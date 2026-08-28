@@ -43,7 +43,26 @@ tools/bake-city.ts      Overpass -> .city pack
 tools/city-index.ts     regenerates public/cities/index.json
 ```
 
-Add a city to `src/cities.ts`, then `bun tools/bake-city.ts --city <id> && bun tools/city-index.ts`.
+Add a city to `src/cities.ts`, then:
+
+```bash
+bun tools/bake-city.ts --city <id>   # Overpass -> public/cities/<id>.city
+bun tools/city-index.ts              # regenerate the menu's index
+bun run verify                       # parse every pack, cross-check the index
+```
+
+`bun run check` runs both typechecks and the pack verifier.
+
+**The verifier is the gate on a bake, and it uses the app's own parser.** The
+failure it exists to catch is a truncated pack from an interrupted bake: it is
+large, it has a valid header, and it is on disk, so a size check and a directory
+listing both wave it through. Only walking every record to the final byte proves
+the file is whole. It also cross-checks `index.json` in both directions, because
+the menu marks cities as having a skyline from that file, and an entry with no
+readable pack is the menu promising something the renderer cannot deliver.
+
+Both directions of that gate have been audited by injecting the failure and
+confirming a non-zero exit -- a check nobody has watched fail is not a check.
 
 ## Rendering notes
 

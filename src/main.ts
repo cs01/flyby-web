@@ -23,7 +23,7 @@ import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Input } from "./sim/input";
 import { Plane } from "./render/plane";
 import { Tour, Beacon } from "./sim/tour";
-import { loadCityPack } from "./data/citypack";
+import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
 import { Composite } from "./render/composite";
 
