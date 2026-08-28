@@ -24,6 +24,7 @@ import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Input } from "./sim/input";
 import { AircraftModel } from "./render/aircraftmodel";
 import { Osd } from "./app/osd";
+import { Minimap } from "./app/minimap";
 import { Timebar, LocalClock } from "./app/timebar";
 import { Beacon } from "./render/beacon";
 import { loadCityPack } from "./data/citypack-load";
@@ -297,6 +298,12 @@ async function main() {
   scene.add(model.group);
 
   const osd = new Osd(ui);
+
+  // A heading-up moving map with a compass round it. Fed the footprints once;
+  // after that it only needs where the aeroplane is and which way it points.
+  const minimap = new Minimap(ui);
+  // A city with no building pack still gets the compass and the landmarks.
+  if (pack) minimap.setCity(pack);
   const layers = new Layers(ui);
 
   // Places you can fly to, and something that flies you there. A list you can
@@ -331,6 +338,7 @@ async function main() {
         Math.hypot(b.x - ac.position.x, b.z - ac.position.z),
     );
     places.setPlaces(nearby);
+    minimap.setPlaces(nearby);
     places.setVisible(layers.landmarks);
   };
   sortByRange();
@@ -579,6 +587,8 @@ async function main() {
     // the whole point of the marker: in a headwind the two disagree.
     const gs = ac.groundSpeed;
     const fpa = (Math.atan2(ac.verticalSpeed, Math.max(gs, 1)) * 180) / Math.PI;
+
+    minimap.update(ac.position.x, ac.position.z, ac.headingDeg, elapsed);
 
     osd.update({
       pitchDeg: ac.pitchDeg,
