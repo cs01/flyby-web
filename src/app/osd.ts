@@ -172,6 +172,12 @@ export class Osd {
   /** The readouts that are plain text, by key. */
   private cells = new Map<string, HTMLElement>();
 
+  /** The drone's two numbers, and the row of dials they stand in for. */
+  private droneStrip!: HTMLElement;
+  private planeRow!: HTMLElement;
+  private planeStrip!: HTMLElement;
+  private droning = false;
+
   constructor(parent: HTMLElement) {
     this.root = document.createElement("div");
     this.root.className = "osd";
@@ -185,7 +191,8 @@ export class Osd {
         <div class="osd-gauge osd-alt"></div>
         <div class="osd-gauge osd-vsi"></div>
       </div>
-      <div class="osd-strip"></div>`;
+      <div class="osd-strip"></div>
+      <div class="osd-strip osd-drone" style="display:none"></div>`;
     parent.append(this.root);
 
     this.buildAsi(this.root.querySelector(".osd-asi") as HTMLElement);
@@ -193,12 +200,41 @@ export class Osd {
     this.buildHeading(this.root.querySelector(".osd-hdg") as HTMLElement);
     this.buildAltimeter(this.root.querySelector(".osd-alt") as HTMLElement);
     this.buildVsi(this.root.querySelector(".osd-vsi") as HTMLElement);
-    this.buildStrip(this.root.querySelector(".osd-strip") as HTMLElement, [
+    this.planeRow = this.root.querySelector(".osd-row") as HTMLElement;
+    this.planeStrip = this.root.querySelector(".osd-strip") as HTMLElement;
+    this.droneStrip = this.root.querySelector(".osd-drone") as HTMLElement;
+    this.buildStrip(this.planeStrip, [
       ["gs", "GS", "kt"],
       ["agl", "AGL", "ft"],
       ["wind", "WIND", ""],
       ["drift", "DRIFT", ""],
     ]);
+    this.buildStrip(this.droneStrip, [
+      ["dspd", "SPEED", "kt"],
+      ["dagl", "HEIGHT", "ft"],
+    ]);
+  }
+
+  /**
+   * Fly the drone, or go back to the aeroplane's panel.
+   *
+   * The six-pack is HIDDEN rather than fed the drone's numbers. Every dial on
+   * it is an instrument of an aircraft that is at this moment parked in the
+   * air behind you: an altimeter reading its altitude, an ASI reading its
+   * airspeed, an attitude ball reading its attitude. Showing them while the
+   * camera is somewhere else would be a panel that lies. Two numbers is what
+   * the drone actually has.
+   */
+  setDrone(s: { speedMs: number; aglM: number } | null): void {
+    if (!!s !== this.droning) {
+      this.droning = !!s;
+      this.planeRow.style.display = this.droning ? "none" : "";
+      this.planeStrip.style.display = this.droning ? "none" : "";
+      this.droneStrip.style.display = this.droning ? "" : "none";
+    }
+    if (!s) return;
+    this.set("dspd", String(Math.round(s.speedMs * KTS)));
+    this.set("dagl", Math.round(s.aglM * FT).toLocaleString());
   }
 
   /**
