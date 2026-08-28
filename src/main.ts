@@ -497,6 +497,7 @@ async function main() {
         z: p.z,
         done: autopilot.target?.name === p.name,
       })),
+      ac.position,
     );
 
     if (input.helpToggled > 0) {
