@@ -13,16 +13,18 @@ import { Terrain, CITY_RINGS } from "./render/terrain";
 import { computeLighting } from "./render/lighting";
 import { loadHeightfield, bboxAround, type Heightfield } from "./data/dem";
 import { stitchImagery, type StitchedImage } from "./data/imagery";
-import { fetchWeather, type Weather } from "./data/weather";
+import { fetchWeather, fetchForecast, type Weather } from "./data/weather";
 import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, DEFAULT_CITY, type City } from "./cities";
 import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
-import { Aircraft, DEFAULT_CONFIG, chooseStartAltitude } from "./sim/aircraft";
+import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Input } from "./sim/input";
-import { Plane } from "./render/plane";
+import { AircraftModel } from "./render/aircraftmodel";
+import { Osd } from "./app/osd";
+import { Timebar, LocalClock } from "./app/timebar";
 import { Tour, Beacon } from "./sim/tour";
 import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
@@ -63,12 +65,32 @@ async function main() {
     return;
   }
   const origin = new Origin(city.lat, city.lon);
-  const now = sceneTime();
+
+  // The scene clock. `base` is the instant the session started from; the
+  // scrubber and the timelapse both move an OFFSET from it rather than
+  // rewriting it, so "back to now" is one assignment and cannot drift.
+  const base = sceneTime();
+  const frozen = new URLSearchParams(location.search).has("t");
+  const startPerf = performance.now();
+  let clockOffset = 0;
+  let timelapse = false;
+  // 600x: a full day passes in 2 minutes 24 seconds, which is slow enough to
+  // watch a sunset happen and fast enough not to be a waiting game.
+  const TIMELAPSE_RATE = 600;
+  const sceneNow = (): Date => {
+    const real = frozen ? 0 : (performance.now() - startPerf) / 1000;
+    return new Date(base.getTime() + (real + clockOffset) * 1000);
+  };
+  let now = base;
 
   loading.set(0.04, `contacting weather for ${city.name}`);
 
   // Weather first-but-not-blocking: kick it off, then start the heavy fetches.
+  // The forecast rides along with it: it is one more small JSON, it is what
+  // makes the clock worth moving, and fetching it later would put a stall in
+  // the middle of a flight.
   const wxPromise = fetchWeather(city.lat, city.lon);
+  const forecastPromise = fetchForecast(city.lat, city.lon);
 
   // DEM: a near field at SRTM-native resolution and a far one for the horizon.
   // z12 is ~30 m/px, which is exactly SRTM's own posting, so a higher zoom
@@ -138,11 +160,14 @@ async function main() {
     u.uUrbanExtent.value = urban.extent;
   }
 
-  const wx: Weather = await wxPromise;
+  const observed: Weather = await wxPromise;
+  const timeline = await forecastPromise;
+  const timezone = timeline?.timezone ?? "UTC";
+  const wallClock = new LocalClock(timezone);
+  let wx: Weather = observed;
 
   const hud = new Hud(ui);
-  hud.setPlace(city, now.toUTCString().slice(17, 22) + " UTC");
-  hud.setWeather(wx);
+  hud.setWeather(wx, 0);
 
   // Start the aircraft upwind of the centre, pointed at the city, at the
   // altitude this place looks best from.
@@ -150,7 +175,8 @@ async function main() {
   const startHdg = city.approach;
   const back = 5200;
   const rad = (startHdg * Math.PI) / 180;
-  const ac = new Aircraft({ ...DEFAULT_CONFIG, simple: new URLSearchParams(location.search).has("easy") });
+  const easy = new URLSearchParams(location.search).has("easy");
+  const ac = new Aircraft(easy ? EASY_CONFIG : DEFAULT_CONFIG);
   const startX = -Math.sin(rad) * back;
   const startZ = Math.cos(rad) * back;
   const startGround = terrain.heightAt(startX, startZ);
@@ -167,11 +193,33 @@ async function main() {
 
   const chase = new ChaseCam();
   const input = new Input(canvas);
-  const plane = new Plane();
-  scene.add(plane.group);
+  const model = new AircraftModel();
+  scene.add(model.group);
 
-  input.onInvertChange = (inv) =>
-    hud.toast(inv ? "Pitch: pull back to climb" : "Pitch: push to climb");
+  const osd = new Osd(ui);
+  const timebar = new Timebar(ui, {
+    lat: city.lat,
+    lon: city.lon,
+    base,
+    timezone,
+    timeline,
+    onOffset: (secs) => {
+      clockOffset = secs;
+      wxDirty = true;
+    },
+    onTimelapse: (on) => {
+      timelapse = on;
+      input.timelapse = on;
+    },
+  });
+  input.onTimelapse = (on) => {
+    timelapse = on;
+    timebar.setTimelapse(on);
+  };
+  if (!timeline) {
+    hud.toast("No forecast feed — the clock moves the sun only");
+  }
+
   hud.showControls();
   loading.done();
 
@@ -180,7 +228,16 @@ async function main() {
 
   // Frame timing, smoothed. A raw per-frame number is unreadable.
   let smoothedMs = 16;
-  let perfAccum = 0;
+  // Starts past the threshold so the first frame fills the panels. Starting at
+  // zero left the place name, the clock and the route blank for the first four
+  // tenths of a second, which is exactly when someone is looking at them.
+  let perfAccum = 1;
+
+  // Weather is resampled on a timer, not per frame: `timeline.at` allocates a
+  // Weather, and doing that 60 times a second to answer a question whose answer
+  // changes on an hourly grid is pure garbage.
+  let wxAccum = 0;
+  let wxDirty = false;
 
   const clock = new THREE.Clock();
   let elapsed = 0;
@@ -190,6 +247,36 @@ async function main() {
     elapsed += dt;
 
     const axes = input.sample(dt);
+
+    // --- Clock ------------------------------------------------------------
+    // Every way of moving the clock funnels through `timebar.setOffset`, so the
+    // slider, the keys and the timelapse cannot disagree about what time it is.
+    const nudge = input.drainTimeNudge();
+    if (nudge) timebar.setOffset(timebar.offsetSeconds + nudge);
+    if (input.drainTimeReset()) timebar.setOffset(0);
+    if (input.timelapse !== timelapse) {
+      timelapse = input.timelapse;
+      timebar.setTimelapse(timelapse);
+    }
+    if (timelapse) timebar.setOffset(timebar.offsetSeconds + dt * TIMELAPSE_RATE);
+    now = sceneNow();
+
+    // --- Weather for that clock -------------------------------------------
+    wxAccum += dt;
+    if (timeline && (wxDirty || wxAccum > 0.5)) {
+      wxAccum = 0;
+      wxDirty = false;
+      // Inside a quarter of an hour of the present the OBSERVATION wins. It is
+      // a measurement and the forecast for the same hour is not, and a model
+      // that disagrees with the sky outside the window is the one thing that
+      // would make the whole feed untrustworthy.
+      const next = Math.abs(clockOffset) < 900 ? observed : timeline.at(now);
+      if (next !== wx) {
+        wx = next;
+        wxDirty = false;
+      }
+    }
+
     const groundUnderAc = terrain.heightAt(ac.position.x, ac.position.z);
     ac.setWeather(wx, ac.position.y);
     if (!input.paused) ac.update(axes, dt, groundUnderAc);
@@ -198,10 +285,12 @@ async function main() {
     chase.update(camera, ac, dt, input.lookBack, terrain.heightAt(camera.position.x, camera.position.z));
     camera.updateMatrixWorld();
 
-    plane.group.position.copy(ac.position);
-    plane.group.quaternion.copy(ac.quaternion);
-    plane.group.visible = chase.mode !== "cockpit";
-    plane.update(dt, ac.throttle);
+    model.group.position.copy(ac.position);
+    model.group.quaternion.copy(ac.quaternion);
+    // In the cockpit view the camera is INSIDE the aeroplane, so drawing it
+    // fills the frame with the back of its own instrument panel.
+    model.group.visible = chase.mode !== "cockpit";
+    model.update(dt, ac.throttle, axes.roll, ac.pitchDeg);
 
     if (!input.paused) tour.update(ac.position, dt);
     const tourDist = tour.distanceTo(ac.position);
@@ -248,22 +337,44 @@ async function main() {
       b.uExposure.value = light.exposure * exposureScale;
     }
 
-    const p = plane.uniforms;
+    const p = model.uniforms;
     p.uSunDir.value.copy(light.sunDir);
     p.uSunColor.value.copy(light.sunColor);
     p.uSunIntensity.value = light.sunIntensity;
     p.uAmbient.value.copy(light.ambient);
 
     // Drift angle: the difference between where the nose points and where the
-    // aircraft is actually going over the ground.
-    const track = (Math.atan2(ac.groundVelocity.x, -ac.groundVelocity.z) * 180) / Math.PI;
+    // machine is actually going over the ground.
+    const track = (Math.atan2(ac.velocity.x, -ac.velocity.z) * 180) / Math.PI;
     let drift = track - ac.headingDeg;
     while (drift > 180) drift -= 360;
     while (drift < -180) drift += 360;
-    hud.setFlight(
-      ac.position.y, ac.airspeed, ac.headingDeg, ac.position.y - groundUnderAc,
-      ac.groundSpeed, drift,
-    );
+
+    // Climb angle of the actual path over the ground, for the flight path
+    // marker. Derived from the velocity rather than from the attitude, which is
+    // the whole point of the marker: in a headwind the two disagree.
+    const gs = ac.groundSpeed;
+    const fpa = (Math.atan2(ac.verticalSpeed, Math.max(gs, 1)) * 180) / Math.PI;
+
+    osd.update({
+      pitchDeg: ac.pitchDeg,
+      rollDeg: ac.rollDeg,
+      headingDeg: ac.headingDeg,
+      altM: ac.position.y,
+      aglM: ac.position.y - groundUnderAc,
+      groundSpeed: ac.groundSpeed,
+      airspeed: ac.airspeed,
+      verticalSpeed: ac.verticalSpeed,
+      rollRateDps: ac.rollRateDps,
+      pitchRateDps: ac.pitchRateDps,
+      yawRateDps: ac.yawRateDps,
+      flightPathDeg: fpa,
+      gLoad: ac.loadFactor,
+      driftDeg: drift,
+      windDirDeg: wx.windDir,
+      windSpeed: Math.hypot(ac.windVector.x, ac.windVector.z),
+      boost: axes.boost > 0.5,
+    });
 
     // Pass 1: the world, in linear HDR, into the offscreen target.
     renderer.setRenderTarget(target);
@@ -290,6 +401,9 @@ async function main() {
       perfAccum = 0;
       hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0, quality.scale);
       hud.setTour(tour.marks, tourDist, tour.finished);
+      hud.setWeather(wx, clockOffset);
+      hud.setPlace(city, wallClock.parts(now).hhmm, wallClock.abbrev(now));
+      timebar.update(now, solar.sun.altitude);
     }
   });
 
@@ -308,7 +422,10 @@ async function main() {
 
   Object.assign(window as unknown as Record<string, unknown>, {
     flyby: {
-      scene, camera, renderer, terrain, sky, wx, city, tune, buildings, composite, ac, chase,
+      scene, camera, renderer, terrain, sky, city, tune, buildings, composite, ac, chase,
+      get wx() { return wx; },
+      get time() { return now; },
+      setOffsetHours: (h: number) => timebar.setOffset(h * 3600),
       setExposure: (v: number) => (exposureScale = v),
     },
   });

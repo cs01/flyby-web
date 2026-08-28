@@ -1,21 +1,43 @@
 // Keyboard, pointer and touch, reduced to one set of axes.
 //
-// Everything upstream of this file deals in "pitch/roll/yaw/throttle in -1..1",
-// so a phone and a keyboard are the same thing to the flight model. The
-// smoothing lives here too: a key is binary and an aircraft control is not, so
-// raw key state fed straight into the model gives a twitch, not a turn.
+// Everything upstream of this file deals in "pitch/roll/yaw/lift/boost in
+// -1..1", so a phone and a keyboard are the same thing to the flight model.
+//
+// The smoothing lives here, and it is a RAMP, not a filter. An exponential
+// filter never reaches the value you asked for, so a tap gives a fraction of
+// an input and holding a key gives an asymptote -- which reads as lag no
+// matter how short the time constant. A ramp reaches full deflection in a
+// known time (0.14 s here) and releases faster than it engages, which is what
+// makes the aircraft feel bolted to the stick.
 
 export interface Axes {
-  pitch: number;
-  roll: number;
-  yaw: number;
+  /** Positive opens the throttle, negative closes it. */
   throttle: number;
+  /** Positive rolls right. */
+  roll: number;
+  /** Positive yaws right. */
+  yaw: number;
+  /** Positive climbs. */
+  lift: number;
+  /** 0..1 sprint. */
+  boost: number;
+}
+
+/** Seconds from centred to full deflection, and back. */
+const ENGAGE = 0.14;
+const RELEASE = 0.08;
+
+function ramp(current: number, target: number, dt: number): number {
+  const toward = Math.abs(target) > Math.abs(current) && target * current >= 0;
+  const rate = dt / (toward ? ENGAGE : RELEASE);
+  const d = target - current;
+  return Math.abs(d) <= rate ? target : current + Math.sign(d) * rate;
 }
 
 export class Input {
   private keys = new Set<string>();
-  private axes: Axes = { pitch: 0, roll: 0, yaw: 0, throttle: 0.75 };
-  private target: Axes = { pitch: 0, roll: 0, yaw: 0, throttle: 0.75 };
+  private axes: Axes = { throttle: 0, roll: 0, yaw: 0, lift: 0, boost: 0 };
+  private target: Axes = { throttle: 0, roll: 0, yaw: 0, lift: 0, boost: 0 };
 
   /** Pointer drag, normalised to -1..1 of the smaller screen dimension. */
   private dragX = 0;
@@ -24,55 +46,49 @@ export class Input {
 
   /** Set when the view should swing round for a look; not a control input. */
   lookBack = false;
-  /** Toggled by C; the camera cycles chase / cockpit / wing. */
+  /** Toggled by C; the camera cycles chase / cockpit / wing / orbit. */
   cameraCycled = 0;
   paused = false;
 
   /**
-   * Which way the pitch axis runs.
+   * Clock nudges, in seconds, accumulated since the last `drainTimeNudge`.
    *
-   * There is no correct answer to this, only a preference, and it is not
-   * something that can be settled by reasoning about it from outside: half of
-   * flying people want a stick (pull back to climb) and half want it direct.
-   * So it is a toggle, remembered per browser, rather than a constant somebody
-   * has to keep flipping.
+   * The input layer does not own the clock -- it reports that a key was
+   * pressed and main decides what a nudge means. Holding the offset here would
+   * put the scene clock in two places, and the URL is already one of them.
    */
-  invertPitch: boolean;
+  private timeNudge = 0;
+  /** Toggled by T: run the scene clock fast so the sun visibly moves. */
+  timelapse = false;
+  /** Set by 0: put the clock back on the present. */
+  timeReset = false;
 
-  private toggleInvertPitch(): void {
-    this.invertPitch = !this.invertPitch;
-    try {
-      localStorage.setItem("flyby.invertPitch", this.invertPitch ? "1" : "0");
-    } catch {
-      // Private mode, or storage blocked. The setting still applies this session.
-    }
-    this.onInvertChange?.(this.invertPitch);
-  }
-
-  /** Called when the pitch axis flips, so the HUD can say so. */
-  onInvertChange: ((inverted: boolean) => void) | null = null;
+  /** Called when the timelapse toggles, so the HUD can say so. */
+  onTimelapse: ((on: boolean) => void) | null = null;
 
   constructor(target: HTMLElement) {
-    let stored: string | null = null;
-    try {
-      stored = localStorage.getItem("flyby.invertPitch");
-    } catch {
-      stored = null;
-    }
-    // Default is the stick convention: pull back to climb.
-    this.invertPitch = stored === null ? true : stored === "1";
-
     addEventListener("keydown", (e) => {
-      if (e.repeat) return;
+      if (e.repeat) {
+        // Held , and . should scrub, so those repeat; nothing else does.
+        if (e.code === "Comma" || e.code === "Period") this.nudge(e);
+        return;
+      }
       this.keys.add(e.code);
       if (e.code === "KeyC") this.cameraCycled++;
       if (e.code === "KeyP") this.paused = !this.paused;
-      if (e.code === "KeyI") this.toggleInvertPitch();
+      if (e.code === "KeyT") {
+        this.timelapse = !this.timelapse;
+        this.onTimelapse?.(this.timelapse);
+      }
+      if (e.code === "Digit0") this.timeReset = true;
+      this.nudge(e);
       // Arrow keys and space scroll the page otherwise, which is jarring when
-      // the page IS the aircraft.
+      // the page IS the aeroplane.
       if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault();
     });
     addEventListener("keyup", (e) => this.keys.delete(e.code));
+    // A tab-away with keys held leaves them held forever, and the aircraft
+    // flies off on its own while nobody is looking at it.
     addEventListener("blur", () => this.keys.clear());
 
     target.addEventListener("pointerdown", (e) => {
@@ -92,6 +108,28 @@ export class Input {
     target.addEventListener("pointercancel", end);
   }
 
+  private nudge(e: KeyboardEvent): void {
+    // Shift takes the step from half an hour to six, so a whole day is two
+    // presses rather than forty-eight.
+    const step = e.shiftKey ? 6 * 3600 : 1800;
+    if (e.code === "Comma") this.timeNudge -= step;
+    if (e.code === "Period") this.timeNudge += step;
+  }
+
+  /** Seconds of clock movement asked for since the last call. Clears it. */
+  drainTimeNudge(): number {
+    const n = this.timeNudge;
+    this.timeNudge = 0;
+    return n;
+  }
+
+  /** True once, on the frame after 0 was pressed. */
+  drainTimeReset(): boolean {
+    const r = this.timeReset;
+    this.timeReset = false;
+    return r;
+  }
+
   private updateDrag(e: PointerEvent): void {
     const r = (e.target as HTMLElement).getBoundingClientRect();
     const half = Math.min(r.width, r.height) * 0.42;
@@ -106,36 +144,39 @@ export class Input {
   /** Smoothed axes for this frame. */
   sample(dt: number): Axes {
     const t = this.target;
-    // Keyboard and pointer must agree with each other, whichever way the axis
-    // runs. They did not: the keyboard was direct while the pointer was a
-    // stick, so whichever control you reached for, the other one was wrong.
-    const sign = this.invertPitch ? 1 : -1;
-    t.pitch = sign * (this.held("ArrowDown", "KeyS") - this.held("ArrowUp", "KeyW"));
-    t.roll = this.held("ArrowRight", "KeyD") - this.held("ArrowLeft", "KeyA");
+
+    // W is FORWARD, which is the question everybody asks first. It opens the
+    // throttle rather than pitching the nose down: on this aeroplane the
+    // throttle commands a speed, so holding W accelerates and holding S slows
+    // right down to a crawl, and neither one costs you any height.
+    //
+    // There is no invert-pitch toggle any more. It existed because "up" on a
+    // pitch axis genuinely has two right answers; a climb axis on Space/Ctrl
+    // has one, and the ambiguity goes away rather than becoming a setting.
+    t.throttle = this.held("KeyW", "ArrowUp") - this.held("KeyS", "ArrowDown");
+    t.roll = this.held("KeyD", "ArrowRight") - this.held("KeyA", "ArrowLeft");
     t.yaw = this.held("KeyE") - this.held("KeyQ");
+    t.lift = this.held("Space", "KeyR") - this.held("ControlLeft", "ControlRight", "KeyF");
+    t.boost = this.held("ShiftLeft", "ShiftRight");
 
     if (this.dragging) {
-      // Pointer overrides the keys, and behaves like a STICK: pulling back
-      // (down the screen) raises the nose. The code used to negate this, which
-      // contradicted the comment right above it and felt inverted to anyone who
-      // reached for the mouse first.
-      t.pitch = sign * this.dragY;
+      // The pointer is a STICK: sideways rolls, back climbs. It does not touch
+      // the throttle, so a mouse user can fly a whole circuit with one hand and
+      // still reach for W when they want to get somewhere.
       t.roll = this.dragX;
+      t.lift = -this.dragY;
     }
 
-    const throttleDelta = this.held("ShiftLeft", "ShiftRight", "Equal") - this.held("ControlLeft", "Minus");
-    t.throttle = Math.max(0, Math.min(1, t.throttle + throttleDelta * dt * 0.7));
+    this.lookBack = this.keys.has("KeyB");
 
-    this.lookBack = this.keys.has("Space");
-
-    // First-order smoothing. The time constant is short enough to feel direct
-    // and long enough that a key press is a control movement, not a step.
-    const k = 1 - Math.pow(0.0008, dt);
     const a = this.axes;
-    a.pitch += (t.pitch - a.pitch) * k;
-    a.roll += (t.roll - a.roll) * k;
-    a.yaw += (t.yaw - a.yaw) * k;
-    a.throttle = t.throttle;
+    a.throttle = ramp(a.throttle, t.throttle, dt);
+    a.roll = ramp(a.roll, t.roll, dt);
+    a.yaw = ramp(a.yaw, t.yaw, dt);
+    a.lift = ramp(a.lift, t.lift, dt);
+    // Boost is a mode, not a control surface; ramping it would put a
+    // quarter-second of nothing between pressing shift and going anywhere.
+    a.boost = t.boost;
     return a;
   }
 }

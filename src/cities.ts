@@ -303,4 +303,4 @@ export function cityById(id: string): City | undefined {
   return CITIES.find((c) => c.id === id);
 }
 
-export const DEFAULT_CITY = "sf";
+export const DEFAULT_CITY = "manhattan";

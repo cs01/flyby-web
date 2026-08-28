@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "bun run check && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json && bun tools/verify-packs.ts",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json && bun test/flight.check.ts && bun tools/verify-packs.ts",
     "bake": "bun tools/bake-city.ts",
-    "verify": "bun tools/verify-packs.ts"
+    "verify": "bun tools/verify-packs.ts",
+    "flight": "bun test/flight.check.ts"
   },
   "dependencies": {
     "three": "^0.180.0"

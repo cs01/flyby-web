@@ -14,7 +14,70 @@ bun run dev
 ```
 
 `?city=<id>` picks a place (see `src/cities.ts`). `?t=<epoch seconds>` freezes
-the clock so a screenshot can be reproduced under an identical sun.
+the clock so a screenshot can be reproduced under an identical sun. `?easy`
+flies a gentler aeroplane.
+
+## Flying it
+
+| | |
+|---|---|
+| `W` / `S` | throttle: **W is forward** |
+| `A` / `D` | roll, and a banked aeroplane turns |
+| `Space` / `Ctrl` | climb / descend |
+| `Q` / `E` | rudder |
+| `Shift` | more power and more bank |
+| drag | stick: sideways rolls, back climbs |
+| `C` · `B` | camera · look back |
+| `,` `.` · `0` · `T` | clock back/forward · back to now · timelapse |
+| `P` | pause |
+
+It is a high-wing light single flown arcade: no stall, no spin, nothing to
+manage, and no way to break it. Three things are assisted on purpose, and they
+are what stop it feeling like the sluggish fixed-wing model it replaced:
+
+- **The throttle commands a SPEED, not a power.** Closing it actively slows the
+  aeroplane instead of waiting for drag, so `S` is a brake and `W` is a
+  go-pedal.
+- **Altitude hold.** With no vertical input it holds its height, including
+  through a turn. A pitch axis that self-centres cannot hold a climb, and one
+  that does not needs trimming; a vertical-speed command needs neither.
+- **The turn rate is scaled 2.4x** off the real `g·tan(bank)/V`. Truthfully,
+  55 degrees of bank at 100 kt is a 30-second circle, and a 30-second circle
+  over Manhattan is not flying, it is waiting. The relation is scaled rather
+  than replaced, so a slow aeroplane still comes round tighter than a fast one.
+
+`bun run flight` asserts all of it -- cruise and slow speed, time for a full
+circle, roll response, climb rate, altitude hold, and that wind moves the track
+without moving the airspeed indicator. Those numbers have no visual tell when
+they drift: an aeroplane that takes thirty seconds to come round still looks
+like an aeroplane in a screenshot.
+
+## Moving the clock
+
+The scrubber under the frame counter moves the scene clock, and the scene clock
+drives **both** the sun and the weather -- solar position computed locally and
+exactly, weather from Open-Meteo's hourly forecast, interpolated. Answering only
+one of them would be worse than answering neither: a dawn sky under this
+afternoon's cloud is a picture of a moment that will never exist.
+
+The coloured band under the slider paints each of the next 60 hours as the
+colour of its sky, so a clear dawn or an incoming front is something you can see
+and click on rather than something you have to find by scrubbing blind.
+
+The weather badge changes with it. An observation is `LIVE`, a prediction is
+`FORECAST +11H`, and no feed at all is `simulated` -- a forecast came off the
+wire exactly as much as the current observation did, so "live" cannot be the
+distinction, and a panel that said LIVE over a prediction would be the one
+dishonesty this app is built to avoid.
+
+## Instruments
+
+Attitude, heading ribbon and vertical speed, in SVG, plus the numbers. The mark
+worth knowing about is the **flight path marker** on the attitude ball: it sits
+where the aeroplane is actually going, as opposed to where its nose is pointing.
+In still air it sits on the reference; in a crosswind it slides off by exactly
+the drift angle. It is the most legible evidence in the app that the weather is
+real rather than decorative.
 
 ## Data
 
@@ -36,9 +99,10 @@ Overpass exposes `height` / `building:levels`.
 ```
 src/geo.ts              three coordinate systems in one file (geodetic / tile / local ENU)
 src/cities.ts           the curated places and their landmarks
-src/data/               cache, DEM, imagery, weather, solar, city packs
-src/render/             atmosphere, sky, terrain, buildings, clouds, tone mapping
+src/data/               cache, DEM, imagery, weather + hourly forecast, solar, city packs
+src/render/             atmosphere, sky, terrain, buildings, clouds, tone mapping, the aeroplane
 src/sim/                flight model, input, chase camera, tour
+src/app/                HUD, instruments, clock scrubber, start menu
 tools/bake-city.ts      Overpass -> .city pack
 tools/city-index.ts     regenerates public/cities/index.json
 ```
@@ -51,7 +115,7 @@ bun tools/city-index.ts              # regenerate the menu's index
 bun run verify                       # parse every pack, cross-check the index
 ```
 
-`bun run check` runs both typechecks and the pack verifier.
+`bun run check` runs both typechecks, the flight-model gate and the pack verifier.
 
 **The verifier is the gate on a bake, and it uses the app's own parser.** The
 failure it exists to catch is a truncated pack from an interrupted bake: it is
@@ -106,6 +170,12 @@ to isolate a term: 1 albedo, 2 direct, 3 ambient, 4 inscatter, 5 lit,
   whose corners sit outside the frustum it skews the whole sky.
 - `.city` packs gzip to ~57%; static hosts compress them in transit, so they are
   stored raw.
+- **Open-Meteo hourly stamps need `timeformat=unixtime`.** Asking for a local
+  timezone (which is the only keyless way to learn a city's wall clock) returns
+  local wall-clock strings with no offset marker, and converting them back needs
+  an offset that is itself only right on one side of a daylight-saving change.
+  Unix time is UTC by definition; the zone is then only ever used for display,
+  via `Intl` rather than by adding seconds.
 
 ## Attribution
 

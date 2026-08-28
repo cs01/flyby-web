@@ -312,3 +312,185 @@ html, body {
 }
 
 .landmark-flash.in { opacity: 1; transform: translate(-50%, 0); }
+
+/* --- Instruments -------------------------------------------------------- */
+
+/* The OSD sits low and centred, where a HUD belongs: the eye returns to the
+   middle of the frame between glances, so the instruments are on the way back
+   rather than in a corner that has to be hunted for. */
+.osd {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.osd-left, .osd-right {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  min-width: 132px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  font-size: 12px;
+}
+
+.osd .row { display: flex; align-items: baseline; gap: 8px; color: var(--dim); }
+.osd .row span { flex: 1; letter-spacing: 0.08em; font-size: 10px; }
+.osd .row b { color: var(--ink); font-weight: 500; }
+.osd .row i { font-style: normal; font-size: 9px; color: var(--dim); width: 22px; text-align: right; }
+
+.osd-mid { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+
+.osd svg.ai { width: 122px; height: 122px; overflow: visible; }
+
+.ai-sky { fill: #2b5d8c; }
+.ai-gnd { fill: #6a4a2c; }
+.ai-horizon { stroke: rgba(255, 255, 255, 0.92); stroke-width: 1.2; }
+.ai-ladder { stroke: rgba(255, 255, 255, 0.72); stroke-width: 0.9; }
+.ai-num { fill: rgba(255, 255, 255, 0.8); font-size: 7px; font-family: inherit; }
+.ai-ring { fill: none; stroke: var(--rule); stroke-width: 1.6; }
+.ai-tick { stroke: rgba(242, 246, 250, 0.55); stroke-width: 1.1; }
+.ai-ptr { fill: var(--accent); }
+.ai-ref { stroke: #ffd166; stroke-width: 2; fill: none; }
+/* The flight path marker shows where the aeroplane is actually going, which
+   in a crosswind is not where its nose is pointing. */
+.ai-fpm { fill: none; stroke: rgba(102, 212, 255, 0.95); stroke-width: 1.6; }
+
+.osd-hdg { position: relative; width: 150px; height: 26px; }
+.osd svg.hdg { width: 100%; height: 100%; }
+.hdg-tick { stroke: rgba(242, 246, 250, 0.5); stroke-width: 0.8; }
+.hdg-num { fill: rgba(242, 246, 250, 0.78); font-size: 7px; font-family: inherit; text-anchor: middle; }
+.hdg-ptr { fill: var(--accent); }
+
+.hdg-box {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgba(8, 13, 20, 0.8);
+  border: 1px solid var(--rule);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+.vsi { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.osd svg.vsi-svg { width: 30px; height: 78px; }
+.vsi-axis { stroke: var(--rule); stroke-width: 1; }
+.vsi-tick { stroke: rgba(242, 246, 250, 0.4); stroke-width: 1; }
+.vsi-zero { stroke: rgba(242, 246, 250, 0.85); stroke-width: 1.4; }
+.vsi-needle { fill: var(--accent); }
+.vsi-text { font-size: 11px; color: var(--dim); }
+.vsi-text.up { color: #6ee7a8; }
+.vsi-text.down { color: #ffcc70; }
+
+/* Boost is a whole-panel state rather than another readout: at 60 m between
+   towers there is no attention left for a word. */
+.osd.boost .osd-left, .osd.boost .osd-right { border-color: rgba(102, 212, 255, 0.55); }
+
+/* --- Clock and forecast scrubber ---------------------------------------- */
+
+/* Below the frame-time panel, which is also centred: two panels sharing the
+   top middle overlapped, and the one that moves is the one that is not a
+   fixed two lines tall. */
+.timebar {
+  position: absolute;
+  top: 76px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(460px, 92vw);
+  padding: 8px 10px 6px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  backdrop-filter: blur(14px) saturate(1.3);
+  -webkit-backdrop-filter: blur(14px) saturate(1.3);
+  font-size: 11px;
+  pointer-events: auto;
+}
+
+.tb-top { display: flex; align-items: center; gap: 8px; }
+.tb-clock { display: flex; align-items: baseline; gap: 5px; min-width: 104px; }
+.tb-clock b { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.tb-zone { font-size: 9px; letter-spacing: 0.1em; color: var(--dim); }
+
+.tb-offset { flex: 1; text-align: center; color: var(--dim); letter-spacing: 0.06em; }
+.tb-offset.shifted { color: var(--accent); }
+.tb-sun { color: var(--dim); font-size: 11px; white-space: nowrap; }
+
+.tb-btn {
+  padding: 2px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--dim);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  transition: color 0.14s ease, border-color 0.14s ease;
+}
+
+.tb-btn:hover { color: var(--ink); border-color: rgba(102, 212, 255, 0.5); }
+.tb-btn.on { color: #05080d; background: var(--accent); border-color: var(--accent); }
+
+/* One cell per hour, painted the colour that hour's sky will be. Scrubbing a
+   bare slider means hunting blind for the interesting hour; this makes a clear
+   dawn or an incoming front something you can see and click. */
+.tb-band {
+  position: relative;
+  display: flex;
+  height: 16px;
+  margin: 7px 0 3px;
+  border-radius: 4px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.tb-band i { flex: 1; display: block; }
+.tb-band i:hover { filter: brightness(1.35); }
+.tb-band i.day-start { box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.45); }
+
+.tb-cursor {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 6px rgba(102, 212, 255, 0.9);
+  pointer-events: none;
+  transition: left 0.08s linear;
+}
+
+.tb-slider { width: 100%; margin: 0; accent-color: var(--accent); height: 14px; }
+
+.tag-fc { background: rgba(102, 212, 255, 0.16); color: var(--accent); }
+
+/* The controls card and the OSD both want the bottom middle; the card is
+   transient, so it moves up rather than the instruments moving down. */
+.hud-controls { bottom: 210px; }
+
+@media (max-width: 720px) {
+  .osd-left, .osd-right { min-width: 104px; font-size: 11px; }
+  .osd svg.ai { width: 96px; height: 96px; }
+  .osd-hdg { width: 118px; }
+}
+
+/* A short window (a laptop with a big browser chrome) has to give the picture
+   back; the instruments shrink rather than being cropped by the bottom edge. */
+@media (max-height: 780px) {
+  .osd { bottom: 14px; gap: 10px; }
+  .osd svg.ai { width: 100px; height: 100px; }
+  .osd svg.vsi-svg { width: 26px; height: 66px; }
+  .osd-left, .osd-right { padding: 7px 9px; }
+}

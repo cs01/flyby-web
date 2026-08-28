@@ -36,10 +36,18 @@ export interface CloudDeck {
   top: number;
 }
 
+export type WeatherSource = "observation" | "forecast" | "simulated";
+
 export interface Weather {
   time: Date;
   /** True if this came off the wire; false means every field below is a guess. */
   live: boolean;
+  /**
+   * Where these numbers came from. `live` alone stopped being enough once the
+   * clock could be moved: a forecast for 09:00 tomorrow IS off the wire, and
+   * badging it "LIVE" would be the exact dishonesty the panel exists to avoid.
+   */
+  source: WeatherSource;
   tempC: number;
   dewC: number;
   humidity: number;
@@ -192,6 +200,7 @@ export function fallbackWeather(): Weather {
   return {
     time: new Date(),
     live: false,
+    source: "simulated",
     tempC: t,
     dewC: d,
     humidity: 60,
@@ -227,6 +236,18 @@ export async function fetchWeather(lat: number, lon: number): Promise<Weather> {
     return fallbackWeather();
   }
 
+  return composeWeather(cur, new Date(cur.time + "Z"), "observation");
+}
+
+/**
+ * One field sample -> one `Weather`.
+ *
+ * Shared by the observation and the forecast so a forecast hour and the current
+ * hour cannot disagree about how cloud decks are stacked or how visibility is
+ * capped. Two copies of this arithmetic would drift, and the drift would show
+ * up as the sky changing appearance the moment the clock moved off "now".
+ */
+function composeWeather(cur: OpenMeteoCurrent, time: Date, source: WeatherSource): Weather {
   const tempC = cur.temperature_2m;
   const dewC = cur.dew_point_2m ?? dewpoint(tempC, cur.relative_humidity_2m);
   const code = cur.weather_code | 0;
@@ -241,8 +262,9 @@ export async function fetchWeather(lat: number, lon: number): Promise<Weather> {
   const highCover = cur.cloud_cover_high / 100;
 
   return {
-    time: new Date(cur.time + "Z"),
+    time,
     live: true,
+    source,
     tempC,
     dewC,
     humidity: cur.relative_humidity_2m,
@@ -263,6 +285,156 @@ export async function fetchWeather(lat: number, lon: number): Promise<Weather> {
     totalCover: cur.cloud_cover / 100,
     opacity: beamOpacity(lowCover, midCover, highCover),
     summary: WMO[code] ?? "Unknown",
+  };
+}
+
+// --- Forecast timeline ----------------------------------------------------
+//
+// The observation answers "what is it doing now". Moving the clock asks a
+// different question, and it has a different feed: Open-Meteo's HOURLY block,
+// out to seven days, with exactly the fields the `current` block carries. So
+// the same `composeWeather` builds both and the sky does not change character
+// the instant you scrub off the present hour.
+//
+// Everything here is interpolated between the two bracketing hours except the
+// two quantities that CANNOT be: the WMO code and the day/night flag are
+// categorical, and the average of "light rain" and "overcast" is not a weather
+// state. Those step at the nearest hour; the continuous fields glide.
+
+const HOURLY_FIELDS = CURRENT_FIELDS;
+
+interface OpenMeteoForecast {
+  utc_offset_seconds: number;
+  timezone: string;
+  timezone_abbreviation: string;
+  hourly: Record<string, (number | null)[]> & { time: number[] };
+}
+
+export interface WeatherTimeline {
+  /** IANA zone for the city, e.g. "America/New_York". Formats the wall clock. */
+  timezone: string;
+  /** Seconds to add to UTC for this city's wall clock, at the queried instant. */
+  utcOffsetSeconds: number;
+  /** Bounds of the forecast, UTC. Outside them `at` clamps to the end sample. */
+  start: Date;
+  end: Date;
+  at(when: Date): Weather;
+}
+
+/** Shortest-arc interpolation between two compass bearings. */
+function lerpAngle(a: number, b: number, t: number): number {
+  let d = ((b - a + 540) % 360) - 180;
+  return (a + d * t + 360) % 360;
+}
+
+/**
+ * Hourly forecast for a place, as a function of time.
+ *
+ * Returns null rather than throwing when the feed is unreachable: the clock
+ * still moves (the SUN is computed locally and needs no network), it just
+ * carries the present weather with it, and the HUD says so.
+ */
+export async function fetchForecast(lat: number, lon: number): Promise<WeatherTimeline | null> {
+  // `timezone=auto` is asked for to learn the city's IANA zone -- there is no
+  // other keyless way to get a city's wall clock, and a hard-coded per-city
+  // offset would be wrong twice a year.
+  //
+  // `timeformat=unixtime` is what makes that safe. With ISO stamps, asking for
+  // a local timezone returns local wall-clock strings with no offset marker,
+  // and every one of them then has to be converted back with an offset that is
+  // itself only correct on one side of a DST change. Unix time is UTC by
+  // definition, so the stamps are unambiguous and the zone is only ever used
+  // for display.
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}` +
+    `&longitude=${lon.toFixed(4)}&hourly=${HOURLY_FIELDS}` +
+    `&wind_speed_unit=ms&timezone=auto&timeformat=unixtime&forecast_days=7&past_days=1`;
+
+  let j: OpenMeteoForecast;
+  try {
+    j = await fetchJson<OpenMeteoForecast>(url, TTL_WEATHER);
+  } catch {
+    return null;
+  }
+
+  const times = j.hourly?.time ?? [];
+  if (times.length < 2) return null;
+  const stamps = times.map((t) => t * 1000);
+
+  const col = (name: string): (number | null)[] => j.hourly[name] ?? [];
+  const cols: Record<string, (number | null)[]> = {};
+  for (const f of HOURLY_FIELDS.split(",")) cols[f] = col(f);
+
+  // A gap in one field must not take the whole hour down: Open-Meteo returns
+  // null for a variable a model does not carry (visibility, on some), and a
+  // null read as 0 is a wall of fog rather than a missing number.
+  const pick = (name: string, i: number, fallback: number): number => {
+    const v = cols[name]?.[i];
+    return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  };
+
+  const sampleAt = (i: number): OpenMeteoCurrent => ({
+    // `composeWeather` takes the instant as an argument; this field only exists
+    // to satisfy the shape shared with the `current` block.
+    time: "",
+    temperature_2m: pick("temperature_2m", i, 15),
+    relative_humidity_2m: pick("relative_humidity_2m", i, 60),
+    dew_point_2m: pick("dew_point_2m", i, NaN),
+    surface_pressure: pick("surface_pressure", i, 1013.25),
+    wind_speed_10m: pick("wind_speed_10m", i, 3),
+    wind_direction_10m: pick("wind_direction_10m", i, 270),
+    wind_gusts_10m: pick("wind_gusts_10m", i, pick("wind_speed_10m", i, 3)),
+    visibility: pick("visibility", i, 24000),
+    precipitation: pick("precipitation", i, 0),
+    weather_code: pick("weather_code", i, 2),
+    is_day: pick("is_day", i, 1),
+    cloud_cover: pick("cloud_cover", i, 0),
+    cloud_cover_low: pick("cloud_cover_low", i, 0),
+    cloud_cover_mid: pick("cloud_cover_mid", i, 0),
+    cloud_cover_high: pick("cloud_cover_high", i, 0),
+  });
+
+  const at = (when: Date): Weather => {
+    const ms = when.getTime();
+    // The grid is exactly hourly, so the bracketing index is arithmetic rather
+    // than a search.
+    const step = stamps[1] - stamps[0];
+    const raw = (ms - stamps[0]) / step;
+    const i = Math.max(0, Math.min(stamps.length - 2, Math.floor(raw)));
+    const f = Math.max(0, Math.min(1, raw - i));
+    const a = sampleAt(i);
+    const b = sampleAt(i + 1);
+
+    const mix = (x: number, y: number) => x + (y - x) * f;
+    const near = f < 0.5 ? a : b;
+
+    const blended: OpenMeteoCurrent = {
+      time: "",
+      temperature_2m: mix(a.temperature_2m, b.temperature_2m),
+      relative_humidity_2m: mix(a.relative_humidity_2m, b.relative_humidity_2m),
+      dew_point_2m: mix(a.dew_point_2m, b.dew_point_2m),
+      surface_pressure: mix(a.surface_pressure, b.surface_pressure),
+      wind_speed_10m: mix(a.wind_speed_10m, b.wind_speed_10m),
+      wind_direction_10m: lerpAngle(a.wind_direction_10m, b.wind_direction_10m, f),
+      wind_gusts_10m: mix(a.wind_gusts_10m, b.wind_gusts_10m),
+      visibility: mix(a.visibility, b.visibility),
+      precipitation: mix(a.precipitation, b.precipitation),
+      weather_code: near.weather_code,
+      is_day: near.is_day,
+      cloud_cover: mix(a.cloud_cover, b.cloud_cover),
+      cloud_cover_low: mix(a.cloud_cover_low, b.cloud_cover_low),
+      cloud_cover_mid: mix(a.cloud_cover_mid, b.cloud_cover_mid),
+      cloud_cover_high: mix(a.cloud_cover_high, b.cloud_cover_high),
+    };
+    return composeWeather(blended, when, "forecast");
+  };
+
+  return {
+    timezone: j.timezone ?? "UTC",
+    utcOffsetSeconds: j.utc_offset_seconds ?? 0,
+    start: new Date(stamps[0]),
+    end: new Date(stamps[stamps.length - 1]),
+    at,
   };
 }
 

@@ -1,54 +1,111 @@
-// The aircraft: an arcade flight model that the weather actually acts on.
+// The aircraft: a light single, flown arcade.
 //
-// Arcade, not a simulator. It is coordinated and self-stabilising -- roll into
-// a turn and it holds the bank, let go and it rolls level -- because the point
-// is sightseeing, not managing an aeroplane. What it does NOT do is fake the
-// air: wind, turbulence and density altitude come from the observation, so a
-// gusty day genuinely shoves the aircraft around and a hot high afternoon
-// genuinely climbs worse.
+// It is a high-wing four-seater, not a fast jet and not a quadcopter, and both
+// of those are deliberate. A jet over a real city reads as a strike package; a
+// camera drone over a real city reads as surveillance. A Cessna over a real
+// city reads as a nice afternoon, which is what this is.
+//
+// Arcade, not a simulator. There is no stall, no spin, no engine to manage and
+// no way to break it, because the point is sightseeing. What it does NOT do is
+// fake the air: wind, turbulence and density altitude come from the
+// observation, so a gusty day genuinely shoves it around and a hot high
+// afternoon genuinely climbs worse.
 //
 // The distinction that matters is between AIRSPEED and GROUNDSPEED. The model
-// flies through a moving block of air: thrust and lift act on airspeed, but the
-// aircraft's position advances by airspeed PLUS the wind vector. That single
-// piece of honesty gives you drift, crab angle, and a downwind leg that eats
-// the ground while the airspeed indicator never moves -- all for free, and none
-// of it is possible if you just add wind to the velocity you display.
+// flies through a moving block of air: the throttle and the turn act on
+// airspeed, but the aircraft's position advances by airspeed PLUS the wind
+// vector. That one piece of honesty gives you drift, crab angle, and a
+// downwind leg that eats the ground while the airspeed indicator never moves,
+// all for free, and none of it is possible if you just add wind to the
+// velocity you display.
+//
+// What it takes from the drone model it replaced -- and the reason it feels
+// nothing like the fixed-wing model BEFORE that -- is the assistance:
+//
+//   ALTITUDE HOLD. With no vertical input it holds its height. A pitch axis
+//     that self-centres to zero cannot hold a climb, and one that does not
+//     self-centre needs trimming; a vertical-speed command needs neither.
+//   ACTIVE BRAKING. The throttle commands a SPEED, and closing it actively
+//     slows the aircraft instead of waiting for drag.
+//   RATE-LIMITED, NOT FILTERED, controls. An exponential filter never reaches
+//     the value you asked for, which reads as lag at any time constant.
+//
+// and the turn rate is deliberately about 2.5x what the real relation gives at
+// these speeds. A truthful 60-degree bank at 90 kt is a 33-second circle, and
+// a 33-second circle over Manhattan is not flying, it is waiting.
 
 import * as THREE from "three";
 import type { Weather } from "../data/weather";
 
 const DEG = Math.PI / 180;
+const G = 9.81;
 
 export interface AircraftInput {
-  /** -1..1, nose down .. nose up. */
-  pitch: number;
+  /** -1..1 throttle change: positive accelerates, negative slows. */
+  throttle: number;
   /** -1..1, roll left .. roll right. */
   roll: number;
-  /** -1..1, rudder. */
+  /** -1..1 rudder, positive yaws right. */
   yaw: number;
-  /** 0..1. */
-  throttle: number;
+  /** -1..1 vertical speed command, positive climbs. */
+  lift: number;
+  /** 0..1. Full power and a higher bank limit; the sprint button. */
+  boost: number;
 }
 
 export interface AircraftConfig {
-  /** Metres per second, level, full throttle, at sea level. */
-  cruiseSpeed: number;
+  /** Metres per second at closed throttle and at open throttle. */
   minSpeed: number;
-  maxSpeed: number;
-  /** Degrees per second at full deflection. */
+  cruiseSpeed: number;
+  /** With boost held. */
+  boostSpeed: number;
+  /** Degrees per second of roll at full stick. */
   rollRate: number;
-  pitchRate: number;
-  /** True for the one-axis mode kids can fly. */
-  simple: boolean;
+  /** Degrees of bank at full stick, and with boost held. */
+  maxBank: number;
+  boostBank: number;
+  /** Degrees per second of yaw at full rudder. */
+  rudderRate: number;
+  /** Metres per second of commanded climb at full stick. */
+  climbRate: number;
+  /**
+   * How much faster than the real g*tan(bank)/V relation the aircraft turns.
+   *
+   * 1.0 is truthful and unflyable over a city; the honest part is kept -- the
+   * turn still tightens as it slows and slackens as it speeds up, because the
+   * relation is scaled rather than replaced by a constant rate.
+   */
+  turnGain: number;
+  /** Airspeed the turn relation is evaluated at, at most. */
+  turnRefSpeed: number;
+  /** Seconds for the speed to close most of the way onto its command. */
+  speedTau: number;
 }
 
 export const DEFAULT_CONFIG: AircraftConfig = {
-  cruiseSpeed: 92,
-  minSpeed: 34,
-  maxSpeed: 165,
-  rollRate: 75,
-  pitchRate: 38,
-  simple: false,
+  minSpeed: 22,
+  cruiseSpeed: 62,
+  boostSpeed: 88,
+  rollRate: 130,
+  maxBank: 55,
+  boostBank: 70,
+  rudderRate: 26,
+  climbRate: 11,
+  turnGain: 2.4,
+  turnRefSpeed: 62,
+  speedTau: 1.4,
+};
+
+/** Gentler everything, for `?easy`. Same shape, smaller numbers. */
+export const EASY_CONFIG: AircraftConfig = {
+  ...DEFAULT_CONFIG,
+  cruiseSpeed: 46,
+  boostSpeed: 60,
+  rollRate: 85,
+  maxBank: 38,
+  boostBank: 48,
+  climbRate: 8,
+  turnGain: 2.0,
 };
 
 export class Aircraft {
@@ -56,25 +113,37 @@ export class Aircraft {
   readonly quaternion = new THREE.Quaternion();
   readonly config: AircraftConfig;
 
-  /** Speed through the AIR, m/s. What the aircraft's physics see. */
-  airspeed: number;
   /** Velocity over the GROUND, m/s. Airspeed plus wind. What the map sees. */
-  readonly groundVelocity = new THREE.Vector3();
+  readonly velocity = new THREE.Vector3();
 
-  throttle = 0.75;
+  /** Speed through the AIR along the nose, m/s. What the physics see. */
+  airspeed: number;
+  /** 0..1 throttle lever, which commands a speed rather than a power. */
+  throttle = 0.72;
+
   private bank = 0;
   private pitchAngle = 0;
   private heading = 0;
-  private turbPhase = Math.random() * 1000;
+  /** Rate of climb through the air, m/s. Commanded, then damped. */
+  private climb = 0;
+
+  /** Body rates, deg/s, measured from the attitude that actually resulted. */
+  private pRate = 0;
+  private qRate = 0;
+  private rRate = 0;
 
   /** Set from the weather each frame. */
   private wind = new THREE.Vector3();
   private gustiness = 0;
   private densityRatio = 1;
+  private turbPhase = Math.random() * 1000;
+
+  /** Load factor in the aircraft's own vertical, in g. */
+  loadFactor = 1;
 
   constructor(config: AircraftConfig = DEFAULT_CONFIG) {
     this.config = { ...config };
-    this.airspeed = config.cruiseSpeed;
+    this.airspeed = config.cruiseSpeed * 0.8;
   }
 
   /**
@@ -99,7 +168,8 @@ export class Aircraft {
     // Density ratio from the ideal gas law against ISA sea level, with a rough
     // pressure lapse for altitude.
     const tempK = wx.tempC + 273.15 - 0.0065 * altitudeM;
-    const pressure = wx.pressureHpa * Math.pow(1 - (0.0065 * altitudeM) / (wx.tempC + 273.15), 5.256);
+    const pressure =
+      wx.pressureHpa * Math.pow(1 - (0.0065 * altitudeM) / (wx.tempC + 273.15), 5.256);
     this.densityRatio = Math.max(0.35, (pressure / 1013.25) * (288.15 / Math.max(tempK, 200)));
   }
 
@@ -113,7 +183,9 @@ export class Aircraft {
     this.heading = -headingDeg * DEG;
     this.bank = 0;
     this.pitchAngle = 0;
-    this.airspeed = this.config.cruiseSpeed;
+    this.climb = 0;
+    this.airspeed = this.config.cruiseSpeed * 0.85;
+    this.velocity.set(0, 0, 0);
     this.syncQuaternion();
   }
 
@@ -127,7 +199,7 @@ export class Aircraft {
    */
   private syncQuaternion(turbBank = 0, turbPitch = 0): void {
     // The roll term is NEGATED. The aircraft's forward axis is -z, and a
-    // positive rotation about +z carries +x (the right wing) toward +y -- i.e.
+    // positive rotation about +z carries +x (the right wing) toward +y, i.e.
     // upward. So a positive `bank`, which the turn model treats as a RIGHT
     // bank, was drawn as a left one: the aircraft rolled away from the
     // direction it was turning, and the camera rolled with it.
@@ -141,50 +213,117 @@ export class Aircraft {
   }
 
   get headingDeg(): number {
-    return ((-this.heading / DEG) % 360 + 360) % 360;
+    return (((-this.heading / DEG) % 360) + 360) % 360;
   }
 
-  get bankDeg(): number {
+  /** Nose-up positive, to match every attitude indicator ever built. */
+  get pitchDeg(): number {
+    return this.pitchAngle / DEG;
+  }
+
+  get rollDeg(): number {
     return this.bank / DEG;
   }
 
+  /** Magnitude of the bank, which is what sets the turn rate. */
+  get bankDeg(): number {
+    return Math.abs(this.bank) / DEG;
+  }
+
   get groundSpeed(): number {
-    return this.groundVelocity.length();
+    return Math.hypot(this.velocity.x, this.velocity.z);
+  }
+
+  get verticalSpeed(): number {
+    return this.velocity.y;
+  }
+
+  get rollRateDps(): number {
+    return this.pRate;
+  }
+  get pitchRateDps(): number {
+    return this.qRate;
+  }
+  get yawRateDps(): number {
+    return this.rRate;
+  }
+
+  /** The wind the model is currently flying in, for the instruments. */
+  get windVector(): THREE.Vector3 {
+    return this.wind;
   }
 
   update(input: AircraftInput, dt: number, groundY: number): void {
     const c = this.config;
+    const boost = THREE.MathUtils.clamp(input.boost, 0, 1);
 
-    // --- Attitude -------------------------------------------------------
-    const rollCmd = c.simple ? 0 : input.roll;
-    this.bank += rollCmd * c.rollRate * DEG * dt;
+    // --- Throttle ---------------------------------------------------------
+    // The lever commands a SPEED, and it moves at a finite rate so that a tap
+    // is a nudge. Closing it slows the aircraft actively rather than leaving it
+    // to drag, which is the difference between a control and a suggestion.
+    this.throttle = THREE.MathUtils.clamp(
+      this.throttle + THREE.MathUtils.clamp(input.throttle, -1, 1) * dt * 0.85,
+      0,
+      1,
+    );
+    const top = THREE.MathUtils.lerp(c.cruiseSpeed, c.boostSpeed, boost);
+    const wantSpeed = THREE.MathUtils.lerp(c.minSpeed, top, this.throttle) * this.densityRatio;
+
+    // --- Attitude ---------------------------------------------------------
+    const bankLimit = THREE.MathUtils.lerp(c.maxBank, c.boostBank, boost) * DEG;
+    const prevBank = this.bank;
+    this.bank += THREE.MathUtils.clamp(input.roll, -1, 1) * c.rollRate * DEG * dt;
     // Self-levelling: with the stick centred the aircraft rolls wings level.
-    if (Math.abs(rollCmd) < 0.02) this.bank *= Math.pow(0.16, dt);
-    this.bank = THREE.MathUtils.clamp(this.bank, -70 * DEG, 70 * DEG);
+    // Slower than it used to be, so a bank can be HELD through a lap of a
+    // landmark rather than having to be flown continuously.
+    if (Math.abs(input.roll) < 0.02) this.bank *= Math.pow(0.30, dt);
+    this.bank = THREE.MathUtils.clamp(this.bank, -bankLimit, bankLimit);
 
-    this.pitchAngle += input.pitch * c.pitchRate * DEG * dt;
-    if (Math.abs(input.pitch) < 0.02) this.pitchAngle *= Math.pow(0.35, dt);
-    this.pitchAngle = THREE.MathUtils.clamp(this.pitchAngle, -35 * DEG, 40 * DEG);
-
-    // A banked aircraft turns. This is the whole of the turn model, and it is
-    // the real relation: rate = g * tan(bank) / V, so a steep turn at low speed
-    // comes round fast and the same bank at high speed does not.
-    const turnRate = (9.81 * Math.tan(this.bank)) / Math.max(this.airspeed, 20);
+    // --- Turn -------------------------------------------------------------
+    // rate = g * tan(bank) / V, scaled. The reference speed caps how lazy a
+    // fast pass is allowed to be while leaving the slow end truthful: a slow
+    // aircraft still comes round noticeably tighter.
+    const vRef = Math.min(Math.max(this.airspeed, 18), c.turnRefSpeed);
+    const turnRate = (G * Math.tan(this.bank) * c.turnGain) / vRef;
+    const prevHeading = this.heading;
     this.heading -= turnRate * dt;
     // Rudder is a small direct yaw, mostly for lining up on a landmark.
-    this.heading -= input.yaw * 22 * DEG * dt;
+    this.heading -= THREE.MathUtils.clamp(input.yaw, -1, 1) * c.rudderRate * DEG * dt;
 
-    // --- Speed ----------------------------------------------------------
-    this.throttle = THREE.MathUtils.clamp(input.throttle, 0, 1);
-    const targetSpeed = THREE.MathUtils.lerp(c.minSpeed * 1.15, c.maxSpeed, this.throttle) * this.densityRatio;
-    // Climbing costs speed, descending gains it. Energy, roughly.
-    const gravityTerm = -Math.sin(this.pitchAngle) * 9.81 * 1.4;
-    this.airspeed += ((targetSpeed - this.airspeed) * 0.55 + gravityTerm) * dt;
-    this.airspeed = THREE.MathUtils.clamp(this.airspeed, c.minSpeed * 0.7, c.maxSpeed * 1.15);
+    // --- Climb ------------------------------------------------------------
+    // A vertical-speed command, damped, so releasing the stick levels off
+    // rather than freezing the nose wherever it was left. Climb performance
+    // falls with density and with speed: a slow aeroplane on a hot day is a
+    // mushy one, and that is a real and legible effect.
+    const climbAuthority = this.densityRatio * THREE.MathUtils.clamp(this.airspeed / c.cruiseSpeed, 0.35, 1.2);
+    const wantClimb = THREE.MathUtils.clamp(input.lift, -1, 1) * c.climbRate * climbAuthority;
+    this.climb += (wantClimb - this.climb) * (1 - Math.pow(0.02, dt));
 
-    // --- Turbulence -----------------------------------------------------
+    // The nose follows the flight path, plus a little extra so a climb LOOKS
+    // like a climb. Attitude here is cosmetic and the climb rate is the truth;
+    // the reverse (deriving climb from attitude) is what made the old model
+    // impossible to hold at a height.
+    const prevPitch = this.pitchAngle;
+    const fpa = Math.asin(THREE.MathUtils.clamp(this.climb / Math.max(this.airspeed, 12), -0.6, 0.6));
+    const wantPitch = THREE.MathUtils.clamp(fpa * 1.25, -30 * DEG, 30 * DEG);
+    this.pitchAngle += (wantPitch - this.pitchAngle) * (1 - Math.pow(0.02, dt));
+
+    // --- Speed ------------------------------------------------------------
+    // Energy, roughly: climbing costs speed and descending gains it, on top of
+    // whatever the throttle asked for.
+    const gravityTerm = (-this.climb / Math.max(this.airspeed, 12)) * G * 1.15;
+    this.airspeed += ((wantSpeed - this.airspeed) / c.speedTau + gravityTerm) * dt;
+    this.airspeed = THREE.MathUtils.clamp(this.airspeed, c.minSpeed * 0.6, c.boostSpeed * 1.2);
+
+    // --- Turbulence -------------------------------------------------------
     // Gusts are the difference between the reported wind and the reported gust.
     // A calm day is glassy; a 25 kt gust spread makes the aircraft work.
+    //
+    // Turbulence is a BOUNDED OFFSET on the attitude, not a rate added to it.
+    // Integrating it was a real bug: a roll RATE of 0.33*g rad/s is ~40 degrees
+    // per second cycling every few seconds, and the aircraft rocked
+    // continuously and fought its own wings-level damping. That is a
+    // resonance, not weather. An offset cannot accumulate.
     this.turbPhase += dt;
     let bumpY = 0;
     let turbBank = 0;
@@ -192,19 +331,6 @@ export class Aircraft {
     if (this.gustiness > 0.3) {
       const g = this.gustiness;
       const p = this.turbPhase;
-
-      // Turbulence is a BOUNDED OFFSET on the attitude, not a rate added to it.
-      //
-      // Integrating it was the bug: `bank += sin(t) * g * 0.0055 * dt * 60` is a
-      // roll RATE of 0.33*g rad/s, which for an ordinary gust spread is ~40
-      // degrees per second cycling every few seconds. The aircraft rocked
-      // continuously and fought its own wings-level damping, which is a
-      // resonance, not weather. An offset cannot accumulate and cannot resonate
-      // with the self-levelling, and its magnitude is exactly what you specify.
-      //
-      // Two incommensurable frequencies per axis so the motion never repeats on
-      // an obvious beat. At a 10 m/s gust spread this is about 3 degrees of
-      // bank and 1.5 of pitch, which is light chop.
       turbBank = Math.sin(p * 1.7 + 0.7) * Math.sin(p * 0.41 + 1.9) * g * 0.0105;
       turbPitch = Math.sin(p * 2.1) * Math.sin(p * 0.33 + 0.4) * g * 0.0050;
       bumpY = Math.sin(p * 2.7) * Math.sin(p * 0.9 + 1.3) * g * 0.25;
@@ -212,15 +338,31 @@ export class Aircraft {
 
     this.syncQuaternion(turbBank, turbPitch);
 
-    // --- Integrate ------------------------------------------------------
-    // Airspeed vector in world axes, from the aircraft's own attitude.
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.quaternion);
-    const air = forward.multiplyScalar(this.airspeed);
-    air.y += bumpY;
+    // Measured rates, from the attitude that actually resulted. Reporting the
+    // COMMAND here would make the instruments agree with the controller rather
+    // than with the aeroplane, which is exactly the reading that hides a bug.
+    if (dt > 0) {
+      this.pRate = (this.bank - prevBank) / DEG / dt;
+      this.qRate = (this.pitchAngle - prevPitch) / DEG / dt;
+      this.rRate = -(this.heading - prevHeading) / DEG / dt;
+    }
+    this.loadFactor = 1 / Math.max(0.2, Math.cos(this.bank));
+
+    // --- Integrate --------------------------------------------------------
+    // Airspeed along the nose, in the horizontal plane, plus the climb rate.
+    // The horizontal component is scaled by cos(fpa) so a steep climb does not
+    // secretly cover more ground than a level cruise at the same airspeed.
+    const cosFpa = Math.cos(fpa);
+    const air = new THREE.Vector3(
+      Math.sin(this.heading) * -this.airspeed * cosFpa,
+      this.climb + bumpY,
+      Math.cos(this.heading) * -this.airspeed * cosFpa,
+    );
 
     // Ground velocity is airspeed PLUS wind. This is what makes drift real.
-    this.groundVelocity.copy(air).add(this.wind);
-    this.position.addScaledVector(this.groundVelocity, dt);
+    this.velocity.copy(air).add(this.wind);
+    this.velocity.y = air.y;
+    this.position.addScaledVector(this.velocity, dt);
 
     // --- Ground -----------------------------------------------------------
     // A hard floor rather than a crash: this is a sightseeing app, and ending
@@ -228,9 +370,12 @@ export class Aircraft {
     const floor = groundY + 25;
     if (this.position.y < floor) {
       this.position.y = floor;
-      if (this.pitchAngle < 0) this.pitchAngle *= 0.4;
+      if (this.climb < 0) this.climb *= 0.3;
     }
-    if (this.position.y > 12000) this.position.y = 12000;
+    if (this.position.y > 12000) {
+      this.position.y = 12000;
+      if (this.climb > 0) this.climb = 0;
+    }
   }
 }
 
@@ -243,8 +388,7 @@ export class Aircraft {
  * m base and the stock 600 m start did exactly that.
  *
  * Preference order: under the deck if there is usable room beneath it, else
- * above its top, else the city default. "Usable room" is generous about ground
- * clearance because these are sightseeing altitudes, not approach minima.
+ * above its top, else the city default.
  */
 export function chooseStartAltitude(
   preferredAgl: number,

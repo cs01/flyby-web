@@ -9,6 +9,8 @@
 
 import type { Weather } from "../data/weather";
 import type { City } from "../cities";
+import { compassPoint } from "./osd";
+import { offsetLabel } from "./timebar";
 
 const KTS_PER_MS = 1.94384;
 
@@ -19,15 +21,9 @@ function el(cls: string, html: string): HTMLDivElement {
   return d;
 }
 
-function compass(deg: number): string {
-  const pts = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
-  return pts[Math.round(((deg % 360) + 360) % 360 / 22.5) % 16];
-}
-
 export class Hud {
   private root: HTMLElement;
   private wxPanel: HTMLDivElement;
-  private flightPanel: HTMLDivElement;
   private placePanel: HTMLDivElement;
   private perfPanel: HTMLDivElement;
   private tourPanel: HTMLDivElement;
@@ -36,10 +32,9 @@ export class Hud {
     this.root = root;
     this.placePanel = el("hud hud-tl", "");
     this.wxPanel = el("hud hud-tr", "");
-    this.flightPanel = el("hud hud-bl", "");
     this.perfPanel = el("hud hud-perf", "");
     this.tourPanel = el("hud hud-br", "");
-    root.append(this.placePanel, this.wxPanel, this.flightPanel, this.perfPanel, this.tourPanel);
+    root.append(this.placePanel, this.wxPanel, this.perfPanel, this.tourPanel);
 
     // An anchor so ctrl/cmd-click opens the picker in a new tab, like any link.
     const back = document.createElement("a");
@@ -58,17 +53,36 @@ export class Hud {
     root.append(att);
   }
 
-  setPlace(city: City, localTime: string): void {
+  /**
+   * The city's own wall clock, not the viewer's and not UTC.
+   *
+   * UTC was the only clock here and it is the wrong one to lead with: nobody
+   * flying over Manhattan wants to work out what 06:33Z means locally, and the
+   * whole point of the sun being computed properly is that the time of day is
+   * something you can SEE. The local time is what agrees with the picture.
+   */
+  setPlace(city: City, localTime: string, zone: string): void {
     this.placePanel.innerHTML = `
       <h2>${city.name}</h2>
-      <div class="row"><span>${city.country}</span><b>${localTime}</b></div>`;
+      <div class="row"><span>${city.country}</span><b>${localTime} <i>${zone}</i></b></div>`;
   }
 
-  setWeather(wx: Weather): void {
+  /**
+   * `offsetSeconds` is how far the scene clock has been moved off the present.
+   *
+   * The badge has to carry it. A forecast for tomorrow morning came off the
+   * wire exactly as much as the current observation did, so "live" cannot be
+   * the distinction -- and a panel that said LIVE over a prediction would be
+   * the one dishonesty this app is built to avoid.
+   */
+  setWeather(wx: Weather, offsetSeconds = 0): void {
     const age = Math.round((Date.now() - wx.time.getTime()) / 60000);
-    const badge = wx.live
-      ? `<span class="tag tag-live">Live · ${age} min old</span>`
-      : `<span class="tag tag-stale">No feed · simulated</span>`;
+    const badge =
+      wx.source === "forecast"
+        ? `<span class="tag tag-fc">Forecast · ${offsetLabel(offsetSeconds)}</span>`
+        : wx.source === "observation"
+          ? `<span class="tag tag-live">Live · ${age} min old</span>`
+          : `<span class="tag tag-stale">No feed · simulated</span>`;
     const decks = [
       wx.low.cover > 0.05 ? `LOW ${Math.round(wx.low.cover * 100)}% @ ${Math.round(wx.low.base)} m` : null,
       wx.mid.cover > 0.05 ? `MID ${Math.round(wx.mid.cover * 100)}%` : null,
@@ -79,37 +93,11 @@ export class Hud {
       <h2>${wx.summary}</h2>
       <div class="row"><span>Temp</span><b>${wx.tempC.toFixed(1)} °C</b></div>
       <div class="row"><span>Dewpoint</span><b>${wx.dewC.toFixed(1)} °C</b></div>
-      <div class="row"><span>Wind</span><b>${compass(wx.windDir)} ${Math.round(wx.windSpeed * KTS_PER_MS)} kt</b></div>
+      <div class="row"><span>Wind</span><b>${compassPoint(wx.windDir)} ${Math.round(wx.windSpeed * KTS_PER_MS)} kt</b></div>
       <div class="row"><span>Visibility</span><b>${(wx.visibility / 1000).toFixed(1)} km</b></div>
       <div class="row"><span>QNH</span><b>${Math.round(wx.pressureHpa)} hPa</b></div>
       ${decks.map((d) => `<div class="row"><span>${d}</span></div>`).join("")}
       ${badge}`;
-  }
-
-  /**
-   * Airspeed and groundspeed are shown separately because they differ, and the
-   * difference is the wind doing something to the aircraft. On a windy day the
-   * two readouts disagree by 30 knots and the drift angle is visibly non-zero,
-   * which is the most legible evidence in the whole app that the weather is
-   * real rather than decorative.
-   */
-  setFlight(
-    altM: number,
-    airspeedMs: number,
-    headingDeg: number,
-    agl: number,
-    groundSpeedMs: number,
-    driftDeg: number,
-  ): void {
-    const drift = Math.abs(driftDeg) < 1 ? "" :
-      `<div class="row"><span>DRIFT</span><b>${driftDeg > 0 ? "R" : "L"} ${Math.abs(Math.round(driftDeg))}°</b></div>`;
-    this.flightPanel.innerHTML = `
-      <div class="row"><span>ALT</span><b>${Math.round(altM * 3.28084).toLocaleString()} ft</b></div>
-      <div class="row"><span>AGL</span><b>${Math.round(agl * 3.28084).toLocaleString()} ft</b></div>
-      <div class="row"><span>IAS</span><b>${Math.round(airspeedMs * KTS_PER_MS)} kt</b></div>
-      <div class="row"><span>GS</span><b>${Math.round(groundSpeedMs * KTS_PER_MS)} kt</b></div>
-      <div class="row"><span>HDG</span><b>${String(Math.round(headingDeg)).padStart(3, "0")}°</b></div>
-      ${drift}`;
   }
 
   /**
@@ -166,13 +154,12 @@ export class Hud {
 
   showControls(): void {
     const d = el("hud hud-controls", `
-      <div class="row"><span>Climb</span><b>S / drag back</b></div>
-      <div class="row"><span>Dive</span><b>W / drag fwd</b></div>
-      <div class="row"><span>Roll</span><b>A / D</b></div>
-      <div class="row"><span>Throttle</span><b>Shift / Ctrl</b></div>
-      <div class="row"><span>Camera</span><b>C</b></div>
-      <div class="row"><span>Invert pitch</span><b>I</b></div>
-      <div class="row"><span>Look back</span><b>Space</b></div>`);
+      <div class="row"><span>Move</span><b>W A S D</b></div>
+      <div class="row"><span>Up / down</span><b>Space / Ctrl</b></div>
+      <div class="row"><span>Turn</span><b>Q / E · drag</b></div>
+      <div class="row"><span>Boost</span><b>Shift</b></div>
+      <div class="row"><span>Camera</span><b>C · look back B</b></div>
+      <div class="row"><span>Time</span><b>, . · 0 · T</b></div>`);
     this.root.append(d);
     // Fade out once the flying has started; it is a reminder, not a panel.
     setTimeout(() => {
