@@ -1,0 +1,151 @@
+// Bootstrap: load a place, build the world, fly it.
+//
+// Load order is deliberate. Weather and terrain are fetched CONCURRENTLY and
+// the terrain mesh waits only on the DEM, because the DEM is the long pole
+// (dozens of PNG tiles) and the weather is one small JSON. Serialising them
+// would add the weather latency to the load for no reason.
+
+import * as THREE from "three";
+import { createRenderer } from "./render/renderer";
+import { Sky } from "./render/sky";
+import { Terrain, CITY_RINGS } from "./render/terrain";
+import { computeLighting } from "./render/lighting";
+import { loadHeightfield, bboxAround, type Heightfield } from "./data/dem";
+import { stitchImagery, type StitchedImage } from "./data/imagery";
+import { fetchWeather, type Weather } from "./data/weather";
+import { solarState, sceneTime } from "./data/solar";
+import { Origin } from "./geo";
+import { CITIES, cityById, DEFAULT_CITY, type City } from "./cities";
+import { Hud, LoadingScreen } from "./app/hud";
+import { OrbitCam } from "./sim/orbitcam";
+
+function chooseCity(): City {
+  const q = new URLSearchParams(location.search).get("city");
+  return cityById(q ?? "") ?? cityById(DEFAULT_CITY) ?? CITIES[0];
+}
+
+async function main() {
+  const canvas = document.getElementById("view") as HTMLCanvasElement;
+  const ui = document.getElementById("ui")!;
+  const loading = new LoadingScreen();
+
+  const city = chooseCity();
+  const origin = new Origin(city.lat, city.lon);
+  const now = sceneTime();
+
+  loading.set(0.04, `contacting weather for ${city.name}`);
+
+  // Weather first-but-not-blocking: kick it off, then start the heavy fetches.
+  const wxPromise = fetchWeather(city.lat, city.lon);
+
+  // DEM: a near field at SRTM-native resolution and a far one for the horizon.
+  // z12 is ~30 m/px, which is exactly SRTM's own posting, so a higher zoom
+  // would only interpolate and cost four times the tiles.
+  loading.set(0.08, "loading terrain");
+  let demDone = 0;
+  const demTotalGuess = 45;
+  const bump = () => loading.set(0.08 + 0.34 * Math.min(1, ++demDone / demTotalGuess), "loading terrain");
+
+  const fields: Heightfield[] = await Promise.all([
+    loadHeightfield(bboxAround(city.lat, city.lon, 22000), 12, bump),
+    loadHeightfield(bboxAround(city.lat, city.lon, 80000), 9, bump),
+  ]);
+
+  loading.set(0.44, "loading imagery");
+  let imgDone = 0;
+  const drapes: StitchedImage[] = [];
+  for (let r = 0; r < CITY_RINGS.length; r++) {
+    const ring = CITY_RINGS[r];
+    drapes.push(await stitchImagery(bboxAround(city.lat, city.lon, ring.extent * 1.05), ring.imageryZoom));
+    loading.set(0.44 + 0.4 * (++imgDone / CITY_RINGS.length), "loading imagery");
+  }
+
+  loading.set(0.88, "building world");
+  const { renderer, scene, camera } = createRenderer(canvas);
+  const sky = new Sky();
+  scene.add(sky.mesh);
+
+  const terrain = new Terrain(origin, fields, drapes);
+  scene.add(terrain.group);
+
+  const wx: Weather = await wxPromise;
+
+  const hud = new Hud(ui);
+  hud.setPlace(city, now.toUTCString().slice(17, 22) + " UTC");
+  hud.setWeather(wx);
+
+  const groundAtCentre = terrain.heightAt(0, 0);
+  const cam = new OrbitCam(camera, {
+    centre: new THREE.Vector3(0, groundAtCentre, 0),
+    radius: 3200,
+    height: groundAtCentre + city.startAlt,
+  });
+
+  loading.done();
+
+  // Live tuning scale, driven from the console while looking at the scene.
+  let exposureScale = 1;
+
+  const clock = new THREE.Clock();
+  let elapsed = 0;
+
+  renderer.setAnimationLoop(() => {
+    const dt = Math.min(0.05, clock.getDelta());
+    elapsed += dt;
+
+    cam.update(dt);
+    camera.updateMatrixWorld();
+
+    const solar = solarState(now, city.lat, city.lon);
+    const light = computeLighting(solar, wx);
+
+    const camAlt = camera.position.y;
+    sky.update(solar, wx, camAlt, elapsed);
+    sky.syncCamera(camera);
+
+    for (const u of terrain.uniforms) {
+      u.uCameraPos.value.copy(camera.position);
+      u.uSunDir.value.copy(light.sunDir);
+      u.uSunColor.value.copy(light.sunColor);
+      u.uSunIntensity.value = light.sunIntensity;
+      u.uAmbient.value.copy(light.ambient);
+      u.uWetness.value = light.wetness;
+      u.uSnow.value = light.snow;
+      u.uNight.value = light.night;
+      u.uMieG.value = light.mieG;
+      u.uTurbidity.value = light.turbidity;
+      u.uCamAltitude.value = camAlt;
+      u.uExposure.value = light.exposure * exposureScale;
+    }
+    sky.uniforms.uExposure.value = light.exposure * exposureScale;
+
+    const ground = terrain.heightAt(camera.position.x, camera.position.z);
+    hud.setFlight(camAlt, cam.speed, cam.heading, camAlt - ground);
+
+    renderer.render(scene, camera);
+  });
+
+  // Handy for poking at the scene from the console during development.
+  const tune = (name: string, value: number) => {
+    const sets: Record<string, THREE.IUniform>[] = [
+      sky.uniforms as unknown as Record<string, THREE.IUniform>,
+      ...(terrain.uniforms as unknown as Record<string, THREE.IUniform>[]),
+    ];
+    let hit = 0;
+    for (const set of sets) if (name in set) { set[name].value = value; hit++; }
+    return `${name} = ${value} (${hit} materials)`;
+  };
+
+  Object.assign(window as unknown as Record<string, unknown>, {
+    flyby: {
+      scene, camera, renderer, terrain, sky, wx, city, cam, tune,
+      setExposure: (v: number) => (exposureScale = v),
+    },
+  });
+}
+
+main().catch((err) => {
+  console.error(err);
+  const d = document.getElementById("loading");
+  if (d) d.querySelector(".step")!.textContent = `failed: ${err.message}`;
+});
