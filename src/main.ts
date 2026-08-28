@@ -6,7 +6,7 @@
 // would add the weather latency to the load for no reason.
 
 import * as THREE from "three";
-import { createRenderer } from "./render/renderer";
+import { createRenderer, createSceneTarget } from "./render/renderer";
 import { Sky } from "./render/sky";
 import { Terrain, CITY_RINGS } from "./render/terrain";
 import { computeLighting } from "./render/lighting";
@@ -18,6 +18,9 @@ import { Origin } from "./geo";
 import { CITIES, cityById, DEFAULT_CITY, type City } from "./cities";
 import { Hud, LoadingScreen } from "./app/hud";
 import { OrbitCam } from "./sim/orbitcam";
+import { loadCityPack } from "./data/citypack";
+import { Buildings } from "./render/buildings";
+import { Composite } from "./render/composite";
 
 function chooseCity(): City {
   const q = new URLSearchParams(location.search).get("city");
@@ -62,11 +65,35 @@ async function main() {
 
   loading.set(0.88, "building world");
   const { renderer, scene, camera } = createRenderer(canvas);
+  const composite = new Composite();
+  let target = createSceneTarget(renderer);
+  addEventListener("resize", () => {
+    const s2 = renderer.getDrawingBufferSize(new THREE.Vector2());
+    target.setSize(s2.x, s2.y);
+  });
+
   const sky = new Sky();
   scene.add(sky.mesh);
 
   const terrain = new Terrain(origin, fields, drapes);
   scene.add(terrain.group);
+
+  // Buildings. A city with no baked pack still flies, it just has no skyline,
+  // so this must never be able to fail the load.
+  loading.set(0.92, "loading buildings");
+  const pack = await loadCityPack(city.id);
+  let buildings: Buildings | null = null;
+  if (pack) {
+    buildings = new Buildings(pack, terrain.heightAt);
+    scene.add(buildings.group);
+    console.log(
+      `[flyby] buildings: ${buildings.stats.drawn} drawn, ` +
+      `${buildings.stats.skippedFar} culled as small+distant, ` +
+      `${buildings.stats.triangles} triangles in ${buildings.stats.cells} cells`,
+    );
+  } else {
+    console.warn(`[flyby] no building pack for ${city.id}; run: bun tools/bake-city.ts --city ${city.id}`);
+  }
 
   const wx: Weather = await wxPromise;
 
@@ -119,17 +146,46 @@ async function main() {
     }
     sky.uniforms.uExposure.value = light.exposure * exposureScale;
 
+    if (buildings) {
+      const b = buildings.uniforms;
+      b.uCameraPos.value.copy(camera.position);
+      b.uSunDir.value.copy(light.sunDir);
+      b.uSunColor.value.copy(light.sunColor);
+      b.uSunIntensity.value = light.sunIntensity;
+      b.uAmbient.value.copy(light.ambient);
+      b.uNight.value = light.night;
+      b.uWetness.value = light.wetness;
+      b.uMieG.value = light.mieG;
+      b.uTurbidity.value = light.turbidity;
+      b.uCamAltitude.value = camAlt;
+      b.uExposure.value = light.exposure * exposureScale;
+    }
+
     const ground = terrain.heightAt(camera.position.x, camera.position.z);
     hud.setFlight(camAlt, cam.speed, cam.heading, camAlt - ground);
 
+    // Pass 1: the world, in linear HDR, into the offscreen target.
+    renderer.setRenderTarget(target);
     renderer.render(scene, camera);
+
+    // Pass 2: clouds raymarched against that target's depth, then tone mapped
+    // to the screen.
+    composite.update(camera, wx, light, elapsed);
+    composite.uniforms.uScene.value = target.texture;
+    composite.uniforms.uDepth.value = target.depthTexture;
+    composite.uniforms.uSunSurfaceCloud.value = 0.105;
+    composite.uniforms.uExposure.value = light.exposure * exposureScale;
+    renderer.setRenderTarget(null);
+    renderer.render(composite.scene, composite.camera);
   });
 
   // Handy for poking at the scene from the console during development.
   const tune = (name: string, value: number) => {
     const sets: Record<string, THREE.IUniform>[] = [
       sky.uniforms as unknown as Record<string, THREE.IUniform>,
+      composite.uniforms as Record<string, THREE.IUniform>,
       ...(terrain.uniforms as unknown as Record<string, THREE.IUniform>[]),
+      ...(buildings ? [buildings.uniforms as Record<string, THREE.IUniform>] : []),
     ];
     let hit = 0;
     for (const set of sets) if (name in set) { set[name].value = value; hit++; }
@@ -138,7 +194,7 @@ async function main() {
 
   Object.assign(window as unknown as Record<string, unknown>, {
     flyby: {
-      scene, camera, renderer, terrain, sky, wx, city, cam, tune,
+      scene, camera, renderer, terrain, sky, wx, city, cam, tune, buildings, composite,
       setExposure: (v: number) => (exposureScale = v),
     },
   });

@@ -182,7 +182,7 @@ void main() {
     else                   col = vec3(vWorld.y / 200.0);
   }
 
-  fragColor = vec4(present(col), 1.0);
+  fragColor = vec4(col, 1.0);
 }
 `;
 

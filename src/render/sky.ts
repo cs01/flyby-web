@@ -120,7 +120,7 @@ void main() {
 
   col += stars(rd, uNightAmount) * trans;
 
-  fragColor = vec4(present(col), 1.0);
+  fragColor = vec4(col, 1.0);
 }
 `;
 

@@ -58,3 +58,34 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
 
   return { renderer, scene, camera };
 }
+
+/**
+ * Offscreen target the scene renders into before the composite pass.
+ *
+ * Half-float colour because the shaders write LINEAR HDR -- the sky looking at
+ * the sun is well over 1.0 and an 8-bit target would clip it to white before
+ * the tone curve ever saw it, which defeats the entire point of tone mapping.
+ *
+ * The depth texture is what lets clouds be composited against the world instead
+ * of painted behind it: without a scene distance to march against, an aircraft
+ * can never fly INTO a cloud.
+ */
+export function createSceneTarget(renderer: THREE.WebGLRenderer): THREE.WebGLRenderTarget {
+  const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+  const depth = new THREE.DepthTexture(size.x, size.y);
+  depth.type = THREE.UnsignedIntType;
+  depth.format = THREE.DepthFormat;
+  depth.minFilter = THREE.NearestFilter;
+  depth.magFilter = THREE.NearestFilter;
+
+  const rt = new THREE.WebGLRenderTarget(size.x, size.y, {
+    type: THREE.HalfFloatType,
+    format: THREE.RGBAFormat,
+    minFilter: THREE.LinearFilter,
+    magFilter: THREE.LinearFilter,
+    depthBuffer: true,
+    stencilBuffer: false,
+    depthTexture: depth,
+  });
+  return rt;
+}
