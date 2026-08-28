@@ -37,10 +37,26 @@ export interface TerrainRing {
  * mountains on the horizon and is allowed to be crude.
  */
 export const CITY_RINGS: TerrainRing[] = [
-  // The innermost ring exists for the ground you actually fly over. At zoom 15
-  // a street is ~3.6 m per pixel, which is a smear; zoom 16 halves that and
-  // road markings, car parks and pitch lines resolve. It is only 2.2 km across,
-  // so the extra sharpness costs about a hundred tiles rather than thousands.
+  // A detail bubble for the ground close enough to look AT rather than fly
+  // over. Zoom 16 is ~1.8 m per pixel, so from a few hundred feet the drape is
+  // visibly made of texels and a road reads as a row of squares. Esri serves
+  // imagery down to zoom 20 (verified live), and zoom 18 is ~0.47 m/px, which
+  // is four times finer in each direction.
+  //
+  // The reason this ring is 400 m and not 2.2 km is texture memory, not tiles.
+  // Drape cost grows as (extent x zoom)^2, and the growth is brutal: measured,
+  // this ring stitches 64 tiles into 2048 px and ~17 MB, while zoom 18 over the
+  // 2.2 km ring below would be ~1760 tiles, an 11264 px canvas and ~460 MB.
+  //
+  // It is therefore a bubble around the START point, not around the aircraft,
+  // and you leave it in seconds at cruise. That is the right trade only
+  // because the pixellation it fixes is a low-and-slow problem. Recentering
+  // this ring as the camera moves is what ground vehicles will need.
+  { extent: 400, segments: 128, imageryZoom: 18 },
+  // The ring the aircraft actually flies through. At zoom 15 a street is
+  // ~3.6 m per pixel, which is a smear; zoom 16 halves that and road markings,
+  // car parks and pitch lines resolve. It is only 2.2 km across, so the extra
+  // sharpness costs about a hundred tiles rather than thousands.
   { extent: 2200, segments: 224, imageryZoom: 16 },
   { extent: 6000, segments: 320, imageryZoom: 15 },
   { extent: 20000, segments: 256, imageryZoom: 13 },

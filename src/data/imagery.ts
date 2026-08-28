@@ -76,15 +76,3 @@ export async function stitchImagery(bbox: Bbox, z: number): Promise<StitchedImag
     },
   };
 }
-
-/**
- * Pick the zoom whose ground resolution puts a `spanM`-wide box at roughly
- * `targetPx` across. Capped at 17: ESRI has imagery deeper than that but the
- * tile count grows as 4^z and the drape stops being the limiting detail once
- * buildings are on it.
- */
-export function zoomForSpan(lat: number, spanM: number, targetPx = 2048): number {
-  const worldM = 2 * Math.PI * 6378137 * Math.cos((lat * Math.PI) / 180);
-  const z = Math.log2((worldM * targetPx) / (spanM * TILE_PX));
-  return Math.max(2, Math.min(17, Math.round(z)));
-}
