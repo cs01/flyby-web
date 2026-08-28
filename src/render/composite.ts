@@ -179,20 +179,25 @@ void main() {
   // Below this there is nothing to see and the march is pure waste. The old
   // 0.01 gate meant a 3% sky paid the full 32-step price for a few wisps.
   if (lowCover > 0.06 || midCover > 0.06) {
-    float slabLo = min(uLow.y, uMid.y);
-    float slabHi = max(uLow.z, uMid.z);
+    // Only the decks that are actually THERE. A mid deck at zero coverage used
+    // to widen these bounds anyway, which stretched the step size derived from
+    // them: a 1200 m low deck was being sampled as if it were 4 km thick.
+    float slabLo = 1.0e9;
+    float slabHi = -1.0e9;
+    if (lowCover > 0.06) { slabLo = min(slabLo, uLow.y); slabHi = max(slabHi, uLow.z); }
+    if (midCover > 0.06) { slabLo = min(slabLo, uMid.y); slabHi = max(slabHi, uMid.z); }
 
     // Clip the march to the span of sky that can hold cloud at all.
     float t0 = 0.0;
-    // Far enough that a near-horizontal ray still reaches an overcast deck.
     // The world is a flat plane, so an overcast seen from underneath runs to
-    // the horizon and must not END anywhere a pixel can see: at 90 km, and
-    // still at 170 km, the march ran out and drew a hard bright line across
-    // the sky under the deck -- bare horizon sky showing through where the
-    // cloud simply stopped. Everything past ~100 km compresses into the last
-    // few pixels above the horizon, so the extra range is nearly free, and it
-    // is entirely free in steps because they grow geometrically.
-    float t1 = min(sceneDist, 400000.0);
+    // the horizon, and where the march STOPS used to be a hard bright line
+    // across the sky: bare horizon sky showing through where the cloud simply
+    // ended. Pushing the limit out to 400 km only moved the line closer to the
+    // horizon without removing it, and every kilometre of it still has to be
+    // marched. 120 km is instead the distance at which a cloud sample and the
+    // sky behind it can be made the same colour, which is the only thing that
+    // makes the end of a march invisible rather than merely distant.
+    float t1 = min(sceneDist, 120000.0);
     if (abs(rd.y) > 1e-4) {
       float ta = (slabLo - uCameraPos.y) / rd.y;
       float tb = (slabHi - uCameraPos.y) / rd.y;
@@ -203,27 +208,28 @@ void main() {
     }
 
     if (t1 > t0) {
-      // 32 steps, not 56. The march is the single most expensive thing in the
-      // frame -- steps x (2 slab evaluations + 4 light steps) x a 4-octave fbm
-      // is roughly 18k hash evaluations per pixel, and at full resolution that
-      // is what took Istanbul to half a frame per second.
-      const int STEPS = 32;
+      // 64 steps now that a density sample is one filtered texture fetch
+      // instead of two dozen hashes. The step BUDGET stopped being what limits
+      // the march; the step SIZE is.
+      const int STEPS = 64;
 
-      // GEOMETRIC steps, not uniform ones. The slab clip bounds the march for
-      // a ray that crosses the deck, but a ray that runs ALONG it -- the
-      // camera inside or just under an overcast, looking at the horizon --
-      // spans the full 170 km, and 32 uniform steps of that is a 5 km step.
-      // No dither hides a 5 km step: it arrives as the horizontal banding that
-      // striped the deck near the horizon.
+      // The step size is a function of distance and of nothing else. This is
+      // the whole terracing fix.
       //
-      // A step proportional to distance is the right shape, because that is
-      // what keeps a sample's SCREEN size constant: near cloud is resolved and
-      // far cloud, which the range fade is thinning out anyway, is not. The
-      // growth is normalised so the same 32 steps still span exactly t0..t1,
-      // so a short march (looking down through a deck) is unaffected.
-      const float GROWTH = 1.12;
-      float norm = (pow(GROWTH, float(STEPS)) - 1.0) / (GROWTH - 1.0);
-      float dt = (t1 - t0) / norm;
+      // Normalising the steps to span t0..t1 made the step size a function of
+      // the pixel's ELEVATION, because the slab crossing t1-t0 is
+      // thickness/rd.y. The integral has discrete events in it (which step
+      // lands in the base ramp, which step drives transmittance under the
+      // early-out), and as elevation changed each event moved one step earlier
+      // or later. One band per event, spread across the sky as iso-elevation
+      // arcs. A dither jitters WITHIN a step and cannot hide a seam that is a
+      // whole step wide.
+      //
+      // Tying the step to distance instead keeps a sample's screen size roughly
+      // constant, which is the right thing to hold steady, and two neighbouring
+      // pixels now march the same way whatever their elevation.
+      float dt0 = (slabHi - slabLo) / 24.0;
+      float dt = dt0 * max(1.0, t0 / 6000.0);
       // Dither the start offset, or the fixed step size shows as concentric
       // banding. A per-pixel HASH decorrelates but is spatially incoherent, and
       // this pass runs at HALF resolution, so the upsample magnified every
@@ -255,10 +261,21 @@ void main() {
       // the sun, and a weak backward one so the far side is not dead flat.
       float ph = mix(miePhase(cosSun, 0.80), miePhase(cosSun, -0.30), 0.35);
 
+      // Empty-space skipping. A broken deck is mostly gaps, and integrating a
+      // gap at the resolution the cloud needs is the entire cost of a sky that
+      // has almost nothing in it. While the last sample was empty the march
+      // strides three steps at a time; the step that finds cloud is thrown
+      // away and the march backs up two steps to enter the edge at full
+      // resolution, or the leading edge of every cloud is quantised to the
+      // coarse stride and reads as a staircase.
+      bool coarse = true;
+      int empties = 0;
+
       for (int i = 0; i < STEPS; i++) {
         if (t > t1) break;
         if (through.g < 0.02) break;
 
+        dt = dt0 * max(1.0, t / 6000.0);
         vec3 p = uCameraPos + rd * t;
         // Fade the deck out toward the march limit by thinning it, NOT by
         // dimming it. Dimming the light while leaving the opacity alone turned
@@ -266,46 +283,66 @@ void main() {
         // the march ended -- the deck was still fully opaque, just unlit.
         float dens = cloudDensity(p) * smoothstep(400000.0, 200000.0, t);
 
-        if (dens > 0.001) {
-          // Light march toward the sun: how deep is this sample buried?
-          //
-          // The two extinction coefficients below are not free. A sunlit cloud
-          // top is the BRIGHTEST thing in a daytime frame -- brighter than lit
-          // ground, because cloud albedo is ~0.9 against a city's ~0.2. Setting
-          // the light-march extinction too high buries the tops in their own
-          // shadow and the whole deck turns dirty grey, which is what happened.
-          // These values put a cloud top near transmittance 0.8 and a deep base
-          // near 0.3, which is the range that reads as a cloud.
-          const float LIGHT_STEP = 120.0;
-          const float SIGMA_LIGHT = 0.004;
-          const float SIGMA_VIEW = 0.012;
-
-          float shadow = 0.0;
-          for (int j = 0; j < 3; j++) {
-            vec3 sp = p + uSunDir * (LIGHT_STEP * (float(j) + 0.5));
-            shadow += cloudDensity(sp);
-          }
-          float sunT = exp(-shadow * LIGHT_STEP * SIGMA_LIGHT * (4.0 / 3.0));
-
-          // Powder: the dark cores of a cloud seen against the light. Without
-          // it clouds look like cotton wool with no interior.
-          float powder = 1.0 - exp(-dens * 8.0);
-
-          float sigma = dens * SIGMA_VIEW;
-          vec3 stepT = exp(-vec3(sigma) * dt);
-
-          vec3 sunColour = uSunColor * uSunIntensity * uSunSurfaceCloud;
-          vec3 lum = sunColour * (ph * 4.0 + 0.5) * sunT * mix(0.35, 1.0, powder)
-                   + uAmbient * 0.9;
-
-          // Rain shafts read as darker cloud bases.
-          lum *= 1.0 - 0.35 * uPrecip * smoothstep(uLow.z, uLow.y, p.y);
-
-          scattered += through * lum * (1.0 - stepT.g);
-          through *= stepT;
+        if (dens <= 0.001) {
+          empties++;
+          // Back to striding once the cloud that was being resolved is behind
+          // us. Immediately would oscillate: the backed-up sample is empty by
+          // construction, and going coarse on it would step straight back into
+          // the same edge.
+          if (empties > 4) coarse = true;
+          t += coarse ? 3.0 * dt : dt;
+          continue;
         }
+        empties = 0;
+        if (coarse) {
+          coarse = false;
+          t = max(t0, t - 2.0 * dt);
+          continue;
+        }
+
+        // Light march toward the sun: how deep is this sample buried?
+        //
+        // The two extinction coefficients below are not free. A sunlit cloud
+        // top is the BRIGHTEST thing in a daytime frame -- brighter than lit
+        // ground, because cloud albedo is ~0.9 against a city's ~0.2. Setting
+        // the light-march extinction too high buries the tops in their own
+        // shadow and the whole deck turns dirty grey, which is what happened.
+        // These values put a cloud top near transmittance 0.8 and a deep base
+        // near 0.3, which is the range that reads as a cloud.
+        const float LIGHT_STEP = 120.0;
+        const float SIGMA_LIGHT = 0.004;
+        const float SIGMA_VIEW = 0.012;
+
+        // Three steps that GROW. What matters near the sample is resolved,
+        // and the reach extends to 570 m instead of 360 m for the same three
+        // fetches, which is the difference between knowing a sample is under
+        // a metre of cloud and knowing it is under half a deck.
+        float shadow = 0.0;
+        float lt = 0.0;
+        for (int j = 0; j < 3; j++) {
+          float ls = LIGHT_STEP * pow(1.5, float(j));
+          shadow += cloudDensity(p + uSunDir * (lt + ls * 0.5)) * ls;
+          lt += ls;
+        }
+        float sunT = exp(-shadow * SIGMA_LIGHT * (4.0 / 3.0));
+
+        // Powder: the dark cores of a cloud seen against the light. Without
+        // it clouds look like cotton wool with no interior.
+        float powder = 1.0 - exp(-dens * 8.0);
+
+        float sigma = dens * SIGMA_VIEW;
+        vec3 stepT = exp(-vec3(sigma) * dt);
+
+        vec3 sunColour = uSunColor * uSunIntensity * uSunSurfaceCloud;
+        vec3 lum = sunColour * (ph * 4.0 + 0.5) * sunT * mix(0.35, 1.0, powder)
+                 + uAmbient * 0.9;
+
+        // Rain shafts read as darker cloud bases.
+        lum *= 1.0 - 0.35 * uPrecip * smoothstep(uLow.z, uLow.y, p.y);
+
+        scattered += through * lum * (1.0 - stepT.g);
+        through *= stepT;
         t += dt;
-        dt *= GROWTH;
       }
 
     }
