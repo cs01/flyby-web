@@ -21,6 +21,7 @@ import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { triangulate, signedArea } from "./earcut";
+import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 import type { Building, CityPack } from "../data/citypack";
 
 const CELL_M = 1500;
@@ -122,6 +123,7 @@ out vec4 fragColor;
 #define ATMO_SUN_STEPS 2
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
+${SUN_SHADOW_GLSL}
 
 uniform vec3  uCameraPos;
 uniform vec3  uAmbient;
@@ -321,7 +323,12 @@ void main() {
 
   float ndl = max(0.0, dot(n, uSunDir));
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
-  vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl;
+  // Cascaded shadow map. It multiplies the DIRECT beam and the sun's specular
+  // and nothing else: a wall in shadow is still lit by the sky above it and by
+  // the light bouncing off everything opposite, which is why real city shadows
+  // are blue rather than black.
+  float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
+  vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl * sunVis;
   // Moonlight, same units as the sun beam. Lit windows alone made a night city
   // read as a floating grid of dots with no buildings behind them; this is
   // what puts the facades back under the lights.
@@ -349,7 +356,7 @@ void main() {
     vec3 v = normalize(uCameraPos - vWorld);
     vec3 h = normalize(v + uSunDir);
     float spec = pow(max(0.0, dot(n, h)), 64.0);
-    lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.2;
+    lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.2 * sunVis;
     vec3 hm = normalize(v + uMoonDir);
     lit += uMoonLight * uSunSurface * pow(max(0.0, dot(n, hm)), 64.0) * gloss * 1.2;
   }
@@ -363,7 +370,7 @@ void main() {
 }
 `;
 
-export interface BuildingUniforms extends Record<string, THREE.IUniform> {
+export interface BuildingUniforms extends SunShadowUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uAmbient: THREE.IUniform<THREE.Color>;
   uNight: THREE.IUniform<number>;
@@ -382,8 +389,13 @@ export interface BuildingUniforms extends Record<string, THREE.IUniform> {
   uMultiScatter: THREE.IUniform<number>;
 }
 
-function makeUniforms(): BuildingUniforms {
+/**
+ * `shadow` is spread in by REFERENCE, so the cascade matrices and maps the
+ * SunShadow pass writes each frame are the same objects these materials read.
+ */
+function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
   return {
+    ...shadow,
     uCameraPos: { value: new THREE.Vector3() },
     uAmbient: { value: new THREE.Color(0.2, 0.24, 0.3) },
     uNight: { value: 0 },
@@ -514,8 +526,12 @@ export class Buildings {
   readonly uniforms: BuildingUniforms;
   readonly stats: BuildingStats;
 
-  constructor(pack: CityPack, groundAt: (x: number, z: number) => number) {
-    this.uniforms = makeUniforms();
+  constructor(
+    pack: CityPack,
+    groundAt: (x: number, z: number) => number,
+    shadow: SunShadowUniforms,
+  ) {
+    this.uniforms = makeUniforms(shadow);
     const lodK = solveLod(pack);
     const cells = new Map<string, Scratch>();
     let drawn = 0;
@@ -575,6 +591,9 @@ export class Buildings {
     for (const s of cells.values()) {
       const mesh = buildMesh(s, this.uniforms);
       if (mesh) {
+        // enable, not set: `set` would drop the mesh off layer 0 and the main
+        // camera would stop drawing the city altogether.
+        mesh.layers.enable(SHADOW_CASTER_LAYER);
         triangles += s.idx.length / 3;
         this.group.add(mesh);
       }

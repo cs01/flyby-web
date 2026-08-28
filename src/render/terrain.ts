@@ -21,6 +21,7 @@ import { TONEMAP_GLSL } from "./tonemap.glsl";
 import type { Heightfield } from "../data/dem";
 import type { StitchedImage } from "../data/imagery";
 import { Origin } from "../geo";
+import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 
 export interface TerrainRing {
   /** Half-width in metres. */
@@ -84,6 +85,7 @@ out vec4 fragColor;
 #define ATMO_SUN_STEPS 2
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
+${SUN_SHADOW_GLSL}
 
 uniform sampler2D uDrape;
 uniform vec3  uCameraPos;
@@ -130,7 +132,11 @@ void main() {
   // itself. The value below is what makes a mid-albedo surface land in the
   // middle of the curve while leaving inscatter at the level the same
   // atmosphere produces, so aerial perspective stays proportionate.
-  vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl;
+  // Cascaded shadow map, on the DIRECT beam only. The ambient sky term below is
+  // deliberately untouched: ground in the shadow of a tower is still under the
+  // whole sky dome, and zeroing that is what turns a shadow into a black hole.
+  float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
+  vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl * sunVis;
 
   // Moonlight. The one thing that makes a night flight over open country
   // something other than a black frame: the street-lamp mask only covers
@@ -181,7 +187,7 @@ void main() {
     float shine = mix(48.0, 320.0, water);
     vec3 hv = normalize(v + uSunDir);
     float spec = pow(max(0.0, dot(n, hv)), shine);
-    lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.6;
+    lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.6 * sunVis;
     // The moon's own glitter path. Water at night is otherwise the darkest
     // thing in the frame, and the moonglade is the only thing that says which
     // part of that darkness is sea.
@@ -309,7 +315,7 @@ void main() {
 }
 `;
 
-export interface TerrainUniforms extends Record<string, THREE.IUniform> {
+export interface TerrainUniforms extends SunShadowUniforms {
   uDrape: THREE.IUniform<THREE.Texture | null>;
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uAmbient: THREE.IUniform<THREE.Color>;
@@ -333,8 +339,13 @@ export interface TerrainUniforms extends Record<string, THREE.IUniform> {
   uMultiScatter: THREE.IUniform<number>;
 }
 
-export function makeTerrainUniforms(): TerrainUniforms {
+/**
+ * `shadow` is spread in by REFERENCE: every ring shares the one set of cascade
+ * uniforms the SunShadow pass writes, so a ring cannot fall a frame behind.
+ */
+export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms {
   return {
+    ...shadow,
     uDrape: { value: null },
     uCameraPos: { value: new THREE.Vector3() },
     uAmbient: { value: new THREE.Color(0.28, 0.36, 0.5) },
@@ -453,6 +464,7 @@ export class Terrain {
     origin: Origin,
     fields: Heightfield[],
     drapes: StitchedImage[],
+    shadow: SunShadowUniforms,
     rings: TerrainRing[] = CITY_RINGS,
   ) {
     // Finest-first lookup, so a point inside the near field uses the 30 m data
@@ -485,7 +497,7 @@ export class Terrain {
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.needsUpdate = true;
 
-      const u = makeTerrainUniforms();
+      const u = makeTerrainUniforms(shadow);
       u.uDrape.value = tex;
       this.uniforms.push(u);
 
@@ -499,6 +511,11 @@ export class Terrain {
       const mesh = new THREE.Mesh(geo, mat);
       mesh.frustumCulled = false;
       mesh.renderOrder = r;
+      // Only the rings that a cascade can actually reach cast. The outer two
+      // span 20 and 70 km and are never frustum-culled, so putting them in the
+      // shadow pass would redraw 200k triangles three times a frame to occlude
+      // ground that is already past the last cascade.
+      if (ring.extent <= 6000) mesh.layers.enable(SHADOW_CASTER_LAYER);
       this.group.add(mesh);
     }
   }
