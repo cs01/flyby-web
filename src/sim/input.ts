@@ -156,6 +156,16 @@ export class Input {
     return codes.some((c) => this.keys.has(c)) ? 1 : 0;
   }
 
+  /**
+   * Whether a roll or rudder input is actually being ASKED for right now,
+   * before any smoothing. The smoothed axis cannot answer this: anything that
+   * writes to it -- an autopilot, say -- reads its own output back a frame
+   * later and cannot tell it from a hand on the stick.
+   */
+  get manualStick(): boolean {
+    return Math.abs(this.target.roll) > 0.02 || Math.abs(this.target.yaw) > 0.02;
+  }
+
   /** Smoothed axes for this frame. */
   sample(dt: number): Axes {
     const t = this.target;

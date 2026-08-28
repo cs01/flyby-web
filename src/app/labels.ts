@@ -47,6 +47,10 @@ const CHAR_PX = 6.6;
 const PAD_PX = 40;
 const ROW_PX = 24;
 
+/** How wide the aeroplane is on screen, for the same test. Generous. */
+const PLANE_W_PX = 300;
+const PLANE_ROWS_PX = 70;
+
 export class Labels {
   private root: HTMLDivElement;
   private els: HTMLElement[] = [];
@@ -70,7 +74,12 @@ export class Labels {
     }
   }
 
-  update(camera: THREE.PerspectiveCamera, targets: LabelTarget[]): void {
+  update(
+    camera: THREE.PerspectiveCamera,
+    targets: LabelTarget[],
+    /** The aeroplane, so labels do not get drawn across it. */
+    subject?: THREE.Vector3,
+  ): void {
     if (!this.visible) {
       this.root.style.display = "none";
       return;
@@ -85,6 +94,23 @@ export class Labels {
       .sort((a, b) => a.d - b.d);
 
     const placed: { x: number; y: number; w: number }[] = [];
+
+    // The aeroplane goes on the placed list FIRST, so it wins every collision
+    // and nothing is drawn over it. It is the one thing in the frame you are
+    // always looking at, and a label across it is a label in the way -- and
+    // because it is just another occupied rectangle, the existing skip does
+    // the work with nothing new to reason about.
+    if (subject) {
+      this.ndc.copy(subject).project(camera);
+      if (this.ndc.z > -1 && this.ndc.z < 1) {
+        placed.push({
+          x: (this.ndc.x * 0.5 + 0.5) * innerWidth,
+          y: (-this.ndc.y * 0.5 + 0.5) * innerHeight,
+          w: PLANE_W_PX,
+        });
+      }
+    }
+
     let shown = 0;
 
     for (const { t, i } of order) {
@@ -122,7 +148,9 @@ export class Labels {
       const py = (y / 100) * innerHeight;
       const w = t.name.length * CHAR_PX + PAD_PX;
       const clash = placed.some(
-        (p) => Math.abs(p.y - py) < ROW_PX && Math.abs(p.x - px) < (p.w + w) / 2,
+        (p) =>
+          Math.abs(p.y - py) < (p.w === PLANE_W_PX ? PLANE_ROWS_PX : ROW_PX) &&
+          Math.abs(p.x - px) < (p.w + w) / 2,
       );
       if (clash || shown >= MAX_ON_SCREEN) {
         if (el.style.display !== "none") el.style.display = "none";

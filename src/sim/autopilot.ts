@@ -22,8 +22,12 @@ import type { Axes } from "./input";
 /** Close enough to say you have arrived, metres. */
 const ARRIVED_M = 500;
 
-/** Heading error, in degrees, at which the roll command saturates. */
-const FULL_DEFLECTION_DEG = 32;
+/** Degrees of bank commanded per degree of heading error, and the ceiling. */
+const BANK_PER_DEG = 1.15;
+const MAX_BANK_DEG = 30;
+
+/** Bank error, in degrees, at which the roll command saturates. */
+const ROLL_AUTHORITY_DEG = 11;
 
 export interface AutopilotTarget {
   name: string;
@@ -53,15 +57,23 @@ export class Autopilot {
    * given: the caller's axes are the aircraft's input and there is no reason
    * to allocate a second one sixty times a second.
    */
-  update(axes: Axes, position: THREE.Vector3, headingDeg: number): Axes {
+  update(
+    axes: Axes,
+    position: THREE.Vector3,
+    headingDeg: number,
+    rollDeg: number,
+    manualStick: boolean,
+  ): Axes {
     this.justArrived = null;
     const t = this.target;
     if (!t) return axes;
 
-    // Any real stick input hands control back. Checked against the SMOOTHED
-    // axis rather than the key state, so releasing a key does not re-engage
-    // half a ramp later.
-    if (Math.abs(axes.roll) > 0.05 || Math.abs(axes.yaw) > 0.05) {
+    // Handing control back is decided by whether a STICK IS BEING HELD, not by
+    // the value on the axis. The axis is the one this function wrote a moment
+    // ago, and the input layer ramps from wherever it was left, so reading it
+    // back meant the autopilot saw its own command as a pilot input and let go
+    // one frame after engaging -- it turned toward the target, then stopped.
+    if (manualStick) {
       this.disengage();
       return axes;
     }
@@ -82,11 +94,18 @@ export class Autopilot {
     // target behind its left shoulder.
     error = ((((error + 180) % 360) + 360) % 360) - 180;
 
-    const cmd = Math.max(-1, Math.min(1, error / FULL_DEFLECTION_DEG));
-    // A dead band around zero, because the roll axis also commands the bank
-    // ANGLE: without one the aeroplane holds a degree or two of bank forever
-    // and crabs along the track it is trying to fly down.
-    axes.roll = Math.abs(error) < 1.5 ? 0 : cmd;
+    // TWO loops, because the roll axis commands a bank RATE and not a bank
+    // angle. Driving it straight from the heading error meant the aeroplane
+    // kept rolling for as long as it was pointed the wrong way -- so it wound
+    // on bank all the way to the limit, swept through the target heading at
+    // full deflection and came back the other way. An outer loop picks the
+    // bank the turn wants; the inner one rolls until it has it.
+    const wantBank = Math.max(
+      -MAX_BANK_DEG,
+      Math.min(MAX_BANK_DEG, error * BANK_PER_DEG),
+    );
+    const bankError = wantBank - rollDeg;
+    axes.roll = Math.max(-1, Math.min(1, bankError / ROLL_AUTHORITY_DEG));
     return axes;
   }
 }

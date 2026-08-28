@@ -26,7 +26,12 @@ const OFFSETS: Record<CameraMode, THREE.Vector3> = {
   // as a model of itself in the middle of the frame; the shot is about the
   // aeroplane over the city, and it has to be big enough to be the subject.
   chase: new THREE.Vector3(0, 4.6, 16),
-  cockpit: new THREE.Vector3(0, 0.55, -1.1),
+  // Behind the windscreen of the REAL airframe, which is a different aeroplane
+  // from the box this was measured against: the imported C182 is 8.5 m long
+  // with its propeller 3.8 m forward of the datum, and the old eye point put
+  // the camera out in front of the glass and half a wingspan from the blades,
+  // so the view was a propeller filling the frame with nothing around it.
+  cockpit: new THREE.Vector3(0, 0.92, -0.15),
   wing: new THREE.Vector3(11, 2.0, 5),
   orbit: new THREE.Vector3(0, 40, 120),
 };

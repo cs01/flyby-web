@@ -30,25 +30,78 @@ export class Places {
   private places: PlaceRow[] = [];
   private active: string | null = null;
 
-  constructor(parent: HTMLElement, private onPick: (p: PlaceRow) => void) {
+  private filter: HTMLInputElement;
+  private note: HTMLElement;
+  private all: PlaceRow[] = [];
+  private query = "";
+
+  constructor(
+    parent: HTMLElement,
+    private onPick: (p: PlaceRow) => void,
+    /** Called when the filter matches nothing here, to look further afield. */
+    private onSearch: (q: string) => void,
+  ) {
     this.root = document.createElement("div");
     this.root.className = "hud hud-places collapsible";
-    this.root.innerHTML = `<h2>Fly to</h2><div class="places-list"></div>`;
+    this.root.innerHTML =
+      `<h2>Fly to</h2>` +
+      `<input class="place-filter" type="search" autocomplete="off" spellcheck="false"` +
+      ` placeholder="find a place..." aria-label="Find a place" />` +
+      `<div class="place-note"></div>` +
+      `<div class="places-list"></div>`;
     this.list = this.root.querySelector(".places-list") as HTMLElement;
+    this.filter = this.root.querySelector(".place-filter") as HTMLInputElement;
+    this.note = this.root.querySelector(".place-note") as HTMLElement;
     parent.append(this.root);
     this.root.style.display = "none";
     // The heading collapses the panel on a phone, the same as the others.
     (this.root.querySelector("h2") as HTMLElement).addEventListener("click", () =>
       this.root.classList.toggle("open"),
     );
+
+    this.filter.addEventListener("input", () => {
+      this.query = this.filter.value.trim().toLowerCase();
+      this.render();
+    });
+    // Enter reaches PAST the list. What is near you is forty things; what you
+    // are looking for by name is very often the forty-first, and a filter that
+    // can only narrow a list cannot find it.
+    this.filter.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const q = this.filter.value.trim();
+      if (q.length < 3) return;
+      const first = this.visible()[0];
+      if (first) this.onPick(first);
+      else {
+        this.note.textContent = "searching...";
+        this.onSearch(q);
+      }
+    });
+  }
+
+  /** Rows matching the current filter, in the list's own order. */
+  private visible(): PlaceRow[] {
+    if (!this.query) return this.all.slice(0, MAX_ROWS);
+    return this.all.filter((p) => p.name.toLowerCase().includes(this.query)).slice(0, MAX_ROWS);
+  }
+
+  /** Shown under the filter when a search reached past the list, or failed. */
+  setNote(text: string): void {
+    this.note.textContent = text;
   }
 
   setVisible(on: boolean): void {
-    this.root.style.display = on && this.places.length > 0 ? "" : "none";
+    this.root.style.display = on && this.all.length > 0 ? "" : "none";
   }
 
   setPlaces(places: PlaceRow[]): void {
-    this.places = places.slice(0, MAX_ROWS);
+    this.all = places;
+    this.render();
+  }
+
+  private render(): void {
+    this.places = this.visible();
     this.list.textContent = "";
     this.rows = [];
     for (const p of this.places) {
