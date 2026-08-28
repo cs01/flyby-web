@@ -276,17 +276,23 @@ void main() {
     if (uNight > 0.02) {
       float r = hash21(vec2(colIdx + seed * 31.0, floorIdx + seed * 17.0));
       // Occupancy falls off up the building and varies per building.
-      float occupancy = mix(0.10, 0.55, hash11(seed + 5.1)) * mix(1.0, 0.55, smoothstep(0.0, 120.0, vUv.y));
+      float occupancy = mix(0.06, 0.40, hash11(seed + 5.1)) * mix(1.0, 0.55, smoothstep(0.0, 120.0, vUv.y));
       // Same treatment as the window pattern: resolve individual lit windows
       // up close, converge to the average glow of a lit building far away.
       float litPattern = step(1.0 - occupancy, r) * winPattern;
       float lit = mix(occupancy * WIN_MEAN, litPattern, detail);
-      vec3 warm = mix(vec3(1.0, 0.72, 0.38), vec3(0.85, 0.90, 1.0), step(0.82, hash11(r * 91.0)));
-      // 0.2, not the 0.85 this carried as an albedo term. That number was
-      // being multiplied by the night ambient (~0.05) before it reached the
-      // screen; as a real emissive it is not, and shipping it unchanged lit
-      // every window like a floodlight and turned the city gold.
-      emissive += warm * lit * uNight * 0.2;
+      // A third of the windows cool. Offices are fluorescent and LED, homes
+      // are warm, and a city that is entirely sodium-orange at night is a city
+      // from before about 1995.
+      vec3 warm = mix(vec3(1.0, 0.74, 0.42), vec3(0.82, 0.88, 1.0), step(0.66, hash11(r * 91.0)));
+      // The number to watch is not the peak, it is the MEAN. Far away this
+      // converges to occupancy x 0.42 x scale over the whole facade, and at
+      // 0.2 that mean was about four times the wall's own night lighting: a
+      // warm wash over every surface, which is what made the city read tan
+      // however neutral the skyglow and the albedo were made. At 0.09 the mean
+      // sits at roughly the wall, so a building is dark with lit windows in
+      // it, and the peak is still 12x the wall up close where it should be.
+      emissive += warm * lit * uNight * 0.09;
     }
   } else {
     // --- Roof -----------------------------------------------------------

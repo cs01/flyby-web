@@ -30,6 +30,8 @@ import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { Composite } from "./render/composite";
+import { Skyline } from "./sim/skyline";
+import { reverseGeocode, placeLabel } from "./data/place";
 
 function chooseCity(): City | null {
   const params = new URLSearchParams(location.search);
@@ -159,6 +161,9 @@ async function main() {
   loading.set(0.92, "loading buildings");
   const pack = await loadCityPack(city.id);
   let buildings: Buildings | null = null;
+  // The rooftops as a height field, so the aeroplane has a floor over a city
+  // rather than only over the ground under it.
+  const skyline = new Skyline(pack, terrain.heightAt);
   if (pack) {
     buildings = new Buildings(pack, terrain.heightAt);
     scene.add(buildings.group);
@@ -200,13 +205,31 @@ async function main() {
   const ac = new Aircraft(easy ? EASY_CONFIG : DEFAULT_CONFIG);
   const startX = -Math.sin(rad) * back;
   const startZ = Math.cos(rad) * back;
-  const startGround = terrain.heightAt(startX, startZ);
+  // Start above the ROOFS, not the ground. Now that the rooftops are a floor,
+  // spawning under one would have the first frame shove the aeroplane upward
+  // out of a building it appeared to be inside.
+  const startGround = Math.max(
+    terrain.heightAt(startX, startZ),
+    skyline.topAt(startX, startZ),
+  );
   ac.reset(
     startX,
     chooseStartAltitude(city.startAlt, Math.max(startGround, groundAtCentre), wx.low),
     startZ,
     startHdg,
   );
+
+  // A flight started from coordinates has no name yet. Ask what is down there,
+  // and write it onto the city the panel is already reading from -- the lookup
+  // is allowed to be slow or to fail, and either way the flight has started.
+  if (city.id === "here") {
+    void reverseGeocode(city.lat, city.lon).then((p) => {
+      if (!p) return;
+      city.name = p.name;
+      city.country = [p.region, p.country].filter(Boolean).join(", ");
+      document.title = `FLYBY - ${placeLabel(p)}`;
+    });
+  }
 
   const tour = new Tour(city, origin, terrain.heightAt);
   const beacon = new Beacon();
@@ -252,6 +275,10 @@ async function main() {
   // Starts past the threshold so the first frame fills the panels. Starting at
   // zero left the place name, the clock and the route blank for the first four
   // tenths of a second, which is exactly when someone is looking at them.
+  // The frame counter is a developer's instrument, not a passenger's. It is
+  // still one query string away, because the number it shows is the one that
+  // says whether a change made the app better or worse.
+  const showPerf = new URLSearchParams(location.search).has("fps");
   let perfAccum = 1;
 
   // Weather is resampled on a timer, not per frame: `timeline.at` allocates a
@@ -298,7 +325,13 @@ async function main() {
       }
     }
 
-    const groundUnderAc = terrain.heightAt(ac.position.x, ac.position.z);
+    // The floor is the higher of the ground and whatever is built on it. The
+    // aircraft adds its own clearance above whatever this returns, so a
+    // rooftop is skimmed rather than landed on.
+    const groundUnderAc = Math.max(
+      terrain.heightAt(ac.position.x, ac.position.z),
+      skyline.topAt(ac.position.x, ac.position.z),
+    );
     ac.setWeather(wx, ac.position.y);
     if (!input.paused) ac.update(axes, dt, groundUnderAc);
 
@@ -426,7 +459,7 @@ async function main() {
     perfAccum += dt;
     if (perfAccum > 0.4) {
       perfAccum = 0;
-      hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0, quality.scale);
+      if (showPerf) hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0, quality.scale);
       hud.setTour(tour.marks, tourDist, tour.finished);
       hud.setWeather(wx, clockOffset);
       hud.setPlace(city, wallClock.parts(now).time, wallClock.abbrev(now));

@@ -395,8 +395,11 @@ export const CITIES: City[] = [
 export function cityAt(lat: number, lon: number): City {
   return {
     id: "here",
-    name: "Where you are",
-    country: "your location",
+    // Placeholder only. main.ts reverse-geocodes the fix and overwrites both
+    // of these as soon as the answer lands, which is usually before the
+    // terrain has finished loading.
+    name: "Locating...",
+    country: "",
     lat,
     lon,
     radius: 6000,

@@ -81,6 +81,17 @@ html, body {
   text-transform: uppercase;
 }
 
+/* The one number the panel is really asked for, at a size that answers before
+   it is read. */
+.wx-temp {
+  margin: 2px 0 6px;
+  font-size: 30px;
+  font-weight: 300;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
 .tag-live { background: rgba(60, 220, 130, 0.16); color: #6ee7a8; }
 .tag-stale { background: rgba(255, 180, 60, 0.16); color: #ffcc70; }
 
@@ -180,6 +191,74 @@ html, body {
   font-size: 13px;
   letter-spacing: 0.05em;
 }
+
+/* Search. The field is the widest thing on the page on purpose: "anywhere on
+   Earth" is the app's actual reach, and a curated grid of twenty-nine hides
+   that rather than showing it. */
+.find-row { position: relative; margin-bottom: 14px; }
+
+.find-input {
+  width: 100%;
+  padding: 13px 16px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+
+.find-input::placeholder { color: var(--dim); }
+.find-input:focus { border-color: rgba(102, 212, 255, 0.5); }
+
+.find-list {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: #0b1017;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+
+.find-hit {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.find-hit i { font-style: normal; font-size: 11px; color: var(--dim); }
+.find-hit:hover, .find-hit.on { background: rgba(102, 212, 255, 0.1); }
+
+/* Fahrenheit or Celsius, and nothing else in the header competes with it. */
+.units { display: flex; justify-content: center; gap: 0; margin-top: 14px; }
+
+.units button {
+  padding: 4px 12px;
+  border: 1px solid var(--rule);
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.units button:first-child { border-radius: 6px 0 0 6px; }
+.units button:last-child { border-radius: 0 6px 6px 0; border-left: 0; }
+.units button.on { color: #05080d; background: var(--accent); border-color: var(--accent); }
 
 /* Continent sections. The heading is a quiet rule rather than a title: it is
    there to break the grid into places you can aim at, not to be read. */
@@ -503,11 +582,11 @@ html, body {
    fixed two lines tall. */
 .timebar {
   position: absolute;
-  top: 76px;
+  top: 22px;
   left: 50%;
   transform: translateX(-50%);
-  width: min(460px, 92vw);
-  padding: 8px 10px 6px;
+  width: min(370px, 92vw);
+  padding: 6px 9px 4px;
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: 10px;
@@ -518,7 +597,7 @@ html, body {
 }
 
 .tb-top { display: flex; align-items: baseline; gap: 6px; }
-.tb-time { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.tb-time { font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .tb-zone { font-size: 9px; letter-spacing: 0.1em; color: var(--dim); }
 .tb-offset { margin-left: auto; color: var(--dim); letter-spacing: 0.06em; }
 .tb-offset.shifted { color: var(--ink); }
@@ -531,9 +610,9 @@ html, body {
 .tb-band {
   position: relative;
   display: flex;
-  height: 26px;
-  margin: 8px 0 0;
-  border-radius: 5px;
+  height: 18px;
+  margin: 5px 0 0;
+  border-radius: 4px;
   overflow: hidden;
   cursor: ew-resize;
   touch-action: none;
@@ -559,9 +638,9 @@ html, body {
 
 .tb-ticks {
   position: relative;
-  height: 11px;
-  margin-top: 3px;
-  font-size: 9px;
+  height: 10px;
+  margin-top: 2px;
+  font-size: 8px;
   letter-spacing: 0.08em;
   color: var(--dim);
 }

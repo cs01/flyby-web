@@ -8,6 +8,8 @@
 // than twenty-four.
 
 import { CITIES, CONTINENTS, type City } from "../cities";
+import { searchPlaces, type SearchHit } from "../data/place";
+import { getUnits, setUnits, formatTemp } from "./units";
 
 const WMO_SHORT: Record<number, string> = {
   0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
@@ -144,6 +146,99 @@ function buildHereCard(row: HTMLElement, onHere: (lat: number, lon: number) => v
   });
 }
 
+/**
+ * Type a place, fly there. Open-Meteo's geocoder, which the app already leans
+ * on for weather, answers with coordinates -- and coordinates are all this
+ * needs, because terrain, imagery and weather are fetched by coordinate.
+ *
+ * Every keystroke ABORTS the request before it. Without that the results are
+ * whichever response happens to land last, which on a slow connection is
+ * routinely the answer to a prefix the reader has already finished typing.
+ */
+function buildSearch(row: HTMLElement, onHere: (lat: number, lon: number) => void): void {
+  row.innerHTML = `
+    <input class="find-input" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Search anywhere on Earth..." aria-label="Search for a place" />
+    <div class="find-list" hidden></div>`;
+  const input = row.querySelector(".find-input") as HTMLInputElement;
+  const list = row.querySelector(".find-list") as HTMLElement;
+
+  let controller: AbortController | null = null;
+  let timer = 0;
+  let hits: SearchHit[] = [];
+  let active = -1;
+
+  const close = () => {
+    list.hidden = true;
+    list.textContent = "";
+    hits = [];
+    active = -1;
+  };
+
+  const highlight = () => {
+    for (const [i, el] of [...list.children].entries()) {
+      el.classList.toggle("on", i === active);
+    }
+  };
+
+  const render = () => {
+    list.textContent = "";
+    if (hits.length === 0) {
+      close();
+      return;
+    }
+    for (const [i, h] of hits.entries()) {
+      const b = document.createElement("button");
+      b.className = "find-hit";
+      b.innerHTML = `<span>${h.name}</span><i>${[h.region, h.country].filter(Boolean).join(", ")}</i>`;
+      b.addEventListener("click", () => onHere(h.lat, h.lon));
+      b.addEventListener("mouseenter", () => { active = i; highlight(); });
+      list.append(b);
+    }
+    list.hidden = false;
+  };
+
+  input.addEventListener("input", () => {
+    clearTimeout(timer);
+    controller?.abort();
+    const q = input.value;
+    if (q.trim().length < 2) {
+      close();
+      return;
+    }
+    // A quarter of a second: long enough that a fast typist makes one request
+    // for a word rather than one per letter, short enough to feel immediate.
+    timer = window.setTimeout(async () => {
+      controller = new AbortController();
+      const found = await searchPlaces(q, controller.signal);
+      // The field may have moved on while this was in flight.
+      if (input.value !== q) return;
+      hits = found;
+      active = -1;
+      render();
+    }, 250);
+  });
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { close(); return; }
+    if (hits.length === 0) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      active = (active + (e.key === "ArrowDown" ? 1 : hits.length - 1)) % hits.length;
+      highlight();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const h = hits[active >= 0 ? active : 0];
+      if (h) onHere(h.lat, h.lon);
+    }
+  });
+
+  input.addEventListener("blur", () => {
+    // After the click on a result has had its chance to fire.
+    setTimeout(close, 150);
+  });
+}
+
 export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon: number) => void): void {
   const root = document.createElement("div");
   root.id = "menu";
@@ -152,7 +247,11 @@ export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon
       <header>
         <h1>FLYBY</h1>
         <p>Fly real places under the weather that is happening there right now.</p>
+        <div class="units">
+          <button data-u="f">&deg;F</button><button data-u="c">&deg;C</button>
+        </div>
       </header>
+      <div class="find-row"></div>
       <div class="here-row"></div>
       <div class="sections"></div>
       <footer>
@@ -162,6 +261,7 @@ export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon
     </div>`;
   document.body.append(root);
 
+  buildSearch(root.querySelector(".find-row") as HTMLElement, onHere);
   buildHereCard(root.querySelector(".here-row") as HTMLElement, onHere);
 
   // One grid per continent, alphabetical inside and out. Twenty-nine cards in
@@ -221,8 +321,33 @@ export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon
     return el;
   });
 
+  // The unit toggle redraws the cards in place rather than reloading: the
+  // weather is already fetched and asking for it again to change a suffix
+  // would be a round trip for nothing.
+  let latest: (CardWeather | null)[] | null = null;
+  const paintUnits = () => {
+    for (const b of root.querySelectorAll<HTMLButtonElement>(".units button")) {
+      b.classList.toggle("on", b.dataset.u === getUnits());
+    }
+    if (!latest) return;
+    CITIES.forEach((_, i) => {
+      const w = latest![i];
+      if (!w) return;
+      (cards[i].querySelector(".wx") as HTMLElement).innerHTML =
+        `${icon(w.code, w.isDay)} ${formatTemp(w.tempC)}`;
+    });
+  };
+  for (const b of root.querySelectorAll<HTMLButtonElement>(".units button")) {
+    b.addEventListener("click", () => {
+      setUnits(b.dataset.u === "c" ? "c" : "f");
+      paintUnits();
+    });
+  }
+  paintUnits();
+
   void (async () => {
     const [wx, skylines] = await Promise.all([fetchAllWeather(CITIES), fetchSkylineIndex()]);
+    latest = wx;
     CITIES.forEach((c, i) => {
       const w = wx[i];
       const el = cards[i];
@@ -230,7 +355,7 @@ export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon
       if (!w) return;
       el.classList.toggle("night", !w.isDay);
       (el.querySelector(".wx") as HTMLElement).innerHTML =
-        `${icon(w.code, w.isDay)} ${Math.round(w.tempC)}°`;
+        `${icon(w.code, w.isDay)} ${formatTemp(w.tempC)}`;
       (el.querySelector(".time") as HTMLElement).textContent = localTime(w.offsetSec);
       el.title = `${WMO_SHORT[w.code] ?? "Unknown"} · ${w.cloud}% cloud`;
     });

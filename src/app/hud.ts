@@ -11,6 +11,7 @@ import type { Weather } from "../data/weather";
 import type { City } from "../cities";
 import { compassPoint } from "./osd";
 import { offsetLabel } from "./timebar";
+import { formatTemp } from "./units";
 import { isTouchDevice } from "../sim/touch";
 
 const KTS_PER_MS = 1.94384;
@@ -33,7 +34,10 @@ export class Hud {
     this.root = root;
     this.placePanel = el("hud hud-tl", "");
     this.wxPanel = el("hud hud-tr", "");
+    // Empty and display:none until setPerf is called, which only happens with
+    // ?fps. An empty panel still painted its own backdrop otherwise.
     this.perfPanel = el("hud hud-perf", "");
+    this.perfPanel.style.display = "none";
     this.tourPanel = el("hud hud-br", "");
     root.append(this.placePanel, this.wxPanel, this.perfPanel, this.tourPanel);
 
@@ -102,20 +106,26 @@ export class Hud {
         : wx.source === "observation"
           ? `<span class="tag tag-live">Live · ${age} min old</span>`
           : `<span class="tag tag-stale">No feed · simulated</span>`;
-    const decks = [
-      wx.low.cover > 0.05 ? `LOW ${Math.round(wx.low.cover * 100)}% @ ${Math.round(wx.low.base)} m` : null,
-      wx.mid.cover > 0.05 ? `MID ${Math.round(wx.mid.cover * 100)}%` : null,
-      wx.high.cover > 0.05 ? `HIGH ${Math.round(wx.high.cover * 100)}%` : null,
-    ].filter(Boolean);
+    // The lowest deck that is actually there, in feet, because that is the
+    // number that says whether you are about to fly into it.
+    const deck =
+      wx.low.cover > 0.05
+        ? `${Math.round(wx.low.cover * 100)}% at ${Math.round((wx.low.base * 3.28084) / 100) * 100} ft`
+        : wx.mid.cover > 0.05
+          ? `${Math.round(wx.mid.cover * 100)}% mid`
+          : wx.high.cover > 0.05
+            ? `${Math.round(wx.high.cover * 100)}% high`
+            : "clear";
 
+    // Temperature first and large. Dewpoint, visibility and QNH were four more
+    // rows of numbers that nobody flying a sightseeing aeroplane reads, and
+    // they cost the panel the one thing it is actually asked -- how warm is it
+    // and what is the sky doing.
     this.wxPanel.innerHTML = `
       <h2>${wx.summary}</h2>
-      <div class="row"><span>Temp</span><b>${wx.tempC.toFixed(1)} °C</b></div>
-      <div class="row"><span>Dewpoint</span><b>${wx.dewC.toFixed(1)} °C</b></div>
+      <div class="wx-temp">${formatTemp(wx.tempC)}</div>
       <div class="row"><span>Wind</span><b>${compassPoint(wx.windDir)} ${Math.round(wx.windSpeed * KTS_PER_MS)} kt</b></div>
-      <div class="row"><span>Visibility</span><b>${(wx.visibility / 1000).toFixed(1)} km</b></div>
-      <div class="row"><span>QNH</span><b>${Math.round(wx.pressureHpa)} hPa</b></div>
-      ${decks.map((d) => `<div class="row"><span>${d}</span></div>`).join("")}
+      <div class="row"><span>Cloud</span><b>${deck}</b></div>
       ${badge}`;
   }
 
@@ -126,6 +136,7 @@ export class Hud {
    */
   setPerf(fps: number, ms: number, triangles: number, scale: number): void {
     const q = scale < 0.999 ? `<div class="row"><span>scale</span><b>${scale.toFixed(2)}x</b></div>` : "";
+    this.perfPanel.style.display = "";
     this.perfPanel.innerHTML = `
       <div class="row"><span>${fps.toFixed(0)} fps</span><b>${ms.toFixed(1)} ms</b></div>
       <div class="row"><span>tris</span><b>${(triangles / 1000).toFixed(0)}k</b></div>${q}`;
