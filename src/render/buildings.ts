@@ -207,6 +207,10 @@ void main() {
 
   float glassiness = 0.0;
 
+  // How much of the sky dome this fragment can see, beyond its own orientation.
+  // 1.0 on a roof; less and less as you go down into a street canyon.
+  float skyOcc = 1.0;
+
   if (isRoof < 0.5) {
     // --- Facade ---------------------------------------------------------
     // Storeys are ~3.2 m; window columns ~2.6 m. Quantising to a real storey
@@ -267,12 +271,20 @@ void main() {
     // slab and gives the facade its scale at distance.
     albedo *= 1.0 - 0.18 * detail * smoothstep(0.10 + w.y, 0.0, cell.y);
 
-    // Ambient occlusion down the wall. Streets are canyons, so the base of a
-    // facade genuinely is darker -- but 0.45 over the bottom 14 m stacked with
-    // every neighbouring wall doing the same turned the streets into black
-    // trenches from the air. Shallower, and over a shorter run.
-    float streetAO = mix(0.74, 1.0, smoothstep(0.0, 9.0, vUv.y));
-    albedo *= streetAO;
+    // Ambient occlusion down the wall -- on the SKY term, not the albedo.
+    //
+    // A street is a canyon. A wall at pavement level sees a slot of sky; the
+    // same wall thirty storeys up sees half a dome. That is an occlusion of
+    // ambient light and of nothing else.
+    //
+    // This used to multiply albedo, and that is why it had to be kept weak:
+    // scaling albedo also darkens the face the SUN is falling on, so stacking
+    // it down every wall on the block turned the streets into black trenches
+    // from the air, and it was backed off to 0.74 over 9 m. Against the sky
+    // term alone it can be far stronger and go far deeper, because a sunlit
+    // wall at street level keeps its whole beam and stays bright -- which is
+    // what a photograph of a city at low sun actually looks like.
+    skyOcc = mix(0.34, 1.0, smoothstep(0.0, 48.0, vUv.y));
 
     // --- Lit windows at night -------------------------------------------
     if (uNight > 0.02) {
@@ -302,10 +314,14 @@ void main() {
     // most of from an aircraft, so they get their own noise rather than the
     // facade colour applied upward.
     float g = hash21(floor(vWorld.xz * 0.35) + seed);
-    albedo = mix(vec3(0.26, 0.26, 0.25), vec3(0.42, 0.41, 0.38), g);
+    // Real roofs are tar, black membrane and gravel: about 0.06-0.12 linear.
+    // These were 0.26-0.42, two to three times too reflective, which made the
+    // roof the BRIGHTEST surface in a top-down shot when in every aerial
+    // photograph it is the darkest.
+    albedo = mix(vec3(0.130, 0.130, 0.124), vec3(0.245, 0.238, 0.218), g);
     // Rooftop plant: a few darker blocks scattered on the big roofs.
     float plant = step(0.93, hash21(floor(vWorld.xz * 0.12) + seed * 3.0));
-    albedo = mix(albedo, vec3(0.20, 0.21, 0.22), plant * step(400.0, bldH * 40.0));
+    albedo = mix(albedo, vec3(0.105, 0.110, 0.115), plant * step(400.0, bldH * 40.0));
   }
 
   // At night a facade has no colour of its own. It is lit by skyglow and by
@@ -346,7 +362,7 @@ void main() {
   // building faces.
   skyView *= 1.0 + 0.14 * dot(n, normalize(vec3(uSunDir.x, 0.0, uSunDir.z)));
   // Skyglow reaches walls better than roofs: it comes from the street below.
-  vec3 ambient = uAmbient * skyView + uNightGlow * (1.0 - 0.35 * n.y);
+  vec3 ambient = uAmbient * skyView * skyOcc + uNightGlow * (1.0 - 0.35 * n.y);
 
   vec3 lit = albedo * (beam + ambient) + emissive;
 

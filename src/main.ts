@@ -483,7 +483,10 @@ async function main() {
     model.group.quaternion.copy(ac.quaternion);
     // In the cockpit view the camera is INSIDE the aeroplane, so drawing it
     // fills the frame with the back of its own instrument panel.
-    model.group.visible = chase.mode !== "cockpit";
+    // Hidden in the seat, and hidden once the automatic descent into the seat
+    // is nearly complete -- past that the camera is inside the cabin and the
+    // airframe is a shell wrapped round the lens.
+    model.group.visible = chase.mode !== "cockpit" && chase.cockpitBlend < 0.9;
     model.update(dt, ac.throttle, axes.roll, ac.pitchDeg, axes.yaw);
 
     // The beam stands on wherever you asked to go, and nowhere at all when you
