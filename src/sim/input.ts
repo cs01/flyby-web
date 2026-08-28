@@ -165,11 +165,18 @@ export class Input {
     // There is no invert-pitch toggle any more. It existed because "up" on a
     // pitch axis genuinely has two right answers; a climb axis on Space/Ctrl
     // has one, and the ambiguity goes away rather than becoming a setting.
-    t.throttle = this.held("KeyW", "ArrowUp") - this.held("KeyS", "ArrowDown");
+    t.throttle = this.held("KeyW") - this.held("KeyS");
     t.roll = this.held("KeyD", "ArrowRight") - this.held("KeyA", "ArrowLeft");
     t.yaw = this.held("KeyE") - this.held("KeyQ");
-    t.lift = this.held("Space", "KeyR") - this.held("ControlLeft", "ControlRight", "KeyF");
-    t.boost = this.held("ShiftLeft", "ShiftRight");
+    // The arrows are a STICK: pull BACK to climb, push forward to dive. That
+    // is what every aeroplane does and what a hand reaching for an arrow key
+    // expects, and the arrows are free for it now that the throttle is W/S --
+    // they were only ever duplicating those keys.
+    t.lift = this.held("ArrowDown", "KeyR") - this.held("ArrowUp", "ControlLeft", "ControlRight", "KeyF");
+    // Space is turbo. It is the key everybody's thumb is already on and the
+    // one they reach for meaning "go", and it is no longer the climb axis,
+    // which is what made it feel like it did nothing much.
+    t.boost = this.held("Space", "ShiftLeft", "ShiftRight");
 
     if (this.dragging) {
       // The pointer flies it directly: sideways rolls, and UP climbs. That is

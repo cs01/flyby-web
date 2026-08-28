@@ -197,6 +197,12 @@ void main() {
   vec3 n = normalize(vNormal);
   vec3 albedo = facadeColour(kind, seed);
 
+  // A lit window EMITS. It was being added into the albedo, which then went
+  // through the sun and ambient terms like everything else -- so a lit window
+  // got dimmer at night, which is the one time it is supposed to be the
+  // brightest thing on the building.
+  vec3 emissive = vec3(0.0);
+
   float glassiness = 0.0;
 
   if (isRoof < 0.5) {
@@ -207,24 +213,46 @@ void main() {
     const float STOREY = 3.2;
     const float COLUMN = 2.6;
 
-    float floorIdx = floor(vUv.y / STOREY);
-    float colIdx = floor(vUv.x / COLUMN);
-    vec2 cell = fract(vec2(vUv.x / COLUMN, vUv.y / STOREY));
+    vec2 grid = vec2(vUv.x / COLUMN, vUv.y / STOREY);
+    float floorIdx = floor(grid.y);
+    float colIdx = floor(grid.x);
+    vec2 cell = fract(grid);
 
-    // Detail fade. A 2.6 m window at 2 km is far smaller than a pixel, and
-    // point-sampling it produces sparkling orange noise rather than a city --
-    // the pattern aliases against the pixel grid and every frame lands on
-    // different windows. Past the fade distance the pattern is replaced by its
-    // own MEAN, which is what a correctly filtered version would converge to.
-    float detail = smoothstep(4200.0, 900.0, vViewDist);
+    // How much of a window cell one pixel covers. Taken on the CONTINUOUS
+    // grid coordinate, not on the fract()ed one: fract() has a derivative spike
+    // at every seam, and fwidth of that reads as an enormous width along a
+    // one-pixel line.
+    vec2 w = max(fwidth(grid), vec2(1e-4));
+
+    // Analytic filtering, not a distance fade.
+    //
+    // A 2.6 m window at 2 km is far smaller than a pixel, and point-sampling
+    // it sparkles: the pattern aliases against the pixel grid and every frame
+    // lands on different windows. The old answer was to cross-fade the whole
+    // pattern to its mean between 4200 m and 900 m, which killed it while it
+    // was still several pixels wide -- from 800 m up, most of the city was
+    // past the fade, and a city of flat-shaded boxes is exactly what it looked
+    // like.
+    //
+    // Widening each edge by the pixel footprint is what a correctly filtered
+    // version does: the windows stay resolved for as long as the PIXELS can
+    // hold them, and dissolve into their own mean exactly when they can't.
+    // It is also per-pixel rather than per-vertex-distance, so a wall seen
+    // edge-on -- where a pixel really does span many windows -- converges even
+    // though it is close.
+    float detail = 1.0 - clamp(max(w.x, w.y) * 1.6, 0.0, 1.0);
     const float WIN_MEAN = 0.68 * 0.62;
 
     // A tall building is mostly glass; a low one is mostly wall.
     glassiness = smoothstep(18.0, 70.0, bldH) * 0.75 + 0.1;
 
-    // Window rectangle inside the cell, with a sill and a mullion.
-    float winPattern = step(0.16, cell.x) * step(cell.x, 0.84)
-                     * step(0.30, cell.y) * step(cell.y, 0.92);
+    // Window rectangle inside the cell, with a sill and a mullion, every edge
+    // softened by the footprint so it antialiases instead of stair-stepping.
+    float winPattern =
+        smoothstep(0.16 - w.x, 0.16 + w.x, cell.x)
+      * smoothstep(0.84 + w.x, 0.84 - w.x, cell.x)
+      * smoothstep(0.30 - w.y, 0.30 + w.y, cell.y)
+      * smoothstep(0.92 + w.y, 0.92 - w.y, cell.y);
     float win = mix(WIN_MEAN, winPattern, detail);
 
     // Ground floor is taller and shopfront-like, not a repeated window.
@@ -235,7 +263,7 @@ void main() {
 
     // Horizontal banding between storeys: a thin darker line reads as a floor
     // slab and gives the facade its scale at distance.
-    albedo *= 1.0 - 0.18 * detail * smoothstep(0.10, 0.0, cell.y);
+    albedo *= 1.0 - 0.18 * detail * smoothstep(0.10 + w.y, 0.0, cell.y);
 
     // Ambient occlusion down the wall. Streets are canyons, so the base of a
     // facade genuinely is darker -- but 0.45 over the bottom 14 m stacked with
@@ -254,7 +282,11 @@ void main() {
       float litPattern = step(1.0 - occupancy, r) * winPattern;
       float lit = mix(occupancy * WIN_MEAN, litPattern, detail);
       vec3 warm = mix(vec3(1.0, 0.72, 0.38), vec3(0.85, 0.90, 1.0), step(0.82, hash11(r * 91.0)));
-      albedo += warm * lit * uNight * 0.85;
+      // 0.2, not the 0.85 this carried as an albedo term. That number was
+      // being multiplied by the night ambient (~0.05) before it reached the
+      // screen; as a real emissive it is not, and shipping it unchanged lit
+      // every window like a floodlight and turned the city gold.
+      emissive += warm * lit * uNight * 0.2;
     }
   } else {
     // --- Roof -----------------------------------------------------------
@@ -266,6 +298,17 @@ void main() {
     // Rooftop plant: a few darker blocks scattered on the big roofs.
     float plant = step(0.93, hash21(floor(vWorld.xz * 0.12) + seed * 3.0));
     albedo = mix(albedo, vec3(0.20, 0.21, 0.22), plant * step(400.0, bldH * 40.0));
+  }
+
+  // At night a facade has no colour of its own. It is lit by skyglow and by
+  // whatever is lit opposite it, and both are the same colour for every
+  // building on the block -- so carrying the daytime brick, sandstone and
+  // concrete palette through at full strength is what made a night city read
+  // as a tan photograph with dots sprinkled over it. The windows keep their
+  // colour, because they are the light source rather than a surface.
+  if (uNight > 0.02) {
+    float ng = dot(albedo, vec3(0.299, 0.587, 0.114));
+    albedo = mix(albedo, vec3(ng * 0.55), uNight * 0.88);
   }
 
   albedo *= (1.0 - 0.35 * uWetness);
@@ -290,9 +333,9 @@ void main() {
   // building faces.
   skyView *= 1.0 + 0.14 * dot(n, normalize(vec3(uSunDir.x, 0.0, uSunDir.z)));
   // Skyglow reaches walls better than roofs: it comes from the street below.
-  vec3 ambient = uAmbient * skyView + uNightGlow * (1.35 - 0.5 * n.y);
+  vec3 ambient = uAmbient * skyView + uNightGlow * (1.0 - 0.35 * n.y);
 
-  vec3 lit = albedo * (beam + ambient);
+  vec3 lit = albedo * (beam + ambient) + emissive;
 
   // Specular: strong on glass, present on wet stone, absent otherwise.
   float gloss = max(glassiness * 0.8, uWetness);

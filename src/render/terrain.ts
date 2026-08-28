@@ -229,8 +229,17 @@ void main() {
     // jitter stops the grid itself from being visible.
     const float LAMP_SPACING = 30.0;
     const float LAMP_FRACTION = 0.22;
-    // Mean of the dot kernel over a cell, for the far field.
-    const float LAMP_MEAN = LAMP_FRACTION * 0.17;
+    // How tight the dot is. exp(-k d^2) integrates to pi/k over the cell for
+    // any k this large, which is what keeps the far-field mean honest below.
+    //
+    // It used to be 18, and 18 is a blob 12 m across: from the air the city
+    // read as a field of soft orange smudges rather than as lights. A lamp is
+    // a POINT with a hot core -- the peak is deliberately over 1.0 so the tone
+    // curve clips it to white, because that is what a light source does and it
+    // is the difference between a lamp and a glowing patch of ground.
+    const float LAMP_SHARP = 55.0;
+    const float LAMP_PEAK = 3.05;   // energy-matched to the old soft kernel
+    const float LAMP_MEAN = LAMP_FRACTION * LAMP_PEAK * (3.14159265 / LAMP_SHARP);
 
     float detail = smoothstep(4500.0, 900.0, vViewDist);
     vec2 g = vWorld.xz * (1.0 / LAMP_SPACING);
@@ -238,21 +247,40 @@ void main() {
     vec2 gf = fract(g);
     float pick = hash21(gi);
     float dot_ = 0.0;
+    // Sodium against mercury and LED. A city is not one colour of light, and
+    // a field of identically warm dots is most of what made this look
+    // synthetic. Skewed warm, because most street lighting still is.
+    vec3 tint = vec3(1.0, 0.78, 0.50);
     if (pick < LAMP_FRACTION) {
       vec2 jit = vec2(hash21(gi + 11.1), hash21(gi + 27.3));
       float d = length(gf - jit);
-      dot_ = exp(-d * d * 18.0);
+      // Per-lamp brightness, mean 1.0 so the far-field average is unchanged.
+      float bright = 0.55 + 0.9 * hash21(gi + 41.7);
+      dot_ = LAMP_PEAK * bright * exp(-d * d * LAMP_SHARP);
+      float warmth = hash21(gi + 63.1);
+      tint = mix(vec3(0.80, 0.88, 1.0), vec3(1.0, 0.70, 0.32),
+                 smoothstep(0.05, 0.55, warmth));
     }
     float lamps = mix(LAMP_MEAN, dot_, detail);
+    // Far away the individual tints have averaged out too, so the mean colour
+    // is what the far field must use.
+    vec3 lampColour = mix(vec3(1.0, 0.78, 0.50), tint, detail);
 
-    lit += vec3(1.0, 0.76, 0.44) * lamps * urban * uNight * 1.15;
+    lit += lampColour * lamps * urban * uNight * 1.15;
 
     // Skyglow on the built-up ground only, and nearly monochrome: at this light
     // level the eye takes almost no colour off a surface, and carrying the
     // drape's daytime hue through is what made the city look like a dimmed
     // photograph rather than a dark place with lights in it.
     float grey = dot(albedo, vec3(0.299, 0.587, 0.114));
-    lit += mix(vec3(grey), albedo, 0.25) * uNightGlow * urban * 0.85;
+    // FLATTENED, not just desaturated. Carrying the drape's daytime contrast
+    // through at night is what made the ground read as a dimmed photograph
+    // with lights sprinkled on it: every road, roof and car park still legible
+    // at midnight. A dark-adapted eye takes almost no texture off a surface
+    // either, so the luminance is compressed most of the way to a constant and
+    // only a trace of the drape's own shape survives.
+    grey = mix(0.30, grey, 0.40);
+    lit += mix(vec3(grey), albedo, 0.12) * uNightGlow * urban * 0.85;
   }
 
   // Aerial perspective: the same integral the sky uses, over the distance to

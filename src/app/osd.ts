@@ -1,21 +1,37 @@
-// The instrument overlay: the numbers a pilot flies on, drawn as SVG.
+// The instrument panel, drawn as SVG.
 //
-// Three instruments, chosen because they are the three a pilot actually looks
-// at and because each answers a question the raw numbers cannot:
+// Round dials with needles, not a column of numbers, and the reason is that a
+// needle answers a different question from the figure it is pointing at. A
+// pilot almost never wants to know that the airspeed is 103 knots; they want
+// to know it is in the green arc and not moving, and a needle says that in one
+// glance without being read. The numbers are still there -- an altimeter that
+// cannot be read exactly is a toy -- but they have stopped being the primary
+// instrument.
 //
-//   ATTITUDE   which way is up, at a glance, with the FLIGHT PATH marked on
-//              it. The nose and the flight path are not the same thing in
-//              wind, and the gap between them is the wind doing something --
-//              the most legible evidence in the app that the weather is real.
-//   HEADING    a ribbon, not a number, because the useful question is "which
-//              way am I turning and how fast", and a ribbon shows the rate.
-//   VERTICAL   a tape with a needle, because climb rate is the one quantity
-//              where the SIGN matters more than the value and a signed number
-//              is slower to read than a needle above or below a centre line.
+// The layout is the standard six-pack minus the two this app has no use for
+// (there is no engine and no turn coordinator that the attitude ball does not
+// already answer):
+//
+//   AIRSPEED   with the real arcs off a light single's placard: white for the
+//              flap range, green for normal operation, yellow for the caution
+//              range and a red radial at never-exceed. The arcs are what make
+//              the dial readable without reading it.
+//   ATTITUDE   which way is up, with the FLIGHT PATH marked on it. The nose
+//              and the flight path are not the same thing in wind, and the gap
+//              between them is the wind doing something -- the most legible
+//              evidence in the app that the weather is real.
+//   HEADING    a ribbon rather than a card, because the useful question is
+//              "which way am I turning and how fast", and a ribbon shows rate.
+//   ALTIMETER  two hands, hundreds and thousands, exactly as the instrument
+//              works. A single hand would be easier to read and would not be
+//              an altimeter.
+//   VERTICAL   zero at nine o'clock, climb over the top: the sign is what
+//              matters and a needle above or below the horizontal reads faster
+//              than a signed number.
 //
 // Everything is updated by writing transforms and text, never innerHTML: this
 // runs every frame, and rebuilding the markup 60 times a second would drop
-// frames and defeat the point of a HUD that reads instantly.
+// frames and defeat the point of an instrument that reads instantly.
 
 const DEG = Math.PI / 180;
 
@@ -57,10 +73,74 @@ const KTS = 1.94384;
 const FT = 3.28084;
 const FPM = 196.85; // m/s -> feet per minute
 
+// --- Airspeed dial ---------------------------------------------------------
+// Knots at each end of the sweep, and how far round the sweep goes. 340
+// degrees leaves a gap at the bottom for the caption, which is where a real
+// instrument puts its maker's name for the same reason.
+const ASI_MIN = 20;
+const ASI_MAX = 180;
+const ASI_SWEEP = 340;
+
+/** Placard speeds off a light single, which is what this aeroplane is. */
+const V_S0 = 33; // stall, flaps down: bottom of the white arc
+const V_FE = 85; // maximum flaps extended: top of the white arc
+const V_S1 = 44; // stall, clean: bottom of the green arc
+const V_NO = 129; // maximum structural cruise: top of green, bottom of yellow
+const V_NE = 163; // never exceed: the red radial
+
+/** Full-scale rate on the vertical speed dial, feet per minute. */
+const VSI_FULL = 4000;
+
 function svg(tag: string, attrs: Record<string, string | number>): SVGElement {
   const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
   for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, String(v));
   return e;
+}
+
+/** Zero is twelve o'clock and positive is clockwise, like every dial. */
+function polar(angleDeg: number, r: number): { x: number; y: number } {
+  return { x: Math.sin(angleDeg * DEG) * r, y: -Math.cos(angleDeg * DEG) * r };
+}
+
+function arcPath(a0: number, a1: number, r: number): string {
+  const p0 = polar(a0, r);
+  const p1 = polar(a1, r);
+  const large = Math.abs(a1 - a0) > 180 ? 1 : 0;
+  return `M${p0.x.toFixed(2)},${p0.y.toFixed(2)} A${r},${r} 0 ${large} 1 ${p1.x.toFixed(2)},${p1.y.toFixed(2)}`;
+}
+
+function tick(a: number, r0: number, r1: number, cls: string): SVGElement {
+  const p0 = polar(a, r0);
+  const p1 = polar(a, r1);
+  return svg("line", { x1: p0.x, y1: p0.y, x2: p1.x, y2: p1.y, class: cls });
+}
+
+function label(a: number, r: number, text: string, cls: string): SVGElement {
+  const p = polar(a, r);
+  const t = svg("text", { x: p.x, y: p.y + 2.6, class: cls });
+  t.textContent = text;
+  return t;
+}
+
+/** Bezel, face and caption. Every dial starts the same way. */
+function dial(host: HTMLElement, caption: string): SVGElement {
+  const wrap = document.createElement("div");
+  wrap.className = "gz-wrap";
+  const s = svg("svg", { viewBox: "-50 -50 100 100", class: "gz" });
+  s.append(svg("circle", { r: 47, cx: 0, cy: 0, class: "gz-bezel" }));
+  s.append(svg("circle", { r: 44, cx: 0, cy: 0, class: "gz-face" }));
+  wrap.append(s);
+  const cap = document.createElement("div");
+  cap.className = "gz-cap";
+  cap.textContent = caption;
+  wrap.append(cap);
+  host.append(wrap);
+  return s;
+}
+
+/** The pivot every needle turns on, drawn last so it sits over the needles. */
+function hub(s: SVGElement): void {
+  s.append(svg("circle", { r: 3.4, cx: 0, cy: 0, class: "gz-hub" }));
 }
 
 export function compassPoint(deg: number): string {
@@ -76,8 +156,14 @@ export class Osd {
   private pathMarker!: SVGElement;
   private hdgTape!: SVGElement;
   private hdgText!: HTMLElement;
-  private vsNeedle!: SVGElement;
-  private vsText!: HTMLElement;
+
+  private asiNeedle!: SVGElement;
+  private asiText!: HTMLElement;
+  private altHundreds!: SVGElement;
+  private altThousands!: SVGElement;
+  private altText!: HTMLElement;
+  private vsiNeedle!: SVGElement;
+  private vsiText!: HTMLElement;
 
   /** The readouts that are plain text, by key. */
   private cells = new Map<string, HTMLElement>();
@@ -86,48 +172,157 @@ export class Osd {
     this.root = document.createElement("div");
     this.root.className = "osd";
     this.root.innerHTML = `
-      <div class="osd-left"></div>
-      <div class="osd-mid">
-        <div class="osd-hdg"></div>
-        <div class="osd-ai"></div>
+      <div class="osd-row">
+        <div class="osd-gauge osd-asi"></div>
+        <div class="osd-mid">
+          <div class="osd-hdg"></div>
+          <div class="osd-ai"></div>
+        </div>
+        <div class="osd-gauge osd-alt"></div>
+        <div class="osd-gauge osd-vsi"></div>
       </div>
-      <div class="osd-right"></div>`;
+      <div class="osd-strip"></div>`;
     parent.append(this.root);
 
+    this.buildAsi(this.root.querySelector(".osd-asi") as HTMLElement);
     this.buildAttitude(this.root.querySelector(".osd-ai") as HTMLElement);
     this.buildHeading(this.root.querySelector(".osd-hdg") as HTMLElement);
-    this.buildNumbers(this.root.querySelector(".osd-left") as HTMLElement, [
-      ["ias", "IAS", "kt"],
+    this.buildAltimeter(this.root.querySelector(".osd-alt") as HTMLElement);
+    this.buildVsi(this.root.querySelector(".osd-vsi") as HTMLElement);
+    this.buildStrip(this.root.querySelector(".osd-strip") as HTMLElement, [
       ["gs", "GS", "kt"],
-      ["alt", "ALT", "ft"],
       ["agl", "AGL", "ft"],
-    ]);
-    this.buildNumbers(this.root.querySelector(".osd-right") as HTMLElement, [
-      ["vs", "V/S", "fpm"],
-      ["rates", "P/R/Y", "°/s"],
       ["wind", "WIND", ""],
       ["drift", "DRIFT", ""],
     ]);
-    this.buildVsi(this.root.querySelector(".osd-right") as HTMLElement);
   }
 
-  private buildNumbers(host: HTMLElement, rows: [string, string, string][]): void {
-    for (const [key, label, unit] of rows) {
-      const row = document.createElement("div");
-      row.className = "row";
+  /**
+   * The numbers a dial cannot give you: groundspeed (which is not airspeed and
+   * differs by exactly the wind), height above the ground rather than the sea,
+   * and the wind and drift themselves. One line, because they are reference
+   * rather than instruments.
+   */
+  private buildStrip(host: HTMLElement, rows: [string, string, string][]): void {
+    for (const [key, name, unit] of rows) {
+      const cell = document.createElement("div");
+      cell.className = "strip-cell";
       const l = document.createElement("span");
-      l.textContent = label;
+      l.textContent = name;
       const v = document.createElement("b");
       v.textContent = "—";
-      row.append(l, v);
+      cell.append(l, v);
       if (unit) {
         const u = document.createElement("i");
         u.textContent = unit;
-        row.append(u);
+        cell.append(u);
       }
-      host.append(row);
+      host.append(cell);
       this.cells.set(key, v);
     }
+  }
+
+  private asiAngle(kt: number): number {
+    const f = (Math.max(ASI_MIN, Math.min(ASI_MAX, kt)) - ASI_MIN) / (ASI_MAX - ASI_MIN);
+    return -ASI_SWEEP / 2 + f * ASI_SWEEP;
+  }
+
+  private buildAsi(host: HTMLElement): void {
+    const s = dial(host, "AIRSPEED KT");
+
+    // Arcs before ticks, so the ticks read on top of them rather than under.
+    // The white arc sits inside the green one because they overlap over most
+    // of their length and a real instrument stacks them the same way.
+    s.append(svg("path", { d: arcPath(this.asiAngle(V_S1), this.asiAngle(V_NO), 38), class: "gz-arc-green" }));
+    s.append(svg("path", { d: arcPath(this.asiAngle(V_NO), this.asiAngle(V_NE), 38), class: "gz-arc-yellow" }));
+    s.append(svg("path", { d: arcPath(this.asiAngle(V_S0), this.asiAngle(V_FE), 32), class: "gz-arc-white" }));
+    s.append(tick(this.asiAngle(V_NE), 34, 41, "gz-redline"));
+
+    for (let v = ASI_MIN; v <= ASI_MAX; v += 10) {
+      const a = this.asiAngle(v);
+      const major = v % 20 === 0;
+      s.append(tick(a, major ? 33 : 36, 41, major ? "gz-tick-maj" : "gz-tick"));
+      // Nothing labelled down in the gap at the bottom: that is where the
+      // digits window sits, and a number under it is a number nobody can read.
+      if (major && Math.abs(a) < 150) s.append(label(a, 25, String(v), "gz-num"));
+    }
+
+    const n = svg("path", { d: "M-2.6,3 L0,-36 L2.6,3 Z", class: "gz-needle" });
+    s.append(n);
+    hub(s);
+    this.asiNeedle = n;
+
+    const t = document.createElement("div");
+    t.className = "gz-digits";
+    t.textContent = "---";
+    (host.querySelector(".gz-wrap") as HTMLElement).append(t);
+    this.asiText = t;
+  }
+
+  private buildAltimeter(host: HTMLElement): void {
+    const s = dial(host, "ALTITUDE FT");
+
+    // One revolution is 1000 ft: ten numbered hundreds, five minor ticks of
+    // 20 ft between each. That is the instrument, and getting the subdivision
+    // wrong is what makes a drawn altimeter look like a clock.
+    for (let i = 0; i < 50; i++) {
+      const a = (i / 50) * 360;
+      const major = i % 5 === 0;
+      s.append(tick(a, major ? 33 : 37.5, 41, major ? "gz-tick-maj" : "gz-tick"));
+      if (major) s.append(label(a, 25, String(i / 5), "gz-num"));
+    }
+
+    // Thousands: short and fat. Hundreds: long and thin. A real altimeter is
+    // misread when the two hands are similar, and the fix is the same here.
+    const th = svg("path", { d: "M-3.4,4 L0,-21 L3.4,4 Z", class: "gz-needle gz-needle-short" });
+    const hu = svg("path", { d: "M-2,4 L0,-38 L2,4 Z", class: "gz-needle" });
+    s.append(th, hu);
+    hub(s);
+    this.altThousands = th;
+    this.altHundreds = hu;
+
+    const t = document.createElement("div");
+    t.className = "gz-digits";
+    t.textContent = "---";
+    (host.querySelector(".gz-wrap") as HTMLElement).append(t);
+    this.altText = t;
+  }
+
+  private vsiAngle(fpm: number): number {
+    const v = Math.max(-VSI_FULL, Math.min(VSI_FULL, fpm));
+    return -90 + (v / VSI_FULL) * 180;
+  }
+
+  private buildVsi(host: HTMLElement): void {
+    const s = dial(host, "CLIMB 1000 FPM");
+
+    // Zero at nine o'clock, climb over the top, descent under the bottom, and
+    // the two ends meet at three o'clock. Both halves are the same sweep, so
+    // "level" is a horizontal needle and any deflection is immediately signed.
+    for (let f = 0; f <= VSI_FULL; f += 500) {
+      const major = f % 1000 === 0;
+      for (const sign of f === 0 ? [1] : [1, -1]) {
+        const a = this.vsiAngle(f * sign);
+        s.append(tick(a, major ? 33 : 37, 41, major ? "gz-tick-maj" : "gz-tick"));
+        if (major) s.append(label(a, 25, String(f / 1000), "gz-num"));
+      }
+    }
+
+    // Drawn pointing UP, like every other needle here, because the rotation it
+    // is given comes from polar() and polar() measures from twelve o'clock. A
+    // needle modelled pointing at its own zero instead is 90 degrees out for
+    // the whole scale, and reads plausibly enough to miss: level flight put it
+    // straight up rather than straight out to the left.
+    const n = svg("path", { d: "M-2.4,2.4 L0,-36 L2.4,2.4 Z", class: "gz-needle" });
+    s.append(n);
+    hub(s);
+    this.vsiNeedle = n;
+
+    const t = document.createElement("div");
+    t.className = "gz-digits";
+    t.textContent = "0";
+    (host.querySelector(".gz-wrap") as HTMLElement).append(t);
+    this.vsiText = t;
   }
 
   private buildAttitude(host: HTMLElement): void {
@@ -227,32 +422,13 @@ export class Osd {
     this.hdgText = box;
   }
 
-  private buildVsi(host: HTMLElement): void {
-    const wrap = document.createElement("div");
-    wrap.className = "vsi";
-    const s = svg("svg", { viewBox: "-16 -46 32 92", class: "vsi-svg" });
-    s.append(svg("line", { x1: 0, y1: -42, x2: 0, y2: 42, class: "vsi-axis" }));
-    // Ticks at 5 m/s, labelled in whole thousands of feet per minute, which is
-    // the unit anyone reading a climb rate already thinks in.
-    for (let v = -15; v <= 15; v += 5) {
-      const y = -v * 2.7;
-      s.append(svg("line", { x1: -6, y1: y, x2: 6, y2: y, class: v === 0 ? "vsi-zero" : "vsi-tick" }));
-    }
-    const needle = svg("path", { d: "M-10,0 L0,-4 L10,0 L0,4 Z", class: "vsi-needle" });
-    s.append(needle);
-    this.vsNeedle = needle;
-    wrap.append(s);
-    const t = document.createElement("div");
-    t.className = "vsi-text";
-    t.textContent = "0";
-    wrap.append(t);
-    host.append(wrap);
-    this.vsText = t;
-  }
-
   private set(key: string, text: string): void {
     const e = this.cells.get(key);
     if (e && e.textContent !== text) e.textContent = text;
+  }
+
+  private setText(e: HTMLElement, text: string): void {
+    if (e.textContent !== text) e.textContent = text;
   }
 
   update(s: OsdState): void {
@@ -275,26 +451,30 @@ export class Osd {
     // Heading ribbon slides under a fixed pointer.
     this.hdgTape.setAttribute("transform", `translate(${(-s.headingDeg * HDG_PX_PER_DEG).toFixed(2)} 0)`);
     const hdg = String(Math.round(s.headingDeg) % 360).padStart(3, "0");
-    if (this.hdgText.textContent !== `${hdg}°`) this.hdgText.textContent = `${hdg}°`;
+    this.setText(this.hdgText, `${hdg}°`);
+
+    // Airspeed.
+    const kt = s.airspeed * KTS;
+    this.asiNeedle.setAttribute("transform", `rotate(${this.asiAngle(kt).toFixed(2)})`);
+    this.setText(this.asiText, String(Math.round(kt)));
+
+    // Altitude. The hands come off the same number, which is the whole trick:
+    // a two-hand altimeter is one value shown at two scales, not two readings.
+    const ft = s.altM * FT;
+    this.altHundreds.setAttribute("transform", `rotate(${(((ft % 1000) / 1000) * 360).toFixed(2)})`);
+    this.altThousands.setAttribute("transform", `rotate(${(((ft % 10000) / 10000) * 360).toFixed(2)})`);
+    this.setText(this.altText, Math.round(ft).toLocaleString());
 
     // Vertical speed.
-    const vClamped = Math.max(-15, Math.min(15, s.verticalSpeed));
-    this.vsNeedle.setAttribute("transform", `translate(0 ${(-vClamped * 2.7).toFixed(2)})`);
     const fpm = Math.round((s.verticalSpeed * FPM) / 10) * 10;
+    this.vsiNeedle.setAttribute("transform", `rotate(${this.vsiAngle(fpm).toFixed(2)})`);
     const vsLabel = `${fpm > 0 ? "+" : ""}${fpm}`;
-    if (this.vsText.textContent !== vsLabel) this.vsText.textContent = vsLabel;
-    this.vsText.classList.toggle("up", fpm > 40);
-    this.vsText.classList.toggle("down", fpm < -40);
+    this.setText(this.vsiText, vsLabel);
+    this.vsiText.classList.toggle("up", fpm > 40);
+    this.vsiText.classList.toggle("down", fpm < -40);
 
-    this.set("ias", String(Math.round(s.airspeed * KTS)));
     this.set("gs", String(Math.round(s.groundSpeed * KTS)));
-    this.set("alt", Math.round(s.altM * FT).toLocaleString());
     this.set("agl", Math.round(s.aglM * FT).toLocaleString());
-    this.set("vs", vsLabel);
-    this.set(
-      "rates",
-      `${Math.round(s.rollRateDps)}/${Math.round(s.pitchRateDps)}/${Math.round(s.yawRateDps)}`,
-    );
     this.set("wind", `${compassPoint(s.windDirDeg)} ${Math.round(s.windSpeed * KTS)} kt`);
     // Drift only means something once there is a flight path to drift off.
     this.set(

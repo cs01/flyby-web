@@ -145,7 +145,12 @@ export function computeLighting(solar: SolarState, wx: Weather): SceneLighting {
     ambient,
     night,
     // Sodium/LED orange, and weak -- it is a fill light, not a light source.
-    nightGlow: new THREE.Color(0.040, 0.030, 0.021).multiplyScalar(night),
+    // Skyglow over a city really is warm, but at 1 : 0.75 : 0.53 it was warm
+    // enough to be the DOMINANT light: every surface it touched came out tan,
+    // so a night city read as sepia rather than as dark. Nearly neutral with a
+    // trace of amber leaves the warmth to the things that are actually warm,
+    // which are the lamps and the lit windows.
+    nightGlow: new THREE.Color(0.030, 0.028, 0.027).multiplyScalar(night),
     wetness,
     snow,
     mieG: 0.62 + 0.22 * Math.max(0, Math.min(1, (wx.humidity - 30) / 60)),

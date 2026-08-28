@@ -181,6 +181,45 @@ html, body {
   letter-spacing: 0.05em;
 }
 
+/* Continent sections. The heading is a quiet rule rather than a title: it is
+   there to break the grid into places you can aim at, not to be read. */
+.menu-section { margin-bottom: 26px; }
+
+.menu-section h2 {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 10px;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.menu-section h2::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+.here-row { margin-bottom: 30px; }
+
+/* The one card that is a button rather than a link: there is no href until the
+   browser has answered, and there is no answer until it is pressed. */
+.card-here {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  border-color: rgba(102, 212, 255, 0.32);
+}
+
+.card-here:disabled { cursor: progress; opacity: 0.7; }
+.card-here .city { color: var(--accent); }
+
 #menu .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
@@ -322,36 +361,102 @@ html, body {
    rather than in a corner that has to be hunted for. */
 .osd {
   position: absolute;
-  bottom: 20px;
+  bottom: 18px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  align-items: flex-end;
-  gap: 12px;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   pointer-events: none;
   font-variant-numeric: tabular-nums;
 }
 
-.osd-left, .osd-right {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 9px 11px;
-  min-width: 132px;
+.osd-row { display: flex; align-items: flex-end; gap: 10px; }
+
+/* Each dial is its own panel, the way each instrument is its own can behind a
+   real panel. One wide panel behind all of them read as a single slab and lost
+   the thing that makes a six-pack legible: the gaps. */
+.osd-gauge, .osd-mid, .osd-strip {
   background: var(--panel);
   border: 1px solid var(--rule);
   border-radius: 10px;
   backdrop-filter: blur(14px) saturate(1.3);
   -webkit-backdrop-filter: blur(14px) saturate(1.3);
-  font-size: 12px;
 }
 
-.osd .row { display: flex; align-items: baseline; gap: 8px; color: var(--dim); }
-.osd .row span { flex: 1; letter-spacing: 0.08em; font-size: 10px; }
-.osd .row b { color: var(--ink); font-weight: 500; }
-.osd .row i { font-style: normal; font-size: 9px; color: var(--dim); width: 22px; text-align: right; }
+.osd-gauge { padding: 7px 7px 5px; }
 
-.osd-mid { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.gz-wrap { position: relative; display: flex; flex-direction: column; align-items: center; }
+.osd svg.gz { width: 104px; height: 104px; display: block; }
+
+.gz-bezel { fill: rgba(8, 12, 18, 0.55); stroke: var(--rule); stroke-width: 1.4; }
+.gz-face { fill: rgba(6, 9, 14, 0.72); stroke: none; }
+
+.gz-tick { stroke: rgba(242, 246, 250, 0.45); stroke-width: 1; }
+.gz-tick-maj { stroke: rgba(242, 246, 250, 0.9); stroke-width: 1.7; }
+.gz-num { fill: rgba(242, 246, 250, 0.85); font-size: 9px; font-family: inherit; text-anchor: middle; }
+
+/* The placard arcs. Muted rather than saturated: they are a background the
+   needle is read AGAINST, and at full strength they became the loudest thing
+   on a panel that sits over a city. */
+.gz-arc-green { fill: none; stroke: rgba(94, 200, 130, 0.62); stroke-width: 4; }
+.gz-arc-yellow { fill: none; stroke: rgba(240, 200, 90, 0.62); stroke-width: 4; }
+.gz-arc-white { fill: none; stroke: rgba(242, 246, 250, 0.55); stroke-width: 3; }
+.gz-redline { stroke: #ff5a52; stroke-width: 2.4; }
+
+.gz-needle { fill: #f2f6fa; stroke: rgba(0, 0, 0, 0.5); stroke-width: 0.5; }
+.gz-needle-short { fill: rgba(242, 246, 250, 0.82); }
+.gz-hub { fill: #cfd8e3; stroke: rgba(0, 0, 0, 0.55); stroke-width: 0.6; }
+
+.gz-cap {
+  margin-top: 1px;
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  color: var(--dim);
+}
+
+/* The exact figure, in the window a real instrument puts its drum in. A dial
+   is read at a glance and a number is read when the glance is not enough; both
+   are wanted, and neither replaces the other. */
+.gz-digits {
+  position: absolute;
+  top: 62%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(4, 7, 11, 0.8);
+  border: 1px solid var(--rule);
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.gz-digits.up { color: #6ee7a8; }
+.gz-digits.down { color: #ffcc70; }
+
+.osd-strip {
+  display: flex;
+  gap: 16px;
+  padding: 5px 12px;
+  font-size: 11px;
+}
+
+.strip-cell { display: flex; align-items: baseline; gap: 6px; color: var(--dim); }
+.strip-cell span { letter-spacing: 0.1em; font-size: 9px; }
+.strip-cell b { color: var(--ink); font-weight: 500; }
+.strip-cell i { font-style: normal; font-size: 9px; color: var(--dim); }
+
+/* The attitude ball is an instrument in the same panel, so it gets the same
+   can around it. Floating bare between two bezelled dials it read as an
+   unrelated overlay that happened to be nearby. */
+.osd-mid {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 7px 9px 5px;
+}
 
 .osd svg.ai { width: 122px; height: 122px; overflow: visible; }
 
@@ -387,19 +492,9 @@ html, body {
   letter-spacing: 0.04em;
 }
 
-.vsi { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.osd svg.vsi-svg { width: 30px; height: 78px; }
-.vsi-axis { stroke: var(--rule); stroke-width: 1; }
-.vsi-tick { stroke: rgba(242, 246, 250, 0.4); stroke-width: 1; }
-.vsi-zero { stroke: rgba(242, 246, 250, 0.85); stroke-width: 1.4; }
-.vsi-needle { fill: var(--accent); }
-.vsi-text { font-size: 11px; color: var(--dim); }
-.vsi-text.up { color: #6ee7a8; }
-.vsi-text.down { color: #ffcc70; }
-
 /* Boost is a whole-panel state rather than another readout: at 60 m between
    towers there is no attention left for a word. */
-.osd.boost .osd-left, .osd.boost .osd-right { border-color: rgba(102, 212, 255, 0.55); }
+.osd.boost .osd-gauge, .osd.boost .osd-strip { border-color: rgba(102, 212, 255, 0.55); }
 
 /* --- Clock and forecast scrubber ---------------------------------------- */
 
@@ -646,11 +741,14 @@ html, body {
     gap: 6px;
     justify-content: center;
   }
-  .osd-left, .osd-right { flex: 1 1 0; min-width: 0; padding: 6px 8px; font-size: 11px; }
-  .osd .row span { font-size: 9px; }
+  .osd-row { gap: 5px; }
+  .osd-gauge { padding: 4px 4px 3px; }
+  .osd svg.gz { width: 72px; height: 72px; }
+  .gz-cap { font-size: 6px; letter-spacing: 0.08em; }
+  .gz-digits { font-size: 9px; padding: 0 3px; }
   .osd svg.ai { width: 86px; height: 86px; }
   .osd-hdg { width: 96px; height: 22px; }
-  .osd svg.vsi-svg { width: 22px; height: 56px; }
+  .osd-strip { gap: 9px; padding: 4px 8px; font-size: 10px; }
 
   /* Nowrap because the card is a reminder read at a glance: a binding broken
      over two lines takes longer to read than the flight leaves time for. */
@@ -689,8 +787,8 @@ html, body {
   .osd { bottom: calc(20px + env(safe-area-inset-bottom)); right: 170px; }
   .osd svg.ai { width: 70px; height: 70px; }
   .osd-hdg { width: 84px; }
-  .osd svg.vsi-svg { width: 20px; height: 44px; }
-  .osd-left, .osd-right { font-size: 10px; padding: 5px 7px; }
+  .osd svg.gz { width: 60px; height: 60px; }
+  .osd-strip { display: none; }
 
   .touch-btns {
     top: auto;
@@ -702,7 +800,6 @@ html, body {
 }
 
 @media (max-width: 720px) and (pointer: fine) {
-  .osd-left, .osd-right { min-width: 104px; font-size: 11px; }
   .osd svg.ai { width: 96px; height: 96px; }
   .osd-hdg { width: 118px; }
 }
@@ -712,8 +809,8 @@ html, body {
 /* Pointer-fine only: a phone in landscape is also a short window, and it has
    its own rule above that this one would otherwise stamp on. */
 @media (max-height: 780px) and (pointer: fine) {
-  .osd { bottom: 14px; gap: 10px; }
+  .osd { bottom: 12px; gap: 4px; }
   .osd svg.ai { width: 100px; height: 100px; }
-  .osd svg.vsi-svg { width: 26px; height: 66px; }
-  .osd-left, .osd-right { padding: 7px 9px; }
+  .osd svg.gz { width: 86px; height: 86px; }
+  .osd-gauge { padding: 5px 5px 3px; }
 }

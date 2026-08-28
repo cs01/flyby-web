@@ -16,7 +16,7 @@ import { stitchImagery, type StitchedImage } from "./data/imagery";
 import { fetchWeather, fetchForecast, type Weather } from "./data/weather";
 import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
-import { CITIES, cityById, DEFAULT_CITY, type City } from "./cities";
+import { CITIES, cityById, cityAt, DEFAULT_CITY, type City } from "./cities";
 import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
@@ -32,7 +32,19 @@ import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanma
 import { Composite } from "./render/composite";
 
 function chooseCity(): City | null {
-  const q = new URLSearchParams(location.search).get("city");
+  const params = new URLSearchParams(location.search);
+  // `?at=lat,lon` outranks `?city=`: it is the more specific request, and it is
+  // what the geolocation card writes.
+  const at = params.get("at");
+  if (at) {
+    const [lat, lon] = at.split(",").map(Number);
+    // A malformed `at` must fall through to the menu rather than flying to
+    // NaN, which loads a black world and never says why.
+    if (Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
+      return cityAt(lat, lon);
+    }
+  }
+  const q = params.get("city");
   if (!q) return null;
   return cityById(q) ?? cityById(DEFAULT_CITY) ?? CITIES[0];
 }
@@ -49,7 +61,16 @@ function chooseCity(): City | null {
  */
 function goToCity(city: City): void {
   const params = new URLSearchParams(location.search);
+  params.delete("at");
   params.set("city", city.id);
+  location.search = params.toString();
+}
+
+/** Three decimals is ~110 m: enough to fly, not enough to be an address. */
+function goToCoords(lat: number, lon: number): void {
+  const params = new URLSearchParams(location.search);
+  params.delete("city");
+  params.set("at", `${lat.toFixed(3)},${lon.toFixed(3)}`);
   location.search = params.toString();
 }
 
@@ -61,7 +82,7 @@ async function main() {
   const city = chooseCity();
   if (!city) {
     loading.done();
-    showMenu(goToCity);
+    showMenu(goToCity, goToCoords);
     return;
   }
   const origin = new Origin(city.lat, city.lon);

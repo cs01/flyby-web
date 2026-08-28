@@ -7,7 +7,7 @@
 // and answers with an array, so twenty-four cities are one round trip rather
 // than twenty-four.
 
-import { CITIES, type City } from "../cities";
+import { CITIES, CONTINENTS, type City } from "../cities";
 
 const WMO_SHORT: Record<number, string> = {
   0: "Clear", 1: "Mostly clear", 2: "Partly cloudy", 3: "Overcast",
@@ -97,7 +97,54 @@ async function fetchSkylineIndex(): Promise<Set<string>> {
   }
 }
 
-export function showMenu(onPick: (city: City) => void): void {
+
+/**
+ * "Fly where I am", which the app can offer because nothing about a place is
+ * baked in: terrain, imagery and weather are all fetched by coordinate.
+ *
+ * The permission prompt is only ever raised by this button being pressed --
+ * asking on load would be a prompt nobody asked for on a page that has not
+ * yet earned one. The fix is rounded to three decimals, ~110 m, before it goes
+ * anywhere: the URL has to carry it so the flight can be reloaded and shared,
+ * and 110 m is far more precision than flying needs and far less than a home
+ * address.
+ */
+function buildHereCard(row: HTMLElement, onHere: (lat: number, lon: number) => void): void {
+  const btn = document.createElement("button");
+  btn.className = "card card-here";
+  btn.innerHTML = `
+    <div class="card-top">
+      <span class="city">Where I am</span>
+      <span class="wx">\u{1F4CD}</span>
+    </div>
+    <div class="card-bot">
+      <span class="country">fly your own sky</span>
+      <span class="time here-status"></span>
+    </div>`;
+  const status = btn.querySelector(".here-status") as HTMLElement;
+  row.append(btn);
+
+  btn.addEventListener("click", () => {
+    if (!navigator.geolocation) {
+      status.textContent = "unavailable";
+      return;
+    }
+    btn.disabled = true;
+    status.textContent = "asking...";
+    navigator.geolocation.getCurrentPosition(
+      (pos) => onHere(pos.coords.latitude, pos.coords.longitude),
+      (err) => {
+        btn.disabled = false;
+        status.textContent = err.code === err.PERMISSION_DENIED ? "declined" : "no fix";
+      },
+      // A cached fix from the last ten minutes is fine: the flight starts at a
+      // whole city's scale, so high accuracy would only cost a GPS wait.
+      { enableHighAccuracy: false, timeout: 12000, maximumAge: 600000 },
+    );
+  });
+}
+
+export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon: number) => void): void {
   const root = document.createElement("div");
   root.id = "menu";
   root.innerHTML = `
@@ -106,7 +153,8 @@ export function showMenu(onPick: (city: City) => void): void {
         <h1>FLYBY</h1>
         <p>Fly real places under the weather that is happening there right now.</p>
       </header>
-      <div class="grid"></div>
+      <div class="here-row"></div>
+      <div class="sections"></div>
       <footer>
         Terrain: NASA SRTM via AWS Terrain Tiles · Imagery: Esri World Imagery ·
         Buildings: © OpenStreetMap contributors (ODbL) · Weather: Open-Meteo
@@ -114,7 +162,32 @@ export function showMenu(onPick: (city: City) => void): void {
     </div>`;
   document.body.append(root);
 
-  const grid = root.querySelector(".grid") as HTMLElement;
+  buildHereCard(root.querySelector(".here-row") as HTMLElement, onHere);
+
+  // One grid per continent, alphabetical inside and out. Twenty-nine cards in
+  // one undifferentiated block is a list you scan rather than a map you know
+  // your way around, and "somewhere in Asia" is how people actually decide.
+  //
+  // The leftover pass is not defensive padding: a place whose continent is
+  // missing must still be REACHABLE. Silently dropping it from the grid would
+  // be the menu quietly losing a city, which is the one failure here that
+  // nothing else in the app would report.
+  const sections = root.querySelector(".sections") as HTMLElement;
+  const grouped = new Map<string, City[]>();
+  for (const c of CITIES) {
+    const key = c.continent && (CONTINENTS as string[]).includes(c.continent) ? c.continent : "Elsewhere";
+    (grouped.get(key) ?? grouped.set(key, []).get(key)!).push(c);
+  }
+  const gridFor = new Map<string, HTMLElement>();
+  for (const key of [...CONTINENTS, "Elsewhere"]) {
+    const list = grouped.get(key);
+    if (!list || list.length === 0) continue;
+    const sec = document.createElement("section");
+    sec.className = "menu-section";
+    sec.innerHTML = `<h2>${key}</h2><div class="grid"></div>`;
+    sections.append(sec);
+    gridFor.set(key, sec.querySelector(".grid") as HTMLElement);
+  }
 
   const cards = CITIES.map((c) => {
     // A real anchor, not a button. Cities are destinations with their own URL,
@@ -143,7 +216,8 @@ export function showMenu(onPick: (city: City) => void): void {
       setTimeout(() => root.remove(), 400);
       onPick(c);
     });
-    grid.append(el);
+    const key = c.continent && (CONTINENTS as string[]).includes(c.continent) ? c.continent : "Elsewhere";
+    gridFor.get(key)!.append(el);
     return el;
   });
 

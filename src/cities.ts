@@ -22,10 +22,24 @@ export interface Landmark {
   height?: number;
 }
 
+/** Alphabetical, which is also the order the start screen groups them in. */
+export type Continent =
+  | "Africa"
+  | "Asia"
+  | "Europe"
+  | "North America"
+  | "Oceania"
+  | "South America";
+
+export const CONTINENTS: Continent[] = [
+  "Africa", "Asia", "Europe", "North America", "Oceania", "South America",
+];
+
 export interface City {
   id: string;
   name: string;
   country: string;
+  continent?: Continent;
   lat: number;
   lon: number;
   /** Building pack radius, metres. */
@@ -38,41 +52,21 @@ export interface City {
 }
 
 export const CITIES: City[] = [
+  // --- Africa --------------------------------------------------------------
   {
-    id: "sf", name: "San Francisco", country: "USA",
-    lat: 37.8085, lon: -122.4098, radius: 7000, approach: 300, startAlt: 700,
+    id: "capetown", name: "Cape Town", country: "South Africa", continent: "Africa",
+    lat: -33.9249, lon: 18.4241, radius: 8000, approach: 340, startAlt: 900,
     landmarks: [
-      { name: "Golden Gate Bridge", lat: 37.8199, lon: -122.4783, height: 227 },
-      { name: "Transamerica Pyramid", lat: 37.7952, lon: -122.4028, height: 260 },
-      { name: "Coit Tower", lat: 37.8024, lon: -122.4058, height: 64 },
-      { name: "Alcatraz", lat: 37.8270, lon: -122.4230, height: 41 },
-      { name: "Salesforce Tower", lat: 37.7897, lon: -122.3972, height: 326 },
+      { name: "Table Mountain", lat: -33.9575, lon: 18.4090, height: 1085 },
+      { name: "Lion's Head", lat: -33.9356, lon: 18.3893, height: 669 },
+      { name: "V&A Waterfront", lat: -33.9036, lon: 18.4197, height: 30 },
+      { name: "Signal Hill", lat: -33.9153, lon: 18.4030, height: 350 },
+      { name: "Green Point Stadium", lat: -33.9036, lon: 18.4110, height: 55 },
     ],
   },
+  // --- Asia ----------------------------------------------------------------
   {
-    id: "manhattan", name: "New York", country: "USA",
-    lat: 40.7549, lon: -73.9840, radius: 8000, approach: 200, startAlt: 800,
-    landmarks: [
-      { name: "Empire State Building", lat: 40.7484, lon: -73.9857, height: 443 },
-      { name: "One World Trade Center", lat: 40.7127, lon: -74.0134, height: 541 },
-      { name: "Statue of Liberty", lat: 40.6892, lon: -74.0445, height: 93 },
-      { name: "Chrysler Building", lat: 40.7516, lon: -73.9755, height: 319 },
-      { name: "Central Park", lat: 40.7829, lon: -73.9654, height: 40 },
-    ],
-  },
-  {
-    id: "hongkong", name: "Hong Kong", country: "Hong Kong SAR",
-    lat: 22.2860, lon: 114.1580, radius: 7000, approach: 180, startAlt: 750,
-    landmarks: [
-      { name: "ICC", lat: 22.3035, lon: 114.1601, height: 484 },
-      { name: "IFC Two", lat: 22.2853, lon: 114.1591, height: 412 },
-      { name: "Victoria Peak", lat: 22.2759, lon: 114.1455, height: 552 },
-      { name: "Bank of China Tower", lat: 22.2790, lon: 114.1615, height: 367 },
-      { name: "Tsing Ma Bridge", lat: 22.3510, lon: 114.0740, height: 206 },
-    ],
-  },
-  {
-    id: "dubai", name: "Dubai", country: "UAE",
+    id: "dubai", name: "Dubai", country: "UAE", continent: "Asia",
     lat: 25.1972, lon: 55.2744, radius: 8000, approach: 240, startAlt: 900,
     landmarks: [
       { name: "Burj Khalifa", lat: 25.1972, lon: 55.2744, height: 828 },
@@ -83,161 +77,18 @@ export const CITIES: City[] = [
     ],
   },
   {
-    id: "rio", name: "Rio de Janeiro", country: "Brazil",
-    lat: -22.9519, lon: -43.2105, radius: 8000, approach: 90, startAlt: 800,
+    id: "hongkong", name: "Hong Kong", country: "Hong Kong SAR", continent: "Asia",
+    lat: 22.2860, lon: 114.1580, radius: 7000, approach: 180, startAlt: 750,
     landmarks: [
-      { name: "Christ the Redeemer", lat: -22.9519, lon: -43.2105, height: 710 },
-      { name: "Sugarloaf Mountain", lat: -22.9492, lon: -43.1545, height: 396 },
-      { name: "Maracana", lat: -22.9121, lon: -43.2302, height: 32 },
-      { name: "Copacabana", lat: -22.9711, lon: -43.1822, height: 10 },
-      { name: "Ipanema", lat: -22.9868, lon: -43.2065, height: 10 },
+      { name: "ICC", lat: 22.3035, lon: 114.1601, height: 484 },
+      { name: "IFC Two", lat: 22.2853, lon: 114.1591, height: 412 },
+      { name: "Victoria Peak", lat: 22.2759, lon: 114.1455, height: 552 },
+      { name: "Bank of China Tower", lat: 22.2790, lon: 114.1615, height: 367 },
+      { name: "Tsing Ma Bridge", lat: 22.3510, lon: 114.0740, height: 206 },
     ],
   },
   {
-    id: "capetown", name: "Cape Town", country: "South Africa",
-    lat: -33.9249, lon: 18.4241, radius: 8000, approach: 340, startAlt: 900,
-    landmarks: [
-      { name: "Table Mountain", lat: -33.9575, lon: 18.4090, height: 1085 },
-      { name: "Lion's Head", lat: -33.9356, lon: 18.3893, height: 669 },
-      { name: "V&A Waterfront", lat: -33.9036, lon: 18.4197, height: 30 },
-      { name: "Signal Hill", lat: -33.9153, lon: 18.4030, height: 350 },
-      { name: "Green Point Stadium", lat: -33.9036, lon: 18.4110, height: 55 },
-    ],
-  },
-  {
-    id: "sydney", name: "Sydney", country: "Australia",
-    lat: -33.8568, lon: 151.2153, radius: 7000, approach: 20, startAlt: 650,
-    landmarks: [
-      { name: "Sydney Opera House", lat: -33.8568, lon: 151.2153, height: 65 },
-      { name: "Harbour Bridge", lat: -33.8523, lon: 151.2108, height: 134 },
-      { name: "Sydney Tower", lat: -33.8704, lon: 151.2085, height: 309 },
-      { name: "Bondi Beach", lat: -33.8908, lon: 151.2743, height: 10 },
-      { name: "Barangaroo", lat: -33.8633, lon: 151.2010, height: 275 },
-    ],
-  },
-  {
-    id: "tokyo", name: "Tokyo", country: "Japan",
-    lat: 35.6586, lon: 139.7454, radius: 8000, approach: 300, startAlt: 800,
-    landmarks: [
-      { name: "Tokyo Tower", lat: 35.6586, lon: 139.7454, height: 333 },
-      { name: "Tokyo Skytree", lat: 35.7101, lon: 139.8107, height: 634 },
-      { name: "Imperial Palace", lat: 35.6852, lon: 139.7528, height: 30 },
-      { name: "Shibuya Scramble", lat: 35.6595, lon: 139.7005, height: 230 },
-      { name: "Rainbow Bridge", lat: 35.6365, lon: 139.7635, height: 127 },
-    ],
-  },
-  {
-    id: "paris", name: "Paris", country: "France",
-    lat: 48.8584, lon: 2.2945, radius: 7000, approach: 70, startAlt: 550,
-    landmarks: [
-      { name: "Eiffel Tower", lat: 48.8584, lon: 2.2945, height: 330 },
-      { name: "Arc de Triomphe", lat: 48.8738, lon: 2.2950, height: 50 },
-      { name: "Notre-Dame", lat: 48.8530, lon: 2.3499, height: 96 },
-      { name: "Sacre-Coeur", lat: 48.8867, lon: 2.3431, height: 213 },
-      { name: "La Defense", lat: 48.8918, lon: 2.2361, height: 231 },
-    ],
-  },
-  {
-    id: "london", name: "London", country: "UK",
-    lat: 51.5045, lon: -0.0865, radius: 7000, approach: 260, startAlt: 600,
-    landmarks: [
-      { name: "The Shard", lat: 51.5045, lon: -0.0865, height: 310 },
-      { name: "Tower Bridge", lat: 51.5055, lon: -0.0754, height: 65 },
-      { name: "Big Ben", lat: 51.5007, lon: -0.1246, height: 96 },
-      { name: "London Eye", lat: 51.5033, lon: -0.1196, height: 135 },
-      { name: "The Gherkin", lat: 51.5145, lon: -0.0803, height: 180 },
-    ],
-  },
-  {
-    id: "singapore", name: "Singapore", country: "Singapore",
-    lat: 1.2838, lon: 103.8591, radius: 7000, approach: 20, startAlt: 600,
-    landmarks: [
-      { name: "Marina Bay Sands", lat: 1.2834, lon: 103.8607, height: 200 },
-      { name: "Gardens by the Bay", lat: 1.2816, lon: 103.8636, height: 50 },
-      { name: "Singapore Flyer", lat: 1.2893, lon: 103.8631, height: 165 },
-      { name: "Merlion", lat: 1.2868, lon: 103.8545, height: 8 },
-      { name: "Guoco Tower", lat: 1.2764, lon: 103.8459, height: 290 },
-    ],
-  },
-  {
-    id: "chicago", name: "Chicago", country: "USA",
-    lat: 41.8789, lon: -87.6359, radius: 7000, approach: 180, startAlt: 700,
-    landmarks: [
-      { name: "Willis Tower", lat: 41.8789, lon: -87.6359, height: 442 },
-      { name: "Trump Tower", lat: 41.8892, lon: -87.6267, height: 423 },
-      { name: "John Hancock Center", lat: 41.8988, lon: -87.6229, height: 344 },
-      { name: "Navy Pier", lat: 41.8917, lon: -87.6086, height: 30 },
-      { name: "Cloud Gate", lat: 41.8827, lon: -87.6233, height: 10 },
-    ],
-  },
-  {
-    id: "vancouver", name: "Vancouver", country: "Canada",
-    lat: 49.2827, lon: -123.1207, radius: 7000, approach: 340, startAlt: 700,
-    landmarks: [
-      { name: "Canada Place", lat: 49.2888, lon: -123.1111, height: 40 },
-      { name: "Living Shangri-La", lat: 49.2841, lon: -123.1213, height: 201 },
-      { name: "Stanley Park", lat: 49.3017, lon: -123.1417, height: 40 },
-      { name: "Lions Gate Bridge", lat: 49.3145, lon: -123.1387, height: 111 },
-      { name: "Grouse Mountain", lat: 49.3800, lon: -123.0800, height: 1231 },
-    ],
-  },
-  {
-    id: "istanbul", name: "Istanbul", country: "Turkiye",
-    lat: 41.0086, lon: 28.9802, radius: 7000, approach: 45, startAlt: 600,
-    landmarks: [
-      { name: "Hagia Sophia", lat: 41.0086, lon: 28.9802, height: 56 },
-      { name: "Blue Mosque", lat: 41.0054, lon: 28.9768, height: 64 },
-      { name: "Galata Tower", lat: 41.0256, lon: 28.9744, height: 67 },
-      { name: "Bosphorus Bridge", lat: 41.0451, lon: 29.0340, height: 165 },
-      { name: "Camlica Tower", lat: 41.0272, lon: 29.0680, height: 369 },
-    ],
-  },
-  {
-    id: "barcelona", name: "Barcelona", country: "Spain",
-    lat: 41.4036, lon: 2.1744, radius: 7000, approach: 135, startAlt: 550,
-    landmarks: [
-      { name: "Sagrada Familia", lat: 41.4036, lon: 2.1744, height: 172 },
-      { name: "Torre Glories", lat: 41.4033, lon: 2.1894, height: 144 },
-      { name: "Montjuic", lat: 41.3638, lon: 2.1655, height: 173 },
-      { name: "Camp Nou", lat: 41.3809, lon: 2.1228, height: 48 },
-      { name: "W Barcelona", lat: 41.3684, lon: 2.1900, height: 99 },
-    ],
-  },
-  {
-    id: "seattle", name: "Seattle", country: "USA",
-    lat: 47.6205, lon: -122.3493, radius: 7000, approach: 160, startAlt: 750,
-    landmarks: [
-      { name: "Space Needle", lat: 47.6205, lon: -122.3493, height: 184 },
-      { name: "Columbia Center", lat: 47.6045, lon: -122.3301, height: 285 },
-      { name: "Pike Place Market", lat: 47.6097, lon: -122.3421, height: 20 },
-      { name: "T-Mobile Park", lat: 47.5914, lon: -122.3325, height: 60 },
-      { name: "Mount Rainier", lat: 46.8523, lon: -121.7603, height: 4392 },
-    ],
-  },
-  {
-    id: "shanghai", name: "Shanghai", country: "China",
-    lat: 31.2336, lon: 121.5055, radius: 8000, approach: 270, startAlt: 900,
-    landmarks: [
-      { name: "Shanghai Tower", lat: 31.2336, lon: 121.5055, height: 632 },
-      { name: "Oriental Pearl", lat: 31.2397, lon: 121.4998, height: 468 },
-      { name: "Jin Mao Tower", lat: 31.2374, lon: 121.5017, height: 421 },
-      { name: "The Bund", lat: 31.2397, lon: 121.4903, height: 30 },
-      { name: "World Financial Center", lat: 31.2352, lon: 121.5057, height: 492 },
-    ],
-  },
-  {
-    id: "toronto", name: "Toronto", country: "Canada",
-    lat: 43.6426, lon: -79.3871, radius: 7000, approach: 20, startAlt: 700,
-    landmarks: [
-      { name: "CN Tower", lat: 43.6426, lon: -79.3871, height: 553 },
-      { name: "First Canadian Place", lat: 43.6487, lon: -79.3817, height: 298 },
-      { name: "Rogers Centre", lat: 43.6414, lon: -79.3894, height: 86 },
-      { name: "Casa Loma", lat: 43.6780, lon: -79.4094, height: 60 },
-      { name: "Toronto Islands", lat: 43.6205, lon: -79.3789, height: 10 },
-    ],
-  },
-  {
-    id: "kualalumpur", name: "Kuala Lumpur", country: "Malaysia",
+    id: "kualalumpur", name: "Kuala Lumpur", country: "Malaysia", continent: "Asia",
     lat: 3.1578, lon: 101.7117, radius: 7000, approach: 200, startAlt: 800,
     landmarks: [
       { name: "Petronas Towers", lat: 3.1578, lon: 101.7117, height: 452 },
@@ -248,7 +99,41 @@ export const CITIES: City[] = [
     ],
   },
   {
-    id: "athens", name: "Athens", country: "Greece",
+    id: "shanghai", name: "Shanghai", country: "China", continent: "Asia",
+    lat: 31.2336, lon: 121.5055, radius: 8000, approach: 270, startAlt: 900,
+    landmarks: [
+      { name: "Shanghai Tower", lat: 31.2336, lon: 121.5055, height: 632 },
+      { name: "Oriental Pearl", lat: 31.2397, lon: 121.4998, height: 468 },
+      { name: "Jin Mao Tower", lat: 31.2374, lon: 121.5017, height: 421 },
+      { name: "The Bund", lat: 31.2397, lon: 121.4903, height: 30 },
+      { name: "World Financial Center", lat: 31.2352, lon: 121.5057, height: 492 },
+    ],
+  },
+  {
+    id: "singapore", name: "Singapore", country: "Singapore", continent: "Asia",
+    lat: 1.2838, lon: 103.8591, radius: 7000, approach: 20, startAlt: 600,
+    landmarks: [
+      { name: "Marina Bay Sands", lat: 1.2834, lon: 103.8607, height: 200 },
+      { name: "Gardens by the Bay", lat: 1.2816, lon: 103.8636, height: 50 },
+      { name: "Singapore Flyer", lat: 1.2893, lon: 103.8631, height: 165 },
+      { name: "Merlion", lat: 1.2868, lon: 103.8545, height: 8 },
+      { name: "Guoco Tower", lat: 1.2764, lon: 103.8459, height: 290 },
+    ],
+  },
+  {
+    id: "tokyo", name: "Tokyo", country: "Japan", continent: "Asia",
+    lat: 35.6586, lon: 139.7454, radius: 8000, approach: 300, startAlt: 800,
+    landmarks: [
+      { name: "Tokyo Tower", lat: 35.6586, lon: 139.7454, height: 333 },
+      { name: "Tokyo Skytree", lat: 35.7101, lon: 139.8107, height: 634 },
+      { name: "Imperial Palace", lat: 35.6852, lon: 139.7528, height: 30 },
+      { name: "Shibuya Scramble", lat: 35.6595, lon: 139.7005, height: 230 },
+      { name: "Rainbow Bridge", lat: 35.6365, lon: 139.7635, height: 127 },
+    ],
+  },
+  // --- Europe --------------------------------------------------------------
+  {
+    id: "athens", name: "Athens", country: "Greece", continent: "Europe",
     lat: 37.9715, lon: 23.7267, radius: 7000, approach: 90, startAlt: 600,
     landmarks: [
       { name: "Acropolis", lat: 37.9715, lon: 23.7267, height: 156 },
@@ -259,40 +144,40 @@ export const CITIES: City[] = [
     ],
   },
   {
-    id: "venice", name: "Venice", country: "Italy",
-    lat: 45.4341, lon: 12.3388, radius: 6000, approach: 250, startAlt: 400,
+    id: "barcelona", name: "Barcelona", country: "Spain", continent: "Europe",
+    lat: 41.4036, lon: 2.1744, radius: 7000, approach: 135, startAlt: 550,
     landmarks: [
-      { name: "St Mark's Campanile", lat: 45.4341, lon: 12.3388, height: 99 },
-      { name: "Rialto Bridge", lat: 45.4380, lon: 12.3358, height: 20 },
-      { name: "Santa Maria della Salute", lat: 45.4306, lon: 12.3346, height: 70 },
-      { name: "Arsenale", lat: 45.4348, lon: 12.3512, height: 30 },
-      { name: "Lido", lat: 45.4104, lon: 12.3665, height: 15 },
+      { name: "Sagrada Familia", lat: 41.4036, lon: 2.1744, height: 172 },
+      { name: "Torre Glories", lat: 41.4033, lon: 2.1894, height: 144 },
+      { name: "Montjuic", lat: 41.3638, lon: 2.1655, height: 173 },
+      { name: "Camp Nou", lat: 41.3809, lon: 2.1228, height: 48 },
+      { name: "W Barcelona", lat: 41.3684, lon: 2.1900, height: 99 },
     ],
   },
   {
-    id: "queenstown", name: "Queenstown", country: "New Zealand",
-    lat: -45.0312, lon: 168.6626, radius: 8000, approach: 30, startAlt: 1200,
+    id: "istanbul", name: "Istanbul", country: "Turkiye", continent: "Europe",
+    lat: 41.0086, lon: 28.9802, radius: 7000, approach: 45, startAlt: 600,
     landmarks: [
-      { name: "The Remarkables", lat: -45.0500, lon: 168.8100, height: 2319 },
-      { name: "Bob's Peak", lat: -45.0290, lon: 168.6480, height: 790 },
-      { name: "Lake Wakatipu", lat: -45.0500, lon: 168.6300, height: 310 },
-      { name: "Kelvin Heights", lat: -45.0450, lon: 168.6900, height: 400 },
-      { name: "Shotover Canyon", lat: -44.9950, lon: 168.6800, height: 350 },
+      { name: "Hagia Sophia", lat: 41.0086, lon: 28.9802, height: 56 },
+      { name: "Blue Mosque", lat: 41.0054, lon: 28.9768, height: 64 },
+      { name: "Galata Tower", lat: 41.0256, lon: 28.9744, height: 67 },
+      { name: "Bosphorus Bridge", lat: 41.0451, lon: 29.0340, height: 165 },
+      { name: "Camlica Tower", lat: 41.0272, lon: 29.0680, height: 369 },
     ],
   },
   {
-    id: "reykjavik", name: "Reykjavik", country: "Iceland",
-    lat: 64.1466, lon: -21.9426, radius: 7000, approach: 100, startAlt: 700,
+    id: "london", name: "London", country: "UK", continent: "Europe",
+    lat: 51.5045, lon: -0.0865, radius: 7000, approach: 260, startAlt: 600,
     landmarks: [
-      { name: "Hallgrimskirkja", lat: 64.1417, lon: -21.9266, height: 74 },
-      { name: "Harpa", lat: 64.1504, lon: -21.9328, height: 43 },
-      { name: "Perlan", lat: 64.1290, lon: -21.9187, height: 61 },
-      { name: "Mount Esja", lat: 64.2333, lon: -21.7500, height: 914 },
-      { name: "Videy Island", lat: 64.1560, lon: -21.8420, height: 30 },
+      { name: "The Shard", lat: 51.5045, lon: -0.0865, height: 310 },
+      { name: "Tower Bridge", lat: 51.5055, lon: -0.0754, height: 65 },
+      { name: "Big Ben", lat: 51.5007, lon: -0.1246, height: 96 },
+      { name: "London Eye", lat: 51.5033, lon: -0.1196, height: 135 },
+      { name: "The Gherkin", lat: 51.5145, lon: -0.0803, height: 180 },
     ],
   },
   {
-    id: "monaco", name: "Monaco", country: "Monaco",
+    id: "monaco", name: "Monaco", country: "Monaco", continent: "Europe",
     lat: 43.7384, lon: 7.4246, radius: 5000, approach: 250, startAlt: 500,
     landmarks: [
       { name: "Monte Carlo Casino", lat: 43.7396, lon: 7.4287, height: 40 },
@@ -303,35 +188,52 @@ export const CITIES: City[] = [
     ],
   },
   {
-    id: "honolulu", name: "Honolulu", country: "USA",
-    lat: 21.2890, lon: -157.8400, radius: 7000, approach: 250, startAlt: 700,
+    id: "paris", name: "Paris", country: "France", continent: "Europe",
+    lat: 48.8584, lon: 2.2945, radius: 7000, approach: 70, startAlt: 550,
     landmarks: [
-      { name: "Diamond Head", lat: 21.2620, lon: -157.8055, height: 60 },
-      { name: "Waikiki Beach", lat: 21.2767, lon: -157.8267, height: 20 },
-      { name: "Aloha Tower", lat: 21.3070, lon: -157.8664, height: 56 },
-      { name: "Punchbowl Crater", lat: 21.3120, lon: -157.8450, height: 50 },
-      { name: "Ala Moana", lat: 21.2890, lon: -157.8460, height: 30 },
+      { name: "Eiffel Tower", lat: 48.8584, lon: 2.2945, height: 330 },
+      { name: "Arc de Triomphe", lat: 48.8738, lon: 2.2950, height: 50 },
+      { name: "Notre-Dame", lat: 48.8530, lon: 2.3499, height: 96 },
+      { name: "Sacre-Coeur", lat: 48.8867, lon: 2.3431, height: 213 },
+      { name: "La Defense", lat: 48.8918, lon: 2.2361, height: 231 },
     ],
   },
-  // --- No city on it at all -------------------------------------------------
-  // The valley runs west to east and the walls are the whole point, so the
-  // approach flies up it rather than across it, and the start is above the rim
-  // so the first thing you see is the shape of the place before you drop in.
   {
-    id: "yosemite", name: "Yosemite", country: "USA",
-    lat: 37.7420, lon: -119.5930, radius: 6000, approach: 90, startAlt: 1200,
+    id: "reykjavik", name: "Reykjavik", country: "Iceland", continent: "Europe",
+    lat: 64.1466, lon: -21.9426, radius: 7000, approach: 100, startAlt: 700,
     landmarks: [
-      { name: "Half Dome", lat: 37.7459, lon: -119.5332, height: 60 },
-      { name: "El Capitan", lat: 37.7340, lon: -119.6376, height: 60 },
-      { name: "Yosemite Falls", lat: 37.7566, lon: -119.5969, height: 40 },
-      { name: "Glacier Point", lat: 37.7275, lon: -119.5734, height: 40 },
-      { name: "Bridalveil Fall", lat: 37.7166, lon: -119.6469, height: 40 },
+      { name: "Hallgrimskirkja", lat: 64.1417, lon: -21.9266, height: 74 },
+      { name: "Harpa", lat: 64.1504, lon: -21.9328, height: 43 },
+      { name: "Perlan", lat: 64.1290, lon: -21.9187, height: 61 },
+      { name: "Mount Esja", lat: 64.2333, lon: -21.7500, height: 914 },
+      { name: "Videy Island", lat: 64.1560, lon: -21.8420, height: 30 },
     ],
   },
-  // Spawns BELOW the rim, which is the only way the scale of it reads: from
-  // above it is a pattern, from inside it is a canyon.
   {
-    id: "grandcanyon", name: "Grand Canyon", country: "USA",
+    id: "venice", name: "Venice", country: "Italy", continent: "Europe",
+    lat: 45.4341, lon: 12.3388, radius: 6000, approach: 250, startAlt: 400,
+    landmarks: [
+      { name: "St Mark's Campanile", lat: 45.4341, lon: 12.3388, height: 99 },
+      { name: "Rialto Bridge", lat: 45.4380, lon: 12.3358, height: 20 },
+      { name: "Santa Maria della Salute", lat: 45.4306, lon: 12.3346, height: 70 },
+      { name: "Arsenale", lat: 45.4348, lon: 12.3512, height: 30 },
+      { name: "Lido", lat: 45.4104, lon: 12.3665, height: 15 },
+    ],
+  },
+  // --- North America -------------------------------------------------------
+  {
+    id: "chicago", name: "Chicago", country: "USA", continent: "North America",
+    lat: 41.8789, lon: -87.6359, radius: 7000, approach: 180, startAlt: 700,
+    landmarks: [
+      { name: "Willis Tower", lat: 41.8789, lon: -87.6359, height: 442 },
+      { name: "Trump Tower", lat: 41.8892, lon: -87.6267, height: 423 },
+      { name: "John Hancock Center", lat: 41.8988, lon: -87.6229, height: 344 },
+      { name: "Navy Pier", lat: 41.8917, lon: -87.6086, height: 30 },
+      { name: "Cloud Gate", lat: 41.8827, lon: -87.6233, height: 10 },
+    ],
+  },
+  {
+    id: "grandcanyon", name: "Grand Canyon", country: "USA", continent: "North America",
     lat: 36.0980, lon: -112.0950, radius: 8000, approach: 60, startAlt: 700,
     landmarks: [
       { name: "Mather Point", lat: 36.0637, lon: -112.1085, height: 40 },
@@ -342,7 +244,119 @@ export const CITIES: City[] = [
     ],
   },
   {
-    id: "iguazu", name: "Iguazu Falls", country: "Argentina",
+    id: "honolulu", name: "Honolulu", country: "USA", continent: "North America",
+    lat: 21.2890, lon: -157.8400, radius: 7000, approach: 250, startAlt: 700,
+    landmarks: [
+      { name: "Diamond Head", lat: 21.2620, lon: -157.8055, height: 60 },
+      { name: "Waikiki Beach", lat: 21.2767, lon: -157.8267, height: 20 },
+      { name: "Aloha Tower", lat: 21.3070, lon: -157.8664, height: 56 },
+      { name: "Punchbowl Crater", lat: 21.3120, lon: -157.8450, height: 50 },
+      { name: "Ala Moana", lat: 21.2890, lon: -157.8460, height: 30 },
+    ],
+  },
+  {
+    id: "manhattan", name: "New York", country: "USA", continent: "North America",
+    lat: 40.7549, lon: -73.9840, radius: 8000, approach: 200, startAlt: 800,
+    landmarks: [
+      { name: "Empire State Building", lat: 40.7484, lon: -73.9857, height: 443 },
+      { name: "One World Trade Center", lat: 40.7127, lon: -74.0134, height: 541 },
+      { name: "Statue of Liberty", lat: 40.6892, lon: -74.0445, height: 93 },
+      { name: "Chrysler Building", lat: 40.7516, lon: -73.9755, height: 319 },
+      { name: "Central Park", lat: 40.7829, lon: -73.9654, height: 40 },
+    ],
+  },
+  {
+    id: "niagara", name: "Niagara Falls", country: "Canada", continent: "North America",
+    lat: 43.0828, lon: -79.0742, radius: 4000, approach: 180, startAlt: 350,
+    landmarks: [
+      { name: "Horseshoe Falls", lat: 43.0779, lon: -79.0747, height: 60 },
+      { name: "American Falls", lat: 43.0842, lon: -79.0687, height: 55 },
+      { name: "Skylon Tower", lat: 43.0863, lon: -79.0790, height: 160 },
+      { name: "Rainbow Bridge", lat: 43.0900, lon: -79.0680, height: 40 },
+      { name: "Niagara Gorge", lat: 43.1100, lon: -79.0600, height: 30 },
+    ],
+  },
+  {
+    id: "sf", name: "San Francisco", country: "USA", continent: "North America",
+    lat: 37.8085, lon: -122.4098, radius: 7000, approach: 300, startAlt: 700,
+    landmarks: [
+      { name: "Golden Gate Bridge", lat: 37.8199, lon: -122.4783, height: 227 },
+      { name: "Transamerica Pyramid", lat: 37.7952, lon: -122.4028, height: 260 },
+      { name: "Coit Tower", lat: 37.8024, lon: -122.4058, height: 64 },
+      { name: "Alcatraz", lat: 37.8270, lon: -122.4230, height: 41 },
+      { name: "Salesforce Tower", lat: 37.7897, lon: -122.3972, height: 326 },
+    ],
+  },
+  {
+    id: "seattle", name: "Seattle", country: "USA", continent: "North America",
+    lat: 47.6205, lon: -122.3493, radius: 7000, approach: 160, startAlt: 750,
+    landmarks: [
+      { name: "Space Needle", lat: 47.6205, lon: -122.3493, height: 184 },
+      { name: "Columbia Center", lat: 47.6045, lon: -122.3301, height: 285 },
+      { name: "Pike Place Market", lat: 47.6097, lon: -122.3421, height: 20 },
+      { name: "T-Mobile Park", lat: 47.5914, lon: -122.3325, height: 60 },
+      { name: "Mount Rainier", lat: 46.8523, lon: -121.7603, height: 4392 },
+    ],
+  },
+  {
+    id: "toronto", name: "Toronto", country: "Canada", continent: "North America",
+    lat: 43.6426, lon: -79.3871, radius: 7000, approach: 20, startAlt: 700,
+    landmarks: [
+      { name: "CN Tower", lat: 43.6426, lon: -79.3871, height: 553 },
+      { name: "First Canadian Place", lat: 43.6487, lon: -79.3817, height: 298 },
+      { name: "Rogers Centre", lat: 43.6414, lon: -79.3894, height: 86 },
+      { name: "Casa Loma", lat: 43.6780, lon: -79.4094, height: 60 },
+      { name: "Toronto Islands", lat: 43.6205, lon: -79.3789, height: 10 },
+    ],
+  },
+  {
+    id: "vancouver", name: "Vancouver", country: "Canada", continent: "North America",
+    lat: 49.2827, lon: -123.1207, radius: 7000, approach: 340, startAlt: 700,
+    landmarks: [
+      { name: "Canada Place", lat: 49.2888, lon: -123.1111, height: 40 },
+      { name: "Living Shangri-La", lat: 49.2841, lon: -123.1213, height: 201 },
+      { name: "Stanley Park", lat: 49.3017, lon: -123.1417, height: 40 },
+      { name: "Lions Gate Bridge", lat: 49.3145, lon: -123.1387, height: 111 },
+      { name: "Grouse Mountain", lat: 49.3800, lon: -123.0800, height: 1231 },
+    ],
+  },
+  {
+    id: "yosemite", name: "Yosemite", country: "USA", continent: "North America",
+    lat: 37.7420, lon: -119.5930, radius: 6000, approach: 90, startAlt: 1200,
+    landmarks: [
+      { name: "Half Dome", lat: 37.7459, lon: -119.5332, height: 60 },
+      { name: "El Capitan", lat: 37.7340, lon: -119.6376, height: 60 },
+      { name: "Yosemite Falls", lat: 37.7566, lon: -119.5969, height: 40 },
+      { name: "Glacier Point", lat: 37.7275, lon: -119.5734, height: 40 },
+      { name: "Bridalveil Fall", lat: 37.7166, lon: -119.6469, height: 40 },
+    ],
+  },
+  // --- Oceania -------------------------------------------------------------
+  {
+    id: "queenstown", name: "Queenstown", country: "New Zealand", continent: "Oceania",
+    lat: -45.0312, lon: 168.6626, radius: 8000, approach: 30, startAlt: 1200,
+    landmarks: [
+      { name: "The Remarkables", lat: -45.0500, lon: 168.8100, height: 2319 },
+      { name: "Bob's Peak", lat: -45.0290, lon: 168.6480, height: 790 },
+      { name: "Lake Wakatipu", lat: -45.0500, lon: 168.6300, height: 310 },
+      { name: "Kelvin Heights", lat: -45.0450, lon: 168.6900, height: 400 },
+      { name: "Shotover Canyon", lat: -44.9950, lon: 168.6800, height: 350 },
+    ],
+  },
+  {
+    id: "sydney", name: "Sydney", country: "Australia", continent: "Oceania",
+    lat: -33.8568, lon: 151.2153, radius: 7000, approach: 20, startAlt: 650,
+    landmarks: [
+      { name: "Sydney Opera House", lat: -33.8568, lon: 151.2153, height: 65 },
+      { name: "Harbour Bridge", lat: -33.8523, lon: 151.2108, height: 134 },
+      { name: "Sydney Tower", lat: -33.8704, lon: 151.2085, height: 309 },
+      { name: "Bondi Beach", lat: -33.8908, lon: 151.2743, height: 10 },
+      { name: "Barangaroo", lat: -33.8633, lon: 151.2010, height: 275 },
+    ],
+  },
+  // --- South America -------------------------------------------------------
+  {
+    id: "iguazu", name: "Iguazu Falls", country: "Argentina", continent: "South America",
     lat: -25.6880, lon: -54.4420, radius: 5000, approach: 340, startAlt: 450,
     landmarks: [
       { name: "Devil's Throat", lat: -25.6905, lon: -54.4380, height: 60 },
@@ -352,7 +366,45 @@ export const CITIES: City[] = [
       { name: "Iguazu River", lat: -25.6800, lon: -54.4300, height: 20 },
     ],
   },
+  {
+    id: "rio", name: "Rio de Janeiro", country: "Brazil", continent: "South America",
+    lat: -22.9519, lon: -43.2105, radius: 8000, approach: 90, startAlt: 800,
+    landmarks: [
+      { name: "Christ the Redeemer", lat: -22.9519, lon: -43.2105, height: 710 },
+      { name: "Sugarloaf Mountain", lat: -22.9492, lon: -43.1545, height: 396 },
+      { name: "Maracana", lat: -22.9121, lon: -43.2302, height: 32 },
+      { name: "Copacabana", lat: -22.9711, lon: -43.1822, height: 10 },
+      { name: "Ipanema", lat: -22.9868, lon: -43.2065, height: 10 },
+    ],
+  },
 ];
+
+/**
+ * A place the curated list was never told about: whatever coordinates the
+ * browser's geolocation handed back, or anything `?at=lat,lon` names.
+ *
+ * This costs almost nothing to support, and that is the point of the app's
+ * shape: terrain, imagery and weather are all fetched at runtime BY
+ * COORDINATE, so any point on Earth is as flyable as Manhattan. What it cannot
+ * have is a baked building pack or a landmark list, so there is no skyline and
+ * no route -- it is a terrain flight, which over most of the planet is what
+ * the place actually is.
+ *
+ * No continent: it is not part of the grouped list and must not appear in it.
+ */
+export function cityAt(lat: number, lon: number): City {
+  return {
+    id: "here",
+    name: "Where you are",
+    country: "your location",
+    lat,
+    lon,
+    radius: 6000,
+    approach: 0,
+    startAlt: 900,
+    landmarks: [],
+  };
+}
 
 export function cityById(id: string): City | undefined {
   return CITIES.find((c) => c.id === id);

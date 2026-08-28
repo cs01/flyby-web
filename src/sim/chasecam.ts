@@ -22,7 +22,10 @@ export type CameraMode = "chase" | "cockpit" | "wing" | "orbit";
 export const CAMERA_MODES: CameraMode[] = ["chase", "cockpit", "wing", "orbit"];
 
 const OFFSETS: Record<CameraMode, THREE.Vector3> = {
-  chase: new THREE.Vector3(0, 6.5, 26),
+  // Close. At 26 m plus the speed stretch the aeroplane sat ~37 m out and read
+  // as a model of itself in the middle of the frame; the shot is about the
+  // aeroplane over the city, and it has to be big enough to be the subject.
+  chase: new THREE.Vector3(0, 4.6, 16),
   cockpit: new THREE.Vector3(0, 0.55, -1.1),
   wing: new THREE.Vector3(11, 2.0, 5),
   orbit: new THREE.Vector3(0, 40, 120),
@@ -65,7 +68,7 @@ export class ChaseCam {
 
     // Pull back with speed. A fixed offset makes a hover and a 100 kt run look
     // identical; a few metres of stretch is most of what sells the difference.
-    const want = ac.groundSpeed * 0.22;
+    const want = ac.groundSpeed * 0.13;
     this.speedPullback += (want - this.speedPullback) * (1 - Math.pow(0.02, dt));
     if (this.mode === "chase") desiredOffset.z += this.speedPullback;
 

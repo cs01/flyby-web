@@ -184,9 +184,14 @@ void main() {
     // Clip the march to the span of sky that can hold cloud at all.
     float t0 = 0.0;
     // Far enough that a near-horizontal ray still reaches an overcast deck.
-    // At 90 km the deck simply stopped, leaving a hard horizontal edge across
-    // the sky where the march ran out rather than where the cloud ended.
-    float t1 = min(sceneDist, 170000.0);
+    // The world is a flat plane, so an overcast seen from underneath runs to
+    // the horizon and must not END anywhere a pixel can see: at 90 km, and
+    // still at 170 km, the march ran out and drew a hard bright line across
+    // the sky under the deck -- bare horizon sky showing through where the
+    // cloud simply stopped. Everything past ~100 km compresses into the last
+    // few pixels above the horizon, so the extra range is nearly free, and it
+    // is entirely free in steps because they grow geometrically.
+    float t1 = min(sceneDist, 400000.0);
     if (abs(rd.y) > 1e-4) {
       float ta = (slabLo - uCameraPos.y) / rd.y;
       float tb = (slabHi - uCameraPos.y) / rd.y;
@@ -202,23 +207,46 @@ void main() {
       // is roughly 18k hash evaluations per pixel, and at full resolution that
       // is what took Istanbul to half a frame per second.
       const int STEPS = 32;
-      float dt = (t1 - t0) / float(STEPS);
-      // Dither the start to break up the banding a fixed step size produces.
-      // Ordered (Bayer) dither, not a hash.
+
+      // GEOMETRIC steps, not uniform ones. The slab clip bounds the march for
+      // a ray that crosses the deck, but a ray that runs ALONG it -- the
+      // camera inside or just under an overcast, looking at the horizon --
+      // spans the full 170 km, and 32 uniform steps of that is a 5 km step.
+      // No dither hides a 5 km step: it arrives as the horizontal banding that
+      // striped the deck near the horizon.
       //
-      // The march needs its start offset jittered or the fixed step size shows
-      // as concentric banding. A per-pixel HASH does that but is spatially
-      // incoherent, and this pass runs at half resolution, so the upsample
-      // magnifies every speck into a 2x2 block -- the clouds came out looking
-      // like television static. An ordered 4x4 matrix decorrelates neighbouring
-      // pixels just as well while staying smooth under magnification.
-      ivec2 px = ivec2(gl_FragCoord.xy) & 3;
-      const float BAYER[16] = float[16](
-         0.0,  8.0,  2.0, 10.0,
-        12.0,  4.0, 14.0,  6.0,
-         3.0, 11.0,  1.0,  9.0,
-        15.0,  7.0, 13.0,  5.0);
-      float jitter = BAYER[px.y * 4 + px.x] * (1.0 / 16.0);
+      // A step proportional to distance is the right shape, because that is
+      // what keeps a sample's SCREEN size constant: near cloud is resolved and
+      // far cloud, which the range fade is thinning out anyway, is not. The
+      // growth is normalised so the same 32 steps still span exactly t0..t1,
+      // so a short march (looking down through a deck) is unaffected.
+      const float GROWTH = 1.12;
+      float norm = (pow(GROWTH, float(STEPS)) - 1.0) / (GROWTH - 1.0);
+      float dt = (t1 - t0) / norm;
+      // Dither the start offset, or the fixed step size shows as concentric
+      // banding. A per-pixel HASH decorrelates but is spatially incoherent, and
+      // this pass runs at HALF resolution, so the upsample magnified every
+      // speck into a 2x2 block: television static.
+      //
+      // A 2x2 ordered matrix, not the 4x4 this used to use, and the size is the
+      // whole point. The present pass reconstructs the march by averaging a
+      // 3x3 half-res neighbourhood with tent weights [1 2 1; 2 4 2; 1 2 1]/16,
+      // and over a period-2 pattern those weights land 4/16 on EVERY phase --
+      // an exact average of all four offsets, so the dither cancels completely
+      // rather than being smeared. A 4x4 pattern has sixteen phases and no
+      // small kernel can average them evenly, which is why it survived the
+      // upsample as the visible cross-hatch it was drawing across the sky.
+      // STRATIFIED, not merely ordered. The 2x2 matrix says which QUARTER of
+      // the step this pixel samples, and interleaved gradient noise picks a
+      // position inside that quarter. The ordered part is what the tent
+      // cancels exactly; the noise is what turns the leftover into fine grain
+      // instead of the concentric rings a purely ordered pattern leaves, which
+      // is what four fixed offsets over a kilometre-long step looked like.
+      ivec2 px = ivec2(gl_FragCoord.xy) & 1;
+      const float BAYER[4] = float[4](0.0, 2.0, 3.0, 1.0);
+      float ign = fract(52.9829189 *
+        fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+      float jitter = (BAYER[px.y * 2 + px.x] + ign) * 0.25;
       float t = t0 + dt * jitter;
 
       float cosSun = dot(rd, uSunDir);
@@ -235,7 +263,7 @@ void main() {
         // dimming it. Dimming the light while leaving the opacity alone turned
         // distant cloud BLACK and drew a hard dark line across the sky where
         // the march ended -- the deck was still fully opaque, just unlit.
-        float dens = cloudDensity(p) * smoothstep(170000.0, 90000.0, t);
+        float dens = cloudDensity(p) * smoothstep(400000.0, 200000.0, t);
 
         if (dens > 0.001) {
           // Light march toward the sun: how deep is this sample buried?
@@ -276,6 +304,7 @@ void main() {
           through *= stepT;
         }
         t += dt;
+        dt *= GROWTH;
       }
 
     }
@@ -318,11 +347,19 @@ uniform sampler2D uCloud;
 
 void main() {
   vec3 scene = texture(uScene, vUv).rgb;
-  // Bilinear upsample of the half-resolution cloud buffer. Clouds are soft and
-  // low-frequency, so the interpolation costs nothing visually; the pass they
-  // come from is the most expensive in the frame and quartering its pixel count
-  // is the largest single saving available.
-  vec4 cloud = texture(uCloud, vUv);
+  // Upsample of the half-resolution cloud buffer, and it is a TENT rather than
+  // the single bilinear tap it used to be. Four taps half a texel off the
+  // centre sum to weights [1 2 1; 2 4 2; 1 2 1]/16 over a 3x3 half-res
+  // neighbourhood, which puts exactly 4/16 on each of the march's four dither
+  // phases: the ray-start jitter averages out to nothing instead of arriving
+  // on screen as a cross-hatch. Clouds are soft and low-frequency, so the two
+  // full-res pixels of extra blur cost nothing that was really there.
+  vec2 texel = 1.0 / vec2(textureSize(uCloud, 0));
+  vec4 cloud = 0.25 * (
+      texture(uCloud, vUv + vec2(-0.5, -0.5) * texel)
+    + texture(uCloud, vUv + vec2( 0.5, -0.5) * texel)
+    + texture(uCloud, vUv + vec2(-0.5,  0.5) * texel)
+    + texture(uCloud, vUv + vec2( 0.5,  0.5) * texel));
   fragColor = vec4(present(scene * cloud.a + cloud.rgb), 1.0);
 }
 `;
