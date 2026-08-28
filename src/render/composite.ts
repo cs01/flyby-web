@@ -22,6 +22,7 @@
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
+import { makeShapeNoise, makeDetailNoise } from "./noise3d";
 import type { Weather } from "../data/weather";
 import type { SceneLighting } from "./lighting";
 
@@ -44,6 +45,7 @@ void main() {
 
 const FRAG = /* glsl */ `
 precision highp float;
+precision highp sampler3D;
 in vec2 vUv;
 in vec3 vRayDir;
 out vec4 fragColor;
@@ -68,55 +70,28 @@ uniform float uHighBase;
 uniform vec2  uWind;        // metres/second, (east, south)
 uniform float uPrecip;      // mm/h, darkens and thickens the low deck
 
-// Integer-bit hash. The usual fract(p * 0.1031) variant leaves visible
-// axis-aligned structure, which in a cloud field reads as long diagonal streaks
-// -- it looked like wind shear but was purely a hash artefact.
-float hash13(vec3 p3) {
-  uvec3 q = floatBitsToUint(p3 + 137.0);
-  q *= uvec3(1597334673u, 3812015801u, 2798796415u);
-  uint n = (q.x ^ q.y ^ q.z) * 1597334673u;
-  n ^= n >> 15;
-  n *= 2246822519u;
-  n ^= n >> 13;
-  return float(n) * (1.0 / 4294967296.0);
+// Baked, tileable, and sampled with hardware trilinear filtering. See
+// noise3d.ts for what is in each channel and why it is baked rather than
+// evaluated per sample here.
+uniform sampler3D uShape;   // rgba: perlin, then worley at 1x / 2x / 4x
+uniform sampler3D uDetail;  // rgb: worley at three frequencies
+
+float remap(float v, float lo, float hi, float nlo, float nhi) {
+  return nlo + (v - lo) / (hi - lo) * (nhi - nlo);
 }
 
-float valueNoise(vec3 p) {
-  vec3 i = floor(p);
-  vec3 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
-  float n000 = hash13(i + vec3(0, 0, 0));
-  float n100 = hash13(i + vec3(1, 0, 0));
-  float n010 = hash13(i + vec3(0, 1, 0));
-  float n110 = hash13(i + vec3(1, 1, 0));
-  float n001 = hash13(i + vec3(0, 0, 1));
-  float n101 = hash13(i + vec3(1, 0, 1));
-  float n011 = hash13(i + vec3(0, 1, 1));
-  float n111 = hash13(i + vec3(1, 1, 1));
-  return mix(
-    mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
-    mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
-}
-
-// Rotating the domain between octaves stops the lattices of successive octaves
-// lining up, which is the other half of the streaking problem.
-const mat3 OCTAVE_ROT = mat3(
-   0.00,  0.80,  0.60,
-  -0.80,  0.36, -0.48,
-  -0.60, -0.48,  0.64);
-
-/** fBm normalised to roughly 0..1 so a coverage threshold means what it says. */
-float fbm(vec3 p) {
-  float a = 0.5;
-  float s = 0.0;
-  float norm = 0.0;
-  for (int i = 0; i < 3; i++) {
-    s += a * valueNoise(p);
-    norm += a;
-    p = OCTAVE_ROT * p * 2.03;
-    a *= 0.5;
-  }
-  return s / norm;
+/**
+ * The Perlin-Worley combine, one texture fetch.
+ *
+ * Perlin alone is a field of smooth blobs and reads as fog rather than as
+ * cloud. The Worley fbm enters as the LOW END of a remap rather than as a
+ * multiplier, which keeps Perlin's large-scale wandering while giving the
+ * inside of it the packed-billow silhouette a cumulus actually has.
+ */
+float perlinWorley(vec3 p) {
+  vec4 t = texture(uShape, p);
+  float wfbm = t.g * 0.625 + t.b * 0.25 + t.a * 0.125;
+  return clamp(remap(t.r, -(1.0 - wfbm), 1.0, 0.0, 1.0), 0.0, 1.0);
 }
 
 /**
@@ -137,12 +112,9 @@ float slabDensity(vec3 p, float cover, float base, float top, float scale) {
 
   vec3 q = p;
   q.xz += uWind * uTime;
-  // One fbm, not two. The old erosion pass was a SECOND four-octave fbm per
-  // density sample -- it doubled the cost of the most expensive inner loop in
-  // the renderer to roughen an edge that is invisible at flying speed.
-  float n = fbm(q * scale);
+  float n = perlinWorley(q * scale);
 
-  // Coverage is a THRESHOLD on the noise. With fbm normalised to 0..1 and
+  // Coverage is a THRESHOLD on the noise. With the noise normalised to 0..1 and
   // centred near 0.5, "1 - cover" is the level that leaves that fraction of the
   // sky filled, so 40% coverage genuinely leaves blue gaps instead of turning
   // the whole deck 40% translucent.
@@ -319,8 +291,9 @@ void main() {
     if (th > 0.0 && th < sceneDist) {
       vec3 p = uCameraPos + rd * th;
       vec2 q = (p.xz + uWind * uTime * 2.5) * 0.00016;
-      // Stretch the noise along one axis: cirrus is combed out by the wind.
-      float n = fbm(vec3(q.x * 0.35, q.y * 2.4, 3.7));
+      // Stretch the noise along one axis: cirrus is combed out by the wind. One
+      // fixed slice of the shape volume, because cirrus has no depth to sample.
+      float n = perlinWorley(vec3(q.x * 0.35, q.y * 2.4, 0.37));
       float veil = smoothstep(1.0 - uHighCover, 1.0 - uHighCover * 0.35, n);
       veil *= smoothstep(0.02, 0.25, rd.y);
       vec3 lit = uSunColor * uSunIntensity * uSunSurfaceCloud * 2.2 + uAmbient * 1.2;
@@ -389,6 +362,8 @@ export interface CompositeUniforms extends Record<string, THREE.IUniform> {
   uTurbidity: THREE.IUniform<number>;
   uCamAltitude: THREE.IUniform<number>;
   uMultiScatter: THREE.IUniform<number>;
+  uShape: THREE.IUniform<THREE.Data3DTexture>;
+  uDetail: THREE.IUniform<THREE.Data3DTexture>;
 }
 
 function fullscreenGeometry(): THREE.BufferGeometry {
@@ -419,10 +394,17 @@ export class Composite {
   };
 
   private cloudTarget: THREE.WebGLRenderTarget;
+  private readonly shapeNoise: THREE.Data3DTexture;
+  private readonly detailNoise: THREE.Data3DTexture;
   // Kept across calls so the metric does not allocate a megabyte per sample.
   private readback: Uint16Array | null = null;
 
   constructor(renderer: THREE.WebGLRenderer) {
+    const bakeStart = performance.now();
+    this.shapeNoise = makeShapeNoise();
+    this.detailNoise = makeDetailNoise();
+    console.log(`[flyby] cloud noise baked in ${(performance.now() - bakeStart).toFixed(0)} ms`);
+
     this.uniforms = {
       uDepth: { value: null },
       uInvProj: { value: new THREE.Matrix4() },
@@ -448,6 +430,8 @@ export class Composite {
       uTurbidity: { value: 1 },
       uCamAltitude: { value: 100 },
       uMultiScatter: { value: 0.055 },
+      uShape: { value: this.shapeNoise },
+      uDetail: { value: this.detailNoise },
     };
 
     const cloudMat = new THREE.RawShaderMaterial({
