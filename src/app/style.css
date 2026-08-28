@@ -50,7 +50,8 @@ html, body {
 }
 
 .hud-tl { top: 14px; left: 14px; }
-.hud-tr { top: 14px; right: 14px; text-align: right; }
+/* Clear of the layer switches, which own the top of this column now. */
+.hud-tr { top: 232px; right: 14px; text-align: right; }
 .hud-bl { bottom: 14px; left: 14px; }
 .hud-br { bottom: 14px; right: 14px; text-align: right; }
 
@@ -432,6 +433,59 @@ html, body {
 }
 
 .landmark-flash.in { opacity: 1; transform: translate(-50%, 0); }
+
+/* --- Landmark labels ---------------------------------------------------- */
+
+/* Names on the things the beams are standing on. A beam said "something is
+   here" and nothing else, which is the half of the question nobody asks. */
+.labels { position: absolute; inset: 0; pointer-events: none; }
+
+.label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 3px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: rgba(6, 10, 16, 0.62);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  white-space: nowrap;
+  font-size: 11px;
+  /* The mark itself is at the anchor point; the tag floats just above it. */
+  margin-top: -8px;
+}
+
+.label b { font-weight: 500; color: var(--ink); }
+.label i { font-style: normal; font-size: 10px; color: var(--accent); }
+.label.done { opacity: 0.45; }
+.label.done i { color: var(--dim); }
+
+/* --- Layer switches ------------------------------------------------------ */
+
+/* Under the back button, because that is the corner that is already about
+   leaving rather than about flying. */
+.hud-layers {
+  top: 58px;
+  right: 14px;
+  text-align: left;
+  pointer-events: auto;
+}
+
+.lyr {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 1px 0;
+  color: var(--dim);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.lyr input { width: 12px; height: 12px; accent-color: var(--accent); cursor: pointer; }
+.lyr:hover span { color: var(--ink); }
 
 /* --- Instruments -------------------------------------------------------- */
 

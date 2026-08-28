@@ -78,7 +78,11 @@ const FPM = 196.85; // m/s -> feet per minute
 // degrees leaves a gap at the bottom for the caption, which is where a real
 // instrument puts its maker's name for the same reason.
 const ASI_MIN = 20;
-const ASI_MAX = 180;
+// Well past a light single's placard, because turbo is 260 kt. The arcs stay
+// where the placard puts them, so the red radial at never-exceed now sits in
+// the middle of the dial and boost visibly runs past it -- which is honest
+// about what boost is doing rather than hiding it by rescaling the numbers.
+const ASI_MAX = 280;
 const ASI_SWEEP = 340;
 
 /** Placard speeds off a light single, which is what this aeroplane is. */
@@ -238,9 +242,9 @@ export class Osd {
     s.append(svg("path", { d: arcPath(this.asiAngle(V_S0), this.asiAngle(V_FE), 32), class: "gz-arc-white" }));
     s.append(tick(this.asiAngle(V_NE), 34, 41, "gz-redline"));
 
-    for (let v = ASI_MIN; v <= ASI_MAX; v += 10) {
+    for (let v = ASI_MIN; v <= ASI_MAX; v += 20) {
       const a = this.asiAngle(v);
-      const major = v % 20 === 0;
+      const major = v % 40 === 0;
       s.append(tick(a, major ? 33 : 36, 41, major ? "gz-tick-maj" : "gz-tick"));
       // Nothing labelled down in the gap at the bottom: that is where the
       // digits window sits, and a number under it is a number nobody can read.

@@ -92,7 +92,11 @@ export interface AircraftConfig {
 export const DEFAULT_CONFIG: AircraftConfig = {
   minSpeed: 22,
   cruiseSpeed: 62,
-  boostSpeed: 88,
+  // 134 m/s is 300 mph, which is not a thing a high-wing light single does.
+  // It is a thing this one does, because the alternative to a turbo button
+  // that actually goes somewhere is a turbo button nobody presses twice. The
+  // aeroplane is still a Cessna at cruise; boost is the arcade.
+  boostSpeed: 134,
   rollRate: 130,
   maxBank: 55,
   boostBank: 70,
@@ -107,7 +111,7 @@ export const DEFAULT_CONFIG: AircraftConfig = {
 export const EASY_CONFIG: AircraftConfig = {
   ...DEFAULT_CONFIG,
   cruiseSpeed: 46,
-  boostSpeed: 60,
+  boostSpeed: 90,
   rollRate: 85,
   maxBank: 38,
   boostBank: 48,

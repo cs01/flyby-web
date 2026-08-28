@@ -202,6 +202,12 @@ export class Hud {
     this.showControls();
   }
 
+  /** Which of the optional panels are drawn. Set from the layers checkboxes. */
+  setLayers(route: boolean, weather: boolean): void {
+    this.tourPanel.style.display = route ? "" : "none";
+    this.wxPanel.style.display = weather ? "" : "none";
+  }
+
   showControls(): void {
     // A phone has no keys to name, and naming them is worse than saying
     // nothing: the one thing someone on a touch screen needs told is that the

@@ -32,6 +32,8 @@ import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanma
 import { Composite } from "./render/composite";
 import { Skyline } from "./sim/skyline";
 import { reverseGeocode, placeLabel } from "./data/place";
+import { Labels } from "./app/labels";
+import { Layers } from "./app/layers";
 
 function chooseCity(): City | null {
   const params = new URLSearchParams(location.search);
@@ -232,6 +234,9 @@ async function main() {
   }
 
   const tour = new Tour(city, origin, terrain.heightAt);
+  // Names on the beacons. The beam said "something is here" and nothing else,
+  // which is the half of the question nobody was asking.
+  const labels = new Labels(ui);
   const beacon = new Beacon();
   scene.add(beacon.group);
 
@@ -241,6 +246,7 @@ async function main() {
   scene.add(model.group);
 
   const osd = new Osd(ui);
+  const layers = new Layers(ui);
   const timebar = new Timebar(ui, {
     lat: city.lat,
     lon: city.lon,
@@ -333,6 +339,23 @@ async function main() {
     );
     ac.setWeather(wx, ac.position.y);
     if (!input.paused) ac.update(axes, dt, groundUnderAc);
+
+    hud.setLayers(layers.route, layers.weather);
+    osd.root.style.display = layers.instruments ? "" : "none";
+    beacon.group.visible = beacon.group.visible && layers.landmarks;
+    labels.visible = layers.landmarks;
+    labels.update(
+      camera,
+      tour.marks.map((m) => ({
+        name: m.name,
+        x: m.x,
+        // Above the thing, not on it: a label at ground level is behind the
+        // building it names as soon as you are lower than the roof.
+        y: m.groundY + (m.height ?? 40) + 60,
+        z: m.z,
+        done: m.collected,
+      })),
+    );
 
     if (input.helpToggled > 0) {
       input.helpToggled = 0;
