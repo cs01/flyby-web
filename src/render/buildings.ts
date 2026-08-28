@@ -142,21 +142,48 @@ float hash21(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// Facade palettes by building kind. Real cities are not one colour, and the
-// variation between neighbours is what stops an extruded block from reading as
-// a grey heightmap.
+// Facade materials.
+//
+// Keyed mostly on a per-building hash rather than on the OSM kind tag,
+// because kind does not vary: most of Manhattan is tagged building=yes, so
+// by kind alone produced a city of one grey with a second grey for anything
+// over 100 m. Real cities are brick beside sandstone beside concrete beside
+// glass, and that variety is most of what makes a skyline read as buildings
+// rather than as extruded polygons.
+//
+// Towers stay keyed on kind: something over 100 m really is steel and glass,
+// and giving one a brick facade looks wrong immediately.
 vec3 facadeColour(float kind, float seed) {
+  float h = hash11(seed * 1.7 + 0.3);
+  float v = hash11(seed * 3.1 + 5.2);
   vec3 c;
-  if (kind < 0.5)      c = vec3(0.42, 0.40, 0.38);          // generic
-  else if (kind < 1.5) c = vec3(0.52, 0.45, 0.39);          // residential
-  else if (kind < 2.5) c = vec3(0.38, 0.41, 0.45);          // commercial
-  else if (kind < 3.5) c = vec3(0.40, 0.39, 0.36);          // industrial
-  else if (kind < 4.5) c = vec3(0.50, 0.44, 0.40);          // retail
-  else if (kind < 5.5) c = vec3(0.55, 0.51, 0.44);          // civic
-  else                 c = vec3(0.30, 0.34, 0.40);          // tower
-  // Per-building tint, deterministic in the seed so it never flickers.
-  vec3 jitter = vec3(hash11(seed), hash11(seed + 7.7), hash11(seed + 19.3)) - 0.5;
-  return clamp(c * (1.0 + 0.30 * jitter.x) + 0.06 * jitter, 0.03, 0.9);
+
+  if (kind > 5.5) {
+    // Tower: glass and steel, cool and fairly dark.
+    c = mix(vec3(0.24, 0.28, 0.34), vec3(0.44, 0.47, 0.51), v);
+  } else if (h < 0.24) {
+    // Brick, the colour most cities are actually made of.
+    c = mix(vec3(0.33, 0.16, 0.12), vec3(0.50, 0.27, 0.20), v);
+  } else if (h < 0.44) {
+    // Sandstone and warm render.
+    c = mix(vec3(0.50, 0.43, 0.32), vec3(0.68, 0.59, 0.44), v);
+  } else if (h < 0.63) {
+    // Pale concrete.
+    c = mix(vec3(0.52, 0.51, 0.49), vec3(0.72, 0.71, 0.68), v);
+  } else if (h < 0.82) {
+    // Grey concrete.
+    c = mix(vec3(0.34, 0.35, 0.36), vec3(0.50, 0.51, 0.52), v);
+  } else {
+    // Painted.
+    c = mix(vec3(0.56, 0.52, 0.45), vec3(0.74, 0.68, 0.57), v);
+  }
+
+  if (kind > 2.5 && kind < 3.5) c *= 0.88;   // industrial: grubbier
+  if (kind > 4.5 && kind < 5.5) c = mix(c, vec3(0.66, 0.62, 0.54), 0.4);  // civic: stone
+
+  // A small per-building shift on top, so neighbours in the same family differ.
+  vec3 jitter = vec3(hash11(seed + 11.3), hash11(seed + 19.7), hash11(seed + 27.1)) - 0.5;
+  return clamp(c * (1.0 + 0.16 * jitter.x) + 0.045 * jitter, 0.03, 0.94);
 }
 
 void main() {
@@ -187,7 +214,7 @@ void main() {
     // the pattern aliases against the pixel grid and every frame lands on
     // different windows. Past the fade distance the pattern is replaced by its
     // own MEAN, which is what a correctly filtered version would converge to.
-    float detail = smoothstep(2400.0, 700.0, vViewDist);
+    float detail = smoothstep(4200.0, 900.0, vViewDist);
     const float WIN_MEAN = 0.68 * 0.62;
 
     // A tall building is mostly glass; a low one is mostly wall.
@@ -208,9 +235,11 @@ void main() {
     // slab and gives the facade its scale at distance.
     albedo *= 1.0 - 0.18 * detail * smoothstep(0.10, 0.0, cell.y);
 
-    // Ambient occlusion down the wall. Streets are canyons; the bottom five
-    // metres of every facade sit in everyone else's shadow.
-    float streetAO = mix(0.45, 1.0, smoothstep(0.0, 14.0, vUv.y));
+    // Ambient occlusion down the wall. Streets are canyons, so the base of a
+    // facade genuinely is darker -- but 0.45 over the bottom 14 m stacked with
+    // every neighbouring wall doing the same turned the streets into black
+    // trenches from the air. Shallower, and over a shorter run.
+    float streetAO = mix(0.74, 1.0, smoothstep(0.0, 9.0, vUv.y));
     albedo *= streetAO;
 
     // --- Lit windows at night -------------------------------------------
@@ -246,10 +275,14 @@ void main() {
   // Sky visibility: an upward face sees the whole dome, a wall sees half, and
   // a wall down in the street sees less still.
   // Sky visibility. A vertical wall sees roughly half the dome and a roof sees
-  // all of it; the floor matters because a shadowed facade lit only by a tenth
-  // of the sky goes darker than the in-scattered haze in front of it, and the
-  // building reads as a navy silhouette rather than a wall in shade.
-  float skyView = 0.62 + 0.38 * n.y;
+  // all of it. Under an overcast, where the direct term is almost gone, this is
+  // the ONLY thing separating one face from another -- flat ambient across
+  // orientations is what makes a city look like untextured boxes.
+  float skyView = 0.48 + 0.52 * n.y;
+  // North/south faces differ even under cloud, because the sky is brighter
+  // toward the sun. A small term, but it restores the sense of which way a
+  // building faces.
+  skyView *= 1.0 + 0.14 * dot(n, normalize(vec3(uSunDir.x, 0.0, uSunDir.z)));
   // Skyglow reaches walls better than roofs: it comes from the street below.
   vec3 ambient = uAmbient * skyView + uNightGlow * (1.35 - 0.5 * n.y);
 
@@ -359,7 +392,14 @@ function addBuilding(s: Scratch, b: Building, groundY: number, seed: number): vo
     const vTop = height;
     s.uv.push(run, vBot, run + len, vBot, run + len, vTop, run, vTop);
     for (let k = 0; k < 4; k++) pushInfo();
-    s.idx.push(v0, v0 + 1, v0 + 2, v0, v0 + 2, v0 + 3);
+
+    // Winding must agree with the normal above, or backface culling removes the
+    // wrong side. It did: the triangle (v0,v1,v2) faces (-dz, 0, dx) while the
+    // shading normal is (dz, 0, -dx) -- exactly opposite. So every OUTWARD wall
+    // was culled and every inward one drawn, and the buildings rendered as open
+    // shells you could see inside, lit by normals pointing away from the face
+    // actually on screen.
+    s.idx.push(v0, v0 + 2, v0 + 1, v0, v0 + 3, v0 + 2);
     run += len;
   }
 
@@ -400,6 +440,8 @@ function buildMesh(s: Scratch, uniforms: BuildingUniforms): THREE.Mesh | null {
 export interface BuildingStats {
   drawn: number;
   skippedFar: number;
+  /** Huge near-flat footprints (rail yards, piers) dropped as visual noise. */
+  skippedFlat: number;
   triangles: number;
   cells: number;
   /** LOD aggression the budget solver settled on; 1 means everything fits. */
@@ -417,12 +459,28 @@ export class Buildings {
     const cells = new Map<string, Scratch>();
     let drawn = 0;
     let skippedFar = 0;
+    let skippedFlat = 0;
 
     for (let i = 0; i < pack.buildings.length; i++) {
       const b = pack.buildings[i];
       const dist = Math.hypot(b.cx, b.cz);
       const h = b.topM - b.baseM;
       if (h < minHeightAt(dist, lodK)) { skippedFar++; continue; }
+
+      // Drop enormous near-flat footprints.
+      //
+      // OSM tags rail yards, pier decks, quays and station train sheds as
+      // buildings. Extruded a couple of metres over a hundred thousand square
+      // metres they are not buildings in any visual sense -- they are dark flat
+      // plates lying on the ground, and several of Manhattan's sit out in the
+      // Hudson looking like holes in the water. A genuine large building (a
+      // stadium, a convention centre, a big-box store) clears 8 m easily, so
+      // the pair of conditions is narrow: 50 of Manhattan's 187k, 7 of San
+      // Francisco's 62k.
+      if (h < 8) {
+        const area = Math.abs(signedArea(b.ring));
+        if (area > 20000) { skippedFlat++; continue; }
+      }
 
       // Winding must be counter-clockwise for the wall normals and the ear
       // clipper to agree. The baker normalises it, but a pack from an older
@@ -461,6 +519,6 @@ export class Buildings {
       }
     }
 
-    this.stats = { drawn, skippedFar, triangles, cells: cells.size, lod: lodK };
+    this.stats = { drawn, skippedFar, skippedFlat, triangles, cells: cells.size, lod: lodK };
   }
 }

@@ -56,7 +56,7 @@ export const CITIES: City[] = [
     ],
   },
   {
-    id: "hongkong", name: "Hong Kong", country: "China",
+    id: "hongkong", name: "Hong Kong", country: "Hong Kong SAR",
     lat: 22.2860, lon: 114.1580, radius: 7000, approach: 180, startAlt: 750,
     landmarks: [
       { name: "ICC", lat: 22.3035, lon: 114.1601, height: 484 },
@@ -177,7 +177,7 @@ export const CITIES: City[] = [
     ],
   },
   {
-    id: "istanbul", name: "Istanbul", country: "Turkey",
+    id: "istanbul", name: "Istanbul", country: "Turkiye",
     lat: 41.0086, lon: 28.9802, radius: 7000, approach: 45, startAlt: 600,
     landmarks: [
       { name: "Hagia Sophia", lat: 41.0086, lon: 28.9802, height: 56 },

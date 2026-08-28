@@ -122,6 +122,7 @@ async function main() {
     console.log(
       `[flyby] buildings: ${buildings.stats.drawn} drawn, ` +
       `${buildings.stats.skippedFar} culled as small+distant, ` +
+      `${buildings.stats.skippedFlat} flat slabs dropped, ` +
       `${buildings.stats.triangles} triangles in ${buildings.stats.cells} cells`,
     );
   } else {

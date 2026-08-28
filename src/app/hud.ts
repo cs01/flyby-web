@@ -155,7 +155,8 @@ export class Hud {
 
   showControls(): void {
     const d = el("hud hud-controls", `
-      <div class="row"><span>Pitch</span><b>W / S or drag</b></div>
+      <div class="row"><span>Climb</span><b>S / drag back</b></div>
+      <div class="row"><span>Dive</span><b>W / drag fwd</b></div>
       <div class="row"><span>Roll</span><b>A / D</b></div>
       <div class="row"><span>Throttle</span><b>Shift / Ctrl</b></div>
       <div class="row"><span>Camera</span><b>C</b></div>

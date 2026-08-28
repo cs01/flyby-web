@@ -37,7 +37,12 @@ export interface TerrainRing {
  * mountains on the horizon and is allowed to be crude.
  */
 export const CITY_RINGS: TerrainRing[] = [
-  { extent: 6000, segments: 384, imageryZoom: 15 },
+  // The innermost ring exists for the ground you actually fly over. At zoom 15
+  // a street is ~3.6 m per pixel, which is a smear; zoom 16 halves that and
+  // road markings, car parks and pitch lines resolve. It is only 2.2 km across,
+  // so the extra sharpness costs about a hundred tiles rather than thousands.
+  { extent: 2200, segments: 224, imageryZoom: 16 },
+  { extent: 6000, segments: 320, imageryZoom: 15 },
   { extent: 20000, segments: 256, imageryZoom: 13 },
   { extent: 70000, segments: 192, imageryZoom: 10 },
 ];

@@ -231,7 +231,11 @@ void main() {
         if (through.g < 0.02) break;
 
         vec3 p = uCameraPos + rd * t;
-        float dens = cloudDensity(p);
+        // Fade the deck out toward the march limit by thinning it, NOT by
+        // dimming it. Dimming the light while leaving the opacity alone turned
+        // distant cloud BLACK and drew a hard dark line across the sky where
+        // the march ended -- the deck was still fully opaque, just unlit.
+        float dens = cloudDensity(p) * smoothstep(170000.0, 90000.0, t);
 
         if (dens > 0.001) {
           // Light march toward the sun: how deep is this sample buried?
@@ -268,9 +272,6 @@ void main() {
           // Rain shafts read as darker cloud bases.
           lum *= 1.0 - 0.35 * uPrecip * smoothstep(uLow.z, uLow.y, p.y);
 
-          // Fade the deck out toward the march limit so it does not end in a
-          // hard line across the sky at the far clip.
-          lum *= smoothstep(170000.0, 95000.0, t);
           scattered += through * lum * (1.0 - stepT.g);
           through *= stepT;
         }

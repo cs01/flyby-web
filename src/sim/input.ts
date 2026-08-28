@@ -72,7 +72,13 @@ export class Input {
   /** Smoothed axes for this frame. */
   sample(dt: number): Axes {
     const t = this.target;
-    t.pitch = this.held("ArrowUp", "KeyW") - this.held("ArrowDown", "KeyS");
+    // STICK convention on both keyboard and pointer: pull back to climb.
+    //
+    // W/Up is the stick pushed FORWARD, which lowers the nose. This used to be
+    // reversed on the keyboard while the pointer used the stick convention, so
+    // the two controls disagreed with each other -- whichever one you reached
+    // for, the other was wrong.
+    t.pitch = this.held("ArrowDown", "KeyS") - this.held("ArrowUp", "KeyW");
     t.roll = this.held("ArrowRight", "KeyD") - this.held("ArrowLeft", "KeyA");
     t.yaw = this.held("KeyE") - this.held("KeyQ");
 
