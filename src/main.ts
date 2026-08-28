@@ -36,7 +36,7 @@ import { Labels } from "./app/labels";
 import { Layers } from "./app/layers";
 import { Places, type PlaceRow } from "./app/places";
 import { Autopilot } from "./sim/autopilot";
-import { fetchNearby } from "./data/nearby";
+import { fetchNearby, searchNamedPlaces } from "./data/nearby";
 
 function chooseCity(): City | null {
   const params = new URLSearchParams(location.search);
@@ -254,10 +254,39 @@ async function main() {
   // only read is a list of things you now have to find by hand at a hundred
   // knots over a city you have never seen from the air.
   const autopilot = new Autopilot();
-  const places = new Places(ui, (p) => {
-    autopilot.engage({ name: p.name, x: p.x, z: p.z });
-    places.setActive(p.name);
-  });
+  const places = new Places(
+    ui,
+    (p) => {
+      autopilot.engage({ name: p.name, x: p.x, z: p.z });
+      places.setActive(p.name);
+      places.setNote("");
+    },
+    // Nothing in the list matched, so look for the name across all of
+    // Wikipedia. Anything inside the loaded world becomes a target here;
+    // anything beyond it is a different flight, and the app already knows how
+    // to start one of those from a coordinate.
+    (q) => {
+      void searchNamedPlaces(q).then((hits) => {
+        if (hits.length === 0) {
+          places.setNote(`nothing called "${q}"`);
+          return;
+        }
+        const hit = hits[0];
+        const w = origin.toWorld(hit.lat, hit.lon);
+        if (Math.hypot(w.x, w.z) < 30000) {
+          const row = { name: hit.name, x: w.x, z: w.z, topY: terrain.heightAt(w.x, w.z) + 120 };
+          nearby.push(row);
+          sortByRange();
+          autopilot.engage({ name: row.name, x: row.x, z: row.z });
+          places.setActive(row.name);
+          places.setNote("");
+        } else {
+          places.setNote(`${hit.name} is a separate flight - loading`);
+          goToCoords(hit.lat, hit.lon);
+        }
+      });
+    },
+  );
 
   // One list, nearest first, and no route.
   //
@@ -350,7 +379,14 @@ async function main() {
     const dt = Math.min(0.05, clock.getDelta());
     elapsed += dt;
 
-    const axes = autopilot.update(input.sample(dt), ac.position, ac.headingDeg);
+    const sampled = input.sample(dt);
+    const axes = autopilot.update(
+      sampled,
+      ac.position,
+      ac.headingDeg,
+      ac.rollDeg,
+      input.manualStick,
+    );
     if (autopilot.justArrived) {
       hud.flashLandmark(autopilot.justArrived);
       places.setActive(null);

@@ -66,3 +66,43 @@ export async function fetchNearby(
     return [];
   }
 }
+
+interface SearchPagesResponse {
+  query?: { pages?: Record<string, { title: string; coordinates?: { lat: number; lon: number }[] }> };
+}
+
+/**
+ * Find a named place anywhere, by name, with its coordinates.
+ *
+ * The geosearch above answers "what is near here", which cannot answer "where
+ * is the lighthouse I have heard of": it only ever returns the nearest few
+ * dozen, and the thing you are looking for is very often the forty-first. This
+ * searches by TITLE across all of Wikipedia and asks for coordinates with the
+ * result, so a name is enough to fly to.
+ *
+ * Pages with no coordinates are dropped rather than returned with nulls -- an
+ * article about a concept is not a place, and the caller has nothing to do
+ * with one.
+ */
+export async function searchNamedPlaces(query: string, limit = 8): Promise<NearbyPlace[]> {
+  const q = query.trim();
+  if (q.length < 3) return [];
+  const url =
+    `https://en.wikipedia.org/w/api.php?action=query&generator=search` +
+    `&gsrsearch=${encodeURIComponent(q)}&gsrlimit=${limit}` +
+    `&prop=coordinates&colimit=max&format=json&origin=*`;
+  try {
+    const j = await fetchJson<SearchPagesResponse>(url, TTL_NEARBY);
+    const pages = Object.values(j.query?.pages ?? {});
+    return pages
+      .filter((p) => p.coordinates && p.coordinates.length > 0)
+      .map((p) => ({
+        name: p.title.replace(/\s*\([^)]*\)\s*$/, "").trim() || p.title,
+        lat: p.coordinates![0].lat,
+        lon: p.coordinates![0].lon,
+        distance: 0,
+      }));
+  } catch {
+    return [];
+  }
+}

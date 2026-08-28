@@ -484,6 +484,25 @@ html, body {
   text-align: left;
 }
 
+.place-filter {
+  width: 100%;
+  margin: 2px 0 4px;
+  padding: 4px 7px;
+  border: 1px solid var(--rule);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  outline: none;
+}
+
+.place-filter::placeholder { color: var(--dim); }
+.place-filter:focus { border-color: rgba(102, 212, 255, 0.5); }
+
+.place-note:empty { display: none; }
+.place-note { padding: 0 0 4px; font-size: 10px; color: var(--accent); }
+
 .places-list { display: flex; flex-direction: column; }
 
 .place-row {

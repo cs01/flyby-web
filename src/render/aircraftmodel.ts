@@ -107,6 +107,105 @@ function material(
 /** Wing semi-span, and the fuselage's forward axis, in metres. Forward is -z. */
 const SEMI_SPAN = 5.5;
 
+/**
+ * A NACA-ish four-digit section, as a closed loop in (chord, thickness) with
+ * the chord normalised to 1 and the leading edge at 0.
+ *
+ * The wing used to be a BOX, and a box is what made the aeroplane read as a
+ * toy from any angle where you could see the wing edge-on: a real wing has a
+ * round leading edge, a sharp trailing edge, and a top surface that is more
+ * curved than the bottom, and all three are visible at any distance where the
+ * wing is more than a few pixels.
+ */
+const AIRFOIL: [number, number][] = [
+  [1.000, 0.0013], [0.850, 0.0271], [0.700, 0.0492], [0.550, 0.0662],
+  [0.400, 0.0765], [0.250, 0.0777], [0.150, 0.0700], [0.075, 0.0563],
+  [0.025, 0.0350], [0.000, 0.0000],
+  [0.025, -0.0263], [0.075, -0.0390], [0.150, -0.0460], [0.250, -0.0480],
+  [0.400, -0.0450], [0.550, -0.0378], [0.700, -0.0280], [0.850, -0.0160],
+];
+
+interface Station {
+  /** Position of the section's leading edge. */
+  x: number;
+  y: number;
+  z: number;
+  chord: number;
+}
+
+/**
+ * Loft the aerofoil between stations to make a real tapered surface.
+ *
+ * `axis` says which way the span runs: "y" spans along x (a wing), "x" spans
+ * along y (a fin). Everything on this aeroplane that is a lifting surface is
+ * one of those two, so one function builds the wings, the stabiliser and the
+ * fin, and they all get a leading edge for free.
+ */
+function loftSurface(stations: Station[], vertical = false): THREE.BufferGeometry {
+  const n = AIRFOIL.length;
+  const pos: number[] = [];
+  const idx: number[] = [];
+
+  for (const st of stations) {
+    for (const [c, t] of AIRFOIL) {
+      const along = st.z + c * st.chord;
+      const thick = t * st.chord;
+      // A fin is the same section stood on its side: the thickness runs across
+      // the aeroplane instead of up it.
+      if (vertical) pos.push(st.x + thick, st.y, along);
+      else pos.push(st.x, st.y + thick, along);
+    }
+  }
+
+  for (let s = 0; s < stations.length - 1; s++) {
+    const a = s * n;
+    const b = (s + 1) * n;
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      idx.push(a + i, b + i, a + j, a + j, b + i, b + j);
+    }
+  }
+
+  // Caps, so a wing seen from the tip is not an open tube. A triangle fan from
+  // the first point is enough for a convex section, which an aerofoil is.
+  const capStart = 0;
+  const capEnd = (stations.length - 1) * n;
+  for (let i = 1; i < n - 1; i++) {
+    idx.push(capStart, capStart + i + 1, capStart + i);
+    idx.push(capEnd, capEnd + i, capEnd + i + 1);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * The fuselage profile: radius against distance along the body, nose first.
+ *
+ * ONE piece, revolved. It used to be a capsule with a cylinder boom stuck on
+ * the back at a different diameter and a cowling cylinder wider than either,
+ * which is exactly what it looked like -- three tubes in a row. A real light
+ * single is a single continuous shape that is fattest at the cabin and tapers
+ * to a point at each end, and revolving one profile is both simpler and right.
+ */
+const FUSELAGE: [number, number][] = [
+  [-3.30, 0.04], [-3.10, 0.20], [-2.90, 0.34], [-2.60, 0.46], [-2.20, 0.55],
+  [-1.70, 0.61], [-1.10, 0.65], [-0.40, 0.66], [0.30, 0.64], [0.90, 0.59],
+  [1.60, 0.50], [2.30, 0.40], [3.00, 0.30], [3.70, 0.20], [4.20, 0.11],
+  [4.40, 0.03],
+];
+
+function fuselageGeometry(scale = 1, phiStart = 0, phiLength = Math.PI * 2): THREE.BufferGeometry {
+  const pts = FUSELAGE.map(([z, r]) => new THREE.Vector2(r * scale, z));
+  const g = new THREE.LatheGeometry(pts, 24, phiStart, phiLength);
+  // The lathe revolves about +y; the aeroplane's body runs along z.
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
 export class AircraftModel {
   readonly group = new THREE.Group();
   readonly uniforms: AircraftUniforms;
@@ -129,101 +228,153 @@ export class AircraftModel {
       uEmissive: { value: 0 },
     };
 
-    const paint = material(this.uniforms, 0xf2f4f7, 0.55);
-    const stripe = material(this.uniforms, 0xd9622b, 0.4);
-    const dark = material(this.uniforms, 0x171b21, 0.25);
-    const glass = material(this.uniforms, 0x0d1620, 0.85);
+    const paint = material(this.uniforms, 0xeef1f5, 0.6);
+    const stripe = material(this.uniforms, 0xc9512a, 0.45);
+    const dark = material(this.uniforms, 0x14181e, 0.25);
+    const glass = material(this.uniforms, 0x121c26, 0.9);
     const navR = material(this.uniforms, 0xff3b30, 0.0, 2.2);
     const navG = material(this.uniforms, 0x30ff7a, 0.0, 2.2);
 
-    // Fuselage: a capsule laid along -z, the aircraft's forward axis.
-    const fuse = new THREE.Mesh(new THREE.CapsuleGeometry(0.62, 3.9, 6, 16), paint);
-    fuse.rotation.x = Math.PI / 2;
-    fuse.position.z = -0.2;
-    this.group.add(fuse);
+    // One continuous body, nose to tailcone.
+    this.group.add(new THREE.Mesh(fuselageGeometry(), paint));
 
-    // Tail boom, tapering to the fin.
-    const boom = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.26, 2.6, 12), paint);
-    boom.rotation.x = Math.PI / 2;
-    boom.position.z = 3.0;
-    this.group.add(boom);
+    // Cabin glazing, as bands of the SAME profile a hair larger, so it sits on
+    // the surface it belongs to instead of intersecting it. A box cabin
+    // punched through a round fuselage was most of what looked wrong.
+    //
+    // TWO bands, one per side, and the arithmetic for where they go is worth
+    // stating: the lathe is built about +y and then rotated onto the body
+    // axis, which sends its z to -y, so the height of a point at angle phi is
+    // -cos(phi) and the very top of the fuselage is phi = 180 degrees. A
+    // single wide band therefore wrapped straight over the SPINE and read as a
+    // dark saddle laid across the roof. Leaving a gap either side of 180 keeps
+    // the roof painted, which is what a cabin roof is.
+    const glazingProfile = [
+      new THREE.Vector2(0.472, -2.05),
+      new THREE.Vector2(0.622, -1.55),
+      new THREE.Vector2(0.670, -0.90),
+      new THREE.Vector2(0.678, -0.10),
+      new THREE.Vector2(0.658, 0.55),
+      new THREE.Vector2(0.606, 1.05),
+    ];
+    for (const start of [Math.PI * 0.56, Math.PI * 1.07]) {
+      const band = new THREE.LatheGeometry(glazingProfile, 14, start, Math.PI * 0.37);
+      band.rotateX(Math.PI / 2);
+      this.group.add(new THREE.Mesh(band, glass));
+    }
 
-    // Cowling and spinner. The nose is where a light single's character is.
-    const cowl = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.5, 1.1, 14), stripe);
-    cowl.rotation.x = Math.PI / 2;
-    cowl.position.z = -2.6;
-    this.group.add(cowl);
-    const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.5, 12), paint);
+    // Cowling: the same profile again over the nose, in the trim colour, so
+    // the join is a paint line rather than a step in the geometry.
+    const cowl = new THREE.LatheGeometry(
+      [
+        new THREE.Vector2(0.21, -3.08),
+        new THREE.Vector2(0.35, -2.88),
+        new THREE.Vector2(0.47, -2.58),
+        new THREE.Vector2(0.56, -2.18),
+        new THREE.Vector2(0.605, -1.85),
+      ],
+      20,
+    );
+    cowl.rotateX(Math.PI / 2);
+    this.group.add(new THREE.Mesh(cowl, stripe));
+
+    const spinner = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.52, 14), paint);
     spinner.rotation.x = -Math.PI / 2;
-    spinner.position.z = -3.35;
+    spinner.position.z = -3.5;
     this.group.add(spinner);
 
-    // Cabin: greenhouse glazing wrapping the front, which with the high wing is
-    // the whole reason this aeroplane is nice to sit in and to look at.
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.06, 0.62, 1.9), glass);
-    cabin.position.set(0, 0.44, -1.0);
-    this.group.add(cabin);
-
-    // High wing, mounted on a shallow pylon above the cabin.
-    const wing = new THREE.Mesh(new THREE.BoxGeometry(SEMI_SPAN * 2, 0.17, 1.65), paint);
-    wing.position.set(0, 0.92, -0.65);
-    this.group.add(wing);
-    const wingStripe = new THREE.Mesh(new THREE.BoxGeometry(SEMI_SPAN * 2, 0.05, 0.34), stripe);
-    wingStripe.position.set(0, 1.0, -1.2);
-    this.group.add(wingStripe);
-
+    // High wing: tapered, with dihedral, sitting on the cabin roof.
+    const ROOT_CHORD = 1.72;
+    const TIP_CHORD = 1.22;
+    const wingLE = -1.35;
     for (const s of [-1, 1]) {
-      // Lift strut, fuselage bottom to mid-wing. Nothing else says "high wing"
-      // this cheaply, and a strutless one reads as a different aeroplane.
-      const strut = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.55, 0.24), paint);
-      strut.position.set(s * 1.42, 0.20, -0.5);
-      strut.rotation.z = s * 0.62;
-      this.group.add(strut);
+      const wing = new THREE.Mesh(
+        loftSurface([
+          { x: 0, y: 0.70, z: wingLE, chord: ROOT_CHORD },
+          { x: s * 2.2, y: 0.78, z: wingLE, chord: ROOT_CHORD },
+          { x: s * SEMI_SPAN, y: 0.92, z: wingLE + 0.16, chord: TIP_CHORD },
+        ]),
+        paint,
+      );
+      this.group.add(wing);
 
-      // Aileron, outboard on the trailing edge, deflecting opposite each side.
-      const ail = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.11, 0.42), stripe);
-      ail.position.set(s * 4.0, 0.92, 0.16);
+      const ail = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.07, 0.36), stripe);
+      ail.position.set(s * 4.1, 0.86, wingLE + TIP_CHORD + 0.05);
       this.group.add(ail);
       this.ailerons.push(ail);
 
+      // Lift strut, cabin floor to mid-span. Nothing else says "high wing"
+      // this cheaply, and a strutless one reads as a different aeroplane.
+      const strut = new THREE.Mesh(new THREE.BoxGeometry(0.07, 1.62, 0.20), paint);
+      strut.position.set(s * 1.30, 0.02, -0.75);
+      strut.rotation.z = s * 0.60;
+      this.group.add(strut);
+
       // Navigation lights: green on the right, red on the left, as on anything
       // that flies. They are how you read the aircraft's heading at range.
-      const nav = new THREE.Mesh(new THREE.SphereGeometry(0.10, 8, 6), s > 0 ? navG : navR);
-      nav.position.set(s * (SEMI_SPAN + 0.05), 0.94, -0.65);
+      const nav = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), s > 0 ? navG : navR);
+      nav.position.set(s * (SEMI_SPAN + 0.04), 0.92, wingLE + 0.2);
       this.group.add(nav);
 
-      // Fixed gear: a sprung leg and a wheel, which is half the friendliness.
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.10, 0.16), paint);
-      leg.position.set(s * 0.62, -0.72, -0.35);
-      leg.rotation.z = s * 0.42;
+      // Fixed gear, with a spat over the wheel: the fairings are half of what
+      // makes a light single look finished rather than unfinished.
+      const leg = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.09, 0.14), paint);
+      leg.position.set(s * 0.58, -0.60, -0.30);
+      leg.rotation.z = s * 0.44;
       this.group.add(leg);
-      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.27, 0.27, 0.17, 12), dark);
+      const spat = new THREE.Mesh(new THREE.SphereGeometry(0.30, 10, 8), paint);
+      spat.scale.set(0.55, 1.0, 1.35);
+      spat.position.set(s * 1.05, -0.92, -0.30);
+      this.group.add(spat);
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.24, 0.14, 12), dark);
       wheel.rotation.z = Math.PI / 2;
-      wheel.position.set(s * 1.12, -1.0, -0.35);
+      wheel.position.set(s * 1.05, -1.00, -0.30);
       this.group.add(wheel);
     }
 
-    // Nose wheel.
-    const noseLeg = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.8, 0.1), paint);
-    noseLeg.position.set(0, -0.85, -2.1);
+    const noseLeg = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.75, 0.09), paint);
+    noseLeg.position.set(0, -0.72, -2.05);
     this.group.add(noseLeg);
-    const noseWheel = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.15, 12), dark);
+    const noseSpat = new THREE.Mesh(new THREE.SphereGeometry(0.24, 10, 8), paint);
+    noseSpat.scale.set(0.55, 1.0, 1.35);
+    noseSpat.position.set(0, -1.02, -2.05);
+    this.group.add(noseSpat);
+    const noseWheel = new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.20, 0.12, 12), dark);
     noseWheel.rotation.z = Math.PI / 2;
-    noseWheel.position.set(0, -1.2, -2.1);
+    noseWheel.position.set(0, -1.08, -2.05);
     this.group.add(noseWheel);
 
-    // Tail: swept fin and a one-piece stabiliser that moves with the elevator.
-    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.13, 1.5, 1.25), paint);
-    fin.position.set(0, 0.95, 4.0);
+    // Fin: the same lofted section stood on its side, with a swept leading
+    // edge. A box fin is a rudder-shaped slab and reads as one.
+    const fin = new THREE.Mesh(
+      loftSurface(
+        [
+          { x: 0, y: 0.16, z: 2.55, chord: 1.85 },
+          { x: 0, y: 0.95, z: 3.15, chord: 1.30 },
+          { x: 0, y: 1.55, z: 3.55, chord: 0.90 },
+        ],
+        true,
+      ),
+      paint,
+    );
     this.group.add(fin);
-    const finStripe = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.9, 0.55), stripe);
-    finStripe.position.set(0, 1.25, 4.25);
+    const finStripe = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.62, 0.48), stripe);
+    finStripe.position.set(0, 1.20, 3.72);
     this.group.add(finStripe);
 
+    // One-piece stabiliser, which on this type really does move as a unit.
     this.elevator = new THREE.Group();
-    const stab = new THREE.Mesh(new THREE.BoxGeometry(3.7, 0.13, 0.95), paint);
-    this.elevator.add(stab);
-    this.elevator.position.set(0, 0.28, 4.1);
+    for (const s of [-1, 1]) {
+      const stab = new THREE.Mesh(
+        loftSurface([
+          { x: 0, y: 0, z: 0, chord: 0.98 },
+          { x: s * 1.85, y: 0.02, z: 0.14, chord: 0.72 },
+        ]),
+        paint,
+      );
+      this.elevator.add(stab);
+    }
+    this.elevator.position.set(0, 0.22, 3.35);
     this.group.add(this.elevator);
 
     // Propeller disc. Drawn as a translucent disc rather than blades: a real
@@ -231,10 +382,10 @@ export class AircraftModel {
     // rate you pick.
     const discMat = material(this.uniforms, 0x8a8f96, 0.1);
     discMat.transparent = true;
-    discMat.opacity = 0.24;
+    discMat.opacity = 0.22;
     discMat.side = THREE.DoubleSide;
-    this.prop = new THREE.Mesh(new THREE.CircleGeometry(1.0, 24), discMat);
-    this.prop.position.z = -3.5;
+    this.prop = new THREE.Mesh(new THREE.CircleGeometry(0.95, 24), discMat);
+    this.prop.position.z = -3.62;
     this.group.add(this.prop);
   }
 
