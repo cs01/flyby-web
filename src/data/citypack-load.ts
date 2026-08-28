@@ -3,7 +3,7 @@
 // the oracle for tools/verify-packs.ts.
 
 import { fetchBytes, evict } from "./cache";
-import { parseCityPack, type CityPack } from "./citypack";
+import { buildingIsNeedle, parseCityPack, type CityPack } from "./citypack";
 
 /**
  * Load a baked pack, or null when the city has no pack yet.
@@ -22,7 +22,18 @@ export async function loadCityPack(cityId: string): Promise<CityPack | null> {
     return null;
   }
   try {
-    return parseCityPack(buf);
+    const pack = parseCityPack(buf);
+    // Drop OSM masts and spires before anything sees them. This happens on the
+    // LOAD path rather than in parseCityPack so that tools/verify-packs.ts,
+    // which uses the pure parser, still counts what the bake actually wrote.
+    // Packs baked before the filter existed are fixed here without a re-bake.
+    const kept = pack.buildings.filter((b) => !buildingIsNeedle(b));
+    const dropped = pack.buildings.length - kept.length;
+    if (dropped > 0) {
+      console.info(`[flyby] ${cityId}: dropped ${dropped} mast-shaped records of ${pack.buildings.length}`);
+      pack.buildings = kept;
+    }
+    return pack;
   } catch (err) {
     console.error(`[flyby] building pack at ${url} is unreadable (${buf.byteLength} bytes):`, err);
     // Whatever is cached under this URL is not a pack. Drop it so the next

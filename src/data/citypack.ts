@@ -94,3 +94,45 @@ export function parseCityPack(buf: ArrayBuffer): CityPack {
 
   return { lat0, lon0, radiusM, buildings };
 }
+
+// --- needles ----------------------------------------------------------------
+
+/**
+ * OSM tags masts, spires, flagpoles and antennae as `building` or
+ * `building:part` often enough that a city pack picks up hundreds of them, and
+ * they carry a real height on a footprint a few metres across. Extruded, they
+ * come out as black needles standing among the towers: at night, over
+ * Manhattan, one of them is 471 m tall on an 11 m footprint, and two stand
+ * within 200 m of the scene origin.
+ *
+ * The height alone cannot be the test, because genuinely slender skyscrapers
+ * exist and are the ones worth seeing. Steinway Tower is 435 m on an 18 m base
+ * (ratio 24) and 432 Park is 426 m on 28 m (ratio 15), so both thresholds here
+ * are set to keep them and drop the masts, which run past ratio 50.
+ */
+export const NEEDLE_MIN_DIM_M = 12;
+export const NEEDLE_MIN_HEIGHT_M = 100;
+export const NEEDLE_MAX_RATIO = 30;
+
+export function isNeedle(heightM: number, minFootprintM: number): boolean {
+  if (minFootprintM < NEEDLE_MIN_DIM_M && heightM > NEEDLE_MIN_HEIGHT_M) return true;
+  return heightM / Math.max(1, minFootprintM) > NEEDLE_MAX_RATIO;
+}
+
+/** Shorter side of the footprint's bounding box, in metres. */
+export function footprintMinDim(ring: Float32Array): number {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < ring.length; i += 2) {
+    const x = ring[i], z = ring[i + 1];
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+  return Math.min(maxX - minX, maxZ - minZ);
+}
+
+/** True when this baked building is a mast rather than a building. */
+export function buildingIsNeedle(b: Building): boolean {
+  return isNeedle(b.topM - b.baseM, footprintMinDim(b.ring));
+}

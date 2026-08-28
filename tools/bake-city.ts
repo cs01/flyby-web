@@ -15,6 +15,7 @@
 
 import { CITIES, cityById, type City } from "../src/cities";
 import { Origin } from "../src/geo";
+import { isNeedle } from "../src/data/citypack";
 
 // The repo's tsconfig deliberately carries no node/bun types (`types:
 // ["vite/client"]`), so the two runtime globals this script needs are declared
@@ -635,6 +636,21 @@ function bakeElements(elements: OsmElement[], origin: Origin, radius: number): B
       }
       if (n > 65535) {
         skips.add("ring over 65535 vertices");
+        continue;
+      }
+
+      // Masts, spires and antennae, which OSM tags as buildings and which
+      // extrude into black needles. The predicate lives in the pack module so
+      // the bake, the loader and the verifier cannot disagree about what one is.
+      let minRX = Infinity, maxRX = -Infinity, minRZ = Infinity, maxRZ = -Infinity;
+      for (let i = 0; i < n; i++) {
+        if (ring.x[i] < minRX) minRX = ring.x[i];
+        if (ring.x[i] > maxRX) maxRX = ring.x[i];
+        if (ring.z[i] < minRZ) minRZ = ring.z[i];
+        if (ring.z[i] > maxRZ) maxRZ = ring.z[i];
+      }
+      if (isNeedle(heights.topM - heights.baseM, Math.min(maxRX - minRX, maxRZ - minRZ))) {
+        skips.add("mast-shaped: tall on a footprint too small to stand on");
         continue;
       }
 

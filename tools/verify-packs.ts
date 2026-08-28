@@ -8,7 +8,7 @@
 // is worse than a missing one, because the menu promises a skyline the renderer
 // then fails to load.
 
-import { parseCityPack } from "../src/data/citypack";
+import { buildingIsNeedle, isNeedle, parseCityPack } from "../src/data/citypack";
 import { signedArea } from "../src/render/earcut";
 import { readdirSync } from "node:fs";
 
@@ -64,6 +64,8 @@ for (const f of files) {
   if (tooFar) problems.push(`${tooFar} centroids outside radius`);
   if (badHeight) problems.push(`${badHeight} implausible heights`);
 
+  const needles = pack.buildings.filter(buildingIsNeedle).length;
+
   const heights = pack.buildings.map((b) => b.topM - b.baseM).sort((a, b) => a - b);
   const p50 = heights[Math.floor(heights.length / 2)];
   if (p50 < 3 || p50 > 30) problems.push(`median height ${p50.toFixed(1)} m is implausible`);
@@ -76,8 +78,37 @@ for (const f of files) {
     console.log(
       `ok   ${id.padEnd(12)} ${String(pack.buildings.length).padStart(7)} buildings  ` +
       `p50 ${p50.toFixed(0).padStart(3)} m  max ${maxH.toFixed(0).padStart(4)} m  ` +
-      `${(buf.byteLength / 1048576).toFixed(1)} MB`,
+      `${(buf.byteLength / 1048576).toFixed(1)} MB` +
+      // Not a failure: packs baked before the mast filter still contain these,
+      // and the loader drops them. It is reported so a re-bake can be seen to
+      // have actually removed them rather than assumed to have.
+      (needles ? `  (${needles} masts, dropped at load)` : ""),
     );
+  }
+}
+
+// The mast filter is a threshold, and a threshold nobody tests drifts until it
+// is either useless or eats the landmarks. These are the cases it exists to get
+// right: real slender towers stay, OSM masts go. Checking the PREDICATE rather
+// than a pack count is what makes this a gate, because a pack with no masts in
+// it would otherwise let any threshold pass.
+const NEEDLE_CASES: [string, number, number, boolean][] = [
+  ["Steinway Tower 435 m on 18 m", 435, 18, false],
+  ["432 Park 426 m on 28 m", 426, 28, false],
+  ["Empire State 381 m on 129 m", 381, 129, false],
+  ["Manhattan worst mast 471 m on 11 m", 471, 11, true],
+  // Only the ratio rule can catch this one: its footprint clears the minimum
+  // dimension, so without the ratio the mast would survive. Keeping a case per
+  // rule is what stops either threshold from becoming decoration.
+  ["a 600 m radio mast on 15 m", 600, 15, true],
+  ["Sydney worst mast 266 m on 7 m", 266, 7, true],
+  ["a 366 m spire on 7 m", 366, 7, true],
+  ["an ordinary house 8 m on 9 m", 8, 9, false],
+];
+for (const [name, h, dim, want] of NEEDLE_CASES) {
+  if (isNeedle(h, dim) !== want) {
+    console.log(`FAIL needle rule: ${name} should ${want ? "" : "not "}be a mast`);
+    failed++;
   }
 }
 
