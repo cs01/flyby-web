@@ -116,6 +116,10 @@ in vec4 vInfo;
 in float vViewDist;
 out vec4 fragColor;
 
+// Aerial perspective only: a shorter march than the sky uses. See the note in
+// atmosphere.glsl.ts -- this is per-fragment with overdraw, and it is smooth.
+#define ATMO_STEPS 7
+#define ATMO_SUN_STEPS 2
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 

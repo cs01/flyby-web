@@ -7,6 +7,7 @@
 
 import * as THREE from "three";
 import { createRenderer, createSceneTarget } from "./render/renderer";
+import { AdaptiveQuality } from "./render/quality";
 import { Sky } from "./render/sky";
 import { Terrain, CITY_RINGS } from "./render/terrain";
 import { computeLighting } from "./render/lighting";
@@ -18,7 +19,7 @@ import { Origin } from "./geo";
 import { CITIES, cityById, DEFAULT_CITY, type City } from "./cities";
 import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
-import { Aircraft, DEFAULT_CONFIG } from "./sim/aircraft";
+import { Aircraft, DEFAULT_CONFIG, chooseStartAltitude } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Input } from "./sim/input";
 import { Plane } from "./render/plane";
@@ -92,12 +93,16 @@ async function main() {
 
   loading.set(0.88, "building world");
   const { renderer, scene, camera } = createRenderer(canvas);
-  const composite = new Composite();
-  let target = createSceneTarget(renderer);
-  addEventListener("resize", () => {
+  const composite = new Composite(renderer);
+  const target = createSceneTarget(renderer);
+  const quality = new AdaptiveQuality(renderer);
+
+  const resizeTargets = () => {
     const s2 = renderer.getDrawingBufferSize(new THREE.Vector2());
     target.setSize(s2.x, s2.y);
-  });
+    composite.resize(renderer);
+  };
+  addEventListener("resize", resizeTargets);
 
   const sky = new Sky();
   scene.add(sky.mesh);
@@ -135,10 +140,13 @@ async function main() {
   const back = 5200;
   const rad = (startHdg * Math.PI) / 180;
   const ac = new Aircraft({ ...DEFAULT_CONFIG, simple: new URLSearchParams(location.search).has("easy") });
+  const startX = -Math.sin(rad) * back;
+  const startZ = Math.cos(rad) * back;
+  const startGround = terrain.heightAt(startX, startZ);
   ac.reset(
-    -Math.sin(rad) * back,
-    groundAtCentre + city.startAlt,
-    Math.cos(rad) * back,
+    startX,
+    chooseStartAltitude(city.startAlt, Math.max(startGround, groundAtCentre), wx.low),
+    startZ,
     startHdg,
   );
 
@@ -248,21 +256,26 @@ async function main() {
     renderer.setRenderTarget(target);
     renderer.render(scene, camera);
 
-    // Pass 2: clouds raymarched against that target's depth, then tone mapped
-    // to the screen.
+    // Pass 2 + 3: clouds raymarched at half resolution against that target's
+    // depth, then a full-resolution present that folds them in and tone maps.
     composite.update(camera, wx, light, elapsed);
-    composite.uniforms.uScene.value = target.texture;
-    composite.uniforms.uDepth.value = target.depthTexture;
     composite.uniforms.uSunSurfaceCloud.value = 0.105;
-    composite.uniforms.uExposure.value = light.exposure * exposureScale;
-    renderer.setRenderTarget(null);
-    renderer.render(composite.scene, composite.camera);
+    composite.presentUniforms.uExposure.value = light.exposure * exposureScale;
+    composite.render(renderer, target.texture, target.depthTexture);
 
     smoothedMs += (dt * 1000 - smoothedMs) * 0.06;
+    if (quality.update(smoothedMs, dt)) {
+      quality.apply(renderer);
+      const w = canvas.clientWidth || innerWidth;
+      const h = canvas.clientHeight || innerHeight;
+      renderer.setSize(w, h, false);
+      resizeTargets();
+      console.log(`[flyby] render scale -> ${quality.scale.toFixed(2)} (${smoothedMs.toFixed(1)} ms)`);
+    }
     perfAccum += dt;
     if (perfAccum > 0.4) {
       perfAccum = 0;
-      hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0);
+      hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0, quality.scale);
       hud.setTour(tour.marks, tourDist, tour.finished);
     }
   });

@@ -73,6 +73,10 @@ in vec3 vWorld;
 in float vViewDist;
 out vec4 fragColor;
 
+// Aerial perspective only: a shorter march than the sky uses. See the note in
+// atmosphere.glsl.ts -- this is per-fragment with overdraw, and it is smooth.
+#define ATMO_STEPS 7
+#define ATMO_SUN_STEPS 2
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 
@@ -85,6 +89,12 @@ uniform float uNight;
 uniform float uSunSurface;
 uniform float uDebug;
 uniform vec3 uNightGlow;
+
+float hash21(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
 
 void main() {
   vec3 albedo = srgbToLinear(texture(uDrape, vUv).rgb);
@@ -155,27 +165,36 @@ void main() {
   // City lights at night, keyed to how built-up the drape looks. Grey, bright
   // and low-saturation pixels are roads and roofs; vegetation and water are not.
   if (uNight > 0.01) {
-    // Street lighting, inferred from the daytime drape: built-up ground is
-    // bright and desaturated, vegetation and water are not.
+    // Street lighting.
     //
-    // This is a WEAK term. It used to be ten times stronger, which after the
-    // night exposure lift turned the whole map into glowing sand while the
-    // buildings on top of it stayed black. The buildings carry the city's
-    // light now; this only fills in the roads between them, and the gate is
-    // tight so bare rock and beach do not read as a lit suburb.
+    // The drape is a DAYLIGHT PHOTOGRAPH. Any broad wash over it reads as that
+    // photograph dimmed and tinted, never as night -- which is exactly what a
+    // strong version of this term produced: the whole of San Francisco glowing
+    // sepia, beaches and hillsides included, because Esri's imagery is bright
+    // and desaturated nearly everywhere and the "is this urban" gate passed it
+    // all.
+    //
+    // Night from the air is not a lit surface, it is DISCRETE LIGHTS with black
+    // between them. So the term is speckled on a ~26 m lattice and only a
+    // fraction of cells are lit: the peak is bright enough to read as a lamp
+    // while the average stays near black. Far away the speckle converges to its
+    // own mean, for the same reason the building windows do -- below a pixel it
+    // would alias into crawling noise.
     float lum = dot(albedo, vec3(0.299, 0.587, 0.114));
     float sat = max(max(albedo.r, albedo.g), albedo.b) - min(min(albedo.r, albedo.g), albedo.b);
-    // The gate has to be generous enough that a dense city actually lights up.
-    // Too tight and Hong Kong at 2 a.m. is a black hill with a few sparks on
-    // it, which is not what any city looks like from the air at night.
-    float urban = smoothstep(0.16, 0.40, lum) * smoothstep(0.28, 0.06, sat);
-    lit += vec3(1.0, 0.74, 0.42) * urban * uNight * 0.16;
-    // Skyglow lands on the built-up ground, not on hillsides and water, and it
-    // is nearly monochrome -- at night the eye takes almost no colour from a
-    // surface this dark, so carrying the drape's daytime hue through makes the
-    // map look like a dimmed photograph instead of a dark city.
-    float grey = dot(albedo, vec3(0.299, 0.587, 0.114));
-    lit += mix(vec3(grey), albedo, 0.35) * uNightGlow * (0.3 + 0.7 * urban);
+    float urban = smoothstep(0.20, 0.44, lum) * smoothstep(0.24, 0.05, sat);
+
+    const float LAMP_FRACTION = 0.26;
+    float detail = smoothstep(5000.0, 1200.0, vViewDist);
+    float cell = hash21(floor(vWorld.xz * (1.0 / 26.0)));
+    float lamps = mix(LAMP_FRACTION, step(1.0 - LAMP_FRACTION, cell), detail);
+
+    lit += vec3(1.0, 0.72, 0.40) * lamps * urban * uNight * 0.20;
+
+    // Skyglow, weighted to built-up ground and nearly monochrome: at this
+    // light level the eye takes almost no colour off a surface.
+    float grey = lum;
+    lit += mix(vec3(grey), albedo, 0.30) * uNightGlow * (0.22 + 0.78 * urban);
   }
 
   // Aerial perspective: the same integral the sky uses, over the distance to

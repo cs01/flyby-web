@@ -20,6 +20,21 @@
 //     glare around the sun and a dry alpine day does not.
 
 export const ATMOSPHERE_GLSL = /* glsl */ `
+// Step counts, overridable per shader with a #define ahead of this chunk.
+//
+// The sky is one full-screen pass and can afford the full march. Terrain and
+// buildings evaluate the SAME integral for aerial perspective over every
+// fragment they cover, with overdraw, and at 16x4 that is 64 exp() calls per
+// pixel before anything else in the frame runs. Aerial perspective over a few
+// kilometres is a smooth, slowly varying quantity; halving its step count is
+// invisible and is one of the largest single savings available here.
+#ifndef ATMO_STEPS
+#define ATMO_STEPS 16
+#endif
+#ifndef ATMO_SUN_STEPS
+#define ATMO_SUN_STEPS 4
+#endif
+
 const float PI = 3.141592653589793;
 
 // Earth and atmosphere shell, metres. The camera lives at ground level plus
@@ -88,7 +103,7 @@ float rayGround(vec3 ro, vec3 rd) {
 vec3 sunTransmittance(vec3 p, vec3 sunDir, float turbidity) {
   float t = rayShell(p, sunDir, R_TOP);
   if (t <= 0.0) return vec3(1.0);
-  const int N = 4;
+  const int N = ATMO_SUN_STEPS;
   float dt = t / float(N);
   float odR = 0.0, odM = 0.0, odO = 0.0;
   for (int i = 0; i < N; i++) {
@@ -116,7 +131,7 @@ vec3 atmosphere(vec3 ro, vec3 rd, float maxDist, out vec3 transmittance) {
   if (ground > 0.0) far = min(far, ground);
   far = min(far, maxDist);
 
-  const int N = 16;
+  const int N = ATMO_STEPS;
   float dt = far / float(N);
   float odR = 0.0, odM = 0.0, odO = 0.0;
   vec3 sumR = vec3(0.0);

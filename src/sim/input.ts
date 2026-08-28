@@ -77,8 +77,11 @@ export class Input {
     t.yaw = this.held("KeyE") - this.held("KeyQ");
 
     if (this.dragging) {
-      // Pointer overrides the keys: pull back to climb, like a stick.
-      t.pitch = -this.dragY;
+      // Pointer overrides the keys, and behaves like a STICK: pulling back
+      // (down the screen) raises the nose. The code used to negate this, which
+      // contradicted the comment right above it and felt inverted to anyone who
+      // reached for the mouse first.
+      t.pitch = this.dragY;
       t.roll = this.dragX;
     }
 

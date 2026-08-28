@@ -28,8 +28,11 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
     alpha: false,
   });
 
-  // Cap at 2x. Beyond that the cost is quadratic and the gain is invisible.
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  // Cap at 1.5x. This renderer is fragment-bound -- a full-screen atmosphere on
+  // every surface plus a cloud march -- so pixel count is very nearly the whole
+  // cost, and 2x on a Retina panel is 5.7 megapixels of it. The visible gain
+  // from 1.5 to 2 is small; the cost is 78% more pixels.
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
   // Every material in this renderer is a RawShaderMaterial, which three.js does
   // NOT inject tone mapping or colour-space conversion into. The shaders call
   // present() from tonemap.glsl themselves. Setting toneMapping here would have

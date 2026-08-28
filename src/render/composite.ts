@@ -51,9 +51,8 @@ out vec4 fragColor;
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 
-uniform sampler2D uScene;
-uniform float uSunSurfaceCloud;
 uniform sampler2D uDepth;
+uniform float uSunSurfaceCloud;
 uniform mat4  uInvProj2;
 uniform vec3  uCameraPos;
 uniform vec3  uAmbient;
@@ -111,7 +110,7 @@ float fbm(vec3 p) {
   float a = 0.5;
   float s = 0.0;
   float norm = 0.0;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < 3; i++) {
     s += a * valueNoise(p);
     norm += a;
     p = OCTAVE_ROT * p * 2.03;
@@ -138,11 +137,10 @@ float slabDensity(vec3 p, float cover, float base, float top, float scale) {
 
   vec3 q = p;
   q.xz += uWind * uTime;
+  // One fbm, not two. The old erosion pass was a SECOND four-octave fbm per
+  // density sample -- it doubled the cost of the most expensive inner loop in
+  // the renderer to roughen an edge that is invisible at flying speed.
   float n = fbm(q * scale);
-  // Erode the edges with a higher-frequency octave so the boundary is wispy.
-  // Re-centred, so erosion roughens the field without lowering its mean --
-  // otherwise it silently eats into the coverage the observation reported.
-  n -= 0.16 * (fbm(q * scale * 4.0) - 0.5);
 
   // Coverage is a THRESHOLD on the noise. With fbm normalised to 0..1 and
   // centred near 0.5, "1 - cover" is the level that leaves that fraction of the
@@ -160,8 +158,10 @@ float cloudDensity(vec3 p) {
 }
 
 void main() {
-  vec3 scene = texture(uScene, vUv).rgb;
   vec3 rd = normalize(vRayDir);
+  // Accumulated in-scatter, and how much of the world survives through it.
+  vec3 scattered = vec3(0.0);
+  vec3 through = vec3(1.0);
 
   // Scene distance from the depth buffer, so clouds occlude and are occluded.
   float d = texture(uDepth, vUv).r;
@@ -175,7 +175,9 @@ void main() {
   float lowCover = uLow.x;
   float midCover = uMid.x;
 
-  if (lowCover > 0.01 || midCover > 0.01) {
+  // Below this there is nothing to see and the march is pure waste. The old
+  // 0.01 gate meant a 3% sky paid the full 32-step price for a few wisps.
+  if (lowCover > 0.06 || midCover > 0.06) {
     float slabLo = min(uLow.y, uMid.y);
     float slabHi = max(uLow.z, uMid.z);
 
@@ -195,17 +197,29 @@ void main() {
     }
 
     if (t1 > t0) {
-      const int STEPS = 56;
+      // 32 steps, not 56. The march is the single most expensive thing in the
+      // frame -- steps x (2 slab evaluations + 4 light steps) x a 4-octave fbm
+      // is roughly 18k hash evaluations per pixel, and at full resolution that
+      // is what took Istanbul to half a frame per second.
+      const int STEPS = 32;
       float dt = (t1 - t0) / float(STEPS);
       // Dither the start to break up the banding a fixed step size produces.
-      // Static dither, not per-frame. A time-varying offset turns the march's
-      // banding into crawling salt-and-pepper, which is more distracting than
-      // the banding it removes.
-      float jitter = hash13(vec3(gl_FragCoord.xy, 0.0));
+      // Ordered (Bayer) dither, not a hash.
+      //
+      // The march needs its start offset jittered or the fixed step size shows
+      // as concentric banding. A per-pixel HASH does that but is spatially
+      // incoherent, and this pass runs at half resolution, so the upsample
+      // magnifies every speck into a 2x2 block -- the clouds came out looking
+      // like television static. An ordered 4x4 matrix decorrelates neighbouring
+      // pixels just as well while staying smooth under magnification.
+      ivec2 px = ivec2(gl_FragCoord.xy) & 3;
+      const float BAYER[16] = float[16](
+         0.0,  8.0,  2.0, 10.0,
+        12.0,  4.0, 14.0,  6.0,
+         3.0, 11.0,  1.0,  9.0,
+        15.0,  7.0, 13.0,  5.0);
+      float jitter = BAYER[px.y * 4 + px.x] * (1.0 / 16.0);
       float t = t0 + dt * jitter;
-
-      vec3 transmittance = vec3(1.0);
-      vec3 scattered = vec3(0.0);
 
       float cosSun = dot(rd, uSunDir);
       // Two lobes: a strong forward one for the silver lining looking toward
@@ -214,7 +228,7 @@ void main() {
 
       for (int i = 0; i < STEPS; i++) {
         if (t > t1) break;
-        if (transmittance.g < 0.02) break;
+        if (through.g < 0.02) break;
 
         vec3 p = uCameraPos + rd * t;
         float dens = cloudDensity(p);
@@ -234,11 +248,11 @@ void main() {
           const float SIGMA_VIEW = 0.012;
 
           float shadow = 0.0;
-          for (int j = 0; j < 4; j++) {
+          for (int j = 0; j < 3; j++) {
             vec3 sp = p + uSunDir * (LIGHT_STEP * (float(j) + 0.5));
             shadow += cloudDensity(sp);
           }
-          float sunT = exp(-shadow * LIGHT_STEP * SIGMA_LIGHT);
+          float sunT = exp(-shadow * LIGHT_STEP * SIGMA_LIGHT * (4.0 / 3.0));
 
           // Powder: the dark cores of a cloud seen against the light. Without
           // it clouds look like cotton wool with no interior.
@@ -257,13 +271,12 @@ void main() {
           // Fade the deck out toward the march limit so it does not end in a
           // hard line across the sky at the far clip.
           lum *= smoothstep(170000.0, 95000.0, t);
-          scattered += transmittance * lum * (1.0 - stepT.g);
-          transmittance *= stepT;
+          scattered += through * lum * (1.0 - stepT.g);
+          through *= stepT;
         }
         t += dt;
       }
 
-      scene = scene * transmittance + scattered;
     }
   }
 
@@ -282,16 +295,38 @@ void main() {
       veil *= smoothstep(0.02, 0.25, rd.y);
       vec3 lit = uSunColor * uSunIntensity * uSunSurfaceCloud * 2.2 + uAmbient * 1.2;
       float a = veil * 0.55 * uHighCover;
-      scene = mix(scene, lit, a);
+      scattered = scattered * (1.0 - a) + lit * a;
+      through *= (1.0 - a);
     }
   }
 
-  fragColor = vec4(present(scene), 1.0);
+  // rgb: light added by cloud. a: fraction of the world still visible.
+  fragColor = vec4(scattered, through.g);
+}
+`;
+
+const PRESENT_FRAG = /* glsl */ `
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+
+${TONEMAP_GLSL}
+
+uniform sampler2D uScene;
+uniform sampler2D uCloud;
+
+void main() {
+  vec3 scene = texture(uScene, vUv).rgb;
+  // Bilinear upsample of the half-resolution cloud buffer. Clouds are soft and
+  // low-frequency, so the interpolation costs nothing visually; the pass they
+  // come from is the most expensive in the frame and quartering its pixel count
+  // is the largest single saving available.
+  vec4 cloud = texture(uCloud, vUv);
+  fragColor = vec4(present(scene * cloud.a + cloud.rgb), 1.0);
 }
 `;
 
 export interface CompositeUniforms extends Record<string, THREE.IUniform> {
-  uScene: THREE.IUniform<THREE.Texture | null>;
   uDepth: THREE.IUniform<THREE.Texture | null>;
   uInvProj: THREE.IUniform<THREE.Matrix4>;
   uInvProj2: THREE.IUniform<THREE.Matrix4>;
@@ -318,14 +353,37 @@ export interface CompositeUniforms extends Record<string, THREE.IUniform> {
   uMultiScatter: THREE.IUniform<number>;
 }
 
+function fullscreenGeometry(): THREE.BufferGeometry {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(9), 3));
+  geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
+  return geo;
+}
+
+/**
+ * Two passes: clouds raymarched at HALF resolution, then a full-resolution
+ * present that folds them over the scene and applies the tone curve.
+ *
+ * Splitting them is what makes the cloud cost affordable. Marched at full
+ * resolution the pass dominated the frame regardless of how much cloud there
+ * actually was; at half resolution it costs a quarter as many pixels, and
+ * clouds are soft enough that the upsample is invisible.
+ */
 export class Composite {
   readonly scene = new THREE.Scene();
+  readonly presentScene = new THREE.Scene();
   readonly camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   readonly uniforms: CompositeUniforms;
+  readonly presentUniforms: {
+    uScene: THREE.IUniform<THREE.Texture | null>;
+    uCloud: THREE.IUniform<THREE.Texture | null>;
+    uExposure: THREE.IUniform<number>;
+  };
 
-  constructor() {
+  private cloudTarget: THREE.WebGLRenderTarget;
+
+  constructor(renderer: THREE.WebGLRenderer) {
     this.uniforms = {
-      uScene: { value: null },
       uDepth: { value: null },
       uInvProj: { value: new THREE.Matrix4() },
       uInvProj2: { value: new THREE.Matrix4() },
@@ -352,11 +410,7 @@ export class Composite {
       uMultiScatter: { value: 0.055 },
     };
 
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(9), 3));
-    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
-
-    const mat = new THREE.RawShaderMaterial({
+    const cloudMat = new THREE.RawShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
       uniforms: this.uniforms,
@@ -364,10 +418,57 @@ export class Composite {
       depthTest: false,
       depthWrite: false,
     });
+    const cloudMesh = new THREE.Mesh(fullscreenGeometry(), cloudMat);
+    cloudMesh.frustumCulled = false;
+    this.scene.add(cloudMesh);
 
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.frustumCulled = false;
-    this.scene.add(mesh);
+    this.presentUniforms = {
+      uScene: { value: null },
+      uCloud: { value: null },
+      uExposure: { value: 1 },
+    };
+    const presentMat = new THREE.RawShaderMaterial({
+      vertexShader: VERT,
+      fragmentShader: PRESENT_FRAG,
+      uniforms: this.presentUniforms as unknown as Record<string, THREE.IUniform>,
+      glslVersion: THREE.GLSL3,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const presentMesh = new THREE.Mesh(fullscreenGeometry(), presentMat);
+    presentMesh.frustumCulled = false;
+    this.presentScene.add(presentMesh);
+
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    this.cloudTarget = new THREE.WebGLRenderTarget(
+      Math.max(1, Math.floor(size.x / 2)),
+      Math.max(1, Math.floor(size.y / 2)),
+      {
+        type: THREE.HalfFloatType,
+        format: THREE.RGBAFormat,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        depthBuffer: false,
+        stencilBuffer: false,
+      },
+    );
+  }
+
+  resize(renderer: THREE.WebGLRenderer): void {
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    this.cloudTarget.setSize(Math.max(1, Math.floor(size.x / 2)), Math.max(1, Math.floor(size.y / 2)));
+  }
+
+  /** Cloud pass into the half-res target, then present to the screen. */
+  render(renderer: THREE.WebGLRenderer, sceneColour: THREE.Texture, depth: THREE.Texture | null): void {
+    this.uniforms.uDepth.value = depth;
+    renderer.setRenderTarget(this.cloudTarget);
+    renderer.render(this.scene, this.camera);
+
+    this.presentUniforms.uScene.value = sceneColour;
+    this.presentUniforms.uCloud.value = this.cloudTarget.texture;
+    renderer.setRenderTarget(null);
+    renderer.render(this.presentScene, this.camera);
   }
 
   update(camera: THREE.PerspectiveCamera, wx: Weather, light: SceneLighting, timeSec: number): void {

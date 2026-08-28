@@ -117,10 +117,26 @@ export class Aircraft {
     this.syncQuaternion();
   }
 
-  private syncQuaternion(): void {
-    // Heading about +y, then pitch, then bank. Applied in that order so bank is
-    // about the aircraft's own longitudinal axis rather than the world's.
-    const e = new THREE.Euler(this.pitchAngle, this.heading, this.bank, "YXZ");
+  /**
+   * Heading about +y, then pitch, then bank, in that order so bank is about the
+   * aircraft's own longitudinal axis rather than the world's.
+   *
+   * Turbulence enters here as an offset on the commanded attitude rather than
+   * being written into it, so the stored attitude stays exactly what the pilot
+   * asked for and the chop cannot integrate.
+   */
+  private syncQuaternion(turbBank = 0, turbPitch = 0): void {
+    // The roll term is NEGATED. The aircraft's forward axis is -z, and a
+    // positive rotation about +z carries +x (the right wing) toward +y -- i.e.
+    // upward. So a positive `bank`, which the turn model treats as a RIGHT
+    // bank, was drawn as a left one: the aircraft rolled away from the
+    // direction it was turning, and the camera rolled with it.
+    const e = new THREE.Euler(
+      this.pitchAngle + turbPitch,
+      this.heading,
+      -(this.bank + turbBank),
+      "YXZ",
+    );
     this.quaternion.setFromEuler(e);
   }
 
@@ -171,14 +187,30 @@ export class Aircraft {
     // A calm day is glassy; a 25 kt gust spread makes the aircraft work.
     this.turbPhase += dt;
     let bumpY = 0;
+    let turbBank = 0;
+    let turbPitch = 0;
     if (this.gustiness > 0.3) {
       const g = this.gustiness;
-      bumpY = Math.sin(this.turbPhase * 2.7) * Math.sin(this.turbPhase * 0.9 + 1.3) * g * 0.35;
-      this.bank += Math.sin(this.turbPhase * 1.7 + 0.7) * g * 0.0055 * dt * 60;
-      this.pitchAngle += Math.sin(this.turbPhase * 2.1) * g * 0.0022 * dt * 60;
+      const p = this.turbPhase;
+
+      // Turbulence is a BOUNDED OFFSET on the attitude, not a rate added to it.
+      //
+      // Integrating it was the bug: `bank += sin(t) * g * 0.0055 * dt * 60` is a
+      // roll RATE of 0.33*g rad/s, which for an ordinary gust spread is ~40
+      // degrees per second cycling every few seconds. The aircraft rocked
+      // continuously and fought its own wings-level damping, which is a
+      // resonance, not weather. An offset cannot accumulate and cannot resonate
+      // with the self-levelling, and its magnitude is exactly what you specify.
+      //
+      // Two incommensurable frequencies per axis so the motion never repeats on
+      // an obvious beat. At a 10 m/s gust spread this is about 3 degrees of
+      // bank and 1.5 of pitch, which is light chop.
+      turbBank = Math.sin(p * 1.7 + 0.7) * Math.sin(p * 0.41 + 1.9) * g * 0.0105;
+      turbPitch = Math.sin(p * 2.1) * Math.sin(p * 0.33 + 0.4) * g * 0.0050;
+      bumpY = Math.sin(p * 2.7) * Math.sin(p * 0.9 + 1.3) * g * 0.25;
     }
 
-    this.syncQuaternion();
+    this.syncQuaternion(turbBank, turbPitch);
 
     // --- Integrate ------------------------------------------------------
     // Airspeed vector in world axes, from the aircraft's own attitude.
@@ -200,4 +232,37 @@ export class Aircraft {
     }
     if (this.position.y > 12000) this.position.y = 12000;
   }
+}
+
+/**
+ * Pick a starting altitude that is not inside a cloud.
+ *
+ * The city's `startAlt` is chosen for how the place looks, with no knowledge of
+ * the weather -- so on a day with a low deck the aircraft spawned inside it and
+ * the first thing you saw was a featureless grey white-out. Istanbul with a 425
+ * m base and the stock 600 m start did exactly that.
+ *
+ * Preference order: under the deck if there is usable room beneath it, else
+ * above its top, else the city default. "Usable room" is generous about ground
+ * clearance because these are sightseeing altitudes, not approach minima.
+ */
+export function chooseStartAltitude(
+  preferredAgl: number,
+  groundY: number,
+  deck: { cover: number; base: number; top: number },
+): number {
+  const wanted = groundY + preferredAgl;
+  // A thin or broken deck is scenery to fly among, not an obstacle.
+  if (deck.cover < 0.4) return wanted;
+
+  const inDeck = wanted > deck.base - 120 && wanted < deck.top + 120;
+  if (!inDeck) return wanted;
+
+  // Room underneath? Leave 150 m of clearance below the base and 250 m above
+  // the ground.
+  const under = deck.base - 150;
+  if (under > groundY + 250) return Math.max(groundY + 250, under);
+
+  // Otherwise climb on top, where a deck is at its best anyway.
+  return deck.top + 320;
 }

@@ -82,11 +82,14 @@ export class ChaseCam {
 
     // Roll the camera a fraction of the aircraft's bank. None at all feels
     // detached; all of it is nauseating.
+    //
+    // Taken from the aircraft's OWN up vector rather than rebuilt from its bank
+    // angle. Rebuilding it meant the sign convention was written down twice,
+    // and when the aircraft's roll sign was wrong the camera reproduced the
+    // error faithfully instead of revealing it.
     const bankShare = this.mode === "cockpit" ? 0.9 : 0.30;
-    const rolled = new THREE.Vector3(0, 1, 0).applyAxisAngle(
-      new THREE.Vector3(0, 0, -1).applyQuaternion(ac.quaternion),
-      ac.bankDeg * (Math.PI / 180) * bankShare,
-    );
+    const acUp = new THREE.Vector3(0, 1, 0).applyQuaternion(ac.quaternion);
+    const rolled = new THREE.Vector3(0, 1, 0).lerp(acUp, bankShare).normalize();
     this.up.lerp(rolled, 1 - Math.pow(0.01, dt));
 
     cam.position.copy(this.pos);

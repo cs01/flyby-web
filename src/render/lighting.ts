@@ -88,7 +88,7 @@ export function computeLighting(solar: SolarState, wx: Weather): SceneLighting {
     ambient,
     night,
     // Sodium/LED orange, and weak -- it is a fill light, not a light source.
-    nightGlow: new THREE.Color(0.075, 0.055, 0.036).multiplyScalar(night),
+    nightGlow: new THREE.Color(0.040, 0.030, 0.021).multiplyScalar(night),
     wetness,
     snow,
     mieG: 0.62 + 0.22 * Math.max(0, Math.min(1, (wx.humidity - 30) / 60)),
