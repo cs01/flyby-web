@@ -22,10 +22,19 @@ export type CameraMode = "chase" | "cockpit" | "wing" | "orbit";
 export const CAMERA_MODES: CameraMode[] = ["chase", "cockpit", "wing", "orbit"];
 
 const OFFSETS: Record<CameraMode, THREE.Vector3> = {
-  // Close. At 26 m plus the speed stretch the aeroplane sat ~37 m out and read
-  // as a model of itself in the middle of the frame; the shot is about the
-  // aeroplane over the city, and it has to be big enough to be the subject.
-  chase: new THREE.Vector3(0, 4.6, 16),
+  // Close, and slightly above, so the shot looks down onto the wing.
+  //
+  // The aeroplane is the subject and it has to be big enough to be one. At
+  // 16 m plus the old speed stretch it sat ~26 m out, where an 11 m span fills
+  // about a third of the frame and reads as a model of itself. At 10 m plus
+  // the gentler stretch below it sits ~16 m out and fills nearer three fifths,
+  // which is close enough to see the livery and the gear.
+  //
+  // y is above the wing (the airframe spans -1.2..2.1 m about its origin), so
+  // the camera looks slightly DOWN on it and the city stays in the frame
+  // behind. Lower than this and the wing hides the ground; higher and it turns
+  // into a map view.
+  chase: new THREE.Vector3(0, 3.5, 10),
   cockpit: new THREE.Vector3(0, 0.55, -1.1),
   wing: new THREE.Vector3(11, 2.0, 5),
   orbit: new THREE.Vector3(0, 40, 120),
@@ -68,7 +77,10 @@ export class ChaseCam {
 
     // Pull back with speed. A fixed offset makes a hover and a 100 kt run look
     // identical; a few metres of stretch is most of what sells the difference.
-    const want = ac.groundSpeed * 0.13;
+    // Gentler than it was: at the old rate the stretch alone was two thirds of
+    // the standoff at cruise, which undid the close framing exactly when the
+    // aeroplane was most worth looking at.
+    const want = ac.groundSpeed * 0.07;
     this.speedPullback += (want - this.speedPullback) * (1 - Math.pow(0.02, dt));
     if (this.mode === "chase") desiredOffset.z += this.speedPullback;
 

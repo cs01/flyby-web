@@ -403,7 +403,8 @@ function makeUniforms(): BuildingUniforms {
   };
 }
 
-interface Scratch {
+/** Exported so test/roof.check.ts can gate the real geometry, not a copy. */
+export interface Scratch {
   pos: number[];
   nrm: number[];
   uv: number[];
@@ -411,11 +412,11 @@ interface Scratch {
   idx: number[];
 }
 
-function emptyScratch(): Scratch {
+export function emptyScratch(): Scratch {
   return { pos: [], nrm: [], uv: [], info: [], idx: [] };
 }
 
-function addBuilding(s: Scratch, b: Building, groundY: number, seed: number): void {
+export function addBuilding(s: Scratch, b: Building, groundY: number, seed: number): void {
   const n = b.ring.length / 2;
   if (n < 3) return;
 
@@ -474,7 +475,21 @@ function addBuilding(s: Scratch, b: Building, groundY: number, seed: number): vo
       s.uv.push(b.ring[i * 2], b.ring[i * 2 + 1]);
       s.info.push(seed, kind, 1, b.topM - b.baseM);
     }
-    for (let i = 0; i < tri.length; i++) s.idx.push(v0 + tri[i]);
+    // REVERSED against the ring's own winding, and that is not a typo.
+    //
+    // `triangulate` takes a ring that is counter-clockwise in (x, z) and hands
+    // back triangles in that same order. Lifted into 3D with y up, a ring that
+    // is counter-clockwise in (x, z) winds CLOCKWISE seen from above, so those
+    // triangles face STRAIGHT DOWN. With THREE.FrontSide that culls every roof
+    // when you look at the city from the air, and a city of open-topped boxes
+    // is exactly what it sounds like -- measured at 99.8% of roof triangles on
+    // the Manhattan pack before this line was reversed.
+    //
+    // The walls hit the same trap and carry their own note above.
+    // test/roof.check.ts is the gate; it fails if this flips back.
+    for (let i = 0; i + 2 < tri.length; i += 3) {
+      s.idx.push(v0 + tri[i], v0 + tri[i + 2], v0 + tri[i + 1]);
+    }
   }
 }
 
