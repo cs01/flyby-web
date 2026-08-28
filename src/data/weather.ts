@@ -143,7 +143,7 @@ const WMO: Record<number, string> = {
  * and pass most of the beam. Measured against the obvious sanity check: a
  * cirrus-only overcast must still cast shadows on the ground.
  */
-function beamOpacity(low: number, mid: number, high: number): number {
+export function beamOpacity(low: number, mid: number, high: number): number {
   return 1 - (1 - 0.92 * low) * (1 - 0.60 * mid) * (1 - 0.28 * high);
 }
 

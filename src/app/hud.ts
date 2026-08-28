@@ -143,12 +143,13 @@ export class Hud {
    * is the number that composes: "the cloud march costs 4 ms" is actionable,
    * "fps dropped from 60 to 48" is not.
    */
-  setPerf(fps: number, ms: number, triangles: number, scale: number): void {
+  setPerf(fps: number, ms: number, triangles: number, scale: number, banding: number): void {
     const q = scale < 0.999 ? `<div class="row"><span>scale</span><b>${scale.toFixed(2)}x</b></div>` : "";
     this.perfPanel.style.display = "";
     this.perfPanel.innerHTML = `
       <div class="row"><span>${fps.toFixed(0)} fps</span><b>${ms.toFixed(1)} ms</b></div>
-      <div class="row"><span>tris</span><b>${(triangles / 1000).toFixed(0)}k</b></div>${q}`;
+      <div class="row"><span>tris</span><b>${(triangles / 1000).toFixed(0)}k</b></div>
+      <div class="row"><span>band</span><b>${banding.toFixed(2)}</b></div>${q}`;
   }
 
   /** Transient toast, used for the pitch-axis toggle. */
