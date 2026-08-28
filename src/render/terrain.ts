@@ -89,6 +89,8 @@ uniform float uNight;
 uniform float uSunSurface;
 uniform float uDebug;
 uniform vec3 uNightGlow;
+uniform sampler2D uUrban;
+uniform float uUrbanExtent;
 
 float hash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -165,36 +167,51 @@ void main() {
   // City lights at night, keyed to how built-up the drape looks. Grey, bright
   // and low-saturation pixels are roads and roofs; vegetation and water are not.
   if (uNight > 0.01) {
-    // Street lighting.
+    // Street lighting, gated by the URBAN MASK -- a coverage grid built from the
+    // actual building footprints, not inferred from the daylight drape. The
+    // drape cannot answer "is this built up": it is bright and desaturated over
+    // beach, bare hill and runway alike, so every threshold either lit the whole
+    // map or none of it.
+    vec2 mUv = vWorld.xz / (2.0 * uUrbanExtent) + 0.5;
+    float urban = texture(uUrban, mUv).r;
+    urban *= step(0.0, mUv.x) * step(mUv.x, 1.0) * step(0.0, mUv.y) * step(mUv.y, 1.0);
+
+    // Night from the air is DISCRETE LIGHTS with black between them, not a lit
+    // surface. Speckled on a ~26 m lattice with only a fraction of cells lit, so
+    // the peak reads as a lamp while the average stays near black. Far away the
+    // speckle converges to its own mean, or it would alias into crawling noise.
+    // Lamps are POINTS inside their cell, not the whole cell.
     //
-    // The drape is a DAYLIGHT PHOTOGRAPH. Any broad wash over it reads as that
-    // photograph dimmed and tinted, never as night -- which is exactly what a
-    // strong version of this term produced: the whole of San Francisco glowing
-    // sepia, beaches and hillsides included, because Esri's imagery is bright
-    // and desaturated nearly everywhere and the "is this urban" gate passed it
-    // all.
-    //
-    // Night from the air is not a lit surface, it is DISCRETE LIGHTS with black
-    // between them. So the term is speckled on a ~26 m lattice and only a
-    // fraction of cells are lit: the peak is bright enough to read as a lamp
-    // while the average stays near black. Far away the speckle converges to its
-    // own mean, for the same reason the building windows do -- below a pixel it
-    // would alias into crawling noise.
-    float lum = dot(albedo, vec3(0.299, 0.587, 0.114));
-    float sat = max(max(albedo.r, albedo.g), albedo.b) - min(min(albedo.r, albedo.g), albedo.b);
-    float urban = smoothstep(0.20, 0.44, lum) * smoothstep(0.24, 0.05, sat);
+    // Filling the cell made a lattice of glowing rectangles -- from the air it
+    // read as luminous paving rather than street lighting. A soft dot at a
+    // jittered position within each chosen cell reads as a light, and the
+    // jitter stops the grid itself from being visible.
+    const float LAMP_SPACING = 30.0;
+    const float LAMP_FRACTION = 0.22;
+    // Mean of the dot kernel over a cell, for the far field.
+    const float LAMP_MEAN = LAMP_FRACTION * 0.17;
 
-    const float LAMP_FRACTION = 0.26;
-    float detail = smoothstep(5000.0, 1200.0, vViewDist);
-    float cell = hash21(floor(vWorld.xz * (1.0 / 26.0)));
-    float lamps = mix(LAMP_FRACTION, step(1.0 - LAMP_FRACTION, cell), detail);
+    float detail = smoothstep(4500.0, 900.0, vViewDist);
+    vec2 g = vWorld.xz * (1.0 / LAMP_SPACING);
+    vec2 gi = floor(g);
+    vec2 gf = fract(g);
+    float pick = hash21(gi);
+    float dot_ = 0.0;
+    if (pick < LAMP_FRACTION) {
+      vec2 jit = vec2(hash21(gi + 11.1), hash21(gi + 27.3));
+      float d = length(gf - jit);
+      dot_ = exp(-d * d * 18.0);
+    }
+    float lamps = mix(LAMP_MEAN, dot_, detail);
 
-    lit += vec3(1.0, 0.72, 0.40) * lamps * urban * uNight * 0.20;
+    lit += vec3(1.0, 0.76, 0.44) * lamps * urban * uNight * 1.15;
 
-    // Skyglow, weighted to built-up ground and nearly monochrome: at this
-    // light level the eye takes almost no colour off a surface.
-    float grey = lum;
-    lit += mix(vec3(grey), albedo, 0.30) * uNightGlow * (0.22 + 0.78 * urban);
+    // Skyglow on the built-up ground only, and nearly monochrome: at this light
+    // level the eye takes almost no colour off a surface, and carrying the
+    // drape's daytime hue through is what made the city look like a dimmed
+    // photograph rather than a dark place with lights in it.
+    float grey = dot(albedo, vec3(0.299, 0.587, 0.114));
+    lit += mix(vec3(grey), albedo, 0.25) * uNightGlow * urban * 0.85;
   }
 
   // Aerial perspective: the same integral the sky uses, over the distance to
@@ -231,6 +248,8 @@ export interface TerrainUniforms extends Record<string, THREE.IUniform> {
   uSnow: THREE.IUniform<number>;
   uNight: THREE.IUniform<number>;
   uNightGlow: THREE.IUniform<THREE.Color>;
+  uUrban: THREE.IUniform<THREE.Texture | null>;
+  uUrbanExtent: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
   uSunSurface: THREE.IUniform<number>;
   uDebug: THREE.IUniform<number>;
@@ -252,6 +271,8 @@ export function makeTerrainUniforms(): TerrainUniforms {
     uSnow: { value: 0 },
     uNight: { value: 0 },
     uNightGlow: { value: new THREE.Color(0, 0, 0) },
+    uUrban: { value: null },
+    uUrbanExtent: { value: 1 },
     uExposure: { value: 1 },
     uSunSurface: { value: 0.105 },
     uDebug: { value: 0 },

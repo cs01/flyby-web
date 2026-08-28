@@ -26,6 +26,7 @@ import { Plane } from "./render/plane";
 import { Tour, Beacon } from "./sim/tour";
 import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
+import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { Composite } from "./render/composite";
 
 function chooseCity(): City | null {
@@ -125,6 +126,15 @@ async function main() {
     );
   } else {
     console.warn(`[flyby] no building pack for ${city.id}; run: bun tools/bake-city.ts --city ${city.id}`);
+  }
+
+  // Where the city actually is, for night lighting. A place with no pack gets
+  // an all-dark mask: unlit open country is a more honest answer than guessing
+  // from the daylight imagery and lighting up the whole map.
+  const urban: UrbanMask = pack ? buildUrbanMask(pack) : emptyUrbanMask();
+  for (const u of terrain.uniforms) {
+    u.uUrban.value = urban.texture;
+    u.uUrbanExtent.value = urban.extent;
   }
 
   const wx: Weather = await wxPromise;
