@@ -50,8 +50,7 @@ html, body {
 }
 
 .hud-tl { top: 14px; left: 14px; }
-/* Clear of the layer switches, which own the top of this column now. */
-.hud-tr { top: 232px; right: 14px; text-align: right; }
+.hud-tr { top: 14px; right: 14px; text-align: right; }
 .hud-bl { bottom: 14px; left: 14px; }
 .hud-br { bottom: 14px; right: 14px; text-align: right; }
 
@@ -458,18 +457,81 @@ html, body {
   margin-top: -8px;
 }
 
+.label b {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .label b { font-weight: 500; color: var(--ink); }
 .label i { font-style: normal; font-size: 10px; color: var(--accent); }
 .label.done { opacity: 0.45; }
 .label.done i { color: var(--dim); }
 
+/* --- Places to fly to ---------------------------------------------------- */
+
+/* Bottom left, opposite the route. The route is where you are being sent and
+   this is where you could go, and they are different enough questions to want
+   different corners. */
+.hud-places {
+  bottom: 14px;
+  left: 14px;
+  max-width: 230px;
+  max-height: 46vh;
+  overflow-y: auto;
+  pointer-events: auto;
+  text-align: left;
+}
+
+.places-list { display: flex; flex-direction: column; }
+
+.place-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* A gutter every row pays for, whether or not it has a marker in it. The
+   marker used to be inserted only on the engaged row, which pushed that one
+   name right and left every other name starting somewhere else -- a list that
+   re-aligns itself as you fly is a list you cannot scan. */
+.place-row::before {
+  content: "\25B8";
+  flex: none;
+  width: 9px;
+  color: transparent;
+}
+
+.place-row span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-row i { font-style: normal; font-size: 10px; flex: none; }
+.place-row:hover span { color: var(--ink); }
+
+/* Engaged. The marker is on the row rather than a separate panel, because the
+   question "where am I going" is answered by the list you picked from. */
+.place-row.on span { color: var(--accent); }
+.place-row.on::before { color: var(--accent); }
+
 /* --- Layer switches ------------------------------------------------------ */
 
-/* Under the back button, because that is the corner that is already about
-   leaving rather than about flying. */
+/* Left column, under the place card. The right column belongs to the weather,
+   which is a panel that GROWS -- a summary line, a temperature and a cloud
+   row -- so anything parked above it is a collision waiting for a cloudy day.
+   The left column is a fixed two lines and has the room. */
 .hud-layers {
-  top: 58px;
-  right: 14px;
+  top: 92px;
+  left: 14px;
+  right: auto;
   text-align: left;
   pointer-events: auto;
 }

@@ -11,7 +11,6 @@
 
 export interface LayerState {
   landmarks: boolean;
-  route: boolean;
   instruments: boolean;
   weather: boolean;
 }
@@ -20,14 +19,12 @@ const KEY = "flyby.layers";
 
 const DEFAULTS: LayerState = {
   landmarks: true,
-  route: true,
   instruments: true,
   weather: true,
 };
 
 const ROWS: [keyof LayerState, string][] = [
   ["landmarks", "Landmarks"],
-  ["route", "Route"],
   ["instruments", "Instruments"],
   ["weather", "Weather"],
 ];
@@ -78,9 +75,6 @@ export class Layers {
 
   get landmarks(): boolean {
     return this.state.landmarks;
-  }
-  get route(): boolean {
-    return this.state.route;
   }
   get instruments(): boolean {
     return this.state.instruments;

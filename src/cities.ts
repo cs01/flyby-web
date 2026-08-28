@@ -54,6 +54,17 @@ export interface City {
 export const CITIES: City[] = [
   // --- Africa --------------------------------------------------------------
   {
+    id: "cairo", name: "Cairo", country: "Egypt", continent: "Africa",
+    lat: 29.9860, lon: 31.1500, radius: 7000, approach: 250, startAlt: 700,
+    landmarks: [
+      { name: "Great Pyramid of Giza", lat: 29.9792, lon: 31.1342, height: 139 },
+      { name: "Great Sphinx", lat: 29.9753, lon: 31.1376, height: 20 },
+      { name: "Pyramid of Khafre", lat: 29.9761, lon: 31.1308, height: 136 },
+      { name: "Saqqara", lat: 29.8712, lon: 31.2165, height: 62 },
+      { name: "Nile at Giza", lat: 30.0100, lon: 31.2200, height: 15 },
+    ],
+  },
+  {
     id: "capetown", name: "Cape Town", country: "South Africa", continent: "Africa",
     lat: -33.9249, lon: 18.4241, radius: 8000, approach: 340, startAlt: 900,
     landmarks: [
@@ -62,6 +73,17 @@ export const CITIES: City[] = [
       { name: "V&A Waterfront", lat: -33.9036, lon: 18.4197, height: 30 },
       { name: "Signal Hill", lat: -33.9153, lon: 18.4030, height: 350 },
       { name: "Green Point Stadium", lat: -33.9036, lon: 18.4110, height: 55 },
+    ],
+  },
+  {
+    id: "marrakesh", name: "Marrakesh", country: "Morocco", continent: "Africa",
+    lat: 31.6250, lon: -7.9890, radius: 6000, approach: 200, startAlt: 600,
+    landmarks: [
+      { name: "Koutoubia Mosque", lat: 31.6236, lon: -7.9930, height: 77 },
+      { name: "Jemaa el-Fnaa", lat: 31.6258, lon: -7.9891, height: 20 },
+      { name: "Bahia Palace", lat: 31.6216, lon: -7.9832, height: 20 },
+      { name: "Menara Gardens", lat: 31.6139, lon: -8.0227, height: 20 },
+      { name: "Badi Palace", lat: 31.6180, lon: -7.9860, height: 25 },
     ],
   },
   // --- Asia ----------------------------------------------------------------

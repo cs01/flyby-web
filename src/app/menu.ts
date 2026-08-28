@@ -8,6 +8,7 @@
 // than twenty-four.
 
 import { CITIES, CONTINENTS, type City } from "../cities";
+import { fetchJson, TTL_WEATHER, TTL_STATIC } from "../data/cache";
 import { searchPlaces, type SearchHit } from "../data/place";
 import { getUnits, setUnits, formatTemp } from "./units";
 
@@ -58,9 +59,11 @@ async function fetchAllWeather(cities: City[]): Promise<(CardWeather | null)[]> 
     `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}` +
     `&current=temperature_2m,weather_code,is_day,cloud_cover&timezone=auto`;
   try {
-    const res = await fetch(url, { mode: "cors", credentials: "omit" });
-    if (!res.ok) throw new Error(String(res.status));
-    const j = (await res.json()) as OMEntry[] | OMEntry;
+    // Through the SAME IndexedDB cache every tile uses, on the weather TTL.
+    // This was a bare fetch, so every visit to the picker -- including every
+    // bounce back from a flight -- was a fresh round trip to Open-Meteo for
+    // numbers that change hourly. Nothing else in the app was that impolite.
+    const j = await fetchJson<OMEntry[] | OMEntry>(url, TTL_WEATHER);
     // A single-city request answers with an object rather than an array.
     const arr = Array.isArray(j) ? j : [j];
     return cities.map((_, i) => {
@@ -90,9 +93,7 @@ function localTime(offsetSec: number): string {
 /** Cities that have a baked building pack, so the card can say so. */
 async function fetchSkylineIndex(): Promise<Set<string>> {
   try {
-    const res = await fetch(`${import.meta.env.BASE_URL}cities/index.json`);
-    if (!res.ok) return new Set();
-    const ids = (await res.json()) as string[];
+    const ids = await fetchJson<string[]>(`${import.meta.env.BASE_URL}cities/index.json`, TTL_STATIC);
     return new Set(ids);
   } catch {
     return new Set();
@@ -248,7 +249,7 @@ export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon
         <h1>FLYBY</h1>
         <p>Fly real places under the weather that is happening there right now.</p>
         <div class="units">
-          <button data-u="f">&deg;F</button><button data-u="c">&deg;C</button>
+          <button data-u="imperial">Imperial</button><button data-u="metric">Metric</button>
         </div>
       </header>
       <div class="find-row"></div>
@@ -339,7 +340,7 @@ export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon
   };
   for (const b of root.querySelectorAll<HTMLButtonElement>(".units button")) {
     b.addEventListener("click", () => {
-      setUnits(b.dataset.u === "c" ? "c" : "f");
+      setUnits(b.dataset.u === "metric" ? "metric" : "imperial");
       paintUnits();
     });
   }

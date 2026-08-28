@@ -28,7 +28,6 @@ export class Hud {
   private wxPanel: HTMLDivElement;
   private placePanel: HTMLDivElement;
   private perfPanel: HTMLDivElement;
-  private tourPanel: HTMLDivElement;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -38,8 +37,7 @@ export class Hud {
     // ?fps. An empty panel still painted its own backdrop otherwise.
     this.perfPanel = el("hud hud-perf", "");
     this.perfPanel.style.display = "none";
-    this.tourPanel = el("hud hud-br", "");
-    root.append(this.placePanel, this.wxPanel, this.perfPanel, this.tourPanel);
+    root.append(this.placePanel, this.wxPanel, this.perfPanel);
 
     // On a phone these two are collapsed to their headings and expand on a tap.
     // At full height they cover a third of the sky each, and the sky is what
@@ -47,17 +45,20 @@ export class Hud {
     // The class is set unconditionally so a desktop window narrowed to a phone
     // width behaves the same way, rather than depending on what the window was
     // when the page loaded.
-    for (const panel of [this.wxPanel, this.tourPanel]) {
-      panel.classList.add("collapsible");
-      panel.addEventListener("click", () => panel.classList.toggle("open"));
-    }
+    this.wxPanel.classList.add("collapsible");
+    this.wxPanel.addEventListener("click", () => this.wxPanel.classList.toggle("open"));
 
     // An anchor so ctrl/cmd-click opens the picker in a new tab, like any link.
     const back = document.createElement("a");
     back.className = "back";
     back.textContent = "\u2190 cities";
     const backParams = new URLSearchParams(location.search);
+    // BOTH of the ways a place can be named. Dropping only `city` meant that
+    // from a searched or geolocated flight -- which is named by `at` -- the
+    // link resolved to the URL you were already on, so the button reloaded the
+    // same place instead of going back.
     backParams.delete("city");
+    backParams.delete("at");
     const q = backParams.toString();
     back.href = q ? `?${q}` : location.pathname;
     root.append(back);
@@ -150,24 +151,6 @@ export class Hud {
       <div class="row"><span>tris</span><b>${(triangles / 1000).toFixed(0)}k</b></div>${q}`;
   }
 
-  /**
-   * Route checklist. Shows what has been reached and what is next, with the
-   * per-leg time -- the leg time is what turns a checklist into a score.
-   */
-  setTour(marks: { name: string; collected: boolean; legSeconds: number }[], distanceM: number, finished: boolean): void {
-    const rows = marks.map((m, i) => {
-      const next = !m.collected && marks.slice(0, i).every((x) => x.collected);
-      const mark = m.collected ? "✓" : next ? "▸" : "·";
-      const time = m.collected
-        ? `${Math.floor(m.legSeconds / 60)}:${String(Math.floor(m.legSeconds % 60)).padStart(2, "0")}`
-        : next ? `${(distanceM / 1000).toFixed(1)} km` : "";
-      const cls = m.collected ? "done" : next ? "next" : "";
-      return `<div class="row ${cls}"><span>${mark} ${m.name}</span><b>${time}</b></div>`;
-    });
-    this.tourPanel.innerHTML =
-      `<h2>${finished ? "Route complete" : "Route"}</h2>${rows.join("")}`;
-  }
-
   /** Transient toast, used for the pitch-axis toggle. */
   toast(text: string): void {
     const d = el("landmark-flash", `<span>${text}</span>`);
@@ -203,8 +186,7 @@ export class Hud {
   }
 
   /** Which of the optional panels are drawn. Set from the layers checkboxes. */
-  setLayers(route: boolean, weather: boolean): void {
-    this.tourPanel.style.display = route ? "" : "none";
+  setLayers(weather: boolean): void {
     this.wxPanel.style.display = weather ? "" : "none";
   }
 

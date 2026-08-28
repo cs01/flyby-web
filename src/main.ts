@@ -25,7 +25,7 @@ import { Input } from "./sim/input";
 import { AircraftModel } from "./render/aircraftmodel";
 import { Osd } from "./app/osd";
 import { Timebar, LocalClock } from "./app/timebar";
-import { Tour, Beacon } from "./sim/tour";
+import { Beacon } from "./render/beacon";
 import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
@@ -34,6 +34,9 @@ import { Skyline } from "./sim/skyline";
 import { reverseGeocode, placeLabel } from "./data/place";
 import { Labels } from "./app/labels";
 import { Layers } from "./app/layers";
+import { Places, type PlaceRow } from "./app/places";
+import { Autopilot } from "./sim/autopilot";
+import { fetchNearby } from "./data/nearby";
 
 function chooseCity(): City | null {
   const params = new URLSearchParams(location.search);
@@ -233,7 +236,6 @@ async function main() {
     });
   }
 
-  const tour = new Tour(city, origin, terrain.heightAt);
   // Names on the beacons. The beam said "something is here" and nothing else,
   // which is the half of the question nobody was asking.
   const labels = new Labels(ui);
@@ -247,6 +249,55 @@ async function main() {
 
   const osd = new Osd(ui);
   const layers = new Layers(ui);
+
+  // Places you can fly to, and something that flies you there. A list you can
+  // only read is a list of things you now have to find by hand at a hundred
+  // knots over a city you have never seen from the air.
+  const autopilot = new Autopilot();
+  const places = new Places(ui, (p) => {
+    autopilot.engage({ name: p.name, x: p.x, z: p.z });
+    places.setActive(p.name);
+  });
+
+  // One list, nearest first, and no route.
+  //
+  // There used to be a five-landmark tour in a fixed order with a panel
+  // tracking your progress through it, which is a game about compliance rather
+  // than a sightseeing flight: it decided where you were going next. The list
+  // is now every named thing near you -- the city's curated landmarks and
+  // whatever Wikipedia knows is down there -- and clicking one points the
+  // aeroplane at it.
+  const curated: PlaceRow[] = city.landmarks.map((l) => {
+    const w = origin.toWorld(l.lat, l.lon);
+    return { name: l.name, x: w.x, z: w.z, topY: terrain.heightAt(w.x, w.z) + (l.height ?? 40) + 60 };
+  });
+  let nearby: PlaceRow[] = [...curated];
+  const sortedAt = { x: 0, z: 0 };
+  const sortByRange = () => {
+    sortedAt.x = ac.position.x;
+    sortedAt.z = ac.position.z;
+    nearby.sort(
+      (a, b) =>
+        Math.hypot(a.x - ac.position.x, a.z - ac.position.z) -
+        Math.hypot(b.x - ac.position.x, b.z - ac.position.z),
+    );
+    places.setPlaces(nearby);
+    places.setVisible(layers.landmarks);
+  };
+  sortByRange();
+
+  // Fired after the flight has started: discovery must never be able to delay
+  // it, and a failure is silent because the flight is the point.
+  void fetchNearby(city.lat, city.lon).then((found) => {
+    const seen = new Set(curated.map((c) => c.name));
+    for (const f of found) {
+      if (seen.has(f.name)) continue;
+      seen.add(f.name);
+      const w = origin.toWorld(f.lat, f.lon);
+      nearby.push({ name: f.name, x: w.x, z: w.z, topY: terrain.heightAt(w.x, w.z) + 120 });
+    }
+    sortByRange();
+  });
   const timebar = new Timebar(ui, {
     lat: city.lat,
     lon: city.lon,
@@ -299,7 +350,11 @@ async function main() {
     const dt = Math.min(0.05, clock.getDelta());
     elapsed += dt;
 
-    const axes = input.sample(dt);
+    const axes = autopilot.update(input.sample(dt), ac.position, ac.headingDeg);
+    if (autopilot.justArrived) {
+      hud.flashLandmark(autopilot.justArrived);
+      places.setActive(null);
+    }
 
     // --- Clock ------------------------------------------------------------
     // Every way of moving the clock funnels through `timebar.setOffset`, so the
@@ -340,20 +395,21 @@ async function main() {
     ac.setWeather(wx, ac.position.y);
     if (!input.paused) ac.update(axes, dt, groundUnderAc);
 
-    hud.setLayers(layers.route, layers.weather);
+    hud.setLayers(layers.weather);
     osd.root.style.display = layers.instruments ? "" : "none";
-    beacon.group.visible = beacon.group.visible && layers.landmarks;
+
     labels.visible = layers.landmarks;
+    places.setVisible(layers.landmarks);
+    // Above the thing, not on it: a label at ground level is behind the
+    // building it names as soon as you are lower than the roof.
     labels.update(
       camera,
-      tour.marks.map((m) => ({
-        name: m.name,
-        x: m.x,
-        // Above the thing, not on it: a label at ground level is behind the
-        // building it names as soon as you are lower than the roof.
-        y: m.groundY + (m.height ?? 40) + 60,
-        z: m.z,
-        done: m.collected,
+      nearby.map((p) => ({
+        name: p.name,
+        x: p.x,
+        y: p.topY,
+        z: p.z,
+        done: autopilot.target?.name === p.name,
       })),
     );
 
@@ -373,10 +429,17 @@ async function main() {
     model.group.visible = chase.mode !== "cockpit";
     model.update(dt, ac.throttle, axes.roll, ac.pitchDeg);
 
-    if (!input.paused) tour.update(ac.position, dt);
-    const tourDist = tour.distanceTo(ac.position);
-    beacon.update(tour.active, elapsed, tourDist);
-    if (tour.justCollected) hud.flashLandmark(tour.justCollected.name);
+    // The beam stands on wherever you asked to go, and nowhere at all when you
+    // have not asked. It used to mark the tour's next stop, which meant there
+    // was always a beam and it was always somebody else's idea.
+    const t = autopilot.target;
+    beacon.update(
+      t && layers.landmarks
+        ? { x: t.x, z: t.z, groundY: terrain.heightAt(t.x, t.z) }
+        : null,
+      elapsed,
+      t ? Math.hypot(t.x - ac.position.x, t.z - ac.position.z) : 0,
+    );
 
     const solar = solarState(now, city.lat, city.lon);
     const light = computeLighting(solar, wx);
@@ -487,9 +550,14 @@ async function main() {
     if (perfAccum > 0.4) {
       perfAccum = 0;
       if (showPerf) hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0, quality.scale);
-      hud.setTour(tour.marks, tourDist, tour.finished);
       hud.setWeather(wx, clockOffset);
       hud.setPlace(city, wallClock.parts(now).time, wallClock.abbrev(now));
+      places.update(ac.position.x, ac.position.z);
+      // Re-sorted only after a kilometre of travel. Sorting every tick would
+      // reorder the rows under the cursor while you were reaching for one.
+      if (Math.hypot(ac.position.x - sortedAt.x, ac.position.z - sortedAt.z) > 1000) {
+        sortByRange();
+      }
       timebar.update(now, solar.sun.altitude);
     }
   });
