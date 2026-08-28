@@ -30,6 +30,7 @@ import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { Composite } from "./render/composite";
+import { SunShadow } from "./render/sunshadow";
 import { Skyline } from "./sim/skyline";
 import { reverseGeocode, placeLabel } from "./data/place";
 import { Labels } from "./app/labels";
@@ -199,7 +200,13 @@ async function main() {
   const sky = new Sky();
   scene.add(sky.mesh);
 
-  const terrain = new Terrain(origin, fields, drapes);
+  // Sun shadows. Constructed before anything that reads them, because the
+  // cascade uniforms are spread by reference into the terrain and building
+  // materials at the moment those materials are created.
+  const sunShadow = new SunShadow();
+  if (new URLSearchParams(location.search).get("shadows") === "0") sunShadow.enabled = false;
+
+  const terrain = new Terrain(origin, fields, drapes, sunShadow.uniforms);
   scene.add(terrain.group);
 
   // Buildings. A city with no baked pack still flies, it just has no skyline,
@@ -211,7 +218,7 @@ async function main() {
   // rather than only over the ground under it.
   const skyline = new Skyline(pack, terrain.heightAt);
   if (pack) {
-    buildings = new Buildings(pack, terrain.heightAt);
+    buildings = new Buildings(pack, terrain.heightAt, sunShadow.uniforms);
     scene.add(buildings.group);
     console.log(
       `[flyby] buildings: ${buildings.stats.drawn} drawn, ` +
@@ -476,7 +483,10 @@ async function main() {
     model.group.quaternion.copy(ac.quaternion);
     // In the cockpit view the camera is INSIDE the aeroplane, so drawing it
     // fills the frame with the back of its own instrument panel.
-    model.group.visible = chase.mode !== "cockpit";
+    // Hidden in the seat, and hidden once the automatic descent into the seat
+    // is nearly complete -- past that the camera is inside the cabin and the
+    // airframe is a shell wrapped round the lens.
+    model.group.visible = chase.mode !== "cockpit" && chase.cockpitBlend < 0.9;
     model.update(dt, ac.throttle, axes.roll, ac.pitchDeg, axes.yaw);
 
     // The beam stands on wherever you asked to go, and nowhere at all when you
@@ -544,12 +554,16 @@ async function main() {
     p.uAmbient.value.copy(light.ambient);
     p.uCameraPos.value.copy(camera.position);
 
-    // The aircraft's own two passes: an environment probe, so the airframe
-    // reflects the real sky and ground it is flying through, and a self-shadow
-    // map, so the high wing lies across the cabin the way it does in every
-    // photograph of one. Both render the scene, and the sky is a full-screen
-    // triangle driven by camera UNIFORMS rather than by the camera it is handed
-    // -- so its matrices have to be put back before the main pass.
+    // The extra passes, in order: the sun's cascaded shadow maps over the whole
+    // city, then the aircraft's environment probe (so the airframe reflects the
+    // real sky and ground it is flying through) and its self-shadow map (so the
+    // high wing lies across the cabin the way it does in every photograph of
+    // one). All of them render the scene with a camera that is not the main
+    // one, and the sky is a full-screen triangle driven by camera UNIFORMS
+    // rather than by the camera it is handed -- so its matrices have to be put
+    // back before the main pass. The shadow cascades exclude the sky by layer;
+    // the probe cannot, which is what the onFace callback is for.
+    sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale);
     model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
     sky.syncCamera(camera);
 
@@ -654,6 +668,7 @@ async function main() {
   Object.assign(window as unknown as Record<string, unknown>, {
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, composite, ac, chase,
+      sunShadow,
       get wx() { return wx; },
       get time() { return now; },
       setOffsetHours: (h: number) => timebar.setOffset(h * 3600),

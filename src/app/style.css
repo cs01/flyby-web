@@ -437,7 +437,21 @@ html, body {
 
 /* Names on the things the beams are standing on. A beam said "something is
    here" and nothing else, which is the half of the question nobody asks. */
-.labels { position: absolute; inset: 0; pointer-events: none; }
+.labels { position: absolute; inset: 0; }
+
+/* #ui is a click-through layer and its children opt back IN via `#ui > *`.
+   That selector carries an id, so its specificity is (1,0,0) and a bare
+   `.labels { pointer-events: none }` at (0,1,0) silently LOSES.
+   The label overlay is transparent and spans the whole viewport, so it was
+   swallowing every click that landed on anything appended before it: the back
+   button, the city card and the weather panel. The checkboxes survived only
+   because they happen to be appended after it.
+   `#ui > .touch` further down was already written this way, for this reason.
+   An overlay that must stay click-through belongs in THIS list, not in its own
+   rule -- its own rule cannot win. */
+#ui > .labels,
+#ui > .osd,
+#ui > .attrib { pointer-events: none; }
 
 .label {
   position: absolute;

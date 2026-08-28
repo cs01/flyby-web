@@ -29,6 +29,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
+import { SHADOW_CASTER_LAYER } from "./sunshadow";
 
 /** Wing semi-span in metres. The real 182 is 10.97 m tip to tip. */
 export const SEMI_SPAN = 5.46;
@@ -542,6 +543,10 @@ export class AircraftModel {
       const mat = this.makeMaterial(surface, o.material);
       o.material = mat;
       o.layers.enable(AIRCRAFT_LAYER);
+      // The aeroplane casts onto the city too. It is three more small draws and
+      // its shadow crossing a roof is one of the few things that says the
+      // aircraft is actually IN the scene rather than pasted over it.
+      o.layers.enable(SHADOW_CASTER_LAYER);
       o.frustumCulled = false;
       this.materials.push(mat);
 
