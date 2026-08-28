@@ -24,6 +24,10 @@ export interface StitchedImage {
   canvas: OffscreenCanvas;
   /** The bbox actually covered, snapped out to whole tiles. */
   bbox: Bbox;
+  /** Tiles that never arrived, even after retries and the coarser fallback. */
+  missing: number;
+  /** Tiles filled from the parent zoom instead of their own level. */
+  coarse: number;
 }
 
 /**
@@ -48,25 +52,73 @@ export async function stitchImagery(bbox: Bbox, z: number): Promise<StitchedImag
 
   const n = 2 ** z;
   const jobs: Promise<void>[] = [];
+  let missing = 0;
+  let coarse = 0;
+
   for (let ty = y0; ty <= y1; ty++) {
     for (let tx = x0; tx <= x1; tx++) {
       const wx = ((tx % n) + n) % n;
-      const url = `${ESRI}/${z}/${ty}/${wx}`;
       const dx = (tx - x0) * TILE_PX;
       const dy = (ty - y0) * TILE_PX;
       jobs.push(
-        fetchImage(url)
-          .then((bmp) => {
-            ctx.drawImage(bmp, dx, dy, TILE_PX, TILE_PX);
-            bmp.close();
-          })
-          .catch(() => {}),
+        (async () => {
+          // Two retries with backoff. ESRI rate-limits a burst, and a whole
+          // ring is hundreds of tiles requested at once, so a handful of them
+          // failing on the first attempt is the NORMAL case rather than the
+          // exceptional one.
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const bmp = await fetchImage(`${ESRI}/${z}/${ty}/${wx}`);
+              ctx.drawImage(bmp, dx, dy, TILE_PX, TILE_PX);
+              bmp.close();
+              return;
+            } catch {
+              if (attempt < 2) await new Promise((r) => setTimeout(r, 250 * (attempt + 1) ** 2));
+            }
+          }
+
+          // Still nothing: draw the matching quarter of the PARENT tile,
+          // upscaled. Half the resolution is invisible from the air; a flat
+          // rectangle of fill colour with hard tile edges is not, and that is
+          // what this used to leave behind -- silently, because the failure was
+          // swallowed by an empty catch and never counted.
+          if (z > 2) {
+            try {
+              const px = wx >> 1;
+              const py = ty >> 1;
+              const bmp = await fetchImage(`${ESRI}/${z - 1}/${py}/${px}`);
+              const half = TILE_PX / 2;
+              ctx.drawImage(
+                bmp,
+                (wx & 1) * half, (ty & 1) * half, half, half,
+                dx, dy, TILE_PX, TILE_PX,
+              );
+              bmp.close();
+              coarse++;
+              return;
+            } catch {
+              // fall through
+            }
+          }
+          missing++;
+        })(),
       );
     }
   }
   await Promise.all(jobs);
 
+  // Say so. A hole in the drape is a flat rectangle with hard tile edges, and
+  // it reads as a rendering bug rather than as a download that did not finish.
+  if (missing > 0 || coarse > 0) {
+    const total = nx * ny;
+    console.warn(
+      `[flyby] imagery z${z}: ${missing}/${total} tiles missing, ${coarse} filled from z${z - 1}`,
+    );
+  }
+
   return {
+    missing,
+    coarse,
     canvas,
     bbox: {
       west: tileXToLon(x0, z),
