@@ -419,6 +419,8 @@ export class Composite {
   };
 
   private cloudTarget: THREE.WebGLRenderTarget;
+  // Kept across calls so the metric does not allocate a megabyte per sample.
+  private readback: Uint16Array | null = null;
 
   constructor(renderer: THREE.WebGLRenderer) {
     this.uniforms = {
@@ -507,6 +509,86 @@ export class Composite {
     this.presentUniforms.uCloud.value = this.cloudTarget.texture;
     renderer.setRenderTarget(null);
     renderer.render(this.presentScene, this.camera);
+  }
+
+  /**
+   * How row-aligned the cloud buffer is, which is the number that says whether
+   * the march is terracing.
+   *
+   * The cloud texture is close to isotropic: a real cloud field has no
+   * preferred screen axis, so the mean vertical and horizontal luminance
+   * gradients should be about equal and the ratio should sit near 1. Terraces
+   * are iso-elevation arcs, which are row-aligned by construction, so they show
+   * up as vertical gradient with no horizontal partner and push the ratio well
+   * above 1. Filtering at 8 half-res pixels first is what keeps the dither and
+   * the cloud's own fine detail out of the measurement, since both are
+   * isotropic and would only dilute the signal.
+   *
+   * Only blocks that are ENTIRELY cloud count (alpha, the fraction of the world
+   * still visible, below 0.5 across the whole block). A block straddling the
+   * edge of the deck carries the edge's own huge gradient, which has nothing to
+   * do with banding.
+   */
+  measureBanding(renderer: THREE.WebGLRenderer): { rows: number; cols: number; ratio: number } {
+    const w = this.cloudTarget.width;
+    const h = this.cloudTarget.height;
+    const need = w * h * 4;
+    if (!this.readback || this.readback.length !== need) this.readback = new Uint16Array(need);
+    const buf = this.readback;
+    // The target is HalfFloat, so readPixels wants a Uint16Array and every
+    // component has to be decoded before it means anything.
+    renderer.readRenderTargetPixels(this.cloudTarget, 0, 0, w, h, buf);
+
+    const BLOCK = 8;
+    const bw = Math.floor(w / BLOCK);
+    const bh = Math.floor(h / BLOCK);
+    if (bw < 2 || bh < 2) return { rows: 0, cols: 0, ratio: 0 };
+
+    const lum = new Float32Array(bw * bh);
+    const solid = new Uint8Array(bw * bh);
+    const half = THREE.DataUtils.fromHalfFloat;
+    for (let by = 0; by < bh; by++) {
+      for (let bx = 0; bx < bw; bx++) {
+        let sum = 0;
+        let n = 0;
+        for (let y = 0; y < BLOCK; y++) {
+          const row = (by * BLOCK + y) * w;
+          for (let x = 0; x < BLOCK; x++) {
+            const i = (row + bx * BLOCK + x) * 4;
+            if (half(buf[i + 3]) >= 0.5) continue;
+            sum += 0.2126 * half(buf[i]) + 0.7152 * half(buf[i + 1]) + 0.0722 * half(buf[i + 2]);
+            n++;
+          }
+        }
+        if (n === BLOCK * BLOCK) {
+          lum[by * bw + bx] = sum / n;
+          solid[by * bw + bx] = 1;
+        }
+      }
+    }
+
+    let rowSum = 0;
+    let rowN = 0;
+    let colSum = 0;
+    let colN = 0;
+    for (let by = 0; by < bh; by++) {
+      for (let bx = 0; bx < bw; bx++) {
+        const i = by * bw + bx;
+        if (!solid[i]) continue;
+        if (by + 1 < bh && solid[i + bw]) {
+          rowSum += Math.abs(lum[i + bw] - lum[i]);
+          rowN++;
+        }
+        if (bx + 1 < bw && solid[i + 1]) {
+          colSum += Math.abs(lum[i + 1] - lum[i]);
+          colN++;
+        }
+      }
+    }
+    if (rowN === 0 || colN === 0) return { rows: 0, cols: 0, ratio: 0 };
+    const rows = rowSum / rowN;
+    const cols = colSum / colN;
+    return { rows, cols, ratio: rows / Math.max(cols, 1e-9) };
   }
 
   update(camera: THREE.PerspectiveCamera, wx: Weather, light: SceneLighting, timeSec: number): void {

@@ -13,7 +13,7 @@ import { Terrain, CITY_RINGS } from "./render/terrain";
 import { computeLighting } from "./render/lighting";
 import { loadHeightfield, bboxAround, type Heightfield } from "./data/dem";
 import { stitchImagery, type StitchedImage } from "./data/imagery";
-import { fetchWeather, fetchForecast, type Weather } from "./data/weather";
+import { fetchWeather, fetchForecast, beamOpacity, type Weather } from "./data/weather";
 import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, cityAt, DEFAULT_CITY, type City } from "./cities";
@@ -71,6 +71,47 @@ function goToCity(city: City): void {
   params.delete("at");
   params.set("city", city.id);
   location.search = params.toString();
+}
+
+/**
+ * `?wx=low:0.95:900:2100,mid:0:3800:5000,high:0:8500:9400,precip:0` pins the
+ * cloud fields to exact numbers, so a sky that renders badly can be reproduced
+ * on any machine on any day. Each deck is `cover:base:top`, cover 0..1 and the
+ * heights in metres AMSL; any term may be left out and keeps the observed
+ * value. Everything the decks do not name (temperature, wind, the sun) is still
+ * the real observation, and while `?wx` is set the forecast timeline no longer
+ * drives cloud: a pinned sky that drifted with the clock would not be a repro.
+ */
+function wxOverride(observed: Weather): Weather | null {
+  const spec = new URLSearchParams(location.search).get("wx");
+  if (!spec) return null;
+
+  const out: Weather = { ...observed, source: "simulated" };
+  for (const term of spec.split(",")) {
+    const f = term.split(":");
+    const num = (i: number, fallback: number): number => {
+      const v = Number(f[i]);
+      return f.length > i && f[i] !== "" && Number.isFinite(v) ? v : fallback;
+    };
+    const key = f[0];
+    if (key === "precip") {
+      out.precip = Math.max(0, num(1, out.precip));
+    } else if (key === "low" || key === "mid" || key === "high") {
+      const deck = out[key];
+      out[key] = {
+        cover: Math.max(0, Math.min(1, num(1, deck.cover))),
+        base: num(2, deck.base),
+        top: num(3, deck.top),
+      };
+    }
+  }
+
+  // The decks stack as independent layers, the same way the beam attenuation
+  // does, so a 50% low under a 50% mid reads as 75% of the sky covered.
+  out.totalCover =
+    1 - (1 - out.low.cover) * (1 - out.mid.cover) * (1 - out.high.cover);
+  out.opacity = beamOpacity(out.low.cover, out.mid.cover, out.high.cover);
+  return out;
 }
 
 /** Three decimals is ~110 m: enough to fly, not enough to be an address. */
@@ -195,7 +236,8 @@ async function main() {
   const timeline = await forecastPromise;
   const timezone = timeline?.timezone ?? "UTC";
   const wallClock = new LocalClock(timezone);
-  let wx: Weather = observed;
+  const pinned = wxOverride(observed);
+  let wx: Weather = pinned ?? observed;
 
   const hud = new Hud(ui);
   hud.setWeather(wx, 0);
@@ -337,6 +379,14 @@ async function main() {
   const showPerf = new URLSearchParams(location.search).has("fps");
   let perfAccum = 1;
 
+  // The banding metric reads the cloud buffer back off the GPU, which stalls
+  // the pipeline, so it runs on its own slow cadence rather than every perf
+  // tick: sampled at 0.4 s it would be measuring its own cost in the ms it
+  // sits next to.
+  let banding = 0;
+  let bandAccum = 0;
+  const BAND_PERIOD = 2;
+
   // Weather is resampled on a timer, not per frame: `timeline.at` allocates a
   // Weather, and doing that 60 times a second to answer a question whose answer
   // changes on an hourly grid is pure garbage.
@@ -378,7 +428,7 @@ async function main() {
       // a measurement and the forecast for the same hour is not, and a model
       // that disagrees with the sky outside the window is the one thing that
       // would make the whole feed untrustworthy.
-      const next = Math.abs(clockOffset) < 900 ? observed : timeline.at(now);
+      const next = pinned ?? (Math.abs(clockOffset) < 900 ? observed : timeline.at(now));
       if (next !== wx) {
         wx = next;
         wxDirty = false;
@@ -546,10 +596,26 @@ async function main() {
       resizeTargets();
       console.log(`[flyby] render scale -> ${quality.scale.toFixed(2)} (${smoothedMs.toFixed(1)} ms)`);
     }
+    if (showPerf) {
+      bandAccum += dt;
+      if (bandAccum > BAND_PERIOD) {
+        bandAccum = 0;
+        banding = composite.measureBanding(renderer).ratio;
+      }
+    }
+
     perfAccum += dt;
     if (perfAccum > 0.4) {
       perfAccum = 0;
-      if (showPerf) hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0, quality.scale);
+      if (showPerf) {
+        hud.setPerf(
+          1000 / smoothedMs,
+          smoothedMs,
+          buildings ? buildings.stats.triangles : 0,
+          quality.scale,
+          banding,
+        );
+      }
       hud.setWeather(wx, clockOffset);
       hud.setPlace(city, wallClock.parts(now).time, wallClock.abbrev(now));
       places.update(ac.position.x, ac.position.z);
@@ -584,6 +650,14 @@ async function main() {
       setExposure: (v: number) => (exposureScale = v),
     },
   });
+
+  // A developer's instrument, on the same switch as the frame counter: it costs
+  // a GPU stall to answer and nothing on the page should pay that unasked.
+  if (showPerf) {
+    Object.assign(window as unknown as Record<string, unknown>, {
+      __cloudMetric: () => composite.measureBanding(renderer),
+    });
+  }
 }
 
 main().catch((err) => {
