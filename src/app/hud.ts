@@ -30,6 +30,7 @@ export class Hud {
   private flightPanel: HTMLDivElement;
   private placePanel: HTMLDivElement;
   private perfPanel: HTMLDivElement;
+  private tourPanel: HTMLDivElement;
 
   constructor(root: HTMLElement) {
     this.root = root;
@@ -37,7 +38,8 @@ export class Hud {
     this.wxPanel = el("hud hud-tr", "");
     this.flightPanel = el("hud hud-bl", "");
     this.perfPanel = el("hud hud-perf", "");
-    root.append(this.placePanel, this.wxPanel, this.flightPanel, this.perfPanel);
+    this.tourPanel = el("hud hud-br", "");
+    root.append(this.placePanel, this.wxPanel, this.flightPanel, this.perfPanel, this.tourPanel);
 
     const back = document.createElement("button");
     back.className = "back";
@@ -121,8 +123,37 @@ export class Hud {
       <div class="row"><span>tris</span><b>${(triangles / 1000).toFixed(0)}k</b></div>`;
   }
 
+  /**
+   * Route checklist. Shows what has been reached and what is next, with the
+   * per-leg time -- the leg time is what turns a checklist into a score.
+   */
+  setTour(marks: { name: string; collected: boolean; legSeconds: number }[], distanceM: number, finished: boolean): void {
+    const rows = marks.map((m, i) => {
+      const next = !m.collected && marks.slice(0, i).every((x) => x.collected);
+      const mark = m.collected ? "✓" : next ? "▸" : "·";
+      const time = m.collected
+        ? `${Math.floor(m.legSeconds / 60)}:${String(Math.floor(m.legSeconds % 60)).padStart(2, "0")}`
+        : next ? `${(distanceM / 1000).toFixed(1)} km` : "";
+      const cls = m.collected ? "done" : next ? "next" : "";
+      return `<div class="row ${cls}"><span>${mark} ${m.name}</span><b>${time}</b></div>`;
+    });
+    this.tourPanel.innerHTML =
+      `<h2>${finished ? "Route complete" : "Route"}</h2>${rows.join("")}`;
+  }
+
+  /** Brief confirmation when a landmark is reached. */
+  flashLandmark(name: string): void {
+    const d = el("landmark-flash", `<span>${name}</span>`);
+    this.root.append(d);
+    requestAnimationFrame(() => d.classList.add("in"));
+    setTimeout(() => {
+      d.classList.remove("in");
+      setTimeout(() => d.remove(), 800);
+    }, 2200);
+  }
+
   showControls(): void {
-    const d = el("hud hud-br", `
+    const d = el("hud hud-controls", `
       <div class="row"><span>Pitch</span><b>W / S or drag</b></div>
       <div class="row"><span>Roll</span><b>A / D</b></div>
       <div class="row"><span>Throttle</span><b>Shift / Ctrl</b></div>

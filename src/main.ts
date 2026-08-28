@@ -22,6 +22,7 @@ import { Aircraft, DEFAULT_CONFIG } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Input } from "./sim/input";
 import { Plane } from "./render/plane";
+import { Tour, Beacon } from "./sim/tour";
 import { loadCityPack } from "./data/citypack";
 import { Buildings } from "./render/buildings";
 import { Composite } from "./render/composite";
@@ -141,6 +142,10 @@ async function main() {
     startHdg,
   );
 
+  const tour = new Tour(city, origin, terrain.heightAt);
+  const beacon = new Beacon();
+  scene.add(beacon.group);
+
   const chase = new ChaseCam();
   const input = new Input(canvas);
   const plane = new Plane();
@@ -176,6 +181,11 @@ async function main() {
     plane.group.quaternion.copy(ac.quaternion);
     plane.group.visible = chase.mode !== "cockpit";
     plane.update(dt, ac.throttle);
+
+    if (!input.paused) tour.update(ac.position, dt);
+    const tourDist = tour.distanceTo(ac.position);
+    beacon.update(tour.active, elapsed, tourDist);
+    if (tour.justCollected) hud.flashLandmark(tour.justCollected.name);
 
     const solar = solarState(now, city.lat, city.lon);
     const light = computeLighting(solar, wx);
@@ -253,6 +263,7 @@ async function main() {
     if (perfAccum > 0.4) {
       perfAccum = 0;
       hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0);
+      hud.setTour(tour.marks, tourDist, tour.finished);
     }
   });
 

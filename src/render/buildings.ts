@@ -36,15 +36,49 @@ const CELL_M = 1500;
  * gradually, which is both what the eye expects and what the triangle budget
  * wants -- a two-storey house at 8 km is a sub-pixel speck.
  */
-function minHeightAt(distM: number): number {
-  if (distM < FULL_DETAIL_M) return 0;
-  const t = (distM - FULL_DETAIL_M) / (THIN_TO_M - FULL_DETAIL_M);
-  return Math.min(1, t) * MAX_CUTOFF_M;
+function minHeightAt(distM: number, k: number): number {
+  if (distM < FULL_DETAIL_M / k) return 0;
+  const t = (distM - FULL_DETAIL_M / k) / (THIN_TO_M - FULL_DETAIL_M / k);
+  return Math.min(1, Math.max(0, t)) * MAX_CUTOFF_M * k;
 }
 
 const FULL_DETAIL_M = 4200;
 const THIN_TO_M = 9000;
 const MAX_CUTOFF_M = 40;
+
+/**
+ * Triangle budget for the whole skyline.
+ *
+ * Cities differ in density by more than a factor of five -- San Francisco bakes
+ * to 62k buildings and Manhattan to 187k over a similar radius -- so a fixed
+ * LOD curve that is right for one is either wasteful or unaffordable for the
+ * other. Solving for the curve against a budget makes the frame cost a property
+ * of the RENDERER rather than of whichever city was loaded.
+ */
+const TRIANGLE_BUDGET = 1_500_000;
+
+/** Triangles a footprint costs: two per wall segment, plus the roof fan. */
+function triangleCost(vertCount: number): number {
+  return vertCount * 2 + Math.max(0, vertCount - 2);
+}
+
+/**
+ * Find the smallest LOD aggression that fits the budget. Coarse steps, because
+ * the difference between k=1 and k=1.5 is invisible and the loop is over every
+ * building in the pack.
+ */
+function solveLod(pack: CityPack): number {
+  for (const k of [1, 1.4, 2, 3, 4.5, 7, 11, 18]) {
+    let tris = 0;
+    for (const b of pack.buildings) {
+      if (b.topM - b.baseM < minHeightAt(Math.hypot(b.cx, b.cz), k)) continue;
+      tris += triangleCost(b.ring.length / 2);
+      if (tris > TRIANGLE_BUDGET) break;
+    }
+    if (tris <= TRIANGLE_BUDGET) return k;
+  }
+  return 18;
+}
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -364,6 +398,8 @@ export interface BuildingStats {
   skippedFar: number;
   triangles: number;
   cells: number;
+  /** LOD aggression the budget solver settled on; 1 means everything fits. */
+  lod: number;
 }
 
 export class Buildings {
@@ -373,6 +409,7 @@ export class Buildings {
 
   constructor(pack: CityPack, groundAt: (x: number, z: number) => number) {
     this.uniforms = makeUniforms();
+    const lodK = solveLod(pack);
     const cells = new Map<string, Scratch>();
     let drawn = 0;
     let skippedFar = 0;
@@ -381,7 +418,7 @@ export class Buildings {
       const b = pack.buildings[i];
       const dist = Math.hypot(b.cx, b.cz);
       const h = b.topM - b.baseM;
-      if (h < minHeightAt(dist)) { skippedFar++; continue; }
+      if (h < minHeightAt(dist, lodK)) { skippedFar++; continue; }
 
       // Winding must be counter-clockwise for the wall normals and the ear
       // clipper to agree. The baker normalises it, but a pack from an older
@@ -420,6 +457,6 @@ export class Buildings {
       }
     }
 
-    this.stats = { drawn, skippedFar, triangles, cells: cells.size };
+    this.stats = { drawn, skippedFar, triangles, cells: cells.size, lod: lodK };
   }
 }

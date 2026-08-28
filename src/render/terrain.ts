@@ -165,8 +165,11 @@ void main() {
     // tight so bare rock and beach do not read as a lit suburb.
     float lum = dot(albedo, vec3(0.299, 0.587, 0.114));
     float sat = max(max(albedo.r, albedo.g), albedo.b) - min(min(albedo.r, albedo.g), albedo.b);
-    float urban = smoothstep(0.22, 0.46, lum) * smoothstep(0.22, 0.05, sat);
-    lit += vec3(1.0, 0.74, 0.42) * urban * uNight * 0.055;
+    // The gate has to be generous enough that a dense city actually lights up.
+    // Too tight and Hong Kong at 2 a.m. is a black hill with a few sparks on
+    // it, which is not what any city looks like from the air at night.
+    float urban = smoothstep(0.16, 0.40, lum) * smoothstep(0.28, 0.06, sat);
+    lit += vec3(1.0, 0.74, 0.42) * urban * uNight * 0.16;
     // Skyglow lands on the built-up ground, not on hillsides and water, and it
     // is nearly monochrome -- at night the eye takes almost no colour from a
     // surface this dark, so carrying the drape's daytime hue through makes the

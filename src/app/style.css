@@ -266,3 +266,46 @@ html, body {
 
 /* The weather panel sits under the back button rather than beside it. */
 .hud-tr { top: 52px; right: 14px; text-align: right; }
+
+.hud-br .row.done { color: rgba(110, 231, 168, 0.85); }
+.hud-br .row.next { color: var(--ink); }
+.hud-br .row.next b { color: var(--accent); }
+
+.hud-controls {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 13px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.hud-controls .row { display: flex; justify-content: space-between; gap: 16px; color: var(--dim); }
+.hud-controls .row b { color: var(--ink); font-weight: 500; }
+
+.landmark-flash {
+  position: absolute;
+  top: 38%;
+  left: 50%;
+  transform: translate(-50%, 14px);
+  padding: 12px 26px;
+  border: 1px solid rgba(102, 212, 255, 0.5);
+  border-radius: 999px;
+  background: rgba(8, 20, 32, 0.62);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  font-size: 15px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0;
+  transition: opacity 0.5s ease, transform 0.5s ease;
+  pointer-events: none;
+}
+
+.landmark-flash.in { opacity: 1; transform: translate(-50%, 0); }

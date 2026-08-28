@@ -181,7 +181,10 @@ void main() {
 
     // Clip the march to the span of sky that can hold cloud at all.
     float t0 = 0.0;
-    float t1 = min(sceneDist, 90000.0);
+    // Far enough that a near-horizontal ray still reaches an overcast deck.
+    // At 90 km the deck simply stopped, leaving a hard horizontal edge across
+    // the sky where the march ran out rather than where the cloud ended.
+    float t1 = min(sceneDist, 170000.0);
     if (abs(rd.y) > 1e-4) {
       float ta = (slabLo - uCameraPos.y) / rd.y;
       float tb = (slabHi - uCameraPos.y) / rd.y;
@@ -253,7 +256,7 @@ void main() {
 
           // Fade the deck out toward the march limit so it does not end in a
           // hard line across the sky at the far clip.
-          lum *= smoothstep(90000.0, 55000.0, t);
+          lum *= smoothstep(170000.0, 95000.0, t);
           scattered += transmittance * lum * (1.0 - stepT.g);
           transmittance *= stepT;
         }

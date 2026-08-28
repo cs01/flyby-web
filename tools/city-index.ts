@@ -5,11 +5,6 @@
 // Generated, never hand-edited: a hand-kept list drifts the moment someone
 // bakes a city and forgets, and then the menu lies.
 
-declare const Bun: {
-  file(p: string): { arrayBuffer(): Promise<ArrayBuffer>; size: number };
-  write(p: string, d: string): Promise<number>;
-};
-
 const dir = new URL("../public/cities/", import.meta.url).pathname;
 const { readdirSync, statSync } = await import("node:fs");
 

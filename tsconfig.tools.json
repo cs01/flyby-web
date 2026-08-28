@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "bun-types"
+    ],
+    "lib": [
+      "ES2022"
+    ]
+  },
+  "include": [
+    "tools",
+    "src/geo.ts",
+    "src/cities.ts"
+  ]
+}
