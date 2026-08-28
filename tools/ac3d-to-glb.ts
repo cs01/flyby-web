@@ -748,7 +748,10 @@ function writeGlb(meshes: BuiltMesh[], untexturedColor: [number, number, number]
 
 async function convertTextures(): Promise<void> {
   const jobs: { src: string; out: string; size: [number, number] | null }[] = [
-    { src: "Default.png", out: "c182-default.png", size: [1024, 2048] },
+    // Default.png is deliberately NOT emitted here. tools/recolor-livery.ts
+    // owns it: it repaints the grey factory sweep navy and downsizes in the
+    // same pass. Emitting it from both would mean whichever ran last won, and
+    // re-running the converter would silently undo the paint job.
     { src: "Lights.png", out: "c182-lights.png", size: [512, 512] },
     { src: "PropBlur.png", out: "c182-propblur.png", size: null },
   ];
