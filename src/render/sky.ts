@@ -42,7 +42,7 @@ ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 
 uniform vec3  uMoonDir;
-uniform float uMoonPhase;
+uniform float uMoonIllum;
 uniform float uNightAmount;
 uniform float uTime;
 
@@ -99,24 +99,51 @@ void main() {
     col += trans * uSunColor * uSunIntensity * 12.0 * (0.55 + 0.45 * limb);
   }
 
-  // Moon: a lit disc with a terminator, so the phase reads.
+  // Moon: a lit sphere, drawn as a disc.
+  //
+  // The terminator comes from the REAL sun direction rather than from a phase
+  // number, which is what gets the crescent's tilt right. A phase-driven
+  // terminator can only cut the disc along one fixed screen axis, so an
+  // evening crescent that should be lying on its back like a bowl was drawn
+  // standing on end -- the phase was correct and the picture still wrong.
+  // Projecting the sun into the disc's own basis gets the fraction AND the
+  // orientation from one piece of geometry, and there is nothing left to
+  // disagree.
   float cm = dot(rd, uMoonDir);
   float moonAng = acos(clamp(cm, -1.0, 1.0));
   float moonR = 0.00475;
+  vec3 mUp = abs(uMoonDir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+  vec3 mx = normalize(cross(mUp, uMoonDir));
+  vec3 my = cross(uMoonDir, mx);
+  // Bright at night, but NOT gated on night: the moon is up in daylight about
+  // half the time and a daytime sky with no moon in it is a missing object,
+  // not a subtle one. The daytime sky simply out-scatters it, as it does in
+  // reality, so the pale disc reads without any special case.
+  float moonBright = mix(0.50, 0.92, uNightAmount);
   if (moonAng < moonR) {
-    vec3 up = abs(uMoonDir.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-    vec3 mx = normalize(cross(up, uMoonDir));
-    vec3 my = cross(uMoonDir, mx);
+    // Small-angle projection into the disc plane: at 0.005 rad the difference
+    // between the chord and the arc is far under a pixel.
     vec2 uv = vec2(dot(rd - uMoonDir, mx), dot(rd - uMoonDir, my)) / moonR;
     float r2 = clamp(1.0 - dot(uv, uv), 0.0, 1.0);
+    // Disc basis: x along mx, y along my, z toward the viewer.
     vec3 n = normalize(vec3(uv, sqrt(r2)));
-    // Phase angle drives a terminator across the disc.
-    float ph = uMoonPhase * 2.0 * PI;
-    vec3 lit = normalize(vec3(sin(ph), 0.0, -cos(ph)));
+    vec3 lit = normalize(vec3(dot(uSunDir, mx), dot(uSunDir, my), dot(uSunDir, -uMoonDir)));
     float ndl = clamp(dot(n, lit), 0.0, 1.0);
-    float mare = 0.82 + 0.18 * hash13(floor(n * 9.0));
-    col += trans * vec3(1.0, 0.97, 0.92) * ndl * mare * 0.55 * uNightAmount;
+    float mare = 0.80 + 0.20 * hash13(floor(n * 8.0));
+    // Earthshine: the dark limb lit by a full Earth. It is brightest at a thin
+    // crescent, because a thin crescent from here is a nearly full Earth from
+    // there -- so it scales with what is NOT lit.
+    float earthshine = 0.045 * (1.0 - uMoonIllum) * uNightAmount;
+    // Antialias the limb; a hard step on an object 0.5 deg across crawls.
+    float edge = smoothstep(moonR, moonR * 0.94, moonAng);
+    col += trans * vec3(1.0, 0.97, 0.92) * (ndl * mare + earthshine) * moonBright * edge;
   }
+
+  // The aureole in the air around the disc. Small, and it is what stops the
+  // moon looking pasted onto the sky; it also gives the eye a reason to find
+  // the moon at all when it is a thin crescent.
+  float halo = exp(-moonAng * 110.0) * 0.045 + exp(-moonAng * 14.0) * 0.005;
+  col += trans * vec3(0.78, 0.84, 1.0) * halo * uMoonIllum * uNightAmount;
 
   col += stars(rd, uNightAmount) * trans;
 
@@ -136,7 +163,7 @@ export interface SkyUniforms {
   uMultiScatter: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
   uMoonDir: THREE.IUniform<THREE.Vector3>;
-  uMoonPhase: THREE.IUniform<number>;
+  uMoonIllum: THREE.IUniform<number>;
   uNightAmount: THREE.IUniform<number>;
   uTime: THREE.IUniform<number>;
 }
@@ -158,7 +185,7 @@ export class Sky {
       uMultiScatter: { value: 0.055 },
       uExposure: { value: 1 },
       uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
-      uMoonPhase: { value: 0.5 },
+      uMoonIllum: { value: 1 },
       uNightAmount: { value: 0 },
       uTime: { value: 0 },
     };
@@ -203,7 +230,7 @@ export class Sky {
     u.uSunDir.value.set(s.x, s.y, s.z);
     const m = solar.moon.dir;
     u.uMoonDir.value.set(m.x, m.y, m.z);
-    u.uMoonPhase.value = solar.moonPhase;
+    u.uMoonIllum.value = solar.moonIllum;
     u.uCamAltitude.value = camAltitude;
     u.uTime.value = timeSec;
 

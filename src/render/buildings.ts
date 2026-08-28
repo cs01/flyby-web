@@ -127,6 +127,8 @@ uniform vec3  uCameraPos;
 uniform vec3  uAmbient;
 uniform float uNight;
 uniform vec3  uNightGlow;
+uniform vec3  uMoonDir;
+uniform vec3  uMoonLight;
 uniform float uWetness;
 uniform float uSunSurface;
 
@@ -271,6 +273,10 @@ void main() {
   float ndl = max(0.0, dot(n, uSunDir));
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
   vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl;
+  // Moonlight, same units as the sun beam. Lit windows alone made a night city
+  // read as a floating grid of dots with no buildings behind them; this is
+  // what puts the facades back under the lights.
+  vec3 beam = direct + uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
 
   // Sky visibility: an upward face sees the whole dome, a wall sees half, and
   // a wall down in the street sees less still.
@@ -286,7 +292,7 @@ void main() {
   // Skyglow reaches walls better than roofs: it comes from the street below.
   vec3 ambient = uAmbient * skyView + uNightGlow * (1.35 - 0.5 * n.y);
 
-  vec3 lit = albedo * (direct + ambient);
+  vec3 lit = albedo * (beam + ambient);
 
   // Specular: strong on glass, present on wet stone, absent otherwise.
   float gloss = max(glassiness * 0.8, uWetness);
@@ -295,6 +301,8 @@ void main() {
     vec3 h = normalize(v + uSunDir);
     float spec = pow(max(0.0, dot(n, h)), 64.0);
     lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.2;
+    vec3 hm = normalize(v + uMoonDir);
+    lit += uMoonLight * uSunSurface * pow(max(0.0, dot(n, hm)), 64.0) * gloss * 1.2;
   }
 
   vec3 ro = atmoOrigin(uCamAltitude);
@@ -311,6 +319,8 @@ export interface BuildingUniforms extends Record<string, THREE.IUniform> {
   uAmbient: THREE.IUniform<THREE.Color>;
   uNight: THREE.IUniform<number>;
   uNightGlow: THREE.IUniform<THREE.Color>;
+  uMoonDir: THREE.IUniform<THREE.Vector3>;
+  uMoonLight: THREE.IUniform<THREE.Color>;
   uWetness: THREE.IUniform<number>;
   uSunSurface: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
@@ -329,6 +339,8 @@ function makeUniforms(): BuildingUniforms {
     uAmbient: { value: new THREE.Color(0.2, 0.24, 0.3) },
     uNight: { value: 0 },
     uNightGlow: { value: new THREE.Color(0, 0, 0) },
+    uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
+    uMoonLight: { value: new THREE.Color(0, 0, 0) },
     uWetness: { value: 0 },
     uSunSurface: { value: 0.105 },
     uExposure: { value: 1 },

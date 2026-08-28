@@ -45,6 +45,8 @@ uniform vec3  uSunColor;
 uniform float uSunIntensity;
 uniform float uSunSurface;
 uniform vec3  uAmbient;
+uniform vec3  uMoonDir;
+uniform vec3  uMoonLight;
 uniform vec3  uAlbedo;
 uniform float uMetal;
 uniform float uEmissive;
@@ -52,6 +54,9 @@ void main() {
   vec3 n = normalize(vNormal);
   float ndl = max(0.0, dot(n, uSunDir));
   vec3 direct = uSunColor * uSunIntensity * uSunSurface * ndl;
+  // Without a moon term the aeroplane goes to a black cutout the moment the
+  // sun sets, while the city under it is still lit.
+  direct += uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
   vec3 ambient = uAmbient * (0.55 + 0.45 * n.y);
   vec3 lit = uAlbedo * (direct + ambient);
   // A painted sheen, so the shell catches the sun as it banks.
@@ -69,6 +74,8 @@ export interface AircraftUniforms extends Record<string, THREE.IUniform> {
   uSunColor: THREE.IUniform<THREE.Color>;
   uSunIntensity: THREE.IUniform<number>;
   uSunSurface: THREE.IUniform<number>;
+  uMoonDir: THREE.IUniform<THREE.Vector3>;
+  uMoonLight: THREE.IUniform<THREE.Color>;
   uAmbient: THREE.IUniform<THREE.Color>;
   uAlbedo: THREE.IUniform<THREE.Color>;
   uMetal: THREE.IUniform<number>;
@@ -114,6 +121,8 @@ export class AircraftModel {
       uSunColor: { value: new THREE.Color(1, 1, 1) },
       uSunIntensity: { value: 16 },
       uSunSurface: { value: 0.105 },
+      uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
+      uMoonLight: { value: new THREE.Color(0, 0, 0) },
       uAmbient: { value: new THREE.Color(0.2, 0.24, 0.3) },
       uAlbedo: { value: new THREE.Color(0xffffff) },
       uMetal: { value: 0.5 },

@@ -192,7 +192,7 @@ async function main() {
   scene.add(beacon.group);
 
   const chase = new ChaseCam();
-  const input = new Input(canvas);
+  const input = new Input(canvas, ui);
   const model = new AircraftModel();
   scene.add(model.group);
 
@@ -314,6 +314,8 @@ async function main() {
       u.uSnow.value = light.snow;
       u.uNight.value = light.night;
       u.uNightGlow.value.copy(light.nightGlow);
+      u.uMoonDir.value.copy(light.moonDir);
+      u.uMoonLight.value.copy(light.moonLight);
       u.uMieG.value = light.mieG;
       u.uTurbidity.value = light.turbidity;
       u.uCamAltitude.value = camAlt;
@@ -330,6 +332,8 @@ async function main() {
       b.uAmbient.value.copy(light.ambient);
       b.uNight.value = light.night;
       b.uNightGlow.value.copy(light.nightGlow);
+      b.uMoonDir.value.copy(light.moonDir);
+      b.uMoonLight.value.copy(light.moonLight);
       b.uWetness.value = light.wetness;
       b.uMieG.value = light.mieG;
       b.uTurbidity.value = light.turbidity;
@@ -341,6 +345,8 @@ async function main() {
     p.uSunDir.value.copy(light.sunDir);
     p.uSunColor.value.copy(light.sunColor);
     p.uSunIntensity.value = light.sunIntensity;
+    p.uMoonDir.value.copy(light.moonDir);
+    p.uMoonLight.value.copy(light.moonLight);
     p.uAmbient.value.copy(light.ambient);
 
     // Drift angle: the difference between where the nose points and where the

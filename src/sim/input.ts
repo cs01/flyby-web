@@ -10,6 +10,8 @@
 // known time (0.14 s here) and releases faster than it engages, which is what
 // makes the aircraft feel bolted to the stick.
 
+import { TouchControls, hasTouch } from "./touch";
+
 export interface Axes {
   /** Positive opens the throttle, negative closes it. */
   throttle: number;
@@ -66,7 +68,12 @@ export class Input {
   /** Called when the timelapse toggles, so the HUD can say so. */
   onTimelapse: ((on: boolean) => void) | null = null;
 
-  constructor(target: HTMLElement) {
+  /** Present wherever a finger can reach the screen; null everywhere else. */
+  private touch: TouchControls | null = null;
+
+  constructor(target: HTMLElement, ui?: HTMLElement) {
+    if (ui && hasTouch()) this.touch = new TouchControls(target, ui);
+
     addEventListener("keydown", (e) => {
       if (e.repeat) {
         // Held , and . should scrub, so those repeat; nothing else does.
@@ -92,11 +99,16 @@ export class Input {
     addEventListener("blur", () => this.keys.clear());
 
     target.addEventListener("pointerdown", (e) => {
+      // Touch is the virtual stick's, not the mouse stick's. The mouse maps
+      // deflection from the centre of the SCREEN, which on a finger means full
+      // deflection the instant it lands.
+      if (e.pointerType === "touch") return;
       this.dragging = true;
       target.setPointerCapture(e.pointerId);
       this.updateDrag(e);
     });
     target.addEventListener("pointermove", (e) => {
+      if (e.pointerType === "touch") return;
       if (this.dragging) this.updateDrag(e);
     });
     const end = () => {
@@ -160,14 +172,32 @@ export class Input {
     t.boost = this.held("ShiftLeft", "ShiftRight");
 
     if (this.dragging) {
-      // The pointer is a STICK: sideways rolls, back climbs. It does not touch
-      // the throttle, so a mouse user can fly a whole circuit with one hand and
-      // still reach for W when they want to get somewhere.
+      // The pointer flies it directly: sideways rolls, and UP climbs. That is
+      // the screen-direct sense rather than a stick's pull-back-to-climb, and
+      // the touch controls match it, because the app already decided this axis
+      // gets one answer when it deleted its invert-pitch toggle. It does not
+      // touch the throttle, so a mouse user can fly a whole circuit with one
+      // hand and still reach for W when they want to get somewhere.
       t.roll = this.dragX;
       t.lift = -this.dragY;
     }
 
-    this.lookBack = this.keys.has("KeyB");
+    const touch = this.touch;
+    if (touch) {
+      // A touched axis WINS over the keyboard rather than summing with it. A
+      // phone with a bluetooth keyboard is the only case where both are live,
+      // and there the thumb is the more recent intent.
+      if (touch.active) {
+        t.roll = touch.axes.roll;
+        t.lift = touch.axes.lift;
+        t.throttle = touch.axes.throttle;
+        t.yaw = touch.axes.yaw;
+      }
+      if (touch.boost) t.boost = 1;
+      this.cameraCycled += touch.drainCameraPresses();
+    }
+
+    this.lookBack = this.keys.has("KeyB") || (touch?.lookBack ?? false);
 
     const a = this.axes;
     a.throttle = ramp(a.throttle, t.throttle, dt);

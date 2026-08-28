@@ -18,6 +18,17 @@ export interface SkyBody {
   altitude: number;
   /** Degrees clockwise from true north. */
   azimuth: number;
+  /**
+   * Right ascension and declination, degrees.
+   *
+   * Carried through because they are where the horizontal pair CAME from, and
+   * a place-independent coordinate is the only thing a test can assert against
+   * an ephemeris. Checking altitude and azimuth alone means every check is
+   * also a check of the observer, and a fault in the shared conversion looks
+   * identical to a fault in the body.
+   */
+  ra: number;
+  dec: number;
   /** Unit vector in world space: +x east, +y up, +z south. */
   dir: { x: number; y: number; z: number };
 }
@@ -27,8 +38,21 @@ export interface SolarState {
   moon: SkyBody;
   /** 0 = new, 0.5 = full, approaching 1 = new again. */
   moonPhase: number;
+  /** Sun-moon elongation in degrees: 0 at new moon, 180 at full. */
+  moonElongation: number;
+  /**
+   * Fraction of the disc that is lit, 0..1.
+   *
+   * This, not the phase, is what a light calculation wants. Phase is an angle
+   * and the illumination is its cosine, so a "half" moon at phase 0.25 puts
+   * out a quarter of the light of a full one, not half -- treating the phase
+   * as a brightness makes every crescent night far too bright.
+   */
+  moonIllum: number;
   /** 0 fully night .. 1 fully day, smoothed across civil twilight. */
   daylight: number;
+  /** Obliquity of the ecliptic at this instant, degrees. */
+  obliquity: number;
 }
 
 function julianDay(d: Date): number {
@@ -56,7 +80,13 @@ function horizontal(ra: number, dec: number, gmst: number, lat: number, lon: num
   );
   const altDeg = alt * R2D;
   const azDeg = (az * R2D + 360) % 360;
-  return { altitude: altDeg, azimuth: azDeg, dir: toDir(altDeg, azDeg) };
+  return {
+    altitude: altDeg,
+    azimuth: azDeg,
+    ra: ((ra * R2D) % 360 + 360) % 360,
+    dec,
+    dir: toDir(altDeg, azDeg),
+  };
 }
 
 export function solarState(date: Date, lat: number, lon: number): SolarState {
@@ -104,12 +134,13 @@ export function solarState(date: Date, lat: number, lon: number): SolarState {
   // Phase from the sun-moon elongation in ecliptic longitude.
   const elong = ((lam - appLon) * R2D + 360) % 360;
   const moonPhase = elong / 360;
+  const moonIllum = (1 - Math.cos(elong * D2R)) / 2;
 
   // Civil twilight ramp. -6 deg is the standard "lights come on" threshold; the
   // extra 4 deg above it stops the transition being a visible switch.
   const daylight = Math.max(0, Math.min(1, (sun.altitude + 6) / 10));
 
-  return { sun, moon, moonPhase, daylight };
+  return { sun, moon, moonPhase, moonElongation: elong, moonIllum, daylight, obliquity: eps * R2D };
 }
 
 /** Scene clock. Frozen by `?t=<epoch seconds>` so screenshots are comparable. */

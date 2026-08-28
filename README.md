@@ -26,10 +26,30 @@ flies a gentler aeroplane.
 | `Space` / `Ctrl` | climb / descend |
 | `Q` / `E` | rudder |
 | `Shift` | more power and more bank |
-| drag | stick: sideways rolls, back climbs |
+| drag | stick: sideways rolls, up climbs |
 | `C` · `B` | camera · look back |
 | `,` `.` · `0` · `T` | clock back/forward · back to now · timelapse |
 | `P` | pause |
+
+On a phone the screen is the stick. Both halves are **dynamic**: nothing is
+drawn until a thumb lands, and the control then appears wherever it landed, so
+the controls cost none of the picture when they are not in use and the thumb
+never has to go looking for a fixed pad.
+
+| | |
+|---|---|
+| left half, drag | roll · up climbs |
+| right half, drag | throttle · sideways is rudder |
+| `CAM` `BST` `LOOK` | camera · boost · look back |
+
+Both halves are relative to where the finger went down, which the mouse is not:
+a mouse is already somewhere when you press it, a finger has to arrive, and an
+absolute mapping snaps the aeroplane to full deflection the instant it does. The
+top quarter of the screen is not a control -- it belongs to the clock scrubber.
+
+The weather and route panels are collapsed to their headings on a phone and
+expand on a tap. At full height they cover a third of the sky each, and on a
+phone the sky is the app.
 
 It is a high-wing light single flown arcade: no stall, no spin, nothing to
 manage, and no way to break it. Three things are assisted on purpose, and they
@@ -101,7 +121,7 @@ src/geo.ts              three coordinate systems in one file (geodetic / tile / 
 src/cities.ts           the curated places and their landmarks
 src/data/               cache, DEM, imagery, weather + hourly forecast, solar, city packs
 src/render/             atmosphere, sky, terrain, buildings, clouds, tone mapping, the aeroplane
-src/sim/                flight model, input, chase camera, tour
+src/sim/                flight model, input, touch controls, chase camera, tour
 src/app/                HUD, instruments, clock scrubber, start menu
 tools/bake-city.ts      Overpass -> .city pack
 tools/city-index.ts     regenerates public/cities/index.json
@@ -115,7 +135,23 @@ bun tools/city-index.ts              # regenerate the menu's index
 bun run verify                       # parse every pack, cross-check the index
 ```
 
-`bun run check` runs both typechecks, the flight-model gate and the pack verifier.
+`bun run check` runs both typechecks and four gates: the ephemeris, the touch
+controls, the flight model and the pack verifier.
+
+`bun run solar` checks the sun and moon. The interesting half of it is
+DIFFERENTIAL: the moon's phase is computed from ecliptic longitudes and its
+position from right ascension and declination, which are two separate paths
+through the file, and they must agree about the sun-moon elongation. The rest
+pins the constants a self-consistent implementation would still get wrong -- the
+synodic and draconic months, the swing in the daily elongation rate (the
+equation of centre), the 5.13 degree latitude amplitude, and that the noon sun
+is in the NORTH from Sydney.
+
+`bun run touch` checks the phone controls against a DOM stub: the axis senses,
+the two zones staying independent under two thumbs, a second finger in a held
+zone being ignored rather than stealing the stick, and a tab-away centring
+everything. It is the only input path with no keyboard behind it, so a wrong
+sign there has nothing to disagree with it.
 
 **The verifier is the gate on a bake, and it uses the app's own parser.** The
 failure it exists to catch is a truncated pack from an interrupted bake: it is
@@ -148,6 +184,33 @@ Buildings are budgeted, not fixed: `solveLod` searches an LOD curve until the
 skyline fits `TRIANGLE_BUDGET`. Cities differ in density by more than 5x (San
 Francisco bakes to 62k buildings, Manhattan to 187k over a similar radius), so a
 fixed curve is either wasteful or unaffordable depending on where you load.
+
+### Night
+
+Night is a model of the dark-adapted **eye**, not of radiometry. Full moonlight
+is about a millionth of sunlight; rendered to scale it is black, which is what
+this used to do -- outside the street-lamp mask the ground got an ambient of
+~0.001 and the tone curve took it to zero, so a night flight was an instrument
+panel floating over nothing. `lighting.ts` carries three terms that stand in for
+scotopic adaptation (`NIGHT_SKY`, `MOON_SKY`, `MOON_BEAM`), set by what reads as
+night on a screen and scaled so that a coastline is visible under no moon at all.
+
+Moonlight is a real directional light, not a lift on the ambient: terrain,
+buildings and the aeroplane all take a `uMoonLight * uSunSurface * N·L` term in
+the same units as the sun, and water gets the moonglade, which is usually the
+only thing saying which part of a dark frame is sea. Its strength is
+`illuminated fraction x horizon extinction x cloud`, and the illuminated
+fraction is `(1 - cos(elongation)) / 2` -- **not** the phase. Treating the phase
+as a brightness makes a first-quarter moon half as bright as a full one when it
+is a quarter, and every crescent night far too light.
+
+The moon's terminator comes from the real sun direction projected into the
+disc's own basis, not from a phase number. A phase-driven terminator can only
+cut the disc along one fixed screen axis, so an evening crescent that should lie
+on its back like a bowl gets drawn standing on end: the phase is right and the
+picture is still wrong. It is also not gated on night -- the moon is up in
+daylight about half the time, and the daytime sky out-scatters it into a pale
+disc on its own.
 
 Set `uDebug` on the terrain material (`flyby.tune('uDebug', n)` in the console)
 to isolate a term: 1 albedo, 2 direct, 3 ambient, 4 inscatter, 5 lit,

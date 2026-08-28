@@ -122,6 +122,8 @@ html, body {
 
 #loading .step { color: var(--dim); font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; }
 
+.attrib-short { display: none; }
+
 .attrib {
   position: fixed;
   bottom: 4px;
@@ -480,7 +482,229 @@ html, body {
    transient, so it moves up rather than the instruments moving down. */
 .hud-controls { bottom: 210px; }
 
-@media (max-width: 720px) {
+/* --- Touch controls ----------------------------------------------------- */
+
+/* The stick and the throttle are DYNAMIC: nothing is drawn until a thumb is
+   down, so they cost no picture at all when they are not in use. Only the
+   three buttons are permanent, because a tap has nowhere to arrive from. */
+/* Specificity matters here: `#ui > *` above turns pointer events ON for every
+   direct child, and it outranks a bare class. A full-screen overlay that wins
+   that fight swallows every drag before the canvas sees it, so this selector
+   has to carry the id too. */
+#ui > .touch { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
+
+/* The buttons are the only permanently drawn part, so they appear only where
+   there is no keyboard to do the same three jobs. */
+.touch-btns { display: none; }
+@media (pointer: coarse) { .touch-btns { display: flex; } }
+
+.touch-ring {
+  position: absolute;
+  width: 128px;
+  height: 128px;
+  margin: -64px 0 0 -64px;
+  border: 1px solid rgba(242, 246, 250, 0.30);
+  border-radius: 50%;
+  background: radial-gradient(rgba(120, 170, 220, 0.10), rgba(120, 170, 220, 0.02) 70%);
+  opacity: 0;
+  transition: opacity 0.14s ease;
+  pointer-events: none;
+}
+
+.touch-ring.right { width: 116px; height: 116px; margin: -58px 0 0 -58px; }
+.touch-ring.in { opacity: 1; }
+
+/* The axes the stick actually commands, drawn as a faint cross so the first
+   use does not have to be an experiment. */
+.touch-ring::before, .touch-ring::after {
+  content: "";
+  position: absolute;
+  background: rgba(242, 246, 250, 0.16);
+}
+.touch-ring::before { left: 12%; right: 12%; top: 50%; height: 1px; }
+.touch-ring::after { top: 12%; bottom: 12%; left: 50%; width: 1px; }
+
+.touch-knob {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 46px;
+  height: 46px;
+  margin: 0;
+  transform: translate(-50%, -50%);
+  border: 1px solid rgba(102, 212, 255, 0.75);
+  border-radius: 50%;
+  background: rgba(102, 212, 255, 0.16);
+  box-shadow: 0 0 14px rgba(102, 212, 255, 0.35);
+}
+
+.touch-btns {
+  position: absolute;
+  z-index: 1;
+  right: calc(8px + env(safe-area-inset-right));
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.touch-btn {
+  width: 46px;
+  height: 46px;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--dim);
+  font: inherit;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  /* Without this a long press pops the OS text-selection callout in the
+     middle of a turn. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: none;
+}
+
+.touch-btn.on { color: #05080d; background: var(--accent); border-color: var(--accent); }
+
+/* --- Phone layout ------------------------------------------------------- */
+
+/* Every panel here is absolutely positioned against the viewport, which on a
+   desktop is four corners and a lot of room between them. On a phone the
+   corners are 60 px apart and the same four panels land on top of each other:
+   the place name under the frame counter under the scrubber under the weather.
+   So the phone gets an explicit vertical STACK down the top of the screen with
+   measured bands, rather than corners that happen not to collide. */
+@media (max-width: 760px), (pointer: coarse) {
+  .hud { padding: 7px 10px; font-size: 11px; }
+  .hud h2 { font-size: 13px; margin-bottom: 4px; }
+  .hud .row { gap: 10px; }
+
+  /* The frame counter is for tuning, and tuning does not happen on a phone. */
+  .hud-perf { display: none; }
+
+  .hud-tl {
+    top: calc(8px + env(safe-area-inset-top));
+    left: calc(8px + env(safe-area-inset-left));
+    max-width: 52vw;
+  }
+
+  .back {
+    top: calc(8px + env(safe-area-inset-top));
+    right: calc(8px + env(safe-area-inset-right));
+    padding: 8px 11px;
+  }
+
+  .timebar {
+    top: calc(70px + env(safe-area-inset-top));
+    left: calc(8px + env(safe-area-inset-left));
+    right: calc(8px + env(safe-area-inset-right));
+    width: auto;
+    transform: none;
+  }
+
+  /* Band and slider are the two things a thumb has to hit; the desktop sizes
+     are under the 44 px target and both were effectively unusable. */
+  .tb-band { height: 22px; }
+  .tb-slider { height: 26px; }
+  .tb-btn { padding: 5px 9px; font-size: 10px; }
+
+  /* Weather and route drop to their headings and expand on a tap. Full height
+     they cover a third of the sky each, and on a phone the sky is the app.
+     The 186 is measured, not guessed: the scrubber is 105 px tall once its
+     band and slider are at a size a thumb can hit. */
+  .hud-tr, .hud-br {
+    top: calc(186px + env(safe-area-inset-top));
+    bottom: auto;
+    max-width: 46vw;
+  }
+  .hud-tr { right: calc(8px + env(safe-area-inset-right)); }
+  .hud-br { left: calc(8px + env(safe-area-inset-left)); right: auto; text-align: left; }
+
+  .hud.collapsible {
+    pointer-events: auto;
+    max-height: 32px;
+    overflow: hidden;
+    transition: max-height 0.2s ease;
+  }
+  .hud.collapsible.open { max-height: 56vh; overflow-y: auto; }
+  .hud.collapsible h2::after { content: " \25BE"; color: var(--accent); font-size: 10px; }
+  .hud.collapsible.open h2::after { content: " \25B4"; }
+
+  /* The instruments clear the bottom strip, because the bottom strip is where
+     the thumbs are: a stick that lands on the airspeed hides the airspeed. */
+  .osd {
+    left: calc(6px + env(safe-area-inset-left));
+    right: calc(6px + env(safe-area-inset-right));
+    width: auto;
+    transform: none;
+    bottom: calc(104px + env(safe-area-inset-bottom));
+    gap: 6px;
+    justify-content: center;
+  }
+  .osd-left, .osd-right { flex: 1 1 0; min-width: 0; padding: 6px 8px; font-size: 11px; }
+  .osd .row span { font-size: 9px; }
+  .osd svg.ai { width: 86px; height: 86px; }
+  .osd-hdg { width: 96px; height: 22px; }
+  .osd svg.vsi-svg { width: 22px; height: 56px; }
+
+  /* Nowrap because the card is a reminder read at a glance: a binding broken
+     over two lines takes longer to read than the flight leaves time for. */
+  .hud-controls { bottom: calc(262px + env(safe-area-inset-bottom)); font-size: 10px; }
+  .hud-controls .row { gap: 14px; white-space: nowrap; }
+
+  .attrib { bottom: calc(3px + env(safe-area-inset-bottom)); font-size: 9px; }
+  .attrib-full { display: none; }
+  .attrib-short { display: inline; }
+
+  .menu-inner { padding: 5vh 16px 32px; }
+  #menu .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+}
+
+/* A phone on its side has no vertical room at all: the top stack and the
+   instruments would meet in the middle. Everything tightens and the scrubber
+   goes back to being one row. */
+@media (max-height: 560px) and (pointer: coarse) {
+  /* The same stack as portrait, pulled tight. The scrubber stops spanning the
+     width so the place name and the back button keep their own row, and the
+     two chips drop below it rather than beside it. */
+  .timebar {
+    top: calc(56px + env(safe-area-inset-top));
+    width: min(420px, 56vw);
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+  }
+  .tb-band { height: 16px; margin: 5px 0 2px; }
+  .tb-slider { height: 20px; }
+  .hud-tr, .hud-br { top: calc(152px + env(safe-area-inset-top)); max-width: 26vw; }
+
+  /* The instruments stop short of the right edge, because that is where the
+     buttons go when there is no vertical room for a column. */
+  /* Clear of the attribution line, which is the one thing on the screen that
+     is not allowed to be covered. */
+  .osd { bottom: calc(20px + env(safe-area-inset-bottom)); right: 170px; }
+  .osd svg.ai { width: 70px; height: 70px; }
+  .osd-hdg { width: 84px; }
+  .osd svg.vsi-svg { width: 20px; height: 44px; }
+  .osd-left, .osd-right { font-size: 10px; padding: 5px 7px; }
+
+  .touch-btns {
+    top: auto;
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    transform: none;
+    flex-direction: row;
+  }
+  .hud-controls { bottom: calc(158px + env(safe-area-inset-bottom)); }
+}
+
+@media (max-width: 720px) and (pointer: fine) {
   .osd-left, .osd-right { min-width: 104px; font-size: 11px; }
   .osd svg.ai { width: 96px; height: 96px; }
   .osd-hdg { width: 118px; }
@@ -488,7 +712,9 @@ html, body {
 
 /* A short window (a laptop with a big browser chrome) has to give the picture
    back; the instruments shrink rather than being cropped by the bottom edge. */
-@media (max-height: 780px) {
+/* Pointer-fine only: a phone in landscape is also a short window, and it has
+   its own rule above that this one would otherwise stamp on. */
+@media (max-height: 780px) and (pointer: fine) {
   .osd { bottom: 14px; gap: 10px; }
   .osd svg.ai { width: 100px; height: 100px; }
   .osd svg.vsi-svg { width: 26px; height: 66px; }

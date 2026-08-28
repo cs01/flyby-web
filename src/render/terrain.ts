@@ -94,6 +94,10 @@ uniform float uNight;
 uniform float uSunSurface;
 uniform float uDebug;
 uniform vec3 uNightGlow;
+uniform vec3 uMoonDir;
+// Moon colour * intensity, in the same units as uSunColor * uSunIntensity, so
+// it converts to surface irradiance through the same uSunSurface.
+uniform vec3 uMoonLight;
 uniform sampler2D uUrban;
 uniform float uUrbanExtent;
 
@@ -128,12 +132,20 @@ void main() {
   // atmosphere produces, so aerial perspective stays proportionate.
   vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl;
 
+  // Moonlight. The one thing that makes a night flight over open country
+  // something other than a black frame: the street-lamp mask only covers
+  // built-up ground, so without this a coastline, a river or a ridge line
+  // outside the city simply is not there.
+  float mndl = max(0.0, dot(n, uMoonDir));
+  vec3 moonBeam = uMoonLight * uSunSurface * mndl;
+  vec3 beam = direct + moonBeam;
+
   // Sky ambient, weighted by how much sky the surface can see. A valley floor
   // is darker than a ridge for the same sun angle, which is most of what makes
   // terrain read as three-dimensional at low sun.
   vec3 ambient = uAmbient * (0.55 + 0.45 * n.y);
 
-  vec3 lit = albedo * (direct + ambient);
+  vec3 lit = albedo * (beam + ambient);
 
   // Specular sheen on wet ground, and always on water (which the drape shows
   // as dark blue; using luminance as a water proxy is crude but it is right
@@ -166,9 +178,16 @@ void main() {
   float gloss = max(uWetness, water);
   vec3 v = normalize(uCameraPos - vWorld);
   if (gloss > 0.01) {
+    float shine = mix(48.0, 320.0, water);
     vec3 hv = normalize(v + uSunDir);
-    float spec = pow(max(0.0, dot(n, hv)), mix(48.0, 320.0, water));
+    float spec = pow(max(0.0, dot(n, hv)), shine);
     lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.6;
+    // The moon's own glitter path. Water at night is otherwise the darkest
+    // thing in the frame, and the moonglade is the only thing that says which
+    // part of that darkness is sea.
+    vec3 hm = normalize(v + uMoonDir);
+    float specM = pow(max(0.0, dot(n, hm)), shine);
+    lit += uMoonLight * uSunSurface * specM * gloss * 1.6;
   }
 
   // Open water is not a dark diffuse surface. Its colour is almost entirely
@@ -179,8 +198,10 @@ void main() {
   if (water > 0.01) {
     float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
     float fres = 0.02 + 0.98 * f;
-    vec3 deep = vec3(0.004, 0.016, 0.030) * (direct + ambient);
-    vec3 skyRefl = uAmbient * 1.7 + uSunColor * uSunIntensity * uSunSurface * sunT * 0.10;
+    vec3 deep = vec3(0.004, 0.016, 0.030) * (beam + ambient);
+    vec3 skyRefl = uAmbient * 1.7
+                 + uSunColor * uSunIntensity * uSunSurface * sunT * 0.10
+                 + uMoonLight * uSunSurface * 0.10;
     lit = mix(lit, mix(deep, skyRefl, fres), water);
   }
 
@@ -247,7 +268,7 @@ void main() {
   //   1 albedo  2 direct  3 ambient  4 inscatter  5 lit  6 transmittance
   if (uDebug > 0.5) {
     if (uDebug < 1.5)      col = albedo;
-    else if (uDebug < 2.5) col = direct;
+    else if (uDebug < 2.5) col = beam;
     else if (uDebug < 3.5) col = ambient;
     else if (uDebug < 4.5) col = inscatter;
     else if (uDebug < 5.5) col = lit;
@@ -268,6 +289,8 @@ export interface TerrainUniforms extends Record<string, THREE.IUniform> {
   uSnow: THREE.IUniform<number>;
   uNight: THREE.IUniform<number>;
   uNightGlow: THREE.IUniform<THREE.Color>;
+  uMoonDir: THREE.IUniform<THREE.Vector3>;
+  uMoonLight: THREE.IUniform<THREE.Color>;
   uUrban: THREE.IUniform<THREE.Texture | null>;
   uUrbanExtent: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
@@ -291,6 +314,8 @@ export function makeTerrainUniforms(): TerrainUniforms {
     uSnow: { value: 0 },
     uNight: { value: 0 },
     uNightGlow: { value: new THREE.Color(0, 0, 0) },
+    uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
+    uMoonLight: { value: new THREE.Color(0, 0, 0) },
     uUrban: { value: null },
     uUrbanExtent: { value: 1 },
     uExposure: { value: 1 },

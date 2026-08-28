@@ -11,6 +11,7 @@ import type { Weather } from "../data/weather";
 import type { City } from "../cities";
 import { compassPoint } from "./osd";
 import { offsetLabel } from "./timebar";
+import { isTouchDevice } from "../sim/touch";
 
 const KTS_PER_MS = 1.94384;
 
@@ -36,6 +37,17 @@ export class Hud {
     this.tourPanel = el("hud hud-br", "");
     root.append(this.placePanel, this.wxPanel, this.perfPanel, this.tourPanel);
 
+    // On a phone these two are collapsed to their headings and expand on a tap.
+    // At full height they cover a third of the sky each, and the sky is what
+    // the app is; the CSS does the collapsing, this only makes them tappable.
+    // The class is set unconditionally so a desktop window narrowed to a phone
+    // width behaves the same way, rather than depending on what the window was
+    // when the page loaded.
+    for (const panel of [this.wxPanel, this.tourPanel]) {
+      panel.classList.add("collapsible");
+      panel.addEventListener("click", () => panel.classList.toggle("open"));
+    }
+
     // An anchor so ctrl/cmd-click opens the picker in a new tab, like any link.
     const back = document.createElement("a");
     back.className = "back";
@@ -46,10 +58,17 @@ export class Hud {
     back.href = q ? `?${q}` : location.pathname;
     root.append(back);
 
+    // Two attributions, one shown at a time by the stylesheet. Every source is
+    // still named in the short one -- what goes is the plumbing (which tile
+    // service, which licence), not the credit. Spelled out in full it wraps to
+    // three lines on a phone and the last of them falls off the bottom of the
+    // screen, which credits nobody.
     const att = document.createElement("div");
     att.className = "attrib";
-    att.textContent =
-      "Terrain: NASA SRTM via AWS Terrain Tiles · Imagery: Esri World Imagery · Buildings: © OpenStreetMap contributors (ODbL) · Weather: Open-Meteo";
+    att.innerHTML =
+      `<span class="attrib-full">Terrain: NASA SRTM via AWS Terrain Tiles · Imagery: Esri World Imagery ·` +
+      ` Buildings: © OpenStreetMap contributors (ODbL) · Weather: Open-Meteo</span>` +
+      `<span class="attrib-short">SRTM · Esri · © OpenStreetMap · Open-Meteo</span>`;
     root.append(att);
   }
 
@@ -153,13 +172,23 @@ export class Hud {
   }
 
   showControls(): void {
-    const d = el("hud hud-controls", `
+    // A phone has no keys to name, and naming them is worse than saying
+    // nothing: the one thing someone on a touch screen needs told is that the
+    // two halves of the screen do different jobs, which is not discoverable.
+    const rows = isTouchDevice()
+      ? `
+      <div class="row"><span>Left half</span><b>roll · up climbs</b></div>
+      <div class="row"><span>Right half</span><b>throttle · rudder</b></div>
+      <div class="row"><span>Buttons</span><b>cam · boost · look</b></div>
+      <div class="row"><span>Time</span><b>the bar up top</b></div>`
+      : `
       <div class="row"><span>Move</span><b>W A S D</b></div>
       <div class="row"><span>Up / down</span><b>Space / Ctrl</b></div>
       <div class="row"><span>Turn</span><b>Q / E · drag</b></div>
       <div class="row"><span>Boost</span><b>Shift</b></div>
       <div class="row"><span>Camera</span><b>C · look back B</b></div>
-      <div class="row"><span>Time</span><b>, . · 0 · T</b></div>`);
+      <div class="row"><span>Time</span><b>, . · 0 · T</b></div>`;
+    const d = el("hud hud-controls", rows);
     this.root.append(d);
     // Fade out once the flying has started; it is a reminder, not a panel.
     setTimeout(() => {
