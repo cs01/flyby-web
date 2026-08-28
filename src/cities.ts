@@ -1,9 +1,14 @@
 // The curated places, with the landmarks that make each one worth a lap.
 //
-// A city earns a place here by having VERTICAL RELIEF the renderer can show:
-// either a skyline (Manhattan, Hong Kong), terrain the city is built into
-// (Rio, Cape Town, San Francisco), or water that reflects it (Sydney, Venice).
-// A flat grid of mid-rises is a real city and a boring flight.
+// A place earns a spot here by having VERTICAL RELIEF the renderer can show:
+// a skyline (Manhattan, Hong Kong), terrain a city is built into (Rio, Cape
+// Town, San Francisco), water that reflects it (Sydney, Venice), or relief
+// with no city on it at all (Yosemite, the Grand Canyon). A flat grid of
+// mid-rises is a real city and a boring flight.
+//
+// The wild ones bake no building pack -- there is nothing to bake -- and the
+// menu simply does not mark them as having a skyline. Everything else in the
+// app is terrain, imagery and weather, which they have as much of as anywhere.
 //
 // `radius` is the half-width of the baked building pack. Bigger is not better:
 // it is a linear cost in bake time and download, and past about 8 km the
@@ -295,6 +300,56 @@ export const CITIES: City[] = [
       { name: "Prince's Palace", lat: 43.7315, lon: 7.4206, height: 60 },
       { name: "Tete de Chien", lat: 43.7330, lon: 7.4050, height: 550 },
       { name: "Larvotto", lat: 43.7470, lon: 7.4340, height: 15 },
+    ],
+  },
+  {
+    id: "honolulu", name: "Honolulu", country: "USA",
+    lat: 21.2890, lon: -157.8400, radius: 7000, approach: 250, startAlt: 700,
+    landmarks: [
+      { name: "Diamond Head", lat: 21.2620, lon: -157.8055, height: 60 },
+      { name: "Waikiki Beach", lat: 21.2767, lon: -157.8267, height: 20 },
+      { name: "Aloha Tower", lat: 21.3070, lon: -157.8664, height: 56 },
+      { name: "Punchbowl Crater", lat: 21.3120, lon: -157.8450, height: 50 },
+      { name: "Ala Moana", lat: 21.2890, lon: -157.8460, height: 30 },
+    ],
+  },
+  // --- No city on it at all -------------------------------------------------
+  // The valley runs west to east and the walls are the whole point, so the
+  // approach flies up it rather than across it, and the start is above the rim
+  // so the first thing you see is the shape of the place before you drop in.
+  {
+    id: "yosemite", name: "Yosemite", country: "USA",
+    lat: 37.7420, lon: -119.5930, radius: 6000, approach: 90, startAlt: 1200,
+    landmarks: [
+      { name: "Half Dome", lat: 37.7459, lon: -119.5332, height: 60 },
+      { name: "El Capitan", lat: 37.7340, lon: -119.6376, height: 60 },
+      { name: "Yosemite Falls", lat: 37.7566, lon: -119.5969, height: 40 },
+      { name: "Glacier Point", lat: 37.7275, lon: -119.5734, height: 40 },
+      { name: "Bridalveil Fall", lat: 37.7166, lon: -119.6469, height: 40 },
+    ],
+  },
+  // Spawns BELOW the rim, which is the only way the scale of it reads: from
+  // above it is a pattern, from inside it is a canyon.
+  {
+    id: "grandcanyon", name: "Grand Canyon", country: "USA",
+    lat: 36.0980, lon: -112.0950, radius: 8000, approach: 60, startAlt: 700,
+    landmarks: [
+      { name: "Mather Point", lat: 36.0637, lon: -112.1085, height: 40 },
+      { name: "Yavapai Point", lat: 36.0658, lon: -112.1189, height: 40 },
+      { name: "Bright Angel Point", lat: 36.1962, lon: -112.0563, height: 40 },
+      { name: "Phantom Ranch", lat: 36.1058, lon: -112.0947, height: 30 },
+      { name: "Plateau Point", lat: 36.0847, lon: -112.1428, height: 40 },
+    ],
+  },
+  {
+    id: "iguazu", name: "Iguazu Falls", country: "Argentina",
+    lat: -25.6880, lon: -54.4420, radius: 5000, approach: 340, startAlt: 450,
+    landmarks: [
+      { name: "Devil's Throat", lat: -25.6905, lon: -54.4380, height: 60 },
+      { name: "San Martin Island", lat: -25.6862, lon: -54.4468, height: 50 },
+      { name: "Bossetti Falls", lat: -25.6845, lon: -54.4452, height: 50 },
+      { name: "Union Falls", lat: -25.6918, lon: -54.4415, height: 50 },
+      { name: "Iguazu River", lat: -25.6800, lon: -54.4300, height: 20 },
     ],
   },
 ];

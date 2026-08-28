@@ -408,7 +408,7 @@ async function main() {
       hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0, quality.scale);
       hud.setTour(tour.marks, tourDist, tour.finished);
       hud.setWeather(wx, clockOffset);
-      hud.setPlace(city, wallClock.parts(now).hhmm, wallClock.abbrev(now));
+      hud.setPlace(city, wallClock.parts(now).time, wallClock.abbrev(now));
       timebar.update(now, solar.sun.altitude);
     }
   });

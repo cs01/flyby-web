@@ -62,7 +62,7 @@ g.requestAnimationFrame = (fn: () => void) => { fn(); return 0; };
 g.matchMedia = () => ({ matches: false });
 g.navigator = g.navigator ?? { maxTouchPoints: 0 };
 
-const { TouchControls } = await import("../src/sim/touch");
+const { TouchControls, STICK_RADIUS, THROTTLE_RADIUS, expo } = await import("../src/sim/touch");
 
 const results: { name: string; ok: boolean; detail: string }[] = [];
 function check(name: string, ok: boolean, detail: string): void {
@@ -105,9 +105,13 @@ check("left zone arms the stick", tc.active, `active=${tc.active}`);
 near("no deflection before the finger moves", tc.axes.roll, 0);
 near("no lift before the finger moves", tc.axes.lift, 0);
 
-move(1, 132, 600); // +32 px of a 64 px radius
-near("half right is half roll", tc.axes.roll, 0.5);
-move(1, 36, 600);
+// Half the travel is NOT half the roll: the axis is expo'd, so the middle of
+// the stick is soft. Asserted against the curve rather than a literal, because
+// the number that matters is that it is well under half and still rising.
+move(1, 100 + STICK_RADIUS / 2, 600);
+near("half right is a soft half roll", tc.axes.roll, expo(0.5));
+check("expo softens the middle", tc.axes.roll < 0.4, `${tc.axes.roll.toFixed(3)}`);
+move(1, 100 - STICK_RADIUS, 600);
 near("full left is full roll", tc.axes.roll, -1);
 move(1, -400, 600);
 near("past full stays full", tc.axes.roll, -1);
@@ -115,37 +119,37 @@ near("past full stays full", tc.axes.roll, -1);
 // Up is a climb, agreeing with the desktop mouse drag. Asserted rather than
 // assumed: the two builds sharing one sense is the whole reason the toggle
 // that used to switch it was deleted.
-move(1, 100, 568); // 32 px UP the screen
+move(1, 100, 600 - STICK_RADIUS / 2);
 near("finger up is a climb", tc.axes.lift, 0.5);
-move(1, 100, 664); // 96 px DOWN, past the radius
+move(1, 100, 600 + STICK_RADIUS * 1.5);
 near("finger down is a descent, clamped", tc.axes.lift, -1);
 
-up(1, 100, 664);
+up(1, 100, 600);
 check("release disarms", !tc.active, `active=${tc.active}`);
 near("release centres roll", tc.axes.roll, 0);
 near("release centres lift", tc.axes.lift, 0);
 
 // --- Right zone: throttle and rudder --------------------------------------
 down(2, 300, 600);
-move(2, 300, 571); // 29 px up of a 58 px radius
+move(2, 300, 600 - THROTTLE_RADIUS / 2);
 near("finger up opens the throttle", tc.axes.throttle, 0.5);
-move(2, 300, 658);
+move(2, 300, 600 + THROTTLE_RADIUS * 1.5);
 near("finger down closes it, clamped", tc.axes.throttle, -1);
-move(2, 329, 600);
-near("sideways is rudder", tc.axes.yaw, 0.5);
-up(2, 329, 600);
+move(2, 300 + THROTTLE_RADIUS / 2, 600);
+near("sideways is rudder", tc.axes.yaw, expo(0.5));
+up(2, 300, 600);
 near("release centres the throttle", tc.axes.throttle, 0);
 
 // --- Two thumbs at once ----------------------------------------------------
 // The whole point of splitting the screen: rolling must not move the throttle.
 down(3, 100, 600);
 down(4, 300, 600);
-move(3, 164, 600);
-move(4, 300, 542);
+move(3, 100 + STICK_RADIUS, 600);
+move(4, 300, 600 - THROTTLE_RADIUS);
 near("left thumb rolls", tc.axes.roll, 1);
 near("right thumb throttles", tc.axes.throttle, 1);
 check("both zones armed", tc.active, `active=${tc.active}`);
-up(3, 164, 600);
+up(3, 100 + STICK_RADIUS, 600);
 near("dropping the stick leaves the throttle", tc.axes.throttle, 1);
 near("dropping the stick centres the roll", tc.axes.roll, 0);
 check("still armed on one thumb", tc.active, `active=${tc.active}`);
@@ -157,7 +161,7 @@ check("both released disarms", !tc.active, `active=${tc.active}`);
 // turning would otherwise re-origin the stick under the thumb and snap the
 // aeroplane level.
 down(5, 100, 600);
-move(5, 164, 600);
+move(5, 100 + STICK_RADIUS, 600);
 down(6, 120, 700); // same zone, second finger
 near("a second finger does not steal the stick", tc.axes.roll, 1);
 move(6, 200, 700);
@@ -171,7 +175,7 @@ reset();
 
 // --- Tab away with a thumb down -------------------------------------------
 down(8, 100, 600);
-move(8, 164, 600);
+move(8, 100 + STICK_RADIUS, 600);
 near("armed before the blur", tc.axes.roll, 1);
 for (const fn of winListeners.get("blur") ?? []) fn({});
 near("blur centres the stick", tc.axes.roll, 0);

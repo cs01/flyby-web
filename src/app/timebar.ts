@@ -13,26 +13,29 @@
 // carried rather than predicted, which is the honest version of a degraded
 // mode.
 //
-// The FORECAST BAND under the slider is the part that makes this usable. A
-// slider alone means scrubbing blind, hunting for the interesting hour; the
-// band paints every hour ahead as the colour of its sky, so a clear dawn or a
-// front coming through is something you can see and click on rather than
-// something you have to find.
+// ONE CONTROL, and it is the picture of the forecast itself. This used to be a
+// row of buttons, a range slider, and a coloured band under the slider that
+// meant something different again: three controls for one number, in three
+// colour languages, and the only one that told you anything was the band. So
+// the band IS the scrubber now -- each cell painted the colour that hour's sky
+// will be, and you drag along it. Every button it had is a keyboard binding
+// that still works (`,` `.` step, `0` back to now, `T` timelapse); none of
+// them was worth the width on a phone.
 
 import { solarState } from "../data/solar";
 import type { WeatherTimeline } from "../data/weather";
 
 /** How far the scrubber reaches, in hours either side of the present. */
-export const SCRUB_BACK_H = 12;
-export const SCRUB_FWD_H = 120;
+export const SCRUB_BACK_H = 6;
+export const SCRUB_FWD_H = 54;
 
-/** Hours drawn in the forecast band. */
-const BAND_HOURS = 60;
+/** Hours drawn in the band, which is now the whole of the scrubber's range. */
+const BAND_HOURS = SCRUB_BACK_H + SCRUB_FWD_H;
 
 /**
  * The city's wall clock, formatted by `Intl` in the city's own IANA zone.
  *
- * Not by adding a fixed offset to a UTC instant. The scrubber reaches five days
+ * Not by adding a fixed offset to a UTC instant. The scrubber reaches days
  * ahead, which can cross a daylight-saving change, and a fixed offset is then
  * an hour wrong for part of its own range -- the one place where being an hour
  * out is most visible, because the sun in the picture would not agree with the
@@ -46,16 +49,16 @@ export class LocalClock {
     const opts: Intl.DateTimeFormatOptions = {
       timeZone: timezone,
       weekday: "short",
-      hour: "2-digit",
+      hour: "numeric",
       minute: "2-digit",
-      hour12: false,
+      hour12: true,
     };
     // An invalid zone throws rather than falling back, and a bad zone string
     // off the wire must not take the whole HUD down with it.
     try {
-      this.fmt = new Intl.DateTimeFormat("en-GB", opts);
+      this.fmt = new Intl.DateTimeFormat("en-US", opts);
     } catch {
-      this.fmt = new Intl.DateTimeFormat("en-GB", { ...opts, timeZone: "UTC" });
+      this.fmt = new Intl.DateTimeFormat("en-US", { ...opts, timeZone: "UTC" });
     }
     try {
       this.zoneFmt = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "short" });
@@ -64,17 +67,21 @@ export class LocalClock {
     }
   }
 
-  parts(when: Date): { hhmm: string; day: string; hour: number } {
+  /** `time` is a 12-hour wall clock, "1:54 PM". `hour` stays 0..24 decimal. */
+  parts(when: Date): { time: string; day: string; hour: number } {
     const p = this.fmt.formatToParts(when);
     const get = (t: string) => p.find((x) => x.type === t)?.value ?? "";
-    // Some locales render midnight as 24; the band's day-boundary test depends
-    // on hour 0 existing, so it is normalised here rather than at every use.
-    const h = Number(get("hour")) % 24;
+    const h12 = Number(get("hour"));
     const m = Number(get("minute"));
+    // `dayPeriod` is the only part that says which half of the day this is;
+    // 12 AM is hour 0 and 12 PM is hour 12, which is the one case a plain
+    // "+12 if PM" gets wrong in both directions.
+    const pm = /p/i.test(get("dayPeriod"));
+    const h24 = (h12 % 12) + (pm ? 12 : 0);
     return {
-      hhmm: `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`,
+      time: `${h12}:${String(m).padStart(2, "0")} ${pm ? "PM" : "AM"}`,
       day: get("weekday"),
-      hour: h + m / 60,
+      hour: h24 + m / 60,
     };
   }
 
@@ -130,14 +137,15 @@ export interface TimebarOptions {
   onTimelapse: (on: boolean) => void;
 }
 
+const SPAN = BAND_HOURS * 3600;
+const LO = -SCRUB_BACK_H * 3600;
+
 export class Timebar {
   private root: HTMLDivElement;
   private clock: HTMLElement;
   private zone: HTMLElement;
   private offsetChip: HTMLElement;
-  private sunChip: HTMLElement;
-  private slider: HTMLInputElement;
-  private lapseBtn: HTMLButtonElement;
+  private band: HTMLElement;
   private cursor: HTMLElement;
   private opts: TimebarOptions;
   private clockFmt: LocalClock;
@@ -151,79 +159,86 @@ export class Timebar {
     this.root.className = "timebar";
     this.root.innerHTML = `
       <div class="tb-top">
-        <button class="tb-btn" data-step="-3600" title="Back one hour">&#9664;</button>
-        <div class="tb-clock">
-          <b>--:--</b>
-          <span class="tb-zone"></span>
-        </div>
-        <button class="tb-btn" data-step="3600" title="Forward one hour">&#9654;</button>
+        <b class="tb-time">--:--</b>
+        <span class="tb-zone"></span>
         <span class="tb-offset">now</span>
-        <span class="tb-sun"></span>
-        <button class="tb-btn tb-now" title="Back to the present">NOW</button>
-        <button class="tb-btn tb-lapse" title="Run the clock fast (T)">&#9193;</button>
       </div>
       <div class="tb-band"><div class="tb-cursor"></div></div>
-      <input class="tb-slider" type="range" step="300"
-             min="${-SCRUB_BACK_H * 3600}" max="${SCRUB_FWD_H * 3600}" value="0" />`;
+      <div class="tb-ticks"></div>`;
     parent.append(this.root);
 
-    this.clock = this.root.querySelector(".tb-clock b")!;
+    this.clock = this.root.querySelector(".tb-time")!;
     this.zone = this.root.querySelector(".tb-zone")!;
     this.offsetChip = this.root.querySelector(".tb-offset")!;
-    this.sunChip = this.root.querySelector(".tb-sun")!;
-    this.slider = this.root.querySelector(".tb-slider")!;
-    this.lapseBtn = this.root.querySelector(".tb-lapse")!;
+    this.band = this.root.querySelector(".tb-band")!;
     this.cursor = this.root.querySelector(".tb-cursor")!;
 
     this.zone.textContent = this.clockFmt.abbrev(opts.base);
 
-    for (const b of this.root.querySelectorAll<HTMLButtonElement>("[data-step]")) {
-      b.addEventListener("click", () => this.nudge(Number(b.dataset.step)));
-    }
-    this.root.querySelector(".tb-now")!.addEventListener("click", () => this.setOffset(0));
-    this.lapseBtn.addEventListener("click", () => {
-      const on = !this.lapseBtn.classList.contains("on");
-      this.setTimelapse(on);
-      opts.onTimelapse(on);
-    });
-    this.slider.addEventListener("input", () => this.setOffset(Number(this.slider.value)));
-
     this.buildBand();
+    this.armDrag();
   }
 
   /**
-   * One cell per hour, coloured by that hour's sky. Clicking one moves the
-   * clock to it, which is the fastest way to reach "tomorrow at sunrise".
+   * One cell per hour, coloured by that hour's sky, plus a label wherever a
+   * new day starts. The labels are what stop the band being an abstract smear:
+   * "Sat" over a dark stretch is a night you can aim at.
    */
   private buildBand(): void {
-    const band = this.root.querySelector(".tb-band")!;
     const { lat, lon, base, timeline } = this.opts;
-    for (let h = 0; h < BAND_HOURS; h++) {
-      const t = new Date(base.getTime() + h * 3600_000);
+    const ticks = this.root.querySelector(".tb-ticks")!;
+    for (let i = 0; i < BAND_HOURS; i++) {
+      const hoursFromBase = i - SCRUB_BACK_H;
+      const t = new Date(base.getTime() + hoursFromBase * 3600_000);
       const solar = solarState(t, lat, lon);
       const wx = timeline?.at(t);
       const cell = document.createElement("i");
       cell.style.background = skyColour(solar.daylight, wx ? wx.totalCover : 0, solar.sun.altitude);
       const local = this.clockFmt.parts(t);
-      cell.title = `${local.day} ${local.hhmm} · ${wx ? wx.summary : "no forecast"}`;
-      // Midnight gets a rule, so a day is a countable unit on the band rather
-      // than an undifferentiated smear of colour.
-      if (local.hour < 1) cell.classList.add("day-start");
-      cell.addEventListener("click", () => this.setOffset(h * 3600));
-      band.append(cell);
+      cell.title = `${local.day} ${local.time} · ${wx ? wx.summary : "no forecast"}`;
+      if (local.hour < 1) {
+        cell.classList.add("day-start");
+        const label = document.createElement("span");
+        label.textContent = local.day;
+        label.style.left = `${((i + 0.5) / BAND_HOURS) * 100}%`;
+        ticks.append(label);
+      }
+      this.band.append(cell);
     }
+    // The present is the one instant worth marking: it is where the picture is
+    // real rather than predicted, and it is how you get back.
+    const now = document.createElement("span");
+    now.className = "tb-nowtick";
+    now.textContent = "now";
+    now.style.left = `${(-LO / SPAN) * 100}%`;
+    ticks.append(now);
   }
 
-  private nudge(seconds: number): void {
-    this.setOffset(this.offset + seconds);
+  /**
+   * The band is the control. Pointer events rather than a range input because
+   * a range input on a phone is a 20 px thumb that has to be hit exactly;
+   * pressing anywhere on the band jumps the clock there and keeps dragging,
+   * which is the gesture the band's shape already suggests.
+   */
+  private armDrag(): void {
+    const seek = (clientX: number) => {
+      const r = this.band.getBoundingClientRect();
+      const frac = (clientX - r.left) / Math.max(r.width, 1);
+      this.setOffset(LO + Math.max(0, Math.min(1, frac)) * SPAN);
+    };
+    this.band.addEventListener("pointerdown", (e) => {
+      this.band.setPointerCapture(e.pointerId);
+      seek(e.clientX);
+      e.preventDefault();
+    });
+    this.band.addEventListener("pointermove", (e) => {
+      if (this.band.hasPointerCapture(e.pointerId)) seek(e.clientX);
+    });
   }
 
   /** Clamped to the scrubber's range, then pushed out to the scene. */
   setOffset(seconds: number): void {
-    const lo = -SCRUB_BACK_H * 3600;
-    const hi = SCRUB_FWD_H * 3600;
-    this.offset = Math.max(lo, Math.min(hi, seconds));
-    if (Number(this.slider.value) !== this.offset) this.slider.value = String(this.offset);
+    this.offset = Math.max(LO, Math.min(LO + SPAN, seconds));
     this.opts.onOffset(this.offset);
   }
 
@@ -232,32 +247,19 @@ export class Timebar {
   }
 
   setTimelapse(on: boolean): void {
-    this.lapseBtn.classList.toggle("on", on);
+    this.root.classList.toggle("lapsing", on);
   }
 
   /** Called every few frames with the clock the scene is actually rendering. */
-  update(now: Date, sunAltitude: number): void {
+  update(now: Date, _sunAltitude: number): void {
     const p = this.clockFmt.parts(now);
-    const label = `${p.day} ${p.hhmm}`;
+    const label = `${p.day} ${p.time}`;
     if (this.clock.textContent !== label) this.clock.textContent = label;
 
     const off = offsetLabel(this.offset);
     if (this.offsetChip.textContent !== off) this.offsetChip.textContent = off;
     this.offsetChip.classList.toggle("shifted", Math.abs(this.offset) >= 60);
 
-    const sun =
-      sunAltitude > 0
-        ? `☀ ${sunAltitude.toFixed(0)}°`
-        : sunAltitude > -6
-          ? "◑ twilight"
-          : "☾ night";
-    if (this.sunChip.textContent !== sun) this.sunChip.textContent = sun;
-
-    // The band starts at the session's base time, so the cursor is the offset
-    // as a fraction of the band's span -- negative offsets run off its left
-    // end, which is correct: there is no past on a forecast band.
-    const frac = this.offset / 3600 / BAND_HOURS;
-    this.cursor.style.left = `${Math.max(0, Math.min(1, frac)) * 100}%`;
-    this.cursor.style.opacity = frac < 0 || frac > 1 ? "0.25" : "1";
+    this.cursor.style.left = `${((this.offset - LO) / SPAN) * 100}%`;
   }
 }

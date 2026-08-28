@@ -422,59 +422,59 @@ html, body {
   pointer-events: auto;
 }
 
-.tb-top { display: flex; align-items: center; gap: 8px; }
-.tb-clock { display: flex; align-items: baseline; gap: 5px; min-width: 104px; }
-.tb-clock b { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.tb-top { display: flex; align-items: baseline; gap: 6px; }
+.tb-time { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .tb-zone { font-size: 9px; letter-spacing: 0.1em; color: var(--dim); }
+.tb-offset { margin-left: auto; color: var(--dim); letter-spacing: 0.06em; }
+.tb-offset.shifted { color: var(--ink); }
 
-.tb-offset { flex: 1; text-align: center; color: var(--dim); letter-spacing: 0.06em; }
-.tb-offset.shifted { color: var(--accent); }
-.tb-sun { color: var(--dim); font-size: 11px; white-space: nowrap; }
-
-.tb-btn {
-  padding: 2px 7px;
-  border: 1px solid var(--rule);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--dim);
-  font: inherit;
-  font-size: 10px;
-  cursor: pointer;
-  transition: color 0.14s ease, border-color 0.14s ease;
-}
-
-.tb-btn:hover { color: var(--ink); border-color: rgba(102, 212, 255, 0.5); }
-.tb-btn.on { color: #05080d; background: var(--accent); border-color: var(--accent); }
-
-/* One cell per hour, painted the colour that hour's sky will be. Scrubbing a
-   bare slider means hunting blind for the interesting hour; this makes a clear
-   dawn or an incoming front something you can see and click. */
+/* The band IS the scrubber: one cell per hour, painted the colour that hour's
+   sky will be, dragged along directly. It replaced a band plus a range slider
+   plus four buttons, which was three controls and three colour languages for
+   one number. `touch-action: none` because the gesture is a horizontal drag
+   inside a page that would otherwise read it as a scroll. */
 .tb-band {
   position: relative;
   display: flex;
-  height: 16px;
-  margin: 7px 0 3px;
-  border-radius: 4px;
+  height: 26px;
+  margin: 8px 0 0;
+  border-radius: 5px;
   overflow: hidden;
-  cursor: pointer;
+  cursor: ew-resize;
+  touch-action: none;
 }
 
 .tb-band i { flex: 1; display: block; }
-.tb-band i:hover { filter: brightness(1.35); }
-.tb-band i.day-start { box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.45); }
+.tb-band i.day-start { box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.35); }
 
+/* White, not the accent: the accent is used for LIVE state elsewhere, and a
+   cyan line on a sky-coloured band read as another piece of weather. */
 .tb-cursor {
   position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 2px;
-  background: var(--accent);
-  box-shadow: 0 0 6px rgba(102, 212, 255, 0.9);
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  margin-left: -2px;
+  border-radius: 3px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
   pointer-events: none;
   transition: left 0.08s linear;
 }
 
-.tb-slider { width: 100%; margin: 0; accent-color: var(--accent); height: 14px; }
+.tb-ticks {
+  position: relative;
+  height: 11px;
+  margin-top: 3px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+}
+
+.tb-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.tb-nowtick { color: var(--ink); }
+
+.timebar.lapsing { border-color: rgba(102, 212, 255, 0.55); }
 
 .tag-fc { background: rgba(102, 212, 255, 0.16); color: var(--accent); }
 
@@ -609,18 +609,16 @@ html, body {
     transform: none;
   }
 
-  /* Band and slider are the two things a thumb has to hit; the desktop sizes
-     are under the 44 px target and both were effectively unusable. */
-  .tb-band { height: 22px; }
-  .tb-slider { height: 26px; }
-  .tb-btn { padding: 5px 9px; font-size: 10px; }
+  /* The band is the only thing a thumb has to hit, so it gets the height the
+     slider and the buttons used to take between them. */
+  .tb-band { height: 40px; }
 
   /* Weather and route drop to their headings and expand on a tap. Full height
      they cover a third of the sky each, and on a phone the sky is the app.
-     The 186 is measured, not guessed: the scrubber is 105 px tall once its
-     band and slider are at a size a thumb can hit. */
+     The 176 is measured, not guessed: the scrubber is 98 px tall once its
+     band is at a size a thumb can hit, and it starts 70 px down. */
   .hud-tr, .hud-br {
-    top: calc(186px + env(safe-area-inset-top));
+    top: calc(176px + env(safe-area-inset-top));
     bottom: auto;
     max-width: 46vw;
   }
@@ -681,9 +679,8 @@ html, body {
     right: auto;
     transform: translateX(-50%);
   }
-  .tb-band { height: 16px; margin: 5px 0 2px; }
-  .tb-slider { height: 20px; }
-  .hud-tr, .hud-br { top: calc(152px + env(safe-area-inset-top)); max-width: 26vw; }
+  .tb-band { height: 24px; margin: 5px 0 0; }
+  .hud-tr, .hud-br { top: calc(142px + env(safe-area-inset-top)); max-width: 26vw; }
 
   /* The instruments stop short of the right edge, because that is where the
      buttons go when there is no vertical room for a column. */

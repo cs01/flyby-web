@@ -66,7 +66,14 @@ export interface AircraftConfig {
   boostBank: number;
   /** Degrees per second of yaw at full rudder. */
   rudderRate: number;
-  /** Metres per second of commanded climb at full stick. */
+  /**
+   * Metres per second of commanded climb at full stick.
+   *
+   * Deliberately far above a real light single's 5 m/s. A truthful climb over
+   * a city is a minute of watching the same rooftops get slightly smaller, and
+   * the vertical is half of what makes a valley or a canyon worth flying: you
+   * want to be able to haul up over a rim and drop back into it.
+   */
   climbRate: number;
   /**
    * How much faster than the real g*tan(bank)/V relation the aircraft turns.
@@ -90,7 +97,7 @@ export const DEFAULT_CONFIG: AircraftConfig = {
   maxBank: 55,
   boostBank: 70,
   rudderRate: 26,
-  climbRate: 11,
+  climbRate: 25,
   turnGain: 2.4,
   turnRefSpeed: 62,
   speedTau: 1.4,
@@ -104,7 +111,7 @@ export const EASY_CONFIG: AircraftConfig = {
   rollRate: 85,
   maxBank: 38,
   boostBank: 48,
-  climbRate: 8,
+  climbRate: 16,
   turnGain: 2.0,
 };
 
@@ -305,7 +312,7 @@ export class Aircraft {
     // impossible to hold at a height.
     const prevPitch = this.pitchAngle;
     const fpa = Math.asin(THREE.MathUtils.clamp(this.climb / Math.max(this.airspeed, 12), -0.6, 0.6));
-    const wantPitch = THREE.MathUtils.clamp(fpa * 1.25, -30 * DEG, 30 * DEG);
+    const wantPitch = THREE.MathUtils.clamp(fpa * 1.25, -38 * DEG, 38 * DEG);
     this.pitchAngle += (wantPitch - this.pitchAngle) * (1 - Math.pow(0.02, dt));
 
     // --- Speed ------------------------------------------------------------

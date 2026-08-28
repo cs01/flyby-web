@@ -77,9 +77,12 @@ async function fetchAllWeather(cities: City[]): Promise<(CardWeather | null)[]> 
   }
 }
 
+/** The city's wall clock as a 12-hour time: "1:54 PM". */
 function localTime(offsetSec: number): string {
   const d = new Date(Date.now() + offsetSec * 1000);
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+  const h24 = d.getUTCHours();
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${String(d.getUTCMinutes()).padStart(2, "0")} ${h24 < 12 ? "AM" : "PM"}`;
 }
 
 /** Cities that have a baked building pack, so the card can say so. */
@@ -101,7 +104,7 @@ export function showMenu(onPick: (city: City) => void): void {
     <div class="menu-inner">
       <header>
         <h1>FLYBY</h1>
-        <p>Fly real cities under the weather that is happening there right now.</p>
+        <p>Fly real places under the weather that is happening there right now.</p>
       </header>
       <div class="grid"></div>
       <footer>

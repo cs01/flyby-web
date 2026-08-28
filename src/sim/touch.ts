@@ -17,9 +17,30 @@
 // Everything above this file sees the same -1..1 axes a keyboard produces, so
 // the flight model has no idea a phone is involved.
 
-/** Where the finger must travel for full deflection, in CSS pixels. */
-const STICK_RADIUS = 64;
-const THROTTLE_RADIUS = 58;
+/**
+ * Where the finger must travel for full deflection, in CSS pixels.
+ *
+ * The stick is the bigger of the two on purpose. A 64 px roll travel meant a
+ * thumb flick was already at the bank limit before the aeroplane had visibly
+ * moved, so every turn was entered at full deflection and then corrected back
+ * out of -- the overshoot was in the mapping, not in the flight model.
+ */
+export const STICK_RADIUS = 96;
+export const THROTTLE_RADIUS = 64;
+
+/**
+ * How much of the roll and rudder travel is spent on small inputs.
+ *
+ * A cubic blend, not a dead zone: a dead zone makes the first few pixels do
+ * NOTHING, which reads as a broken control, while expo makes them do a little.
+ * The ends are untouched -- full travel is still full deflection -- so nothing
+ * is given up for the fine control near centre.
+ */
+export const ROLL_EXPO = 0.55;
+
+export function expo(v: number, amount = ROLL_EXPO): number {
+  return v * (1 - amount) + v * v * v * amount;
+}
 
 /**
  * Fraction of the viewport height, measured from the top, that the flight
@@ -206,7 +227,10 @@ export class TouchControls {
     const a = this.axes;
     const l = this.left ?? { x: 0, y: 0 };
     const r = this.right ?? { x: 0, y: 0 };
-    a.roll = l.x;
+    // Expo on the two axes a thumb SWIPES rather than holds. Lift and throttle
+    // are pushed to a position and left there, and softening those would just
+    // make them feel slack.
+    a.roll = expo(l.x);
     // Finger UP is a climb, which is the same sense as the mouse drag on the
     // desktop build. It is the screen-direct convention rather than the
     // pull-back-to-climb one a real stick uses, and the two must not disagree
@@ -214,7 +238,7 @@ export class TouchControls {
     // it deleted its invert-pitch toggle, that this axis gets one answer.
     a.lift = -l.y;
     a.throttle = -r.y;
-    a.yaw = r.x;
+    a.yaw = expo(r.x);
     this.active = this.left !== null || this.right !== null;
   }
 }
