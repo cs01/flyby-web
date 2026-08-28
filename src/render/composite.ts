@@ -104,22 +104,51 @@ float perlinWorley(vec3 p) {
  */
 float slabDensity(vec3 p, float cover, float base, float top, float scale) {
   if (cover <= 0.01) return 0.0;
-  float h = (p.y - base) / max(top - base, 1.0);
+  float thickness = max(top - base, 1.0);
+
+  // The WEATHER field: one low-frequency tap at a fixed depth, so it varies
+  // over kilometres of ground and not at all with height. It is what stops a
+  // full overcast being a plane. The reported coverage is the average over the
+  // sky, so letting it vary about that average is not inventing weather, it is
+  // declining to pretend the deck is uniform.
+  float w = texture(uShape, vec3(p.xz * scale * 0.25, 0.37)).r;
+
+  float localCover = clamp(cover * (0.8 + 0.4 * w), 0.0, 1.0);
+  // The base and the top are surfaces, not altitudes. A real stratocumulus
+  // base sags and lifts by a good fraction of the deck's own depth, and the top
+  // moves further than the base because that is where the convection is.
+  float localBase = base + 0.15 * thickness * (w - 0.5);
+  float localTop  = top  + 0.25 * thickness * (w - 0.5);
+
+  float h = (p.y - localBase) / max(localTop - localBase, 1.0);
   if (h < 0.0 || h > 1.0) return 0.0;
 
   // Round the top, flatten the bottom: cumulus grow upward from a flat base.
-  float profile = smoothstep(0.0, 0.12, h) * smoothstep(1.0, 0.55, h);
+  // Both ends are a FRACTION of the deck's thickness. As a fixed 120 m the ramp
+  // was a hard event at one altitude, and the march crossed it at a different
+  // step for every screen row, which is one of the things the terracing was.
+  float profile = smoothstep(0.0, 0.2, h) * smoothstep(1.0, 0.6, h);
 
   vec3 q = p;
   q.xz += uWind * uTime;
-  float n = perlinWorley(q * scale);
+  float shape = perlinWorley(q * scale);
 
-  // Coverage is a THRESHOLD on the noise. With the noise normalised to 0..1 and
-  // centred near 0.5, "1 - cover" is the level that leaves that fraction of the
-  // sky filled, so 40% coverage genuinely leaves blue gaps instead of turning
-  // the whole deck 40% translucent.
-  float threshold = 1.0 - cover;
-  float d = smoothstep(threshold, threshold + 0.14, n) * profile;
+  // The threshold is a REMAP rather than a smoothstep, which is what makes it
+  // survive full coverage. smoothstep(0, 0.14, n) is 1 almost everywhere, so a
+  // 100% deck came out as a constant: a mathematically flat plane of plaster.
+  // The remap hands back the noise itself at localCover 1, so an overcast still
+  // has thick and thin parts for the light to find.
+  float d = clamp(remap(shape, 1.0 - localCover, 1.0, 0.0, 1.0), 0.0, 1.0) * profile;
+
+  // Erosion, at the edges only, where it is the entire difference between a
+  // cloud and a blob. The interior is opaque and nothing about it is visible,
+  // so it does not pay for the second fetch. The detail rides the same wind as
+  // the shape, or it would crawl across a moving cloud.
+  if (d > 0.0 && d < 0.3) {
+    vec3 t = texture(uDetail, q * scale * 6.0).rgb;
+    float detail = t.r * 0.625 + t.g * 0.25 + t.b * 0.125;
+    d = clamp(remap(d, detail * 0.35, 1.0, 0.0, 1.0), 0.0, 1.0);
+  }
   return d;
 }
 
