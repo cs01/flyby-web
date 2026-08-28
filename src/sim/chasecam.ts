@@ -77,8 +77,16 @@ export class ChaseCam {
     // turn, which is nauseating, and one that inherited the pitch would swing
     // the ground in and out of shot on every level-off. The bank is put back
     // below, as a fraction, where it can be tuned independently.
+    // Some of the PITCH, because a nose-up attitude the camera ignores is an
+    // aeroplane climbing out of its own shot: pull up hard and the frame stays
+    // resolutely horizontal while the aeroplane points at a sky you cannot
+    // see. A fraction rather than all of it, so an ordinary level-off does not
+    // swing the ground in and out. The bank is still left out entirely -- a
+    // rig that rolls with the aircraft turns every turn into a barrel roll of
+    // the whole frame.
+    const pitchFollow = ac.pitchDeg * 0.62 * DEG;
     const yawOnly = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(0, -ac.headingDeg * DEG, 0, "YXZ"),
+      new THREE.Euler(pitchFollow, -ac.headingDeg * DEG, 0, "YXZ"),
     );
     const target = desiredOffset.clone().applyQuaternion(yawOnly).add(ac.position);
 

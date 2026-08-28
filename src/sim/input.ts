@@ -50,6 +50,8 @@ export class Input {
   lookBack = false;
   /** Toggled by C; the camera cycles chase / cockpit / wing / orbit. */
   cameraCycled = 0;
+  /** H presses. The controls card is asked for now rather than imposed. */
+  helpToggled = 0;
   paused = false;
 
   /**
@@ -83,6 +85,7 @@ export class Input {
       this.keys.add(e.code);
       if (e.code === "KeyC") this.cameraCycled++;
       if (e.code === "KeyP") this.paused = !this.paused;
+      if (e.code === "KeyH") this.helpToggled++;
       if (e.code === "KeyT") {
         this.timelapse = !this.timelapse;
         this.onTimelapse?.(this.timelapse);

@@ -97,7 +97,7 @@ export const DEFAULT_CONFIG: AircraftConfig = {
   maxBank: 55,
   boostBank: 70,
   rudderRate: 26,
-  climbRate: 25,
+  climbRate: 45,
   turnGain: 2.4,
   turnRefSpeed: 62,
   speedTau: 1.4,
@@ -111,7 +111,7 @@ export const EASY_CONFIG: AircraftConfig = {
   rollRate: 85,
   maxBank: 38,
   boostBank: 48,
-  climbRate: 16,
+  climbRate: 22,
   turnGain: 2.0,
 };
 
@@ -311,8 +311,15 @@ export class Aircraft {
     // the reverse (deriving climb from attitude) is what made the old model
     // impossible to hold at a height.
     const prevPitch = this.pitchAngle;
-    const fpa = Math.asin(THREE.MathUtils.clamp(this.climb / Math.max(this.airspeed, 12), -0.6, 0.6));
-    const wantPitch = THREE.MathUtils.clamp(fpa * 1.25, -38 * DEG, 38 * DEG);
+    // The climb angle is allowed to go nearly VERTICAL. It used to be clamped
+    // at 0.6 (34 degrees) with the nose capped at 38, which meant the sky was
+    // something you could point at but never actually fly into: the aeroplane
+    // stood on its tail at 38 degrees and stayed there however hard you pulled.
+    // The energy term below is what keeps this honest rather than silly -- a
+    // vertical climb costs airspeed fast, and the climb authority falls with
+    // the airspeed, so it mushes out on its own instead of hanging there.
+    const fpa = Math.asin(THREE.MathUtils.clamp(this.climb / Math.max(this.airspeed, 12), -0.985, 0.985));
+    const wantPitch = THREE.MathUtils.clamp(fpa * 1.1, -82 * DEG, 82 * DEG);
     this.pitchAngle += (wantPitch - this.pitchAngle) * (1 - Math.pow(0.02, dt));
 
     // --- Speed ------------------------------------------------------------

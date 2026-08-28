@@ -100,12 +100,20 @@ export class Hud {
    */
   setWeather(wx: Weather, offsetSeconds = 0): void {
     const age = Math.round((Date.now() - wx.time.getTime()) / 60000);
+    // The age is only worth the reader's attention once it is a PROBLEM. An
+    // observation is published hourly, so anything under an hour is simply
+    // the current weather and saying "11 min old" invites a worry that does
+    // not exist. Past that it has stopped being current and the badge says so.
+    // The exact stamp is on the hover either way, for anyone who wants it.
+    const stamp = wx.time.toLocaleString();
     const badge =
       wx.source === "forecast"
-        ? `<span class="tag tag-fc">Forecast · ${offsetLabel(offsetSeconds)}</span>`
+        ? `<span class="tag tag-fc" title="Forecast for ${stamp}">Forecast · ${offsetLabel(offsetSeconds)}</span>`
         : wx.source === "observation"
-          ? `<span class="tag tag-live">Live · ${age} min old</span>`
-          : `<span class="tag tag-stale">No feed · simulated</span>`;
+          ? age > 60
+            ? `<span class="tag tag-stale" title="Observed ${stamp}">${Math.round(age / 60)} h old</span>`
+            : `<span class="tag tag-live" title="Observed ${stamp}">Live</span>`
+          : `<span class="tag tag-stale" title="No feed reached">Simulated</span>`;
     // The lowest deck that is actually there, in feet, because that is the
     // number that says whether you are about to fly into it.
     const deck =
@@ -182,6 +190,18 @@ export class Hud {
     }, 2200);
   }
 
+  private controlsCard: HTMLElement | null = null;
+
+  /** Toggled by H. Nothing shows it on arrival any more. */
+  toggleControls(): void {
+    if (this.controlsCard) {
+      this.controlsCard.remove();
+      this.controlsCard = null;
+      return;
+    }
+    this.showControls();
+  }
+
   showControls(): void {
     // A phone has no keys to name, and naming them is worse than saying
     // nothing: the one thing someone on a touch screen needs told is that the
@@ -199,14 +219,10 @@ export class Hud {
       <div class="row"><span>Turbo</span><b>Space · Shift</b></div>
       <div class="row"><span>Camera</span><b>C · look back B</b></div>
       <div class="row"><span>Time</span><b>, . · 0 · T</b></div>`;
-    const d = el("hud hud-controls", rows);
+    const d = el("hud hud-controls", rows + `
+      <div class="row"><span>Hide</span><b>H</b></div>`);
     this.root.append(d);
-    // Fade out once the flying has started; it is a reminder, not a panel.
-    setTimeout(() => {
-      d.style.transition = "opacity 1.4s ease";
-      d.style.opacity = "0";
-      setTimeout(() => d.remove(), 1600);
-    }, 9000);
+    this.controlsCard = d;
   }
 
   remove(): void {

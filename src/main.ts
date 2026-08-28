@@ -264,7 +264,6 @@ async function main() {
     hud.toast("No forecast feed — the clock moves the sun only");
   }
 
-  hud.showControls();
   loading.done();
 
   // Live tuning scale, driven from the console while looking at the scene.
@@ -334,6 +333,11 @@ async function main() {
     );
     ac.setWeather(wx, ac.position.y);
     if (!input.paused) ac.update(axes, dt, groundUnderAc);
+
+    if (input.helpToggled > 0) {
+      input.helpToggled = 0;
+      hud.toggleControls();
+    }
 
     chase.mode = CAMERA_MODES[input.cameraCycled % CAMERA_MODES.length];
     chase.update(camera, ac, dt, input.lookBack, terrain.heightAt(camera.position.x, camera.position.z));
