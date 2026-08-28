@@ -17,7 +17,10 @@ import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, DEFAULT_CITY, type City } from "./cities";
 import { Hud, LoadingScreen } from "./app/hud";
-import { OrbitCam } from "./sim/orbitcam";
+import { Aircraft, DEFAULT_CONFIG } from "./sim/aircraft";
+import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
+import { Input } from "./sim/input";
+import { Plane } from "./render/plane";
 import { loadCityPack } from "./data/citypack";
 import { Buildings } from "./render/buildings";
 import { Composite } from "./render/composite";
@@ -101,13 +104,26 @@ async function main() {
   hud.setPlace(city, now.toUTCString().slice(17, 22) + " UTC");
   hud.setWeather(wx);
 
+  // Start the aircraft upwind of the centre, pointed at the city, at the
+  // altitude this place looks best from.
   const groundAtCentre = terrain.heightAt(0, 0);
-  const cam = new OrbitCam(camera, {
-    centre: new THREE.Vector3(0, groundAtCentre, 0),
-    radius: 3200,
-    height: groundAtCentre + city.startAlt,
-  });
+  const startHdg = city.approach;
+  const back = 5200;
+  const rad = (startHdg * Math.PI) / 180;
+  const ac = new Aircraft({ ...DEFAULT_CONFIG, simple: new URLSearchParams(location.search).has("easy") });
+  ac.reset(
+    -Math.sin(rad) * back,
+    groundAtCentre + city.startAlt,
+    Math.cos(rad) * back,
+    startHdg,
+  );
 
+  const chase = new ChaseCam();
+  const input = new Input(canvas);
+  const plane = new Plane();
+  scene.add(plane.group);
+
+  hud.showControls();
   loading.done();
 
   // Live tuning scale, driven from the console while looking at the scene.
@@ -120,8 +136,19 @@ async function main() {
     const dt = Math.min(0.05, clock.getDelta());
     elapsed += dt;
 
-    cam.update(dt);
+    const axes = input.sample(dt);
+    const groundUnderAc = terrain.heightAt(ac.position.x, ac.position.z);
+    ac.setWeather(wx, ac.position.y);
+    if (!input.paused) ac.update(axes, dt, groundUnderAc);
+
+    chase.mode = CAMERA_MODES[input.cameraCycled % CAMERA_MODES.length];
+    chase.update(camera, ac, dt, input.lookBack, terrain.heightAt(camera.position.x, camera.position.z));
     camera.updateMatrixWorld();
+
+    plane.group.position.copy(ac.position);
+    plane.group.quaternion.copy(ac.quaternion);
+    plane.group.visible = chase.mode !== "cockpit";
+    plane.update(dt, ac.throttle);
 
     const solar = solarState(now, city.lat, city.lon);
     const light = computeLighting(solar, wx);
@@ -161,8 +188,22 @@ async function main() {
       b.uExposure.value = light.exposure * exposureScale;
     }
 
-    const ground = terrain.heightAt(camera.position.x, camera.position.z);
-    hud.setFlight(camAlt, cam.speed, cam.heading, camAlt - ground);
+    const p = plane.uniforms;
+    p.uSunDir.value.copy(light.sunDir);
+    p.uSunColor.value.copy(light.sunColor);
+    p.uSunIntensity.value = light.sunIntensity;
+    p.uAmbient.value.copy(light.ambient);
+
+    // Drift angle: the difference between where the nose points and where the
+    // aircraft is actually going over the ground.
+    const track = (Math.atan2(ac.groundVelocity.x, -ac.groundVelocity.z) * 180) / Math.PI;
+    let drift = track - ac.headingDeg;
+    while (drift > 180) drift -= 360;
+    while (drift < -180) drift += 360;
+    hud.setFlight(
+      ac.position.y, ac.airspeed, ac.headingDeg, ac.position.y - groundUnderAc,
+      ac.groundSpeed, drift,
+    );
 
     // Pass 1: the world, in linear HDR, into the offscreen target.
     renderer.setRenderTarget(target);
@@ -194,7 +235,7 @@ async function main() {
 
   Object.assign(window as unknown as Record<string, unknown>, {
     flyby: {
-      scene, camera, renderer, terrain, sky, wx, city, cam, tune, buildings, composite,
+      scene, camera, renderer, terrain, sky, wx, city, tune, buildings, composite, ac, chase,
       setExposure: (v: number) => (exposureScale = v),
     },
   });

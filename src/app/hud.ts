@@ -72,12 +72,46 @@ export class Hud {
       ${badge}`;
   }
 
-  setFlight(altM: number, speedMs: number, headingDeg: number, agl: number): void {
+  /**
+   * Airspeed and groundspeed are shown separately because they differ, and the
+   * difference is the wind doing something to the aircraft. On a windy day the
+   * two readouts disagree by 30 knots and the drift angle is visibly non-zero,
+   * which is the most legible evidence in the whole app that the weather is
+   * real rather than decorative.
+   */
+  setFlight(
+    altM: number,
+    airspeedMs: number,
+    headingDeg: number,
+    agl: number,
+    groundSpeedMs: number,
+    driftDeg: number,
+  ): void {
+    const drift = Math.abs(driftDeg) < 1 ? "" :
+      `<div class="row"><span>DRIFT</span><b>${driftDeg > 0 ? "R" : "L"} ${Math.abs(Math.round(driftDeg))}°</b></div>`;
     this.flightPanel.innerHTML = `
       <div class="row"><span>ALT</span><b>${Math.round(altM * 3.28084).toLocaleString()} ft</b></div>
       <div class="row"><span>AGL</span><b>${Math.round(agl * 3.28084).toLocaleString()} ft</b></div>
-      <div class="row"><span>SPD</span><b>${Math.round(speedMs * KTS_PER_MS)} kt</b></div>
-      <div class="row"><span>HDG</span><b>${String(Math.round(headingDeg)).padStart(3, "0")}°</b></div>`;
+      <div class="row"><span>IAS</span><b>${Math.round(airspeedMs * KTS_PER_MS)} kt</b></div>
+      <div class="row"><span>GS</span><b>${Math.round(groundSpeedMs * KTS_PER_MS)} kt</b></div>
+      <div class="row"><span>HDG</span><b>${String(Math.round(headingDeg)).padStart(3, "0")}°</b></div>
+      ${drift}`;
+  }
+
+  showControls(): void {
+    const d = el("hud hud-br", `
+      <div class="row"><span>Pitch</span><b>W / S or drag</b></div>
+      <div class="row"><span>Roll</span><b>A / D</b></div>
+      <div class="row"><span>Throttle</span><b>Shift / Ctrl</b></div>
+      <div class="row"><span>Camera</span><b>C</b></div>
+      <div class="row"><span>Look back</span><b>Space</b></div>`);
+    this.root.append(d);
+    // Fade out once the flying has started; it is a reminder, not a panel.
+    setTimeout(() => {
+      d.style.transition = "opacity 1.4s ease";
+      d.style.opacity = "0";
+      setTimeout(() => d.remove(), 1600);
+    }, 9000);
   }
 
   remove(): void {
