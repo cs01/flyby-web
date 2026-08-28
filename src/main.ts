@@ -21,6 +21,7 @@ import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
+import { Drone } from "./sim/drone";
 import { Input } from "./sim/input";
 import { AircraftModel } from "./render/aircraftmodel";
 import { Osd } from "./app/osd";
@@ -293,6 +294,18 @@ async function main() {
 
   const chase = new ChaseCam();
   const input = new Input(canvas, ui);
+
+  // The drone. It shares the camera and nothing else: while it is flying the
+  // aeroplane is frozen exactly where it was, still drawn, still lit, and you
+  // can go and look at it.
+  const drone = new Drone();
+  let droneActive = false;
+  // Field of view, eased. An FPV camera is wide -- most of the reason a drone
+  // shot looks like a drone shot is the lens, not the flying -- but a cut from
+  // 62 to 78 degrees reads as the world lurching, so it is a move, not a cut.
+  const PLANE_FOV = camera.fov;
+  const DRONE_FOV = 78;
+
   const model = new AircraftModel();
   scene.add(model.group);
 
@@ -407,6 +420,22 @@ async function main() {
     const dt = Math.min(0.05, clock.getDelta());
     elapsed += dt;
 
+    // --- Which machine is flying ------------------------------------------
+    if (input.droneToggled > 0) {
+      input.droneToggled = 0;
+      droneActive = !droneActive;
+      if (droneActive) {
+        // Carries the aeroplane's momentum, so the swap is a step out of the
+        // cockpit rather than a cut to a different shot.
+        drone.enterFrom(ac.position, ac.headingDeg, ac.velocity);
+        input.setPointerLock(true);
+        hud.toast("Drone: WASD fly · R/F up-down · mouse looks · Shift boost · V back to the Cessna");
+      } else {
+        input.setPointerLock(false);
+        hud.toast("Back in the Cessna");
+      }
+    }
+
     const axes = autopilot.update(input.sample(dt), ac.position, ac.headingDeg);
     if (autopilot.justArrived) {
       hud.flashLandmark(autopilot.justArrived);
@@ -450,7 +479,20 @@ async function main() {
       skyline.topAt(ac.position.x, ac.position.z),
     );
     ac.setWeather(wx, ac.position.y);
-    if (!input.paused) ac.update(axes, dt, groundUnderAc);
+    // The aeroplane stops being integrated while the drone is up. Not paused
+    // globally -- the sun still moves, the clouds still drift -- just parked.
+    if (!input.paused && !droneActive) ac.update(axes, dt, groundUnderAc);
+
+    // The drone's floor is the TERRAIN, deliberately not the rooftops the
+    // aeroplane uses. The whole point is to get down between the buildings,
+    // and a roof-height floor over a city is a lid on the street.
+    const groundUnderDrone = terrain.heightAt(drone.position.x, drone.position.z);
+    if (droneActive) {
+      // Drained every frame even while paused, or the mouse travel banks up
+      // behind the pause and the view snaps when it lets go.
+      const di = input.droneAxes(dt);
+      if (!input.paused) drone.update(di, dt, groundUnderDrone);
+    }
 
     hud.setLayers(layers.weather);
     osd.root.style.display = layers.instruments ? "" : "none";
@@ -476,7 +518,24 @@ async function main() {
     }
 
     chase.mode = CAMERA_MODES[input.cameraCycled % CAMERA_MODES.length];
-    chase.update(camera, ac, dt, input.lookBack, terrain.heightAt(camera.position.x, camera.position.z));
+    if (droneActive) {
+      // Driven straight off the drone, with no rig, no lag and no look-at: the
+      // camera IS the machine, and the lean it has is the lean it flew.
+      camera.position.copy(drone.position);
+      camera.up.set(0, 1, 0);
+      drone.orientation(camera.quaternion);
+    } else {
+      chase.update(camera, ac, dt, input.lookBack, terrain.heightAt(camera.position.x, camera.position.z));
+    }
+
+    // Ease the lens. ~0.4 s to settle, and the projection matrix is rebuilt
+    // only while it is actually moving.
+    const wantFov = droneActive ? DRONE_FOV : PLANE_FOV;
+    if (Math.abs(camera.fov - wantFov) > 0.01) {
+      camera.fov += (wantFov - camera.fov) * (1 - Math.pow(0.0006, dt));
+      if (Math.abs(camera.fov - wantFov) <= 0.01) camera.fov = wantFov;
+      camera.updateProjectionMatrix();
+    }
     camera.updateMatrixWorld();
 
     model.group.position.copy(ac.position);
@@ -486,8 +545,12 @@ async function main() {
     // Hidden in the seat, and hidden once the automatic descent into the seat
     // is nearly complete -- past that the camera is inside the cabin and the
     // airframe is a shell wrapped round the lens.
-    model.group.visible = chase.mode !== "cockpit" && chase.cockpitBlend < 0.9;
-    model.update(dt, ac.throttle, axes.roll, ac.pitchDeg, axes.yaw);
+    // Always drawn while droning, whatever the chase rig had decided: flying
+    // round your own parked Cessna is most of the fun of leaving it.
+    model.group.visible = droneActive || (chase.mode !== "cockpit" && chase.cockpitBlend < 0.9);
+    // Zeroed control surfaces while droning. W and A are the drone's now, and
+    // a parked aeroplane waggling its ailerons at them looks haunted.
+    model.update(dt, ac.throttle, droneActive ? 0 : axes.roll, ac.pitchDeg, droneActive ? 0 : axes.yaw);
 
     // The beam stands on wherever you asked to go, and nowhere at all when you
     // have not asked. It used to mark the tour's next stop, which meant there
@@ -580,25 +643,32 @@ async function main() {
     const gs = ac.groundSpeed;
     const fpa = (Math.atan2(ac.verticalSpeed, Math.max(gs, 1)) * 180) / Math.PI;
 
-    osd.update({
-      pitchDeg: ac.pitchDeg,
-      rollDeg: ac.rollDeg,
-      headingDeg: ac.headingDeg,
-      altM: ac.position.y,
-      aglM: ac.position.y - groundUnderAc,
-      groundSpeed: ac.groundSpeed,
-      airspeed: ac.airspeed,
-      verticalSpeed: ac.verticalSpeed,
-      rollRateDps: ac.rollRateDps,
-      pitchRateDps: ac.pitchRateDps,
-      yawRateDps: ac.yawRateDps,
-      flightPathDeg: fpa,
-      gLoad: ac.loadFactor,
-      driftDeg: drift,
-      windDirDeg: wx.windDir,
-      windSpeed: Math.hypot(ac.windVector.x, ac.windVector.z),
-      boost: axes.boost > 0.5,
-    });
+    osd.setDrone(
+      droneActive
+        ? { speedMs: drone.speed, aglM: drone.position.y - groundUnderDrone }
+        : null,
+    );
+    if (!droneActive) {
+      osd.update({
+        pitchDeg: ac.pitchDeg,
+        rollDeg: ac.rollDeg,
+        headingDeg: ac.headingDeg,
+        altM: ac.position.y,
+        aglM: ac.position.y - groundUnderAc,
+        groundSpeed: ac.groundSpeed,
+        airspeed: ac.airspeed,
+        verticalSpeed: ac.verticalSpeed,
+        rollRateDps: ac.rollRateDps,
+        pitchRateDps: ac.pitchRateDps,
+        yawRateDps: ac.yawRateDps,
+        flightPathDeg: fpa,
+        gLoad: ac.loadFactor,
+        driftDeg: drift,
+        windDirDeg: wx.windDir,
+        windSpeed: Math.hypot(ac.windVector.x, ac.windVector.z),
+        boost: axes.boost > 0.5,
+      });
+    }
 
     // Pass 1: the world, in linear HDR, into the offscreen target.
     renderer.setRenderTarget(target);
@@ -668,7 +738,8 @@ async function main() {
   Object.assign(window as unknown as Record<string, unknown>, {
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, composite, ac, chase,
-      sunShadow,
+      sunShadow, drone,
+      get droneActive() { return droneActive; },
       get wx() { return wx; },
       get time() { return now; },
       setOffsetHours: (h: number) => timebar.setOffset(h * 3600),
