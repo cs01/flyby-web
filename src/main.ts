@@ -427,7 +427,7 @@ async function main() {
     // In the cockpit view the camera is INSIDE the aeroplane, so drawing it
     // fills the frame with the back of its own instrument panel.
     model.group.visible = chase.mode !== "cockpit";
-    model.update(dt, ac.throttle, axes.roll, ac.pitchDeg);
+    model.update(dt, ac.throttle, axes.roll, ac.pitchDeg, axes.yaw);
 
     // The beam stands on wherever you asked to go, and nowhere at all when you
     // have not asked. It used to mark the tour's next stop, which meant there
@@ -492,6 +492,16 @@ async function main() {
     p.uMoonDir.value.copy(light.moonDir);
     p.uMoonLight.value.copy(light.moonLight);
     p.uAmbient.value.copy(light.ambient);
+    p.uCameraPos.value.copy(camera.position);
+
+    // The aircraft's own two passes: an environment probe, so the airframe
+    // reflects the real sky and ground it is flying through, and a self-shadow
+    // map, so the high wing lies across the cabin the way it does in every
+    // photograph of one. Both render the scene, and the sky is a full-screen
+    // triangle driven by camera UNIFORMS rather than by the camera it is handed
+    // -- so its matrices have to be put back before the main pass.
+    model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
+    sky.syncCamera(camera);
 
     // Drift angle: the difference between where the nose points and where the
     // machine is actually going over the ground.
