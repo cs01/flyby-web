@@ -207,6 +207,7 @@ export class Hud {
       <div class="row"><span>Turn</span><b>Q / E · drag</b></div>
       <div class="row"><span>Turbo</span><b>Space · Shift</b></div>
       <div class="row"><span>Camera</span><b>C · look back B</b></div>
+      <div class="row"><span>Drone</span><b>V · mouse looks</b></div>
       <div class="row"><span>Time</span><b>, . · 0 · T</b></div>`;
     const d = el("hud hud-controls", rows + `
       <div class="row"><span>Hide</span><b>H</b></div>`);
