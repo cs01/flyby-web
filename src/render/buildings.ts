@@ -24,9 +24,27 @@ import { triangulate, signedArea } from "./earcut";
 import type { Building, CityPack } from "../data/citypack";
 
 const CELL_M = 1500;
-/** Everything is drawn inside this radius; beyond it, only tall things. */
-const NEAR_RADIUS = 3200;
-const FAR_MIN_HEIGHT = 24;
+
+/**
+ * Graduated level of detail: the minimum height a building needs to be kept,
+ * as a function of its distance from the city centre.
+ *
+ * A single radius with a hard height cut-off was wrong in a way that is obvious
+ * in flight: the pack origin is one corner of the city, so everything more than
+ * a few kilometres from it vanished, and half of San Francisco was missing
+ * while you flew over it. A ramp keeps the core complete and thins the outskirts
+ * gradually, which is both what the eye expects and what the triangle budget
+ * wants -- a two-storey house at 8 km is a sub-pixel speck.
+ */
+function minHeightAt(distM: number): number {
+  if (distM < FULL_DETAIL_M) return 0;
+  const t = (distM - FULL_DETAIL_M) / (THIN_TO_M - FULL_DETAIL_M);
+  return Math.min(1, t) * MAX_CUTOFF_M;
+}
+
+const FULL_DETAIL_M = 4200;
+const THIN_TO_M = 9000;
+const MAX_CUTOFF_M = 40;
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -176,7 +194,11 @@ void main() {
 
   // Sky visibility: an upward face sees the whole dome, a wall sees half, and
   // a wall down in the street sees less still.
-  float skyView = 0.5 + 0.5 * n.y;
+  // Sky visibility. A vertical wall sees roughly half the dome and a roof sees
+  // all of it; the floor matters because a shadowed facade lit only by a tenth
+  // of the sky goes darker than the in-scattered haze in front of it, and the
+  // building reads as a navy silhouette rather than a wall in shade.
+  float skyView = 0.62 + 0.38 * n.y;
   vec3 ambient = uAmbient * skyView;
 
   vec3 lit = albedo * (direct + ambient);
@@ -343,7 +365,7 @@ export class Buildings {
       const b = pack.buildings[i];
       const dist = Math.hypot(b.cx, b.cz);
       const h = b.topM - b.baseM;
-      if (dist > NEAR_RADIUS && h < FAR_MIN_HEIGHT) { skippedFar++; continue; }
+      if (h < minHeightAt(dist)) { skippedFar++; continue; }
 
       // Winding must be counter-clockwise for the wall normals and the ear
       // clipper to agree. The baker normalises it, but a pack from an older

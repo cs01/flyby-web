@@ -11,7 +11,7 @@
 // byte for byte. Every field is little-endian and written back to back with no
 // alignment padding.
 
-import { fetchBytes } from "./cache";
+import { fetchBytes, evict } from "./cache";
 
 export const CITY_MAGIC = 0x43495459;
 
@@ -91,12 +91,29 @@ export function parseCityPack(buf: ArrayBuffer): CityPack {
   return { lat0, lon0, radiusM, buildings };
 }
 
-/** Load a baked pack, or null when the city has no pack yet. */
+/**
+ * Load a baked pack, or null when the city has no pack yet.
+ *
+ * A missing pack is not an error -- the city still flies, it just has no
+ * skyline -- but the REASON must reach the console. Silently returning null
+ * made a 404 and a corrupt file look identical to a city nobody has baked.
+ */
 export async function loadCityPack(cityId: string): Promise<CityPack | null> {
+  const url = `${import.meta.env.BASE_URL}cities/${cityId}.city`;
+  let buf: ArrayBuffer;
   try {
-    const buf = await fetchBytes(`${import.meta.env.BASE_URL}cities/${cityId}.city`);
+    buf = await fetchBytes(url);
+  } catch (err) {
+    console.warn(`[flyby] no building pack at ${url}:`, err);
+    return null;
+  }
+  try {
     return parseCityPack(buf);
-  } catch {
+  } catch (err) {
+    console.error(`[flyby] building pack at ${url} is unreadable (${buf.byteLength} bytes):`, err);
+    // Whatever is cached under this URL is not a pack. Drop it so the next
+    // load refetches rather than failing identically for the next 30 days.
+    void evict(url);
     return null;
   }
 }

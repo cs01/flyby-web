@@ -132,3 +132,137 @@ html, body {
   pointer-events: none;
   white-space: nowrap;
 }
+
+.hud-perf {
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 11px;
+  opacity: 0.72;
+}
+
+/* --- Start screen ------------------------------------------------------ */
+
+#menu {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow-y: auto;
+  background:
+    radial-gradient(1200px 700px at 50% -10%, rgba(60, 120, 190, 0.30), transparent 65%),
+    linear-gradient(#070b12, #05080d 60%);
+  transition: opacity 0.4s ease;
+}
+
+#menu.leaving { opacity: 0; pointer-events: none; }
+
+.menu-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 8vh 24px 40px;
+}
+
+#menu header { text-align: center; margin-bottom: 42px; }
+
+#menu h1 {
+  margin: 0 0 12px;
+  font-size: clamp(38px, 8vw, 74px);
+  font-weight: 200;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+}
+
+#menu header p {
+  margin: 0;
+  color: var(--dim);
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
+
+#menu .grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  /* A two-line name (Rio de Janeiro, Kuala Lumpur) must not make its card
+     taller than its neighbours; the row would step and the grid would look
+     broken rather than dense. */
+  min-height: 86px;
+  gap: 10px;
+  padding: 14px 15px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: linear-gradient(rgba(120, 170, 220, 0.10), rgba(120, 170, 220, 0.03));
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(102, 212, 255, 0.55);
+  background: linear-gradient(rgba(102, 212, 255, 0.16), rgba(102, 212, 255, 0.05));
+}
+
+.card.night {
+  background: linear-gradient(rgba(60, 80, 130, 0.20), rgba(30, 40, 70, 0.06));
+}
+
+.card-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.card-bot { display: flex; justify-content: space-between; align-items: baseline; }
+
+.card .city { font-size: 15px; font-weight: 500; letter-spacing: 0.02em; }
+.card .wx { font-size: 14px; color: var(--ink); white-space: nowrap; font-family: ui-sans-serif, system-ui, sans-serif; }
+.card .country { font-size: 11px; color: var(--dim); letter-spacing: 0.06em; text-transform: uppercase; }
+.card .time { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+
+/* A city with a baked building pack gets a skyline; one without is terrain
+   only. Saying so up front beats letting someone wonder where the city went. */
+.card.has-skyline .city::after {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+
+#menu footer {
+  margin-top: 34px;
+  text-align: center;
+  font-size: 10px;
+  color: rgba(242, 246, 250, 0.32);
+}
+
+.back {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  padding: 7px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.back:hover { color: var(--ink); border-color: rgba(102, 212, 255, 0.5); }
+
+/* The weather panel sits under the back button rather than beside it. */
+.hud-tr { top: 52px; right: 14px; text-align: right; }

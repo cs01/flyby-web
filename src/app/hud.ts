@@ -29,13 +29,25 @@ export class Hud {
   private wxPanel: HTMLDivElement;
   private flightPanel: HTMLDivElement;
   private placePanel: HTMLDivElement;
+  private perfPanel: HTMLDivElement;
 
   constructor(root: HTMLElement) {
     this.root = root;
     this.placePanel = el("hud hud-tl", "");
     this.wxPanel = el("hud hud-tr", "");
     this.flightPanel = el("hud hud-bl", "");
-    root.append(this.placePanel, this.wxPanel, this.flightPanel);
+    this.perfPanel = el("hud hud-perf", "");
+    root.append(this.placePanel, this.wxPanel, this.flightPanel, this.perfPanel);
+
+    const back = document.createElement("button");
+    back.className = "back";
+    back.textContent = "\u2190 cities";
+    back.addEventListener("click", () => {
+      const p = new URLSearchParams(location.search);
+      p.delete("city");
+      location.search = p.toString();
+    });
+    root.append(back);
 
     const att = document.createElement("div");
     att.className = "attrib";
@@ -96,6 +108,17 @@ export class Hud {
       <div class="row"><span>GS</span><b>${Math.round(groundSpeedMs * KTS_PER_MS)} kt</b></div>
       <div class="row"><span>HDG</span><b>${String(Math.round(headingDeg)).padStart(3, "0")}°</b></div>
       ${drift}`;
+  }
+
+  /**
+   * Frame time, shown as both fps and milliseconds. Milliseconds because that
+   * is the number that composes: "the cloud march costs 4 ms" is actionable,
+   * "fps dropped from 60 to 48" is not.
+   */
+  setPerf(fps: number, ms: number, triangles: number): void {
+    this.perfPanel.innerHTML = `
+      <div class="row"><span>${fps.toFixed(0)} fps</span><b>${ms.toFixed(1)} ms</b></div>
+      <div class="row"><span>tris</span><b>${(triangles / 1000).toFixed(0)}k</b></div>`;
   }
 
   showControls(): void {

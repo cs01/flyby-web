@@ -17,6 +17,7 @@ import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, DEFAULT_CITY, type City } from "./cities";
 import { Hud, LoadingScreen } from "./app/hud";
+import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Input } from "./sim/input";
@@ -25,9 +26,26 @@ import { loadCityPack } from "./data/citypack";
 import { Buildings } from "./render/buildings";
 import { Composite } from "./render/composite";
 
-function chooseCity(): City {
+function chooseCity(): City | null {
   const q = new URLSearchParams(location.search).get("city");
-  return cityById(q ?? "") ?? cityById(DEFAULT_CITY) ?? CITIES[0];
+  if (!q) return null;
+  return cityById(q) ?? cityById(DEFAULT_CITY) ?? CITIES[0];
+}
+
+/**
+ * Picking a city reloads the page rather than swapping the scene in place.
+ *
+ * Everything in the world -- the two height fields, three stitched drapes, the
+ * building pack, the tangent-plane origin every coordinate is relative to -- is
+ * built once per city and threaded through the whole renderer. Tearing that
+ * down and rebuilding it correctly is a large amount of teardown code whose
+ * only reward is skipping a page load that is already fast, because every tile
+ * the new city needs comes out of the same IndexedDB cache on the way back.
+ */
+function goToCity(city: City): void {
+  const params = new URLSearchParams(location.search);
+  params.set("city", city.id);
+  location.search = params.toString();
 }
 
 async function main() {
@@ -36,6 +54,11 @@ async function main() {
   const loading = new LoadingScreen();
 
   const city = chooseCity();
+  if (!city) {
+    loading.done();
+    showMenu(goToCity);
+    return;
+  }
   const origin = new Origin(city.lat, city.lon);
   const now = sceneTime();
 
@@ -129,6 +152,10 @@ async function main() {
   // Live tuning scale, driven from the console while looking at the scene.
   let exposureScale = 1;
 
+  // Frame timing, smoothed. A raw per-frame number is unreadable.
+  let smoothedMs = 16;
+  let perfAccum = 0;
+
   const clock = new THREE.Clock();
   let elapsed = 0;
 
@@ -218,6 +245,13 @@ async function main() {
     composite.uniforms.uExposure.value = light.exposure * exposureScale;
     renderer.setRenderTarget(null);
     renderer.render(composite.scene, composite.camera);
+
+    smoothedMs += (dt * 1000 - smoothedMs) * 0.06;
+    perfAccum += dt;
+    if (perfAccum > 0.4) {
+      perfAccum = 0;
+      hud.setPerf(1000 / smoothedMs, smoothedMs, buildings ? buildings.stats.triangles : 0);
+    }
   });
 
   // Handy for poking at the scene from the console during development.

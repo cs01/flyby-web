@@ -94,6 +94,19 @@ export function fetchBytes(url: string, ttl = TTL_STATIC): Promise<ArrayBuffer> 
     if (hit) return hit;
     const res = await fetch(url, { mode: "cors", credentials: "omit" });
     if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
+
+    // A 200 is not proof the response is the thing that was asked for.
+    //
+    // A dev server (and most static hosts) answer a missing path with the SPA
+    // fallback: 200, and an HTML page. Caching that poisons the entry for the
+    // full 30-day TTL, so the asset stays broken long after it exists -- which
+    // is exactly what happened to the first city pack. Reject HTML for any
+    // request that did not ask for a page, and reject it BEFORE the cache write.
+    const type = res.headers.get("content-type") ?? "";
+    if (type.includes("text/html") && !/\.html?($|\?)/.test(url)) {
+      throw new Error(`${url} returned an HTML page, not an asset (likely a 404 served as the app shell)`);
+    }
+
     const body = await res.arrayBuffer();
     void cachePut(url, body);
     return body;
@@ -112,6 +125,21 @@ export async function fetchJson<T>(url: string, ttl = TTL_STATIC): Promise<T> {
 export async function fetchImage(url: string, ttl = TTL_STATIC): Promise<ImageBitmap> {
   const buf = await fetchBytes(url, ttl);
   return createImageBitmap(new Blob([buf]));
+}
+
+/**
+ * Drop one entry. Called when a cached response turns out to be unusable, so a
+ * single reload recovers instead of the bad copy persisting for its whole TTL.
+ */
+export async function evict(url: string): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  try {
+    const tx = db.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(url);
+  } catch {
+    // Nothing useful to do; the TTL will clear it eventually.
+  }
 }
 
 export async function clearCache(): Promise<void> {
