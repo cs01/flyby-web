@@ -193,6 +193,7 @@ async function main() {
       u.uWetness.value = light.wetness;
       u.uSnow.value = light.snow;
       u.uNight.value = light.night;
+      u.uNightGlow.value.copy(light.nightGlow);
       u.uMieG.value = light.mieG;
       u.uTurbidity.value = light.turbidity;
       u.uCamAltitude.value = camAlt;
@@ -208,6 +209,7 @@ async function main() {
       b.uSunIntensity.value = light.sunIntensity;
       b.uAmbient.value.copy(light.ambient);
       b.uNight.value = light.night;
+      b.uNightGlow.value.copy(light.nightGlow);
       b.uWetness.value = light.wetness;
       b.uMieG.value = light.mieG;
       b.uTurbidity.value = light.turbidity;

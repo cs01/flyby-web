@@ -88,6 +88,7 @@ ${TONEMAP_GLSL}
 uniform vec3  uCameraPos;
 uniform vec3  uAmbient;
 uniform float uNight;
+uniform vec3  uNightGlow;
 uniform float uWetness;
 uniform float uSunSurface;
 
@@ -143,12 +144,21 @@ void main() {
     float colIdx = floor(vUv.x / COLUMN);
     vec2 cell = fract(vec2(vUv.x / COLUMN, vUv.y / STOREY));
 
+    // Detail fade. A 2.6 m window at 2 km is far smaller than a pixel, and
+    // point-sampling it produces sparkling orange noise rather than a city --
+    // the pattern aliases against the pixel grid and every frame lands on
+    // different windows. Past the fade distance the pattern is replaced by its
+    // own MEAN, which is what a correctly filtered version would converge to.
+    float detail = smoothstep(2400.0, 700.0, vViewDist);
+    const float WIN_MEAN = 0.68 * 0.62;
+
     // A tall building is mostly glass; a low one is mostly wall.
     glassiness = smoothstep(18.0, 70.0, bldH) * 0.75 + 0.1;
 
     // Window rectangle inside the cell, with a sill and a mullion.
-    float win = step(0.16, cell.x) * step(cell.x, 0.84)
-              * step(0.30, cell.y) * step(cell.y, 0.92);
+    float winPattern = step(0.16, cell.x) * step(cell.x, 0.84)
+                     * step(0.30, cell.y) * step(cell.y, 0.92);
+    float win = mix(WIN_MEAN, winPattern, detail);
 
     // Ground floor is taller and shopfront-like, not a repeated window.
     if (vUv.y < STOREY * 1.15) win *= 0.35;
@@ -158,7 +168,7 @@ void main() {
 
     // Horizontal banding between storeys: a thin darker line reads as a floor
     // slab and gives the facade its scale at distance.
-    albedo *= 1.0 - 0.18 * smoothstep(0.10, 0.0, cell.y);
+    albedo *= 1.0 - 0.18 * detail * smoothstep(0.10, 0.0, cell.y);
 
     // Ambient occlusion down the wall. Streets are canyons; the bottom five
     // metres of every facade sit in everyone else's shadow.
@@ -170,9 +180,12 @@ void main() {
       float r = hash21(vec2(colIdx + seed * 31.0, floorIdx + seed * 17.0));
       // Occupancy falls off up the building and varies per building.
       float occupancy = mix(0.10, 0.55, hash11(seed + 5.1)) * mix(1.0, 0.55, smoothstep(0.0, 120.0, vUv.y));
-      float lit = step(1.0 - occupancy, r) * win;
+      // Same treatment as the window pattern: resolve individual lit windows
+      // up close, converge to the average glow of a lit building far away.
+      float litPattern = step(1.0 - occupancy, r) * winPattern;
+      float lit = mix(occupancy * WIN_MEAN, litPattern, detail);
       vec3 warm = mix(vec3(1.0, 0.72, 0.38), vec3(0.85, 0.90, 1.0), step(0.82, hash11(r * 91.0)));
-      albedo += warm * lit * uNight * 1.5;
+      albedo += warm * lit * uNight * 0.85;
     }
   } else {
     // --- Roof -----------------------------------------------------------
@@ -199,7 +212,8 @@ void main() {
   // of the sky goes darker than the in-scattered haze in front of it, and the
   // building reads as a navy silhouette rather than a wall in shade.
   float skyView = 0.62 + 0.38 * n.y;
-  vec3 ambient = uAmbient * skyView;
+  // Skyglow reaches walls better than roofs: it comes from the street below.
+  vec3 ambient = uAmbient * skyView + uNightGlow * (1.35 - 0.5 * n.y);
 
   vec3 lit = albedo * (direct + ambient);
 
@@ -225,6 +239,7 @@ export interface BuildingUniforms extends Record<string, THREE.IUniform> {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uAmbient: THREE.IUniform<THREE.Color>;
   uNight: THREE.IUniform<number>;
+  uNightGlow: THREE.IUniform<THREE.Color>;
   uWetness: THREE.IUniform<number>;
   uSunSurface: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
@@ -242,6 +257,7 @@ function makeUniforms(): BuildingUniforms {
     uCameraPos: { value: new THREE.Vector3() },
     uAmbient: { value: new THREE.Color(0.2, 0.24, 0.3) },
     uNight: { value: 0 },
+    uNightGlow: { value: new THREE.Color(0, 0, 0) },
     uWetness: { value: 0 },
     uSunSurface: { value: 0.105 },
     uExposure: { value: 1 },

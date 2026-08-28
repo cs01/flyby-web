@@ -18,6 +18,12 @@ export interface SceneLighting {
   ambient: THREE.Color;
   /** 0..1, how far into night. Drives city lights and stars. */
   night: number;
+  /**
+   * Skyglow: the light a city throws back up at itself after dark. Without it
+   * every surface not carrying its own emissive goes to pure black and the
+   * buildings become silhouettes cut out of the ground.
+   */
+  nightGlow: THREE.Color;
   /** 0..1 surface wetness from recent precipitation. */
   wetness: number;
   /** 0..1 lying snow. */
@@ -81,13 +87,17 @@ export function computeLighting(solar: SolarState, wx: Weather): SceneLighting {
     sunIntensity,
     ambient,
     night,
+    // Sodium/LED orange, and weak -- it is a fill light, not a light source.
+    nightGlow: new THREE.Color(0.052, 0.038, 0.026).multiplyScalar(night),
     wetness,
     snow,
     mieG: 0.62 + 0.22 * Math.max(0, Math.min(1, (wx.humidity - 30) / 60)),
     turbidity: Math.max(0.6, Math.min(12, 34 / visKm)),
-    // Night needs a big exposure lift or the tone curve crushes the whole frame
-    // to black; the eye adapts and so must this.
-    exposure: 1 + 2.6 * night * night,
+    // Night needs an exposure lift or the tone curve crushes the frame to
+    // black; the eye adapts and so must this. But the lift multiplies the
+    // EMISSIVE terms too -- street lights, lit windows -- so it has to stay
+    // modest or a city at night blows out brighter than the same city at noon.
+    exposure: 1 + 1.7 * night * night,
     fogEnd: Math.min(160000, wx.visibility * 2.6),
   };
 }

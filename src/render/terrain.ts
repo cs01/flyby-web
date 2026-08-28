@@ -84,6 +84,7 @@ uniform float uSnow;
 uniform float uNight;
 uniform float uSunSurface;
 uniform float uDebug;
+uniform vec3 uNightGlow;
 
 void main() {
   vec3 albedo = srgbToLinear(texture(uDrape, vUv).rgb);
@@ -154,10 +155,24 @@ void main() {
   // City lights at night, keyed to how built-up the drape looks. Grey, bright
   // and low-saturation pixels are roads and roofs; vegetation and water are not.
   if (uNight > 0.01) {
+    // Street lighting, inferred from the daytime drape: built-up ground is
+    // bright and desaturated, vegetation and water are not.
+    //
+    // This is a WEAK term. It used to be ten times stronger, which after the
+    // night exposure lift turned the whole map into glowing sand while the
+    // buildings on top of it stayed black. The buildings carry the city's
+    // light now; this only fills in the roads between them, and the gate is
+    // tight so bare rock and beach do not read as a lit suburb.
     float lum = dot(albedo, vec3(0.299, 0.587, 0.114));
     float sat = max(max(albedo.r, albedo.g), albedo.b) - min(min(albedo.r, albedo.g), albedo.b);
-    float urban = smoothstep(0.16, 0.42, lum) * smoothstep(0.30, 0.08, sat);
-    lit += vec3(1.0, 0.78, 0.45) * urban * uNight * 0.55;
+    float urban = smoothstep(0.22, 0.46, lum) * smoothstep(0.22, 0.05, sat);
+    lit += vec3(1.0, 0.74, 0.42) * urban * uNight * 0.055;
+    // Skyglow lands on the built-up ground, not on hillsides and water, and it
+    // is nearly monochrome -- at night the eye takes almost no colour from a
+    // surface this dark, so carrying the drape's daytime hue through makes the
+    // map look like a dimmed photograph instead of a dark city.
+    float grey = dot(albedo, vec3(0.299, 0.587, 0.114));
+    lit += mix(vec3(grey), albedo, 0.35) * uNightGlow * (0.3 + 0.7 * urban);
   }
 
   // Aerial perspective: the same integral the sky uses, over the distance to
@@ -193,6 +208,7 @@ export interface TerrainUniforms extends Record<string, THREE.IUniform> {
   uWetness: THREE.IUniform<number>;
   uSnow: THREE.IUniform<number>;
   uNight: THREE.IUniform<number>;
+  uNightGlow: THREE.IUniform<THREE.Color>;
   uExposure: THREE.IUniform<number>;
   uSunSurface: THREE.IUniform<number>;
   uDebug: THREE.IUniform<number>;
@@ -213,6 +229,7 @@ export function makeTerrainUniforms(): TerrainUniforms {
     uWetness: { value: 0 },
     uSnow: { value: 0 },
     uNight: { value: 0 },
+    uNightGlow: { value: new THREE.Color(0, 0, 0) },
     uExposure: { value: 1 },
     uSunSurface: { value: 0.105 },
     uDebug: { value: 0 },
