@@ -41,14 +41,14 @@ export class Hud {
     this.tourPanel = el("hud hud-br", "");
     root.append(this.placePanel, this.wxPanel, this.flightPanel, this.perfPanel, this.tourPanel);
 
-    const back = document.createElement("button");
+    // An anchor so ctrl/cmd-click opens the picker in a new tab, like any link.
+    const back = document.createElement("a");
     back.className = "back";
     back.textContent = "\u2190 cities";
-    back.addEventListener("click", () => {
-      const p = new URLSearchParams(location.search);
-      p.delete("city");
-      location.search = p.toString();
-    });
+    const backParams = new URLSearchParams(location.search);
+    backParams.delete("city");
+    const q = backParams.toString();
+    back.href = q ? `?${q}` : location.pathname;
     root.append(back);
 
     const att = document.createElement("div");
@@ -142,6 +142,17 @@ export class Hud {
       `<h2>${finished ? "Route complete" : "Route"}</h2>${rows.join("")}`;
   }
 
+  /** Transient toast, used for the pitch-axis toggle. */
+  toast(text: string): void {
+    const d = el("landmark-flash", `<span>${text}</span>`);
+    this.root.append(d);
+    requestAnimationFrame(() => d.classList.add("in"));
+    setTimeout(() => {
+      d.classList.remove("in");
+      setTimeout(() => d.remove(), 800);
+    }, 1400);
+  }
+
   /** Brief confirmation when a landmark is reached. */
   flashLandmark(name: string): void {
     const d = el("landmark-flash", `<span>${name}</span>`);
@@ -160,6 +171,7 @@ export class Hud {
       <div class="row"><span>Roll</span><b>A / D</b></div>
       <div class="row"><span>Throttle</span><b>Shift / Ctrl</b></div>
       <div class="row"><span>Camera</span><b>C</b></div>
+      <div class="row"><span>Invert pitch</span><b>I</b></div>
       <div class="row"><span>Look back</span><b>Space</b></div>`);
     this.root.append(d);
     // Fade out once the flying has started; it is a reminder, not a panel.

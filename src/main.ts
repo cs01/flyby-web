@@ -170,6 +170,8 @@ async function main() {
   const plane = new Plane();
   scene.add(plane.group);
 
+  input.onInvertChange = (inv) =>
+    hud.toast(inv ? "Pitch: pull back to climb" : "Pitch: push to climb");
   hud.showControls();
   loading.done();
 

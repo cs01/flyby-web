@@ -114,8 +114,14 @@ export function showMenu(onPick: (city: City) => void): void {
   const grid = root.querySelector(".grid") as HTMLElement;
 
   const cards = CITIES.map((c) => {
-    const el = document.createElement("button");
+    // A real anchor, not a button. Cities are destinations with their own URL,
+    // so ctrl/cmd-click, middle-click and "open in new tab" all have to work --
+    // a button with a click handler silently swallows every one of them.
+    const el = document.createElement("a");
     el.className = "card";
+    const params = new URLSearchParams(location.search);
+    params.set("city", c.id);
+    el.href = `?${params.toString()}`;
     el.innerHTML = `
       <div class="card-top">
         <span class="city">${c.name}</span>
@@ -125,7 +131,11 @@ export function showMenu(onPick: (city: City) => void): void {
         <span class="country">${c.country}</span>
         <span class="time">--:--</span>
       </div>`;
-    el.addEventListener("click", () => {
+    el.addEventListener("click", (e) => {
+      // Let the browser handle any click it has its own meaning for: a modifier
+      // key, or anything that is not the primary button.
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
       root.classList.add("leaving");
       setTimeout(() => root.remove(), 400);
       onPick(c);

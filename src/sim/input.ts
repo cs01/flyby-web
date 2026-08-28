@@ -28,12 +28,46 @@ export class Input {
   cameraCycled = 0;
   paused = false;
 
+  /**
+   * Which way the pitch axis runs.
+   *
+   * There is no correct answer to this, only a preference, and it is not
+   * something that can be settled by reasoning about it from outside: half of
+   * flying people want a stick (pull back to climb) and half want it direct.
+   * So it is a toggle, remembered per browser, rather than a constant somebody
+   * has to keep flipping.
+   */
+  invertPitch: boolean;
+
+  private toggleInvertPitch(): void {
+    this.invertPitch = !this.invertPitch;
+    try {
+      localStorage.setItem("flyby.invertPitch", this.invertPitch ? "1" : "0");
+    } catch {
+      // Private mode, or storage blocked. The setting still applies this session.
+    }
+    this.onInvertChange?.(this.invertPitch);
+  }
+
+  /** Called when the pitch axis flips, so the HUD can say so. */
+  onInvertChange: ((inverted: boolean) => void) | null = null;
+
   constructor(target: HTMLElement) {
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem("flyby.invertPitch");
+    } catch {
+      stored = null;
+    }
+    // Default is the stick convention: pull back to climb.
+    this.invertPitch = stored === null ? true : stored === "1";
+
     addEventListener("keydown", (e) => {
       if (e.repeat) return;
       this.keys.add(e.code);
       if (e.code === "KeyC") this.cameraCycled++;
       if (e.code === "KeyP") this.paused = !this.paused;
+      if (e.code === "KeyI") this.toggleInvertPitch();
       // Arrow keys and space scroll the page otherwise, which is jarring when
       // the page IS the aircraft.
       if (e.code.startsWith("Arrow") || e.code === "Space") e.preventDefault();
@@ -72,13 +106,11 @@ export class Input {
   /** Smoothed axes for this frame. */
   sample(dt: number): Axes {
     const t = this.target;
-    // STICK convention on both keyboard and pointer: pull back to climb.
-    //
-    // W/Up is the stick pushed FORWARD, which lowers the nose. This used to be
-    // reversed on the keyboard while the pointer used the stick convention, so
-    // the two controls disagreed with each other -- whichever one you reached
-    // for, the other was wrong.
-    t.pitch = this.held("ArrowDown", "KeyS") - this.held("ArrowUp", "KeyW");
+    // Keyboard and pointer must agree with each other, whichever way the axis
+    // runs. They did not: the keyboard was direct while the pointer was a
+    // stick, so whichever control you reached for, the other one was wrong.
+    const sign = this.invertPitch ? 1 : -1;
+    t.pitch = sign * (this.held("ArrowDown", "KeyS") - this.held("ArrowUp", "KeyW"));
     t.roll = this.held("ArrowRight", "KeyD") - this.held("ArrowLeft", "KeyA");
     t.yaw = this.held("KeyE") - this.held("KeyQ");
 
@@ -87,7 +119,7 @@ export class Input {
       // (down the screen) raises the nose. The code used to negate this, which
       // contradicted the comment right above it and felt inverted to anyone who
       // reached for the mouse first.
-      t.pitch = this.dragY;
+      t.pitch = sign * this.dragY;
       t.roll = this.dragX;
     }
 

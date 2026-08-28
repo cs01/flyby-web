@@ -187,6 +187,7 @@ html, body {
 
 .card {
   display: flex;
+  text-decoration: none;
   flex-direction: column;
   justify-content: space-between;
   /* A two-line name (Rio de Janeiro, Kuala Lumpur) must not make its card
@@ -245,6 +246,8 @@ html, body {
 
 .back {
   position: absolute;
+  text-decoration: none;
+  display: inline-block;
   top: 14px;
   right: 14px;
   padding: 7px 12px;

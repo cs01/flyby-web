@@ -147,7 +147,22 @@ void main() {
   // here because the DEM decoder clamps everything below sea level to exactly
   // zero, which makes open water a plateau at 0 m. The soft ramp gives a
   // natural shoreline, since a 30 m DEM posting interpolates across the coast.
-  float water = smoothstep(1.6, 0.25, vWorld.y);
+  // Water: elevation FIRST, appearance as a backstop.
+  //
+  // Elevation alone is not enough. The DEM carries small positive values in
+  // patches out on open water, and where that lifted a patch above the
+  // threshold it was shaded as LAND -- using the drape's near-black water
+  // pixels, which lights to roughly a tenth of the Fresnel water all around it.
+  // The result was dark angular holes lying in the middle of the Hudson.
+  //
+  // So a second test runs alongside: ground that is BOTH low and dark in the
+  // imagery is water too. Neither test alone is reliable (open water is not
+  // always exactly zero, and dark low ground is sometimes a car park), but a
+  // patch has to fail both to be mistaken for land.
+  float lumA = dot(albedo, vec3(0.299, 0.587, 0.114));
+  float byElevation = smoothstep(3.5, 0.4, vWorld.y);
+  float byAppearance = smoothstep(0.26, 0.07, lumA) * smoothstep(7.0, 1.0, vWorld.y);
+  float water = clamp(max(byElevation, byAppearance), 0.0, 1.0);
   float gloss = max(uWetness, water);
   vec3 v = normalize(uCameraPos - vWorld);
   if (gloss > 0.01) {
