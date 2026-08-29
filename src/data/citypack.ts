@@ -136,3 +136,23 @@ export function footprintMinDim(ring: Float32Array): number {
 export function buildingIsNeedle(b: Building): boolean {
   return isNeedle(b.topM - b.baseM, footprintMinDim(b.ring));
 }
+
+/**
+ * The ground a building stands on: the LOWEST terrain sample under its
+ * footprint, in absolute world metres.
+ *
+ * Not the centroid. A footprint on a hillside spans several metres of slope,
+ * and anchoring it at the centre leaves the downhill half hanging in the air --
+ * San Francisco is nothing but slope. The renderer buries the base at this
+ * height (see addBuilding) and the drone's collider raises its roof from it,
+ * and the two have to be the SAME number: a collider that sits a metre off the
+ * geometry means bouncing off nothing and sinking through walls.
+ */
+export function footprintGroundY(b: Building, heightAt: (x: number, z: number) => number): number {
+  let lowest = Infinity;
+  for (let v = 0; v < b.ring.length; v += 2) {
+    const g = heightAt(b.ring[v], b.ring[v + 1]);
+    if (g < lowest) lowest = g;
+  }
+  return Number.isFinite(lowest) ? lowest : heightAt(b.cx, b.cz);
+}
