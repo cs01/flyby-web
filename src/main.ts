@@ -31,6 +31,8 @@ import { Beacon } from "./render/beacon";
 import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
+import { loadLandPack } from "./data/landcover-load";
+import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { Composite } from "./render/composite";
 import { SunShadow } from "./render/sunshadow";
 import { Skyline } from "./sim/skyline";
@@ -214,6 +216,9 @@ async function main() {
   // Buildings. A city with no baked pack still flies, it just has no skyline,
   // so this must never be able to fail the load.
   loading.set(0.92, "loading buildings");
+  // Alongside the buildings, not after them: both are single files off the same
+  // origin, so overlapping the two fetches costs nothing and saves a round trip.
+  const landPromise = loadLandPack(city.id);
   const pack = await loadCityPack(city.id);
   let buildings: Buildings | null = null;
   // The rooftops as a height field, so the aeroplane has a floor over a city
@@ -236,9 +241,31 @@ async function main() {
   // an all-dark mask: unlit open country is a more honest answer than guessing
   // from the daylight imagery and lighting up the whole map.
   const urban: UrbanMask = pack ? buildUrbanMask(pack) : emptyUrbanMask();
+
+  // Measured landcover: what is water, what is built, what is green. It is
+  // awaited AFTER the terrain exists and can never fail the load, because a
+  // city without a .land pack is not broken, it just falls back to the
+  // sea-level water heuristic and to footprints alone for night lighting.
+  const landPack = await landPromise;
+  const land: LandMask = landPack ? buildLandMask(landPack) : emptyLandMask();
+  if (!landPack) {
+    console.warn(`[flyby] no landcover for ${city.id}; run: bun tools/bake-land.ts --city ${city.id}`);
+  }
+
+  // Term isolation for the terrain shader; see the ladder at the bottom of
+  // render/terrain.ts. 9 and 10 are the landcover water and built channels,
+  // 11 the four-channel false-colour.
+  const terrainDebug = Number(new URLSearchParams(location.search).get("terrainDebug") ?? 0);
+
   for (const u of terrain.uniforms) {
     u.uUrban.value = urban.texture;
     u.uUrbanExtent.value = urban.extent;
+    u.uLandNear.value = land.near;
+    u.uLandFar.value = land.far;
+    u.uLandNearExtent.value = land.nearExtent;
+    u.uLandFarExtent.value = land.farExtent;
+    u.uHasLand.value = land.has ? 1 : 0;
+    if (Number.isFinite(terrainDebug)) u.uDebug.value = terrainDebug;
   }
 
   const observed: Weather = await wxPromise;

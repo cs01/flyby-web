@@ -118,6 +118,14 @@ uniform vec3 uMoonDir;
 uniform vec3 uMoonLight;
 uniform sampler2D uUrban;
 uniform float uUrbanExtent;
+// Baked ESA WorldCover coverage: R water, G built, B vegetation, A bare/snow.
+// Two levels, for the same reason the terrain has rings: 10 m over the city,
+// ~137 m out to the horizon.
+uniform sampler2D uLandNear;
+uniform sampler2D uLandFar;
+uniform float uLandNearExtent;
+uniform float uLandFarExtent;
+uniform float uHasLand;
 
 float hash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -169,6 +177,21 @@ void main() {
 
   vec3 lit = albedo * (beam + ambient);
 
+  // Landcover, sampled once and used by both the water term and the night
+  // lighting. Near level inside its own extent, far level outside, crossfaded
+  // over the last tenth of the near extent: a hard switch would draw the near
+  // grid's 12 km square onto the ground as a visible edge, since the two levels
+  // disagree by a texel or two along any coastline they share.
+  vec2 lcUvN = vWorld.xz / (2.0 * uLandNearExtent) + 0.5;
+  vec2 lcUvF = vWorld.xz / (2.0 * uLandFarExtent) + 0.5;
+  // Chebyshev distance, not Euclidean: the near grid is a SQUARE, so this is
+  // the distance to the edge that actually runs out of data.
+  float lcR = max(abs(vWorld.x), abs(vWorld.z)) / max(1.0, uLandNearExtent);
+  vec4 lc = mix(texture(uLandNear, lcUvN), texture(uLandFar, lcUvF),
+                smoothstep(0.9, 1.0, lcR));
+  float lcWater = lc.r;
+  float lcBuilt = lc.g;
+
   // Specular sheen on wet ground, and always on water (which the drape shows
   // as dark blue; using luminance as a water proxy is crude but it is right
   // far more often than it is wrong, and it costs one texture read).
@@ -193,10 +216,19 @@ void main() {
   // imagery is water too. Neither test alone is reliable (open water is not
   // always exactly zero, and dark low ground is sometimes a car park), but a
   // patch has to fail both to be mistaken for land.
+  //
+  // ALL OF THAT IS NOW THE FALLBACK. Both tests are anchored to SEA LEVEL, so
+  // any water above it is invisible to them: Lake Michigan's surface is at
+  // 176 m, and Chicago's entire lakefront shaded as lit land. Where a .land
+  // pack exists the measured landcover REPLACES the heuristic outright rather
+  // than joining it, because a union can only ever add water, and half the
+  // gain here is removing the heuristic's false positives (a dark car park, a
+  // shadowed street) that no amount of extra evidence could take back.
   float lumA = dot(albedo, vec3(0.299, 0.587, 0.114));
   float byElevation = smoothstep(3.5, 0.4, vWorld.y);
   float byAppearance = smoothstep(0.26, 0.07, lumA) * smoothstep(7.0, 1.0, vWorld.y);
-  float water = clamp(max(byElevation, byAppearance), 0.0, 1.0);
+  float heur = clamp(max(byElevation, byAppearance), 0.0, 1.0);
+  float water = mix(heur, lcWater, uHasLand);
   float gloss = max(uWetness, water);
   vec3 v = normalize(uCameraPos - vWorld);
   if (gloss > 0.01) {
@@ -238,6 +270,14 @@ void main() {
     vec2 mUv = vWorld.xz / (2.0 * uUrbanExtent) + 0.5;
     float urban = texture(uUrban, mUv).r;
     urban *= step(0.0, mUv.x) * step(mUv.x, 1.0) * step(0.0, mUv.y) * step(mUv.y, 1.0);
+
+    // Union with the landcover's built class. Only a handful of cities have a
+    // .city pack, and the rest were getting emptyUrbanMask() and rendering
+    // pitch black after dark. WorldCover's built class is coarser than a
+    // footprint grid (it cannot tell a tower from a bungalow) but it covers
+    // everywhere, so the union is "footprints where we have them, measured
+    // land use everywhere else".
+    urban = max(urban, lcBuilt * uHasLand);
 
     // Night from the air is DISCRETE LIGHTS with black between them, not a lit
     // surface. Speckled on a ~26 m lattice with only a fraction of cells lit, so
@@ -315,16 +355,25 @@ void main() {
 
   // Term isolation. Chasing a too-bright image by arithmetic is slow and easy
   // to get wrong; showing one term at a time answers it in one look.
-  //   1 albedo  2 direct  3 ambient  4 inscatter  5 lit  6 transmittance
+  //   1 albedo       2 direct        3 ambient      4 inscatter
+  //   5 lit          6 transmittance 7 water        8 elevation/200
+  //   9 landcover water          10 landcover built
+  //  11 landcover false-colour: blue water, red built, green vegetation,
+  //     white bare/snow. Black means no pack, which is the one thing the
+  //     single-channel views cannot distinguish from "none of this class".
   if (uDebug > 0.5) {
-    if (uDebug < 1.5)      col = albedo;
-    else if (uDebug < 2.5) col = beam;
-    else if (uDebug < 3.5) col = ambient;
-    else if (uDebug < 4.5) col = inscatter;
-    else if (uDebug < 5.5) col = lit;
-    else if (uDebug < 6.5) col = trans;
-    else if (uDebug < 7.5) col = vec3(water);
-    else                   col = vec3(vWorld.y / 200.0);
+    if (uDebug < 1.5)       col = albedo;
+    else if (uDebug < 2.5)  col = beam;
+    else if (uDebug < 3.5)  col = ambient;
+    else if (uDebug < 4.5)  col = inscatter;
+    else if (uDebug < 5.5)  col = lit;
+    else if (uDebug < 6.5)  col = trans;
+    else if (uDebug < 7.5)  col = vec3(water);
+    else if (uDebug < 8.5)  col = vec3(vWorld.y / 200.0);
+    else if (uDebug < 9.5)  col = vec3(lcWater * uHasLand);
+    else if (uDebug < 10.5) col = vec3(lcBuilt * uHasLand);
+    else col = (vec3(0.1, 0.3, 1.0) * lc.r + vec3(1.0, 0.15, 0.1) * lc.g
+              + vec3(0.1, 0.8, 0.2) * lc.b + vec3(1.0) * lc.a) * uHasLand;
   }
 
   fragColor = vec4(col, 1.0);
@@ -343,6 +392,11 @@ export interface TerrainUniforms extends SunShadowUniforms {
   uMoonLight: THREE.IUniform<THREE.Color>;
   uUrban: THREE.IUniform<THREE.Texture | null>;
   uUrbanExtent: THREE.IUniform<number>;
+  uLandNear: THREE.IUniform<THREE.Texture | null>;
+  uLandFar: THREE.IUniform<THREE.Texture | null>;
+  uLandNearExtent: THREE.IUniform<number>;
+  uLandFarExtent: THREE.IUniform<number>;
+  uHasLand: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
   uSunSurface: THREE.IUniform<number>;
   uDebug: THREE.IUniform<number>;
@@ -373,6 +427,11 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uMoonLight: { value: new THREE.Color(0, 0, 0) },
     uUrban: { value: null },
     uUrbanExtent: { value: 1 },
+    uLandNear: { value: null },
+    uLandFar: { value: null },
+    uLandNearExtent: { value: 1 },
+    uLandFarExtent: { value: 1 },
+    uHasLand: { value: 0 },
     uExposure: { value: 1 },
     uSunSurface: { value: 0.105 },
     uDebug: { value: 0 },

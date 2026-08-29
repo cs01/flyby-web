@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "bun run check && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json && bun test/solar.check.ts && bun test/touch.check.ts && bun test/flight.check.ts && bun test/drone.check.ts && bun test/roof.check.ts && bun tools/verify-packs.ts && bun tools/verify-land.ts && bun tools/verify-aircraft.ts",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json && bun test/solar.check.ts && bun test/touch.check.ts && bun test/flight.check.ts && bun test/drone.check.ts && bun test/roof.check.ts && bun test/landmask.check.ts && bun tools/verify-packs.ts && bun tools/verify-land.ts && bun tools/verify-aircraft.ts",
     "bake": "bun tools/bake-city.ts",
     "land": "bun tools/bake-land.ts",
     "aircraft": "bun tools/ac3d-to-glb.ts && bun tools/recolor-livery.ts",
