@@ -20,8 +20,10 @@
 // is the classic bug here and it is silent: it only shows up as the drone
 // feeling draggy on a slow machine and slippery on a fast one.
 //
-// It does NOT collide with buildings -- the city pack carries no collision
-// data, only geometry -- so it will fly through a tower. Terrain is a floor.
+// Buildings are NOT this file's problem. The pack is geometry with no
+// collision data in it, so the solid city lives in sim/citycollision.ts and is
+// applied by the caller after `update` has integrated and clamped to terrain.
+// Keeping it out here is what lets the aeroplane share none of it.
 
 import * as THREE from "three";
 
@@ -103,6 +105,18 @@ const TILT_FOLLOW = 0.005;
  * everywhere to fix a wedge at the bottom of one view.
  */
 export const DRONE_GROUND_CLEARANCE = 2.5;
+
+/**
+ * Radius of the drone as the city collider sees it, in metres.
+ *
+ * Bigger than the airframe, and deliberately. The camera sits at the centre of
+ * this circle and its near plane is 2 m, so a radius that matched a real 30 cm
+ * quadcopter would put the wall INSIDE the near plane every time you skimmed
+ * one and the facade would tear open. At 1.2 m the drone stops with the brick
+ * filling the frame, which is the shot, and a 2.4 m machine still fits down
+ * every street and airshaft in the pack.
+ */
+export const DRONE_RADIUS = 1.2;
 
 /** Where the drone appears relative to the aeroplane it just left, in metres. */
 const ENTRY_BACK = 18;

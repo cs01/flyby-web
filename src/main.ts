@@ -21,7 +21,8 @@ import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
-import { Drone } from "./sim/drone";
+import { Drone, DRONE_RADIUS } from "./sim/drone";
+import { CityCollision } from "./sim/citycollision";
 import { Input } from "./sim/input";
 import { AircraftModel } from "./render/aircraftmodel";
 import { Osd } from "./app/osd";
@@ -235,6 +236,20 @@ async function main() {
     );
   } else {
     console.warn(`[flyby] no building pack for ${city.id}; run: bun tools/bake-city.ts --city ${city.id}`);
+  }
+
+  // Buildings the DRONE cannot fly through. Built once; a city with no pack
+  // simply has no collision, the same way it has no skyline.
+  let collision: CityCollision | null = null;
+  if (pack) {
+    const t0 = performance.now();
+    collision = new CityCollision(pack, terrain.heightAt);
+    console.log(
+      `[flyby] collision: ${collision.stats.buildings} footprints in ` +
+      `${collision.stats.cells} cells (max ${collision.stats.maxPerCell} per cell), ` +
+      `${(collision.stats.bytes / 1048576).toFixed(1)} MB, ` +
+      `${(performance.now() - t0).toFixed(0)} ms`,
+    );
   }
 
   // Where the city actually is, for night lighting. A place with no pack gets
@@ -562,7 +577,16 @@ async function main() {
       // Drained every frame even while paused, or the mouse travel banks up
       // behind the pause and the view snaps when it lets go.
       const di = input.droneAxes(dt);
-      if (!input.paused) drone.update(di, dt, groundUnderDrone);
+      if (!input.paused) {
+        drone.update(di, dt, groundUnderDrone);
+        // After the integrate and after the terrain clamp, so the push-out is
+        // the last word on where the drone ended up this frame.
+        //
+        // The DRONE only. Flying the Cessna into a tower would end the flight,
+        // which nobody asked for, and the aeroplane already has the rooftop
+        // height field as a floor keeping it over the city rather than in it.
+        collision?.resolve(drone.position, drone.velocity, DRONE_RADIUS);
+      }
     }
 
     hud.setLayers(layers.weather);
