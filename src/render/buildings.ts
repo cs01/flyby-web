@@ -21,6 +21,7 @@ import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { triangulate, signedArea } from "./earcut";
+import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 import type { Building, CityPack } from "../data/citypack";
 
 const CELL_M = 1500;
@@ -122,6 +123,7 @@ out vec4 fragColor;
 #define ATMO_SUN_STEPS 2
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
+${SUN_SHADOW_GLSL}
 
 uniform vec3  uCameraPos;
 uniform vec3  uAmbient;
@@ -205,6 +207,10 @@ void main() {
 
   float glassiness = 0.0;
 
+  // How much of the sky dome this fragment can see, beyond its own orientation.
+  // 1.0 on a roof; less and less as you go down into a street canyon.
+  float skyOcc = 1.0;
+
   if (isRoof < 0.5) {
     // --- Facade ---------------------------------------------------------
     // Storeys are ~3.2 m; window columns ~2.6 m. Quantising to a real storey
@@ -265,12 +271,20 @@ void main() {
     // slab and gives the facade its scale at distance.
     albedo *= 1.0 - 0.18 * detail * smoothstep(0.10 + w.y, 0.0, cell.y);
 
-    // Ambient occlusion down the wall. Streets are canyons, so the base of a
-    // facade genuinely is darker -- but 0.45 over the bottom 14 m stacked with
-    // every neighbouring wall doing the same turned the streets into black
-    // trenches from the air. Shallower, and over a shorter run.
-    float streetAO = mix(0.74, 1.0, smoothstep(0.0, 9.0, vUv.y));
-    albedo *= streetAO;
+    // Ambient occlusion down the wall -- on the SKY term, not the albedo.
+    //
+    // A street is a canyon. A wall at pavement level sees a slot of sky; the
+    // same wall thirty storeys up sees half a dome. That is an occlusion of
+    // ambient light and of nothing else.
+    //
+    // This used to multiply albedo, and that is why it had to be kept weak:
+    // scaling albedo also darkens the face the SUN is falling on, so stacking
+    // it down every wall on the block turned the streets into black trenches
+    // from the air, and it was backed off to 0.74 over 9 m. Against the sky
+    // term alone it can be far stronger and go far deeper, because a sunlit
+    // wall at street level keeps its whole beam and stays bright -- which is
+    // what a photograph of a city at low sun actually looks like.
+    skyOcc = mix(0.34, 1.0, smoothstep(0.0, 48.0, vUv.y));
 
     // --- Lit windows at night -------------------------------------------
     if (uNight > 0.02) {
@@ -300,10 +314,14 @@ void main() {
     // most of from an aircraft, so they get their own noise rather than the
     // facade colour applied upward.
     float g = hash21(floor(vWorld.xz * 0.35) + seed);
-    albedo = mix(vec3(0.26, 0.26, 0.25), vec3(0.42, 0.41, 0.38), g);
+    // Real roofs are tar, black membrane and gravel: about 0.06-0.12 linear.
+    // These were 0.26-0.42, two to three times too reflective, which made the
+    // roof the BRIGHTEST surface in a top-down shot when in every aerial
+    // photograph it is the darkest.
+    albedo = mix(vec3(0.130, 0.130, 0.124), vec3(0.245, 0.238, 0.218), g);
     // Rooftop plant: a few darker blocks scattered on the big roofs.
     float plant = step(0.93, hash21(floor(vWorld.xz * 0.12) + seed * 3.0));
-    albedo = mix(albedo, vec3(0.20, 0.21, 0.22), plant * step(400.0, bldH * 40.0));
+    albedo = mix(albedo, vec3(0.105, 0.110, 0.115), plant * step(400.0, bldH * 40.0));
   }
 
   // At night a facade has no colour of its own. It is lit by skyglow and by
@@ -321,7 +339,12 @@ void main() {
 
   float ndl = max(0.0, dot(n, uSunDir));
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
-  vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl;
+  // Cascaded shadow map. It multiplies the DIRECT beam and the sun's specular
+  // and nothing else: a wall in shadow is still lit by the sky above it and by
+  // the light bouncing off everything opposite, which is why real city shadows
+  // are blue rather than black.
+  float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
+  vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl * sunVis;
   // Moonlight, same units as the sun beam. Lit windows alone made a night city
   // read as a floating grid of dots with no buildings behind them; this is
   // what puts the facades back under the lights.
@@ -339,7 +362,7 @@ void main() {
   // building faces.
   skyView *= 1.0 + 0.14 * dot(n, normalize(vec3(uSunDir.x, 0.0, uSunDir.z)));
   // Skyglow reaches walls better than roofs: it comes from the street below.
-  vec3 ambient = uAmbient * skyView + uNightGlow * (1.0 - 0.35 * n.y);
+  vec3 ambient = uAmbient * skyView * skyOcc + uNightGlow * (1.0 - 0.35 * n.y);
 
   vec3 lit = albedo * (beam + ambient) + emissive;
 
@@ -349,7 +372,7 @@ void main() {
     vec3 v = normalize(uCameraPos - vWorld);
     vec3 h = normalize(v + uSunDir);
     float spec = pow(max(0.0, dot(n, h)), 64.0);
-    lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.2;
+    lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.2 * sunVis;
     vec3 hm = normalize(v + uMoonDir);
     lit += uMoonLight * uSunSurface * pow(max(0.0, dot(n, hm)), 64.0) * gloss * 1.2;
   }
@@ -363,7 +386,7 @@ void main() {
 }
 `;
 
-export interface BuildingUniforms extends Record<string, THREE.IUniform> {
+export interface BuildingUniforms extends SunShadowUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uAmbient: THREE.IUniform<THREE.Color>;
   uNight: THREE.IUniform<number>;
@@ -382,8 +405,13 @@ export interface BuildingUniforms extends Record<string, THREE.IUniform> {
   uMultiScatter: THREE.IUniform<number>;
 }
 
-function makeUniforms(): BuildingUniforms {
+/**
+ * `shadow` is spread in by REFERENCE, so the cascade matrices and maps the
+ * SunShadow pass writes each frame are the same objects these materials read.
+ */
+function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
   return {
+    ...shadow,
     uCameraPos: { value: new THREE.Vector3() },
     uAmbient: { value: new THREE.Color(0.2, 0.24, 0.3) },
     uNight: { value: 0 },
@@ -403,7 +431,8 @@ function makeUniforms(): BuildingUniforms {
   };
 }
 
-interface Scratch {
+/** Exported so test/roof.check.ts can gate the real geometry, not a copy. */
+export interface Scratch {
   pos: number[];
   nrm: number[];
   uv: number[];
@@ -411,11 +440,11 @@ interface Scratch {
   idx: number[];
 }
 
-function emptyScratch(): Scratch {
+export function emptyScratch(): Scratch {
   return { pos: [], nrm: [], uv: [], info: [], idx: [] };
 }
 
-function addBuilding(s: Scratch, b: Building, groundY: number, seed: number): void {
+export function addBuilding(s: Scratch, b: Building, groundY: number, seed: number): void {
   const n = b.ring.length / 2;
   if (n < 3) return;
 
@@ -474,7 +503,21 @@ function addBuilding(s: Scratch, b: Building, groundY: number, seed: number): vo
       s.uv.push(b.ring[i * 2], b.ring[i * 2 + 1]);
       s.info.push(seed, kind, 1, b.topM - b.baseM);
     }
-    for (let i = 0; i < tri.length; i++) s.idx.push(v0 + tri[i]);
+    // REVERSED against the ring's own winding, and that is not a typo.
+    //
+    // `triangulate` takes a ring that is counter-clockwise in (x, z) and hands
+    // back triangles in that same order. Lifted into 3D with y up, a ring that
+    // is counter-clockwise in (x, z) winds CLOCKWISE seen from above, so those
+    // triangles face STRAIGHT DOWN. With THREE.FrontSide that culls every roof
+    // when you look at the city from the air, and a city of open-topped boxes
+    // is exactly what it sounds like -- measured at 99.8% of roof triangles on
+    // the Manhattan pack before this line was reversed.
+    //
+    // The walls hit the same trap and carry their own note above.
+    // test/roof.check.ts is the gate; it fails if this flips back.
+    for (let i = 0; i + 2 < tri.length; i += 3) {
+      s.idx.push(v0 + tri[i], v0 + tri[i + 2], v0 + tri[i + 1]);
+    }
   }
 }
 
@@ -514,8 +557,12 @@ export class Buildings {
   readonly uniforms: BuildingUniforms;
   readonly stats: BuildingStats;
 
-  constructor(pack: CityPack, groundAt: (x: number, z: number) => number) {
-    this.uniforms = makeUniforms();
+  constructor(
+    pack: CityPack,
+    groundAt: (x: number, z: number) => number,
+    shadow: SunShadowUniforms,
+  ) {
+    this.uniforms = makeUniforms(shadow);
     const lodK = solveLod(pack);
     const cells = new Map<string, Scratch>();
     let drawn = 0;
@@ -575,6 +622,9 @@ export class Buildings {
     for (const s of cells.values()) {
       const mesh = buildMesh(s, this.uniforms);
       if (mesh) {
+        // enable, not set: `set` would drop the mesh off layer 0 and the main
+        // camera would stop drawing the city altogether.
+        mesh.layers.enable(SHADOW_CASTER_LAYER);
         triangles += s.idx.length / 3;
         this.group.add(mesh);
       }

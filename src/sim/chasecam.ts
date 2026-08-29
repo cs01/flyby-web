@@ -22,10 +22,19 @@ export type CameraMode = "chase" | "cockpit" | "wing" | "orbit";
 export const CAMERA_MODES: CameraMode[] = ["chase", "cockpit", "wing", "orbit"];
 
 const OFFSETS: Record<CameraMode, THREE.Vector3> = {
-  // Close. At 26 m plus the speed stretch the aeroplane sat ~37 m out and read
-  // as a model of itself in the middle of the frame; the shot is about the
-  // aeroplane over the city, and it has to be big enough to be the subject.
-  chase: new THREE.Vector3(0, 4.6, 16),
+  // Close, and slightly above, so the shot looks down onto the wing.
+  //
+  // The aeroplane is the subject and it has to be big enough to be one. At
+  // 16 m plus the old speed stretch it sat ~26 m out, where an 11 m span fills
+  // about a third of the frame and reads as a model of itself. At 10 m plus
+  // the gentler stretch below it sits ~16 m out and fills nearer three fifths,
+  // which is close enough to see the livery and the gear.
+  //
+  // y is above the wing (the airframe spans -1.2..2.1 m about its origin), so
+  // the camera looks slightly DOWN on it and the city stays in the frame
+  // behind. Lower than this and the wing hides the ground; higher and it turns
+  // into a map view.
+  chase: new THREE.Vector3(0, 3.5, 10),
   // Behind the windscreen of the REAL airframe, which is a different aeroplane
   // from the box this was measured against: the imported C182 is 8.5 m long
   // with its propeller 3.8 m forward of the datum, and the old eye point put
@@ -38,6 +47,34 @@ const OFFSETS: Record<CameraMode, THREE.Vector3> = {
 
 const DEG = Math.PI / 180;
 
+/**
+ * Height above ground, in metres, over which the chase rig slides into the
+ * left seat and back out again.
+ *
+ * The point is the street. Up at cruise the shot is about the aeroplane over
+ * the city, so it wants to be outside looking at it; down among the buildings
+ * that same rig is useless -- the airframe fills the frame, the camera is
+ * 16 m behind you and keeps clipping the block you just passed, and you cannot
+ * see the gap you are aiming for. Down there the shot is about the CITY, and
+ * the only place to see it from is the seat.
+ *
+ * 150 m is roughly where Manhattan's rooftops start passing above you, and
+ * 55 m is well down in the canyon, so the swap happens exactly over the run
+ * where the buildings stop being scenery and start being obstacles.
+ */
+const FPV_OUT_M = 150;
+const FPV_IN_M = 55;
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+const _seatOffset = new THREE.Vector3();
+const _seatPos = new THREE.Vector3();
+const _seatQuat = new THREE.Quaternion();
+const _lookBackQuat = new THREE.Quaternion();
+
 export class ChaseCam {
   private pos = new THREE.Vector3();
   private aim = new THREE.Vector3();
@@ -49,6 +86,19 @@ export class ChaseCam {
 
   /** Metres of extra standoff, so speed reads as speed. */
   private speedPullback = 0;
+
+  /** 0 = chase rig, 1 = out of the left seat. Driven by height above ground. */
+  private fpv = 0;
+
+  /**
+   * How far into the first-person view the camera currently is.
+   *
+   * Read by the renderer to decide whether to draw the aeroplane: at the seat
+   * you are inside it.
+   */
+  get cockpitBlend(): number {
+    return this.fpv;
+  }
 
   update(
     cam: THREE.PerspectiveCamera,
@@ -73,7 +123,10 @@ export class ChaseCam {
 
     // Pull back with speed. A fixed offset makes a hover and a 100 kt run look
     // identical; a few metres of stretch is most of what sells the difference.
-    const want = ac.groundSpeed * 0.13;
+    // Gentler than it was: at the old rate the stretch alone was two thirds of
+    // the standoff at cruise, which undid the close framing exactly when the
+    // aeroplane was most worth looking at.
+    const want = ac.groundSpeed * 0.07;
     this.speedPullback += (want - this.speedPullback) * (1 - Math.pow(0.02, dt));
     if (this.mode === "chase") desiredOffset.z += this.speedPullback;
 
@@ -131,6 +184,38 @@ export class ChaseCam {
     cam.position.copy(this.pos);
     cam.up.copy(this.up);
     cam.lookAt(this.aim);
+
+    // --- Slide into the seat as the ground comes up ------------------------
+    //
+    // Only from the chase rig. Picking `wing` or `orbit` is an explicit request
+    // for a particular shot, and having it silently become something else at
+    // 400 feet would be the camera arguing with you.
+    //
+    // Blended twice on purpose: `smoothstep` on HEIGHT so the transition has no
+    // corner in it, and an exponential follow in TIME so that skimming a roof
+    // or dropping into a single wide street does not snap the view across and
+    // back. The height term alone made a hop over one tall building look like
+    // a cut.
+    const agl = ac.position.y - groundY;
+    const wantFpv = this.mode === "chase" ? smoothstep(FPV_OUT_M, FPV_IN_M, agl) : 0;
+    this.fpv += (wantFpv - this.fpv) * (1 - Math.pow(0.08, dt));
+
+    if (this.fpv > 0.001) {
+      _seatOffset.copy(OFFSETS.cockpit).applyQuaternion(ac.quaternion);
+      _seatPos.copy(ac.position).add(_seatOffset);
+      // In the seat the camera IS the aeroplane, roll and all -- which is the
+      // whole reason to be there when a building is going past the wingtip.
+      _lookBackQuat.setFromEuler(new THREE.Euler(0, lookBack ? Math.PI : 0, 0, "YXZ"));
+      _seatQuat.copy(ac.quaternion).multiply(_lookBackQuat);
+
+      cam.position.lerpVectors(this.pos, _seatPos, this.fpv);
+      // Orientation is slerped rather than built from a look-at target, because
+      // a look-at cannot express roll and roll is most of what the seat view is.
+      cam.quaternion.slerp(_seatQuat, this.fpv);
+      // Keep the rig's own state at the blended position, or letting go of the
+      // blend snaps the camera back to wherever the chase rig had drifted to.
+      this.pos.copy(cam.position);
+    }
   }
 
   /**

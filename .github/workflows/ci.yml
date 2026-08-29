@@ -1,0 +1,32 @@
+# Runs the project's own gate on every pull request.
+#
+# Deploy.yml only fires on push to main, so before this existed a PR carried no
+# checks at all -- and `gh pr checks` exits non-zero on "no checks reported",
+# which reads identically to a red build to anything automating a merge.
+#
+# `bun run check` is the same command used locally: typecheck, tools typecheck,
+# the solar/touch/flight suites, the city-pack verifier and the aircraft
+# verifier. The build is run too, because a green typecheck can still fail to
+# bundle.
+
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bunx vite build

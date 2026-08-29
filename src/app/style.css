@@ -437,7 +437,21 @@ html, body {
 
 /* Names on the things the beams are standing on. A beam said "something is
    here" and nothing else, which is the half of the question nobody asks. */
-.labels { position: absolute; inset: 0; pointer-events: none; }
+.labels { position: absolute; inset: 0; }
+
+/* #ui is a click-through layer and its children opt back IN via `#ui > *`.
+   That selector carries an id, so its specificity is (1,0,0) and a bare
+   `.labels { pointer-events: none }` at (0,1,0) silently LOSES.
+   The label overlay is transparent and spans the whole viewport, so it was
+   swallowing every click that landed on anything appended before it: the back
+   button, the city card and the weather panel. The checkboxes survived only
+   because they happen to be appended after it.
+   `#ui > .touch` further down was already written this way, for this reason.
+   An overlay that must stay click-through belongs in THIS list, not in its own
+   rule -- its own rule cannot win. */
+#ui > .labels,
+#ui > .osd,
+#ui > .attrib { pointer-events: none; }
 
 .label {
   position: absolute;
@@ -1027,4 +1041,26 @@ html, body {
   .osd svg.ai { width: 100px; height: 100px; }
   .osd svg.gz { width: 86px; height: 86px; }
   .osd-gauge { padding: 5px 5px 3px; }
+}
+
+/* Moving map. Bottom-right, above the attribution line. */
+.minimap {
+  position: absolute;
+  bottom: 34px;
+  right: 14px;
+  width: 160px;
+  height: 160px;
+  pointer-events: none;
+}
+.minimap canvas { width: 100%; height: 100%; display: block; }
+
+@media (max-width: 760px), (pointer: coarse) {
+  /* On a phone the sky is the app, and the route panel already owns the
+     bottom-left. 116 px still reads at arm's length. */
+  .minimap {
+    width: 116px;
+    height: 116px;
+    bottom: calc(10px + env(safe-area-inset-bottom));
+    right: calc(8px + env(safe-area-inset-right));
+  }
 }

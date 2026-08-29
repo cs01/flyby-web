@@ -11,6 +11,7 @@
 // makes the aircraft feel bolted to the stick.
 
 import { TouchControls, hasTouch } from "./touch";
+import type { DroneInput } from "./drone";
 
 export interface Axes {
   /** Positive opens the throttle, negative closes it. */
@@ -29,11 +30,33 @@ export interface Axes {
 const ENGAGE = 0.14;
 const RELEASE = 0.08;
 
+/**
+ * Degrees of look per pixel of mouse travel under pointer lock.
+ *
+ * 0.11 puts a 180-degree turn at about 1600 px, which is a normal mouse's
+ * worth of desk. Higher and a nudge whips the city past; lower and you run out
+ * of mat before you have looked behind you.
+ */
+const LOOK_DEG_PER_PX = 0.11;
+
 function ramp(current: number, target: number, dt: number): number {
   const toward = Math.abs(target) > Math.abs(current) && target * current >= 0;
   const rate = dt / (toward ? ENGAGE : RELEASE);
   const d = target - current;
   return Math.abs(d) <= rate ? target : current + Math.sign(d) * rate;
+}
+
+function freshDrone(): DroneInput {
+  return {
+    forward: 0,
+    strafe: 0,
+    lift: 0,
+    yaw: 0,
+    pitch: 0,
+    boost: 0,
+    lookYawDeg: 0,
+    lookPitchDeg: 0,
+  };
 }
 
 export class Input {
@@ -52,6 +75,8 @@ export class Input {
   cameraCycled = 0;
   /** H presses. The controls card is asked for now rather than imposed. */
   helpToggled = 0;
+  /** V presses. Counted, not latched, so main drains it and cannot miss one. */
+  droneToggled = 0;
   paused = false;
 
   /**
@@ -73,6 +98,18 @@ export class Input {
   /** Present wherever a finger can reach the screen; null everywhere else. */
   private touch: TouchControls | null = null;
 
+  /** The canvas, kept so pointer lock can be asked for and checked against. */
+  private lockTarget: HTMLElement;
+  /** Degrees of unread mouse look, accumulated since the last `droneAxes`. */
+  private lookX = 0;
+  private lookY = 0;
+  private locked = false;
+  /** Whether anything currently WANTS the mouse captured. */
+  private wantLock = false;
+
+  private droneCurrent: DroneInput = freshDrone();
+  private droneTarget: DroneInput = freshDrone();
+
   constructor(target: HTMLElement, ui?: HTMLElement) {
     if (ui && hasTouch()) this.touch = new TouchControls(target, ui);
 
@@ -86,6 +123,10 @@ export class Input {
       if (e.code === "KeyC") this.cameraCycled++;
       if (e.code === "KeyP") this.paused = !this.paused;
       if (e.code === "KeyH") this.helpToggled++;
+      if (e.code === "KeyV") this.droneToggled++;
+      // Escape already drops pointer lock in every browser; doing it here as
+      // well is what stops us asking for it straight back on the next click.
+      if (e.code === "Escape") this.setPointerLock(false);
       if (e.code === "KeyT") {
         this.timelapse = !this.timelapse;
         this.onTimelapse?.(this.timelapse);
@@ -106,13 +147,44 @@ export class Input {
       // deflection from the centre of the SCREEN, which on a finger means full
       // deflection the instant it lands.
       if (e.pointerType === "touch") return;
+      // A click while the drone wants the mouse is a request to get the mouse
+      // back, not a stick input: escaping the lock is how you reach the HUD,
+      // and clicking the view is how everyone expects to return to the game.
+      if (this.wantLock) {
+        this.requestLock();
+        return;
+      }
       this.dragging = true;
       target.setPointerCapture(e.pointerId);
       this.updateDrag(e);
     });
     target.addEventListener("pointermove", (e) => {
       if (e.pointerType === "touch") return;
+      if (this.locked) {
+        // Under lock there is no cursor position, only movement, and it is
+        // already in degrees once scaled. Accumulated rather than sampled, so
+        // a fast flick between two frames is not thrown away.
+        this.lookX += e.movementX * LOOK_DEG_PER_PX;
+        this.lookY += e.movementY * LOOK_DEG_PER_PX;
+        return;
+      }
       if (this.dragging) this.updateDrag(e);
+    });
+
+    this.lockTarget = target;
+    document.addEventListener("pointerlockchange", () => {
+      this.locked = document.pointerLockElement === this.lockTarget;
+      // Whatever was half-accumulated when the lock went away is not a look
+      // the pilot asked for. Dropping it is what stops the drone spinning on
+      // the frame after Escape.
+      if (!this.locked) {
+        this.lookX = 0;
+        this.lookY = 0;
+      }
+    });
+    // A refused or lost lock must not take the mouse deltas with it silently.
+    document.addEventListener("pointerlockerror", () => {
+      this.locked = false;
     });
     const end = () => {
       this.dragging = false;
@@ -227,6 +299,92 @@ export class Input {
     // Boost is a mode, not a control surface; ramping it would put a
     // quarter-second of nothing between pressing shift and going anywhere.
     a.boost = t.boost;
+    return a;
+  }
+
+  // --- Pointer lock ---------------------------------------------------------
+  //
+  // Wanted only by the drone. Everything here degrades to nothing: a browser
+  // that refuses the lock, a user who presses Escape, or a platform with no
+  // pointer at all leaves `locked` false, the mouse deltas at zero, and the
+  // keyboard look working exactly as it did.
+
+  /** True while the mouse is actually captured, not merely asked for. */
+  get pointerLocked(): boolean {
+    return this.locked;
+  }
+
+  /** Ask for or give up the mouse. Safe to call every frame. */
+  setPointerLock(want: boolean): void {
+    this.wantLock = want;
+    if (want) {
+      this.requestLock();
+    } else if (document.pointerLockElement) {
+      document.exitPointerLock();
+    }
+  }
+
+  private requestLock(): void {
+    if (this.locked || !this.lockTarget.requestPointerLock) return;
+    // Chrome rejects a request made too soon after an exit, and the rejection
+    // arrives as an unhandled promise if it is not caught. Neither the throw
+    // nor the rejection is worth reporting: the fallback is the keyboard.
+    try {
+      const r = this.lockTarget.requestPointerLock() as unknown;
+      if (r && typeof (r as Promise<void>).catch === "function") {
+        (r as Promise<void>).catch(() => {});
+      }
+    } catch {
+      /* no lock, no mouse look, keyboard still flies it */
+    }
+  }
+
+  /**
+   * Smoothed drone axes for this frame, plus the mouse look that has arrived
+   * since the last call.
+   *
+   * Ramped through the same `ramp` the aeroplane uses, so the two machines
+   * respond to a key press identically and only the models differ. The look
+   * degrees are NOT ramped: they are already a finished movement, and
+   * smoothing a mouse is how a game earns the word "floaty".
+   */
+  droneAxes(dt: number): DroneInput {
+    const t = this.droneTarget;
+    t.forward = this.held("KeyW") - this.held("KeyS");
+    t.strafe = this.held("KeyD") - this.held("KeyA");
+    t.yaw = this.held("KeyE", "ArrowRight") - this.held("KeyQ", "ArrowLeft");
+    // Same sense as the aeroplane's: ArrowDown climbs, because the arrows are
+    // a stick there and having them mean the opposite here would be a trap.
+    t.lift = this.held("KeyR", "ArrowDown") - this.held("KeyF", "ArrowUp", "ControlLeft", "ControlRight");
+    // Keyboard look. X/Z rather than the arrows, which are already the lift
+    // axis; this is the fallback for a browser that will not give up the
+    // mouse, and the mouse is the way it is meant to be flown.
+    t.pitch = this.held("KeyX") - this.held("KeyZ");
+    t.boost = this.held("ShiftLeft", "ShiftRight", "Space");
+
+    const touch = this.touch;
+    if (touch?.active) {
+      // The virtual stick means the same things it does in the aeroplane:
+      // move with the left thumb, turn and climb with the right.
+      t.forward = touch.axes.throttle;
+      t.strafe = touch.axes.roll;
+      t.yaw = touch.axes.yaw;
+      t.lift = touch.axes.lift;
+    }
+    if (touch?.boost) t.boost = 1;
+
+    const a = this.droneCurrent;
+    a.forward = ramp(a.forward, t.forward, dt);
+    a.strafe = ramp(a.strafe, t.strafe, dt);
+    a.lift = ramp(a.lift, t.lift, dt);
+    a.yaw = ramp(a.yaw, t.yaw, dt);
+    a.pitch = ramp(a.pitch, t.pitch, dt);
+    a.boost = t.boost;
+
+    a.lookYawDeg = this.lookX;
+    a.lookPitchDeg = -this.lookY;
+    this.lookX = 0;
+    this.lookY = 0;
     return a;
   }
 }
