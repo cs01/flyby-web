@@ -22,7 +22,7 @@ import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { triangulate, signedArea } from "./earcut";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
-import type { Building, CityPack } from "../data/citypack";
+import { footprintGroundY, type Building, type CityPack } from "../data/citypack";
 
 const CELL_M = 1500;
 
@@ -603,12 +603,9 @@ export class Buildings {
       }
 
       // Lowest ground under the footprint, so nothing floats on a hillside.
-      let groundY = Infinity;
-      for (let v = 0; v < b.ring.length; v += 2) {
-        const g = groundAt(b.ring[v], b.ring[v + 1]);
-        if (g < groundY) groundY = g;
-      }
-      if (!Number.isFinite(groundY)) groundY = groundAt(b.cx, b.cz);
+      // Shared with the drone's collider, which has to raise its roof to the
+      // same height this puts the geometry at.
+      const groundY = footprintGroundY(b, groundAt);
 
       const key = `${Math.floor(b.cx / CELL_M)},${Math.floor(b.cz / CELL_M)}`;
       let s = cells.get(key);
