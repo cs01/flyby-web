@@ -234,6 +234,14 @@ async function main() {
 
   loading.set(0.88, "building world");
   const { renderer, scene, camera } = createRenderer(canvas);
+
+  // A failed shader is invisible on a phone: three.js logs and carries on, and
+  // the mesh either vanishes or draws garbage. Surface it in the same red box
+  // the context-loss watch uses.
+  renderer.debug.onShaderError = (_gl, _prog, vs, fs) => {
+    const shout = (window as unknown as { __flybyShout?: (s: string) => void }).__flybyShout;
+    shout?.(`SHADER FAILED: ${String((vs as { name?: string }).name ?? "")} / ${String((fs as { name?: string }).name ?? "")}`);
+  };
   const composite = new Composite(renderer);
   const target = createSceneTarget(renderer);
   // Screen-space sky occlusion. Runs before the main pass, because the surface
@@ -275,7 +283,20 @@ async function main() {
   // surface and a prefiltered cube for the glass and the wet tarmac.
   const skyProbe = new SkyProbe();
   if (new URLSearchParams(location.search).get("shadows") === "0") sunShadow.enabled = false;
-  if (new URLSearchParams(location.search).get("ao") === "0") ao.enabled = false;
+  // AO is off by default on a phone, and it is not a close call.
+  //
+  // It costs a full-geometry depth prepass plus two more RGBA16F targets, on a
+  // device that already corrupted once from GPU memory pressure and that draws
+  // the caster set several times a frame (main, up to three shadow cascades,
+  // this prepass, and six faces of the aircraft probe). Its own measurement
+  // says a street-level camera finds occlusion on 7% of the buffer, so the
+  // device that can least afford it gains the least from it.
+  const params = new URLSearchParams(location.search);
+  const coarsePointer =
+    typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+  if (coarsePointer) ao.enabled = false;
+  if (params.get("ao") === "0") ao.enabled = false;
+  if (params.get("ao") === "1") ao.enabled = true;
 
   const terrain = new Terrain(origin, fields, drapes, sunShadow.uniforms);
   scene.add(terrain.group);

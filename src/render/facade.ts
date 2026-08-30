@@ -525,6 +525,37 @@ Facade readFacade(float bidx) {
   p.tenantW = e.x;    p.tenantH = e.y;  p.coreW = e.z;      p.corePeriod = e.w;
   p.coreSlot = f.x;   p.group = floor(f.y / 8.0);  p.family = f.y - p.group * 8.0;
   p.relief = f.z;     p.parapetM = f.w;
+
+  // A DEAD TABLE MUST BE LOUD, NOT BLACK.
+  //
+  // If the parameter texture never made it to the GPU (an upload refused under
+  // memory pressure leaves it incomplete for the whole session, with nothing
+  // thrown on the JS side), every texelFetch returns (0,0,0,1). Then storeyM
+  // and columnM are 0, vUv / 0 is Inf, fract(Inf) is NaN, and the NaN
+  // propagates through the window mask into albedo. A NaN fragment renders
+  // black on essentially all hardware, so an entire city goes black with no
+  // error anywhere and no way to tell that from a lighting bug.
+  //
+  // corePeriod is >= CORE_PERIOD_MIN (7) by construction for any real record,
+  // so a zero there is impossible unless the read itself failed. Flagging it
+  // magenta turns a silent black city into an obvious "the facade table is
+  // dead", which is the difference between a week of guessing and one glance
+  // at a phone screenshot.
+  if (p.corePeriod < 1.0) {
+    p.colour = vec3(1.0, 0.0, 0.8);
+    p.storeyM = 3.2; p.columnM = 2.6; p.glassFrac = 0.0; p.roughness = 0.9;
+    p.tenantW = 4.0; p.tenantH = 2.0; p.coreW = 2.0; p.corePeriod = 9.0;
+    p.win = vec4(0.18, 0.82, 0.16, 0.86);
+  }
+
+  // Belt and braces: clamp every divisor at the point of use anyway, so a
+  // partially bad record cannot NaN-poison the fragment either.
+  p.storeyM = max(p.storeyM, 0.1);
+  p.columnM = max(p.columnM, 0.1);
+  p.coreW = max(p.coreW, 1.0);
+  p.corePeriod = max(p.corePeriod, 1.0);
+  p.tenantW = max(p.tenantW, 1.0);
+  p.tenantH = max(p.tenantH, 1.0);
   return p;
 }
 

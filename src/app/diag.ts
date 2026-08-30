@@ -86,13 +86,49 @@ export function showDiagnostics(canvas: HTMLCanvasElement): void {
     }
   }
 
-  // Whatever the app managed to publish about itself. Absent means it never got
-  // far enough to publish, which is the single most useful thing to know.
-  const w = window as unknown as Record<string, unknown>;
-  rows.push(line("app booted", w.flyby ? "yes" : "<b style='color:#ff8a8a'>NO</b>"));
-
   el.innerHTML = rows.join("");
   document.body.append(el);
+
+  // The panel is built before the world is, so everything below has to be
+  // re-read on a timer. Capabilities answer "what could go wrong"; these answer
+  // "what actually did", which is the half that discriminates between a dead
+  // parameter table, a night sky, and a miscompiled shader.
+  const app = document.createElement("div");
+  el.append(app);
+  const refresh = () => {
+    const w = window as unknown as {
+      flyby?: {
+        time?: Date;
+        wx?: { totalCover?: number; precip?: number; tempC?: number };
+        buildings?: { stats?: { drawn?: number; triangles?: number } };
+        renderer?: { info?: { memory?: { textures?: number; geometries?: number } } };
+      };
+    };
+    const f = w.flyby;
+    const out: string[] = [];
+    out.push(line("app booted", f ? "yes" : "<b style='color:#ff8a8a'>NO</b>"));
+    if (f) {
+      // H5: a black city at 22:00 with no lit windows may simply be night.
+      out.push(line("scene time", String(f.time ?? "?")));
+      if (f.wx) {
+        out.push(line("cloud/precip", `${f.wx.totalCover?.toFixed(2)} / ${f.wx.precip?.toFixed(2)}`));
+      }
+      const st = f.buildings?.stats;
+      out.push(
+        line(
+          "buildings drawn",
+          st?.drawn
+            ? `${st.drawn} (${st.triangles} tris)`
+            : "<b style='color:#ff8a8a'>0 - pack missing or culled</b>",
+        ),
+      );
+      const mem = f.renderer?.info?.memory;
+      if (mem) out.push(line("gpu textures", `${mem.textures} tex / ${mem.geometries} geo`));
+    }
+    app.innerHTML = out.join("");
+  };
+  refresh();
+  setInterval(refresh, 2000);
 }
 
 /**
@@ -116,6 +152,14 @@ export function watchForFailures(canvas: HTMLCanvasElement): void {
     }
     box.textContent = `${box.textContent ?? ""}\n${what}`.trim();
   };
+
+  // Shader compile and link failures, and GL errors, both vanish today: three
+  // logs them to a console a phone cannot open, and an incomplete framebuffer
+  // raises INVALID_FRAMEBUFFER_OPERATION that nothing ever reads. Route both to
+  // the same visible box, because "black screen, no error" has already cost
+  // this project several rounds of guessing.
+  const w = window as unknown as { __flybyShout?: (s: string) => void };
+  w.__flybyShout = shout;
 
   canvas.addEventListener("webglcontextlost", (e) => {
     e.preventDefault();
