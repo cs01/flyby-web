@@ -10,7 +10,7 @@
 // known time (0.14 s here) and releases faster than it engages, which is what
 // makes the aircraft feel bolted to the stick.
 
-import { TouchControls, hasTouch } from "./touch";
+import { TouchControls, hasTouch, expo, rateLimit } from "./touch";
 import type { DroneInput } from "./drone";
 
 export interface Axes {
@@ -239,6 +239,10 @@ export class Input {
   }
 
   /** Smoothed axes for this frame. */
+  private stickRoll = 0;
+  private stickYaw = 0;
+  private stickLift = 0;
+
   sample(dt: number): Axes {
     const t = this.target;
 
@@ -251,13 +255,40 @@ export class Input {
     // pitch axis genuinely has two right answers; a climb axis on Space/Ctrl
     // has one, and the ambiguity goes away rather than becoming a setting.
     t.throttle = this.held("KeyW") - this.held("KeyS");
-    t.roll = this.held("KeyD", "ArrowRight") - this.held("KeyA", "ArrowLeft");
-    t.yaw = this.held("KeyE") - this.held("KeyQ");
+    // A key is a step function, and the flight model integrates these axes
+    // directly: roll goes straight into 130 deg/s and lift into a 45 m/s
+    // vertical speed command. So a tap that lasts one frame asked for FULL
+    // deflection, and the aeroplane snapped. Touch never had this problem
+    // because a thumb travels 96 px to reach full and gets expo on top; the
+    // keyboard had neither.
+    //
+    // The fix is the one this file's header already says the controls use, and
+    // which had only ever been applied to the throttle lever: RATE LIMIT, do
+    // not filter. A rate limit reaches exactly the value asked for, in a known
+    // time. An exponential filter never arrives, which reads as lag however
+    // it is tuned.
+    //
+    // Release is quicker than push, because letting go should stop the
+    // aeroplane doing the thing rather than feeling like a spring unwinding.
+    this.stickRoll = rateLimit(
+      this.stickRoll,
+      this.held("KeyD", "ArrowRight") - this.held("KeyA", "ArrowLeft"),
+      dt,
+    );
+    t.roll = expo(this.stickRoll);
+    this.stickYaw = rateLimit(this.stickYaw, this.held("KeyE") - this.held("KeyQ"), dt);
+    t.yaw = expo(this.stickYaw);
     // The arrows are a STICK: pull BACK to climb, push forward to dive. That
     // is what every aeroplane does and what a hand reaching for an arrow key
     // expects, and the arrows are free for it now that the throttle is W/S --
     // they were only ever duplicating those keys.
-    t.lift = this.held("ArrowDown", "KeyR") - this.held("ArrowUp", "ControlLeft", "ControlRight", "KeyF");
+    this.stickLift = rateLimit(
+      this.stickLift,
+      this.held("ArrowDown", "KeyR") -
+        this.held("ArrowUp", "ControlLeft", "ControlRight", "KeyF"),
+      dt,
+    );
+    t.lift = expo(this.stickLift);
     // Space is turbo. It is the key everybody's thumb is already on and the
     // one they reach for meaning "go", and it is no longer the climb axis,
     // which is what made it feel like it did nothing much.

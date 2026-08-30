@@ -38,6 +38,29 @@ export const THROTTLE_RADIUS = 64;
  */
 export const ROLL_EXPO = 0.55;
 
+/**
+ * Seconds from centre to full deflection on a key, and back.
+ *
+ * 0.28 s is close to how long a hand actually takes to move a stick through
+ * full travel, and it is short enough that the control never feels laggy: a
+ * held key is at full authority in under a third of a second. The release is
+ * quicker because stopping should feel immediate.
+ */
+export const STICK_PUSH_S = 0.28;
+export const STICK_RELEASE_S = 0.16;
+
+/**
+ * Move `have` toward `want` at a bounded rate. Not an exponential filter: this
+ * one arrives, and arrives when it says it will.
+ */
+export function rateLimit(have: number, want: number, dt: number): number {
+  const towardCentre = Math.abs(want) < Math.abs(have);
+  const step = dt / (towardCentre ? STICK_RELEASE_S : STICK_PUSH_S);
+  const d = want - have;
+  if (Math.abs(d) <= step) return want;
+  return have + Math.sign(d) * step;
+}
+
 export function expo(v: number, amount = ROLL_EXPO): number {
   return v * (1 - amount) + v * v * v * amount;
 }

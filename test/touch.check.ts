@@ -62,7 +62,7 @@ g.requestAnimationFrame = (fn: () => void) => { fn(); return 0; };
 g.matchMedia = () => ({ matches: false });
 g.navigator = g.navigator ?? { maxTouchPoints: 0 };
 
-const { TouchControls, STICK_RADIUS, THROTTLE_RADIUS, expo } = await import("../src/sim/touch");
+const { TouchControls, STICK_RADIUS, THROTTLE_RADIUS, expo, rateLimit, STICK_PUSH_S } = await import("../src/sim/touch");
 
 const results: { name: string; ok: boolean; detail: string }[] = [];
 function check(name: string, ok: boolean, detail: string): void {
@@ -210,10 +210,70 @@ check("look back releases", !tc.lookBack, `${tc.lookBack}`);
 
 // --- Report ----------------------------------------------------------------
 
+// --- keyboard stick rate limiting -------------------------------------------
+//
+// The flight model integrates the stick axes directly (roll straight into
+// 130 deg/s, lift into a 45 m/s vertical speed command), so a key going 0 to 1
+// in one frame asked for full deflection instantly and the aeroplane snapped.
+// These assertions are about the SHAPE of the ramp, not its exact timing.
+{
+  const step = 1 / 60;
+
+  // Full deflection is reached, and reached when it says it will be. An
+  // exponential filter would fail this: it approaches and never arrives.
+  let v = 0;
+  let frames = 0;
+  while (v < 1 && frames < 600) { v = rateLimit(v, 1, step); frames++; }
+  check(
+    "a held key reaches full deflection",
+    v === 1,
+    `${v.toFixed(3)} after ${frames} frames`,
+  );
+  check(
+    "and reaches it in about the stated time",
+    Math.abs(frames * step - STICK_PUSH_S) < 0.03,
+    `${(frames * step).toFixed(3)} s vs ${STICK_PUSH_S} s`,
+  );
+
+  // One frame of a tap must not be full authority. This is the actual bug.
+  const oneFrame = rateLimit(0, 1, step);
+  check(
+    "a one-frame tap is a small input",
+    oneFrame < 0.15,
+    `${oneFrame.toFixed(3)} of full travel`,
+  );
+
+  // Release is quicker than push, and also arrives.
+  let r = 1;
+  let rf = 0;
+  while (r > 0 && rf < 600) { r = rateLimit(r, 0, step); rf++; }
+  check("releasing returns to centre", r === 0, `${rf} frames`);
+  check("release is quicker than push", rf < frames, `${rf} vs ${frames} frames`);
+
+  // Sign is preserved: a left input never momentarily reads as right.
+  let n = 0;
+  for (let i = 0; i < 40; i++) {
+    n = rateLimit(n, -1, step);
+    if (n > 0) break;
+  }
+  check("a left input never reads as right", n <= 0, `${n.toFixed(3)}`);
+
+  // Crossing centre passes through it rather than jumping.
+  let c = 1;
+  let sawCentreish = false;
+  for (let i = 0; i < 60; i++) {
+    c = rateLimit(c, -1, step);
+    if (Math.abs(c) < 0.2) sawCentreish = true;
+  }
+  check("reversing passes through centre", sawCentreish, `ended at ${c.toFixed(3)}`);
+}
+
 let failed = 0;
 for (const r of results) {
   if (!r.ok) failed++;
   console.log(`${r.ok ? "ok  " : "FAIL"}  ${r.name.padEnd(46)} ${r.detail}`);
 }
+
 console.log(`\n${results.length - failed}/${results.length} touch checks passed`);
 if (failed) process.exit(1);
+
