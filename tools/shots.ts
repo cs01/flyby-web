@@ -121,6 +121,9 @@ export const POSES: Pose[] = [
   },
 ];
 
+/** Extra query parameters appended to every pose, e.g. `--query terrainDebug=3`. */
+let extraQuery = "";
+
 function url(base: string, p: Pose): string {
   const q = new URLSearchParams({
     city: p.city,
@@ -134,7 +137,7 @@ function url(base: string, p: Pose): string {
     // are left alone: they cannot change a pixel, and blocking them would be
     // one more way the harness stops resembling the app.
   });
-  return `${base}/?${q.toString()}`;
+  return `${base}/?${q.toString()}${extraQuery ? "&" + extraQuery : ""}`;
 }
 
 interface Shot {
@@ -199,6 +202,7 @@ async function main(): Promise<void> {
   const debugPort = Number(arg("debug-port", "9411"));
   const profileDir = arg("profile", "/tmp/flyby-shots-profile")!;
   const repeat = has("repeat");
+  extraQuery = arg("query", "") ?? "";
 
   mkdirSync(outDir, { recursive: true });
   const poses = only ? POSES.filter((p) => only.split(",").includes(p.name)) : POSES;
