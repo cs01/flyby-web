@@ -188,13 +188,26 @@ function button(label: string): FakeElement {
   if (!b) throw new Error(`no ${label} button`);
   return b;
 }
-check("three buttons exist", ui.children[0].children[0].children.length === 3,
-  `${ui.children[0].children[0].children.length}`);
+// Named rather than counted. A count says "three" and goes red the day a fourth
+// is added for a good reason, which teaches whoever added it to change the
+// number rather than to think; the names are what a thumb is actually looking
+// for, and a missing one is the failure worth having.
+const BUTTONS = ["CAM", "BST", "CAR", "LOOK"];
+const btnLabels = ui.children[0].children[0].children.map((c) => c.textContent);
+check("every button exists, and nothing else does",
+  BUTTONS.every((b) => btnLabels.includes(b)) && btnLabels.length === BUTTONS.length,
+  btnLabels.join(" "));
 near("camera presses start at zero", tc.drainCameraPresses(), 0);
 button("CAM").fire("pointerdown", ev(9, 0, 0));
 button("CAM").fire("pointerdown", ev(9, 0, 0));
 near("camera presses accumulate", tc.drainCameraPresses(), 2);
 near("draining clears them", tc.drainCameraPresses(), 0);
+
+near("car presses start at zero", tc.drainCarPresses(), 0);
+button("CAR").fire("pointerdown", ev(9, 0, 0));
+button("CAR").fire("pointerdown", ev(9, 0, 0));
+near("car presses accumulate", tc.drainCarPresses(), 2);
+near("draining clears the car presses too", tc.drainCarPresses(), 0);
 
 check("boost starts off", !tc.boost, `${tc.boost}`);
 button("BST").fire("pointerdown", ev(9, 0, 0));

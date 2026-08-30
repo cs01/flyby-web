@@ -25,6 +25,9 @@ import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS } from "./sim/drone";
+import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
+import { buildRoadGraph } from "./data/roadgraph";
+import { DetailRing } from "./render/detailring";
 import { CityCollision } from "./sim/citycollision";
 import { Input } from "./sim/input";
 import { AircraftModel } from "./render/aircraftmodel";
@@ -391,6 +394,22 @@ async function main() {
     console.warn(`[flyby] no road pack for ${city.id}; run: bun tools/bake-roads.ts --city ${city.id}`);
   }
 
+  // The driveable network, for the car. Derived from the same pack the ribbons
+  // are drawn from, so what you can drive on is what you can see. A city with
+  // no .roads pack simply has no car, the same way it has no skyline.
+  const car = roadPack ? new Car(buildRoadGraph(roadPack.roads)) : null;
+  if (car) {
+    const cs = car.stats;
+    console.log(
+      `[flyby] driveable graph: ${cs.edges} edges, ${cs.nodes} nodes, ` +
+      `${cs.junctions} junctions, ${cs.indexedSegments} segments indexed, ${cs.buildMs} ms`,
+    );
+  }
+
+  // The detail ring follows whatever is on the ground. It starts where the
+  // terrain built it, so nothing changes until something asks it to move.
+  const detailRing = new DetailRing(origin, terrain, budget.rings[0]);
+
   // The canopy. Declared here so setAo below can reach it; it cannot be BUILT
   // until the landcover pack has arrived, which happens after the road pack.
   let foliage: Foliage | null = null;
@@ -539,11 +558,28 @@ async function main() {
   // can go and look at it.
   const drone = new Drone();
   let droneActive = false;
+  let carActive = false;
   // Field of view, eased. An FPV camera is wide -- most of the reason a drone
   // shot looks like a drone shot is the lens, not the flying -- but a cut from
   // 62 to 78 degrees reads as the world lurching, so it is a move, not a cut.
   const PLANE_FOV = camera.fov;
   const DRONE_FOV = 78;
+  // Wider than the aeroplane's and narrower than the drone's. A street is a
+  // corridor and a narrow lens down one reads as a telephoto shot of a street
+  // rather than as being in it; the drone's 78 is a lens choice for an FPV look
+  // and puts too much barrel on a horizon that is now at eye level.
+  const CAR_FOV = 70;
+  /**
+   * Height above the ground under which the detail ring follows the camera.
+   *
+   * At 40 m the 400 m ring is most of what is in front of the lens and the
+   * zoom-16 ring past it is 3.6 m per pixel, which is a smear at that range.
+   * Higher up the aircraft covers 400 m in nine seconds, so following would be
+   * a restitch every few seconds for a drape that is no longer the limiting
+   * detail: from 400 m the terrain mesh and the building LOD are.
+   */
+  const DETAIL_FOLLOW_AGL_M = 40;
+  const PLANE_NEAR = camera.near;
 
   const model = new AircraftModel(budget);
   scene.add(model.group);
@@ -717,6 +753,9 @@ async function main() {
       input.droneToggled = 0;
       droneActive = !droneActive;
       if (droneActive) {
+        // Two machines cannot both have the camera. Stepping into the drone
+        // from the car is a step out of the car.
+        carActive = false;
         // Carries the aeroplane's momentum, so the swap is a step out of the
         // cockpit rather than a cut to a different shot.
         drone.enterFrom(ac.position, ac.headingDeg, ac.velocity);
@@ -725,6 +764,32 @@ async function main() {
       } else {
         input.setPointerLock(false);
         hud.toast("Back in the Cessna");
+      }
+    }
+
+    if (input.carToggled > 0) {
+      input.carToggled = 0;
+      if (carActive) {
+        carActive = false;
+        input.setPointerLock(false);
+        hud.toast("Back in the Cessna");
+      } else if (!car) {
+        hud.toast("No road data here \u00b7 bake a .roads pack for this city");
+      } else {
+        // Enter from wherever the camera actually is, carrying whatever of the
+        // machine's momentum the road can use. Same idea as the drone: a step
+        // out of the aircraft, not a scene reload.
+        const from = droneActive ? drone.position : ac.position;
+        const hdg = droneActive ? drone.yawDeg : ac.headingDeg;
+        const vel = droneActive ? drone.velocity : ac.velocity;
+        if (car.enterFrom(from, hdg, vel, terrain.heightAt)) {
+          carActive = true;
+          droneActive = false;
+          input.setPointerLock(true);
+          hud.toast("Car: W/S drive \u00b7 A/D steer and pick the turning \u00b7 mouse looks \u00b7 G to get out");
+        } else {
+          hud.toast("No road within reach \u00b7 fly closer to a street");
+        }
       }
     }
 
@@ -780,7 +845,7 @@ async function main() {
     ac.setWeather(wx, ac.position.y);
     // The aeroplane stops being integrated while the drone is up. Not paused
     // globally -- the sun still moves, the clouds still drift -- just parked.
-    if (!input.paused && !droneActive) ac.update(axes, dt, groundUnderAc);
+    if (!input.paused && !droneActive && !carActive) ac.update(axes, dt, groundUnderAc);
 
     // The drone's floor is the TERRAIN, deliberately not the rooftops the
     // aeroplane uses. The whole point is to get down between the buildings,
@@ -800,6 +865,13 @@ async function main() {
         // height field as a floor keeping it over the city rather than in it.
         collision?.resolve(drone.position, drone.velocity, DRONE_RADIUS);
       }
+    }
+
+    if (carActive && car) {
+      // Drained every frame even while paused, for the same reason the drone's
+      // is: banked-up mouse travel snaps the view when the pause lets go.
+      const ci = input.carAxes();
+      if (!input.paused) car.update(ci, dt, terrain.heightAt);
     }
 
     hud.setLayers(layers.weather);
@@ -827,7 +899,13 @@ async function main() {
     }
 
     chase.mode = CAMERA_MODES[input.cameraCycled % CAMERA_MODES.length];
-    if (droneActive) {
+    if (carActive && car) {
+      // Straight off the car, like the drone: the camera IS the driver's head,
+      // an eye height over the carriageway the car is standing on.
+      car.eye(camera.position);
+      camera.up.set(0, 1, 0);
+      car.orientation(camera.quaternion);
+    } else if (droneActive) {
       // Driven straight off the drone, with no rig, no lag and no look-at: the
       // camera IS the machine, and the lean it has is the lean it flew.
       camera.position.copy(drone.position);
@@ -854,12 +932,38 @@ async function main() {
       camera.up.set(0, 1, 0);
     }
 
+    // Keep the sharp ground under anything that is nearly ON the ground.
+    //
+    // Driven off the CAMERA rather than off whichever machine is active, and
+    // after the pinned shot camera has had its say, so it covers all three
+    // cases with one rule: the car (always at eye height), the drone flying
+    // down a street, and a fixed street-level pose in the screenshot harness.
+    // The aeroplane and every aerial pose are above the threshold and are left
+    // exactly as they were. Asked every frame and almost always a no-op; see
+    // render/detailring.ts for when it is not.
+    const camGround = terrain.heightAt(camera.position.x, camera.position.z);
+    if (camera.position.y - camGround < DETAIL_FOLLOW_AGL_M) {
+      const carDir = (car?.headingDeg ?? 0) * Math.PI / 180;
+      const vx = carActive && car ? Math.sin(carDir) * car.speed : droneActive ? drone.velocity.x : 0;
+      const vz = carActive && car ? -Math.cos(carDir) * car.speed : droneActive ? drone.velocity.z : 0;
+      detailRing.follow(camera.position.x, camera.position.z, vx, vz);
+    }
+
     // Ease the lens. ~0.4 s to settle, and the projection matrix is rebuilt
     // only while it is actually moving.
-    const wantFov = droneActive ? DRONE_FOV : PLANE_FOV;
+    const wantFov = carActive ? CAR_FOV : droneActive ? DRONE_FOV : PLANE_FOV;
     if (Math.abs(camera.fov - wantFov) > 0.01) {
       camera.fov += (wantFov - camera.fov) * (1 - Math.pow(0.0006, dt));
       if (Math.abs(camera.fov - wantFov) <= 0.01) camera.fov = wantFov;
+      camera.updateProjectionMatrix();
+    }
+    // The near plane is the aeroplane's nose everywhere except in the car, where
+    // it is the tarmac under the windscreen; see CAR_NEAR_PLANE_M. Stepped
+    // rather than eased, because a moving near plane moves every depth in the
+    // buffer and the shadow cascades are fitted against it.
+    const wantNear = carActive ? CAR_NEAR_PLANE_M : PLANE_NEAR;
+    if (camera.near !== wantNear) {
+      camera.near = wantNear;
       camera.updateProjectionMatrix();
     }
     camera.updateMatrixWorld();
@@ -886,10 +990,11 @@ async function main() {
     // the city, and an aeroplane parked in the middle of it would be the most
     // prominent thing that changed between two otherwise identical frames.
     model.group.visible =
-      !shotCam && (droneActive || (chase.mode !== "cockpit" && chase.cockpitBlend < 0.45));
+      !shotCam && (droneActive || carActive || (chase.mode !== "cockpit" && chase.cockpitBlend < 0.45));
     // Zeroed control surfaces while droning. W and A are the drone's now, and
     // a parked aeroplane waggling its ailerons at them looks haunted.
-    model.update(dt, ac.throttle, droneActive ? 0 : axes.roll, ac.pitchDeg, droneActive ? 0 : axes.yaw);
+    const parked = droneActive || carActive;
+    model.update(dt, ac.throttle, parked ? 0 : axes.roll, ac.pitchDeg, parked ? 0 : axes.yaw);
 
     // The beam stands on wherever you asked to go, and nowhere at all when you
     // have not asked. It used to mark the tour's next stop, which meant there
@@ -1056,18 +1161,22 @@ async function main() {
     // The map follows whatever you are actually flying. In the drone the
     // aeroplane is parked somewhere behind you, and a moving map centred on it
     // would be pointing at a landmark you left two blocks ago.
-    if (droneActive) {
+    if (carActive && car) {
+      minimap.update(car.position.x, car.position.z, car.headingDeg, elapsed);
+    } else if (droneActive) {
       minimap.update(drone.position.x, drone.position.z, drone.yawDeg, elapsed);
     } else {
       minimap.update(ac.position.x, ac.position.z, ac.headingDeg, elapsed);
     }
 
     osd.setDrone(
-      droneActive
+      carActive && car
+        ? { speedMs: Math.abs(car.speed), aglM: 0 }
+        : droneActive
         ? { speedMs: drone.speed, aglM: drone.position.y - groundUnderDrone }
         : null,
     );
-    if (!droneActive) {
+    if (!droneActive && !carActive) {
       osd.update({
         pitchDeg: ac.pitchDeg,
         rollDeg: ac.rollDeg,
@@ -1212,11 +1321,16 @@ async function main() {
       get treeLods() { return foliage ? foliage.stats.lodCounts : []; },
       get treeTriangles() { return foliage ? foliage.stats.triangles : 0; },
       get lod() { return buildings ? buildings.stats.lod : 0; },
+      /** True while the detail ring is fetching. A frame captured mid-stitch
+       *  would show the drape the ring is about to replace. */
+      get drapePending() { return detailRing.stats.pending; },
+      get drapeMoves() { return detailRing.stats.moves; },
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe, ao,
+      sunShadow, drone, skyProbe, ao, car, detailRing,
       get droneActive() { return droneActive; },
+      get carActive() { return carActive; },
       get wx() { return wx; },
       get time() { return now; },
       setOffsetHours: (h: number) => timebar.setOffset(h * 3600),

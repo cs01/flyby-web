@@ -313,6 +313,20 @@ function drapeTilesAcross(ring: TerrainRing): number {
   return Math.floor(spanM / tileM) + 1;
 }
 
+/**
+ * The extra drape a ground vehicle's moving detail ring costs.
+ *
+ * render/detailring.ts stitches the innermost ring again around the car and
+ * swaps it in atomically, which means that for the length of one swap BOTH
+ * copies are resident: the old one is still being drawn and the new one has
+ * already been uploaded. The estimate has to carry that second copy or it
+ * under-reports the peak by the biggest single texture in the plan, on the
+ * device least able to absorb it.
+ */
+export function detailRestitchBytes(rings: TerrainRing[]): number {
+  return rings.length > 0 ? drapeBytes([rings[0]]) : 0;
+}
+
 function drapeBytes(rings: TerrainRing[]): number {
   let bytes = 0;
   for (const ring of rings) {
@@ -400,6 +414,10 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
     {
       what: `ambient occlusion ${plan.aoEnabled ? `${aoW}x${aoH}` : "off"}`,
       bytes: plan.aoEnabled ? aoW * aoH * AO_BYTES_PER_PIXEL : 0,
+    },
+    {
+      what: `detail ring restitch ${plan.rings[0].extent} m z${plan.rings[0].imageryZoom}`,
+      bytes: detailRestitchBytes(plan.rings),
     },
     {
       what: `building geometry ${(plan.buildingTriangleBudget / 1000).toFixed(0)}k tris`,

@@ -137,6 +137,22 @@ export const POSES: Pose[] = [
     what: "Emerald Hills treetops, 55 m above the canopy",
   },
   {
+    name: "sf-street",
+    city: "sf",
+    // Van Ness Avenue at Pine, from the driver's seat, looking north up the
+    // avenue: the same view as `sf-vanness` above from 48 m, taken from 2 m.
+    //
+    // Ground here measures 56.78 m AMSL through terrain.heightAt, and the field
+    // below is AMSL, so 58.8 m is the carriageway plus about two metres. This
+    // is the only pose in the set at eye height, and it is the one that says
+    // what the ground, the kerb line and the near facades look like from a car
+    // rather than from the air.
+    lat: 37.7885, lon: -122.4222, altM: 58.8, hdgDeg: 5, pitchDeg: -2,
+    t: D("2025-06-21T18:30:00Z"), // 11:30 PDT: the noon case, not the hero hour
+    wx: CLEAR,
+    what: "SF street level on Van Ness, two metres up",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is
@@ -176,6 +192,8 @@ interface Shot {
   treeLods: number[];
   treeTriangles: number;
   lod: number;
+  /** Times the detail ring restitched before the frame was taken. */
+  drapeMoves: number;
   signature: number[];
 }
 
@@ -197,6 +215,17 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   // uploading and the sun shadow cascades filling in.
   await cdp.waitFor("window.flybyShot", 240_000, `${p.name} to load`);
   await cdp.waitFor("window.flybyShot.frames > 60", 60_000, `${p.name} to settle`);
+  // A street-level pose recentres the detail drape onto itself, asynchronously.
+  // Capturing before that lands photographs the drape it is about to replace,
+  // which is both the wrong picture and not reproducible between runs.
+  // `!== true` rather than `=== false` on purpose: a build from before the
+  // detail ring existed has no such field, and this harness has to be able to
+  // capture the BEFORE half of a before/after pair.
+  await cdp.waitFor(
+    "window.flybyShot.drapePending !== true",
+    120_000,
+    `${p.name} detail drape`,
+  );
 
   await cdp.eval("window.flybyShot.resetTiming()");
   await cdp.waitFor("window.flybyShot.timed > 240", 60_000, `${p.name} timing sample`);
@@ -206,6 +235,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const treeLods = await cdp.eval<number[]>("window.flybyShot.treeLods ?? []");
   const treeTriangles = await cdp.eval<number>("window.flybyShot.treeTriangles ?? 0");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
+  const drapeMoves = await cdp.eval<number>("window.flybyShot.drapeMoves ?? 0");
   const signature = await cdp.eval<number[]>("window.flybyShot.signature(48)");
 
   const bad = cdp.problems.filter((m) => FATAL.some((r) => r.test(m)));
@@ -218,7 +248,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const file = `${outDir}/${p.name}${tag}.png`;
   writeFileSync(file, png);
 
-  return { pose: p, file, frameMs, triangles, trees, treeLods, treeTriangles, lod, signature };
+  return { pose: p, file, frameMs, triangles, trees, treeLods, treeTriangles, lod, drapeMoves, signature };
 }
 
 /** Mean absolute channel difference between two frame fingerprints, 0..255. */
@@ -293,7 +323,7 @@ async function main(): Promise<void> {
       shots.push(s);
       console.log(
         `${s.file.padEnd(44)} ${s.frameMs.mean.toFixed(2)} ms mean  ${s.frameMs.p99.toFixed(2)} p99  ` +
-        `${(s.triangles / 1000).toFixed(0)}k tris  lod ${s.lod}  ` +
+        `${(s.triangles / 1000).toFixed(0)}k tris  lod ${s.lod}  drape ${s.drapeMoves}  ` +
         `trees ${s.trees} (${s.treeLods.join("/")}) ${(s.treeTriangles / 1000).toFixed(0)}k tris`,
       );
       if (repeat) {
@@ -328,6 +358,7 @@ async function main(): Promise<void> {
         treeLods: s.treeLods,
         treeTriangles: s.treeTriangles,
         lod: s.lod,
+        drapeMoves: s.drapeMoves,
       })),
       null,
       2,
