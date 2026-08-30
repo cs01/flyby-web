@@ -11,6 +11,8 @@
 // itself even if the app never finished booting, since "nothing rendered at
 // all" is one of the outcomes it has to report.
 
+import { deviceBudget, formatMiB } from "../render/budget";
+
 const EXTENSIONS = [
   "EXT_color_buffer_float",
   "EXT_color_buffer_half_float",
@@ -40,18 +42,45 @@ export function showDiagnostics(canvas: HTMLCanvasElement): void {
 
   const rows: string[] = [];
   rows.push(line("ua", navigator.userAgent.slice(0, 120)));
-  rows.push(line("dpr", String(devicePixelRatio)));
   rows.push(line("screen", `${innerWidth}x${innerHeight}`));
-  const mem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
-  rows.push(line("deviceMemory", mem === undefined ? "unknown" : `${mem} GB`));
+
+  // The tier and everything derived from it. This is the half of the panel that
+  // says what the app DECIDED, as against what the device can do, and the
+  // estimated total is the number this whole exercise exists to produce: no
+  // code anywhere used to know how much GPU memory a load was asking for.
+  const budget = deviceBudget();
+  const d = budget.device;
+  rows.push(line("dpr", `${devicePixelRatio} capped to ${d.pixelRatio}`));
+  rows.push(
+    line("deviceMemory", d.deviceMemoryGb === null
+      ? `unknown, assuming ${budget.assumedMemoryGb} GB`
+      : `${d.deviceMemoryGb} GB`),
+  );
+  rows.push(line("pointer", d.coarsePointer ? "coarse" : "fine"));
+  rows.push(line("<b>tier</b>", `<b>${budget.tier}</b>`));
+  rows.push(line("tier because", budget.reasons.length ? budget.reasons.join("; ") : "nothing forced it down"));
+  rows.push(
+    line("drape rings", budget.rings.map((r) => `${r.extent}m@z${r.imageryZoom}`).join(" ")),
+  );
+  rows.push(line("msaa", budget.msaaSamples === 0 ? "off" : `${budget.msaaSamples}x`));
+  rows.push(
+    line("sun cascades", `${budget.shadowCascadeCount} x ${budget.shadowCascadeSize}`),
+  );
+  rows.push(
+    line("aircraft probes", `env ${budget.aircraftEnvSize}, self-shadow ${budget.aircraftShadowSize}`),
+  );
+  rows.push(line("ambient occlusion", budget.aoEnabled ? "on" : "off"));
   rows.push(
     line(
-      "pointer",
-      typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches
-        ? "coarse (mobile plan)"
-        : "fine (desktop plan)",
+      "triangle budget",
+      `${(budget.buildingTriangleBudget / 1000).toFixed(0)}k buildings, ` +
+      `${(budget.roadTriangleBudget / 1000).toFixed(0)}k roads`,
     ),
   );
+  for (const item of budget.memory.items) {
+    rows.push(line(`&nbsp;&nbsp;${item.what}`, formatMiB(item.bytes)));
+  }
+  rows.push(line("<b>gpu estimate</b>", `<b>${formatMiB(budget.memory.totalBytes)}</b>`));
 
   // A separate context from the app's, so probing here cannot disturb the real
   // one. It costs a context and is released immediately.

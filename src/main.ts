@@ -9,7 +9,8 @@ import * as THREE from "three";
 import { createRenderer, createSceneTarget } from "./render/renderer";
 import { AdaptiveQuality } from "./render/quality";
 import { Sky } from "./render/sky";
-import { Terrain, cityRingsForDevice } from "./render/terrain";
+import { Terrain } from "./render/terrain";
+import { deviceBudget } from "./render/budget";
 import { computeLighting } from "./render/lighting";
 import { loadHeightfield, bboxAround, type Heightfield } from "./data/dem";
 import { stitchImagery, type StitchedImage } from "./data/imagery";
@@ -175,6 +176,17 @@ async function main() {
     showDiagnostics(document.createElement("canvas"));
   }
 
+  // The device tier, decided once and before anything allocates. Every number
+  // that follows from it (the drape plan, MSAA, the cascades, the aircraft's
+  // probes, ambient occlusion, both triangle budgets) comes out of this one
+  // object, and `?diag=1` prints the memory total it adds up to.
+  const budget = deviceBudget();
+  console.log(
+    `[flyby] device tier: ${budget.tier}` +
+    `${budget.reasons.length ? ` (${budget.reasons.join("; ")})` : ""}, ` +
+    `~${(budget.memory.totalBytes / 1048576).toFixed(0)} MB of GPU memory planned`,
+  );
+
   const city = chooseCity();
   if (!city) {
     loading.done();
@@ -225,7 +237,7 @@ async function main() {
   loading.set(0.44, "loading imagery");
   let imgDone = 0;
   const drapes: StitchedImage[] = [];
-  const rings = cityRingsForDevice();
+  const rings = budget.rings;
   for (let r = 0; r < rings.length; r++) {
     const ring = rings[r];
     drapes.push(await stitchImagery(bboxAround(city.lat, city.lon, ring.extent * 1.05), ring.imageryZoom));
@@ -233,7 +245,7 @@ async function main() {
   }
 
   loading.set(0.88, "building world");
-  const { renderer, scene, camera } = createRenderer(canvas);
+  const { renderer, scene, camera } = createRenderer(canvas, budget);
 
   // A failed shader is invisible on a phone: three.js logs and carries on, and
   // the mesh either vanishes or draws garbage. Surface it in the same red box
@@ -243,7 +255,7 @@ async function main() {
     shout?.(`SHADER FAILED: ${String((vs as { name?: string }).name ?? "")} / ${String((fs as { name?: string }).name ?? "")}`);
   };
   const composite = new Composite(renderer);
-  const target = createSceneTarget(renderer);
+  const target = createSceneTarget(renderer, budget);
   // Screen-space sky occlusion. Runs before the main pass, because the surface
   // shaders read its result rather than the composite doing so; see render/ao.ts.
   const ao = new AoPass(renderer);
@@ -278,23 +290,16 @@ async function main() {
   // Sun shadows. Constructed before anything that reads them, because the
   // cascade uniforms are spread by reference into the terrain and building
   // materials at the moment those materials are created.
-  const sunShadow = new SunShadow();
+  const sunShadow = new SunShadow(budget);
   // One environment probe for the whole scene: sky irradiance for every diffuse
   // surface and a prefiltered cube for the glass and the wet tarmac.
   const skyProbe = new SkyProbe();
   if (new URLSearchParams(location.search).get("shadows") === "0") sunShadow.enabled = false;
-  // AO is off by default on a phone, and it is not a close call.
-  //
-  // It costs a full-geometry depth prepass plus two more RGBA16F targets, on a
-  // device that already corrupted once from GPU memory pressure and that draws
-  // the caster set several times a frame (main, up to three shadow cascades,
-  // this prepass, and six faces of the aircraft probe). Its own measurement
-  // says a street-level camera finds occlusion on 7% of the buffer, so the
-  // device that can least afford it gains the least from it.
+  // Whether this device gets ambient occlusion at all is render/budget.ts's
+  // call; the query parameters below still override it either way, because
+  // forcing it on is how the phone case gets tested from a desktop.
   const params = new URLSearchParams(location.search);
-  const coarsePointer =
-    typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
-  if (coarsePointer) ao.enabled = false;
+  ao.enabled = budget.aoEnabled;
   if (params.get("ao") === "0") ao.enabled = false;
   if (params.get("ao") === "1") ao.enabled = true;
 
@@ -314,7 +319,7 @@ async function main() {
   // rather than only over the ground under it.
   const skyline = new Skyline(pack, terrain.heightAt);
   if (pack) {
-    buildings = new Buildings(pack, terrain.heightAt, sunShadow.uniforms);
+    buildings = new Buildings(pack, terrain.heightAt, sunShadow.uniforms, budget);
     scene.add(buildings.group);
     console.log(
       `[flyby] buildings: ${buildings.stats.drawn} drawn, ` +
@@ -345,7 +350,7 @@ async function main() {
   const roadPack = await roadPromise;
   let roads: Roads | null = null;
   if (roadPack) {
-    roads = new Roads(roadPack, terrain.heightAt, sunShadow.uniforms);
+    roads = new Roads(roadPack, terrain.heightAt, sunShadow.uniforms, budget);
     scene.add(roads.group);
     const rs = roads.stats;
     console.log(
@@ -468,7 +473,7 @@ async function main() {
   const PLANE_FOV = camera.fov;
   const DRONE_FOV = 78;
 
-  const model = new AircraftModel();
+  const model = new AircraftModel(budget);
   scene.add(model.group);
 
   const osd = new Osd(ui);

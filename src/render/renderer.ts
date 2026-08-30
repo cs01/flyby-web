@@ -11,6 +11,7 @@
 // desaturates sunsets hard, and sunsets are most of what this app is for.
 
 import * as THREE from "three";
+import type { Budget } from "./budget";
 
 export interface RendererBundle {
   renderer: THREE.WebGLRenderer;
@@ -18,7 +19,7 @@ export interface RendererBundle {
   camera: THREE.PerspectiveCamera;
 }
 
-export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
+export function createRenderer(canvas: HTMLCanvasElement, budget: Budget): RendererBundle {
   const renderer = new THREE.WebGLRenderer({
     canvas,
     antialias: true,
@@ -33,11 +34,10 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
     preserveDrawingBuffer: new URLSearchParams(location.search).has("shot"),
   });
 
-  // Cap at 1.5x. This renderer is fragment-bound -- a full-screen atmosphere on
-  // every surface plus a cloud march -- so pixel count is very nearly the whole
-  // cost, and 2x on a Retina panel is 5.7 megapixels of it. The visible gain
-  // from 1.5 to 2 is small; the cost is 78% more pixels.
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+  // Capped, and capped in render/budget.ts rather than here, because the
+  // drawing buffer this produces is the largest single term in the memory
+  // estimate the budget reports.
+  renderer.setPixelRatio(budget.device.pixelRatio);
   // Every material in this renderer is a RawShaderMaterial, which three.js does
   // NOT inject tone mapping or colour-space conversion into. The shaders call
   // present() from tonemap.glsl themselves. Setting toneMapping here would have
@@ -87,7 +87,7 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
  * of painted behind it: without a scene distance to march against, an aircraft
  * can never fly INTO a cloud.
  */
-export function createSceneTarget(renderer: THREE.WebGLRenderer): THREE.WebGLRenderTarget {
+export function createSceneTarget(renderer: THREE.WebGLRenderer, budget: Budget): THREE.WebGLRenderTarget {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   const depth = new THREE.DepthTexture(size.x, size.y);
   depth.type = THREE.UnsignedIntType;
@@ -107,13 +107,10 @@ export function createSceneTarget(renderer: THREE.WebGLRenderer): THREE.WebGLRen
   // dated.
   //
   // 4x is the sweet spot: WebGL2 guarantees at least 4, it costs one extra
-  // resolve, and going to 8 is not visible on this content. A coarse-pointer
-  // device gets 0, because the multisampled colour buffer is 4x the memory of
-  // the target and phones are already the constrained case (see the drape plan
-  // in terrain.ts, which exists for the same reason).
-  const coarse =
-    typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
-
+  // resolve, and going to 8 is not visible on this content. Whether this device
+  // gets it is render/budget.ts's call, alongside every other thing the tier
+  // decides, and the multisampled buffers it adds are itemised in the estimate
+  // that panel prints.
   const rt = new THREE.WebGLRenderTarget(size.x, size.y, {
     type: THREE.HalfFloatType,
     format: THREE.RGBAFormat,
@@ -122,7 +119,7 @@ export function createSceneTarget(renderer: THREE.WebGLRenderer): THREE.WebGLRen
     depthBuffer: true,
     stencilBuffer: false,
     depthTexture: depth,
-    samples: coarse ? 0 : 4,
+    samples: budget.msaaSamples,
   });
   return rt;
 }

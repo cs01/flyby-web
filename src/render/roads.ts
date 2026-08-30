@@ -32,6 +32,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import type { Budget } from "./budget";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
@@ -102,17 +103,6 @@ const CLASS_RANGE_M: number[] = [
   10000, // track
 ];
 
-/**
- * Triangle budget for every road in the city.
- *
- * Same argument as the skyline's: cities differ in road density by more than a
- * factor of three (sf 2404 km, chicago 5557 km, manhattan 8068 km over similar
- * radii), so a fixed LOD curve is either wasteful for one or unaffordable for
- * the other. Solving the curve against a budget makes the frame cost a property
- * of the renderer rather than of whichever city was loaded.
- */
-const TRIANGLE_BUDGET = 700_000;
-
 /** Ways shorter than this are digitising noise at any altitude worth flying. */
 const MIN_LENGTH_M = 6;
 
@@ -148,7 +138,7 @@ function keep(r: Road, dist: number, k: number): boolean {
  * difference between k=1 and k=1.4 is invisible and the loop runs over every
  * way in the pack.
  */
-function solveLod(pack: RoadPack, dists: Float64Array): number {
+function solveLod(pack: RoadPack, dists: Float64Array, triangleBudget: number): number {
   for (const k of [1, 1.3, 1.8, 2.5, 3.5, 5, 8, 13, 22]) {
     let tris = 0;
     for (let i = 0; i < pack.roads.length; i++) {
@@ -156,9 +146,9 @@ function solveLod(pack: RoadPack, dists: Float64Array): number {
       if ((r.flags & ROAD_TUNNEL) !== 0) continue;
       if (!keep(r, dists[i], k)) continue;
       tris += ribbonTriangleCost(r.pts.length / 2);
-      if (tris > TRIANGLE_BUDGET) break;
+      if (tris > triangleBudget) break;
     }
-    if (tris <= TRIANGLE_BUDGET) return k;
+    if (tris <= triangleBudget) return k;
   }
   return 22;
 }
@@ -664,6 +654,7 @@ export class Roads {
     pack: RoadPack,
     groundAt: (x: number, z: number) => number,
     shadow: SunShadowUniforms,
+    budget: Budget,
   ) {
     const t0 = performance.now();
     this.uniforms = makeUniforms(shadow);
@@ -672,7 +663,7 @@ export class Roads {
     for (let i = 0; i < pack.roads.length; i++) {
       dists[i] = Math.hypot(pack.roads[i].cx, pack.roads[i].cz);
     }
-    const lod = solveLod(pack, dists);
+    const lod = solveLod(pack, dists, budget.roadTriangleBudget);
 
     const buckets = new Map<string, Bucket>();
     let drawn = 0;

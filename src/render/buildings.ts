@@ -25,6 +25,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import type { Budget } from "./budget";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { triangulate, signedArea } from "./earcut";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
@@ -116,17 +117,6 @@ function extrasCost(vertCount: number, e: RoofExtras): number {
 }
 
 /**
- * Triangle budget for the whole skyline.
- *
- * Cities differ in density by more than a factor of five -- San Francisco bakes
- * to 62k buildings and Manhattan to 187k over a similar radius -- so a fixed
- * LOD curve that is right for one is either wasteful or unaffordable for the
- * other. Solving for the curve against a budget makes the frame cost a property
- * of the RENDERER rather than of whichever city was loaded.
- */
-const TRIANGLE_BUDGET = 1_500_000;
-
-/**
  * Find the smallest LOD aggression that fits the budget. Coarse steps, because
  * the difference between k=1 and k=1.5 is invisible and the loop is over every
  * building in the pack.
@@ -135,7 +125,7 @@ const TRIANGLE_BUDGET = 1_500_000;
  * budget would be a number about walls and the actual triangle count would be
  * whatever the clutter happened to add.
  */
-function solveLod(pack: CityPack): number {
+function solveLod(pack: CityPack, triangleBudget: number): number {
   for (const k of [1, 1.4, 2, 3, 4.5, 7, 11, 18]) {
     let tris = 0;
     for (const b of pack.buildings) {
@@ -147,9 +137,9 @@ function solveLod(pack: CityPack): number {
       if (dist < PARAPET_M / k) {
         tris += extrasCost(n, roofExtras(dist, k, h, Math.abs(signedArea(b.ring))));
       }
-      if (tris > TRIANGLE_BUDGET) break;
+      if (tris > triangleBudget) break;
     }
-    if (tris <= TRIANGLE_BUDGET) return k;
+    if (tris <= triangleBudget) return k;
   }
   return 18;
 }
@@ -948,9 +938,10 @@ export class Buildings {
     pack: CityPack,
     groundAt: (x: number, z: number) => number,
     shadow: SunShadowUniforms,
+    budget: Budget,
   ) {
     this.uniforms = makeUniforms(shadow);
-    const lodK = solveLod(pack);
+    const lodK = solveLod(pack, budget.buildingTriangleBudget);
     const cells = new Map<string, Scratch>();
     const params: FacadeParams[] = [];
     const families: number[] = new Array(5).fill(0);
