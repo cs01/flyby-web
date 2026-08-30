@@ -172,6 +172,23 @@ export const POSES: Pose[] = [
     what: "SF street level on Van Ness, two metres up",
   },
   {
+    // Van Ness again, from the same two metres as `sf-street` but looking SOUTH
+    // down the avenue instead of north across the junction.
+    //
+    // `sf-street` is the regression check for near-field ground and it stays
+    // exactly where it is; what it is not is a picture of a street, because the
+    // building on the corner fills half of it and everything beyond is the far
+    // side of a wide crossroads. This one points down the carriageway: the kerb
+    // line, the columns, the parked row and the traffic are all in it, and it
+    // is the pose to put `?nostreet` against.
+    name: "sf-van-ness-kerb",
+    city: "sf",
+    lat: 37.7885, lon: -122.4222, altM: 58.8, hdgDeg: 185, pitchDeg: -3,
+    t: D("2025-06-21T18:30:00Z"), // 11:30 PDT, the same clock as sf-street
+    wx: CLEAR,
+    what: "SF down Van Ness from the kerb, two metres up",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is
@@ -295,6 +312,13 @@ interface Shot {
   treeTriangles: number;
   lod: number;
   pavementTriangles: number;
+  /** The street: columns, moving cars, parked cars, and what they cost. */
+  lamps: number;
+  lampsMeasured: number;
+  cars: number;
+  parkedCars: number;
+  streetTriangles: number;
+  streetClipped: number;
   /** Times the detail ring restitched before the frame was taken. */
   drapeMoves: number;
   signature: number[];
@@ -361,6 +385,12 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const treeTriangles = await cdp.eval<number>("window.flybyShot.treeTriangles ?? 0");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
   const pavementTriangles = await cdp.eval<number>("window.flybyShot.pavementTriangles ?? 0");
+  const lamps = await cdp.eval<number>("window.flybyShot.lamps ?? 0");
+  const lampsMeasured = await cdp.eval<number>("window.flybyShot.lampsMeasured ?? 0");
+  const cars = await cdp.eval<number>("window.flybyShot.cars ?? 0");
+  const parkedCars = await cdp.eval<number>("window.flybyShot.parkedCars ?? 0");
+  const streetTriangles = await cdp.eval<number>("window.flybyShot.streetTriangles ?? 0");
+  const streetClipped = await cdp.eval<number>("window.flybyShot.streetClipped ?? 0");
   const drapeMoves = await cdp.eval<number>("window.flybyShot.drapeMoves ?? 0");
   const signature = await cdp.eval<number[]>("window.flybyShot.signature(48)");
 
@@ -374,7 +404,11 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const file = `${outDir}/${p.name}${tag}.png`;
   writeFileSync(file, png);
 
-  return { pose: p, file, frameMs, triangles, trees, treeLods, treeTriangles, lod, pavementTriangles, drapeMoves, signature };
+  return {
+    pose: p, file, frameMs, triangles, trees, treeLods, treeTriangles, lod,
+    pavementTriangles, lamps, lampsMeasured, cars, parkedCars, streetTriangles,
+    streetClipped, drapeMoves, signature,
+  };
 }
 
 /** Mean absolute channel difference between two frame fingerprints, 0..255. */
@@ -458,7 +492,10 @@ async function main(): Promise<void> {
         `${s.file.padEnd(44)} ${s.frameMs.mean.toFixed(2)} ms mean  ${s.frameMs.p99.toFixed(2)} p99  ` +
         `${(s.triangles / 1000).toFixed(0)}k tris  lod ${s.lod}  drape ${s.drapeMoves}  ` +
         `pave ${(s.pavementTriangles / 1000).toFixed(0)}k  ` +
-        `trees ${s.trees} (${s.treeLods.join("/")}) ${(s.treeTriangles / 1000).toFixed(0)}k tris`,
+        `trees ${s.trees} (${s.treeLods.join("/")}) ${(s.treeTriangles / 1000).toFixed(0)}k tris  ` +
+        `street ${s.lamps} lamps (${s.lampsMeasured} surveyed) ${s.cars} moving ` +
+        `${s.parkedCars} parked ${(s.streetTriangles / 1000).toFixed(0)}k tris` +
+        (s.streetClipped ? `  CLIPPED ${s.streetClipped}` : ""),
       );
       if (repeat) {
         const again = await capture(cdp, base, p, outDir, "-repeat");
@@ -495,6 +532,12 @@ async function main(): Promise<void> {
         treeTriangles: s.treeTriangles,
         lod: s.lod,
         pavementTriangles: s.pavementTriangles,
+        lamps: s.lamps,
+        lampsMeasured: s.lampsMeasured,
+        cars: s.cars,
+        parkedCars: s.parkedCars,
+        streetTriangles: s.streetTriangles,
+        streetClipped: s.streetClipped,
         drapeMoves: s.drapeMoves,
       })),
       null,

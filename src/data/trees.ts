@@ -223,8 +223,23 @@ export class RoadIndex {
    * @param roads the ways to index; filter before calling to index a subset.
    * @param padOf how far beyond each centreline a query can reach, in metres.
    * @param cellM grid pitch. Bigger means fewer registrations and longer scans.
+   * @param idOf the id to record against each way, defaulting to its position
+   *   in `roads`.
+   *
+   *   That default is wrong whenever the caller FILTERED, and wrong in a way
+   *   that reports nothing: `blockedExcept` and `nearestSegment` then hand back
+   *   a position in the filtered array while the caller is holding a position
+   *   in the pack, the two almost never coincide, and the exclusion silently
+   *   never fires. Measured when it happened: every parked car in San Francisco
+   *   was suppressed as standing on a carriageway, which is true, because it
+   *   was standing on its own.
    */
-  constructor(roads: readonly Road[], padOf: (r: Road) => number, cellM = 32) {
+  constructor(
+    roads: readonly Road[],
+    padOf: (r: Road) => number,
+    cellM = 32,
+    idOf?: (r: Road, i: number) => number,
+  ) {
     this.cellM = cellM;
 
     let count = 0;
@@ -249,7 +264,7 @@ export class RoadIndex {
         this.ax[s] = x0; this.az[s] = z0;
         this.bx[s] = x1; this.bz[s] = z1;
         this.pad[s] = p;
-        this.owner[s] = w;
+        this.owner[s] = idOf ? idOf(r, w) : w;
         s++;
         const lo = Math.min(x0, x1) - p, hi = Math.max(x0, x1) + p;
         const lz = Math.min(z0, z1) - p, hz = Math.max(z0, z1) + p;
@@ -329,6 +344,26 @@ export class RoadIndex {
     const c = this.row(z) * this.nx + this.col(x);
     for (let e = this.start[c]; e < this.start[c + 1]; e++) {
       const i = this.items[e];
+      const p = this.pad[i];
+      if (this.distSq(i, x, z) <= p * p) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The same test, ignoring one road.
+   *
+   * A thing placed BESIDE a road is inside that road's own envelope by
+   * construction -- a car parked at the kerb is on the carriageway it is parked
+   * on -- so "am I in the middle of a junction" can only be asked about the
+   * OTHER ways. Without the exclusion the answer is always yes and every parked
+   * car in the city is suppressed.
+   */
+  blockedExcept(x: number, z: number, exceptRoad: number): boolean {
+    const c = this.row(z) * this.nx + this.col(x);
+    for (let e = this.start[c]; e < this.start[c + 1]; e++) {
+      const i = this.items[e];
+      if (this.owner[i] === exceptRoad) continue;
       const p = this.pad[i];
       if (this.distSq(i, x, z) <= p * p) return true;
     }

@@ -10,6 +10,7 @@
 
 import { Origin } from "../geo";
 import { bboxFilter, Skips, truthy, type OsmBbox, type OsmElement, type OsmPt } from "./osm";
+import { furnitureStatements } from "./osmfurniture";
 import {
   LAYER_MAX,
   LAYER_MIN,
@@ -344,6 +345,40 @@ export function roadsStatements(b: OsmBbox): string {
 export function roadsQuery(b: OsmBbox, timeoutS = 120): string {
   return `[out:json][timeout:${timeoutS}];
 ${roadsStatements(b)}
+out geom;`;
+}
+
+/**
+ * The BAKE query: road centrelines and the street furniture standing beside
+ * them, in one request.
+ *
+ * Two statements, one request. Public Overpass instances rate-limit on
+ * requests, this project has already been shed by them for over-fetching, and
+ * the furniture nodes sit in the same cells and are a rounding error next to
+ * the way geometry. `out geom` gives a way its full polyline and gives a node
+ * its lat/lon, so one output statement serves both.
+ *
+ * SEPARATE FROM roadsQuery ON PURPOSE, and this is the interesting half. The
+ * runtime streams buildings, roads and vegetation through ONE union query
+ * (data/livetiles.ts), built from the same statement fragments the three bakes
+ * use, and test/live.check.ts asserts that the union covers every statement of
+ * every bake query. Folding the furniture into `roadsQuery` would therefore
+ * oblige the live path to fetch furniture nodes as well -- and the live path
+ * has nowhere to put them, because furniture reaches the renderer through a
+ * baked `.street` sibling that a live place by definition does not have. So the
+ * bake asks for more than the runtime does, deliberately, and says so here.
+ *
+ * Adding the second statement does NOT invalidate the bake cache, which is
+ * keyed by city and cell rather than by query text: a cell fetched before the
+ * furniture existed parses cleanly and yields none of it. See
+ * data/osmfurniture.ts for why that is the right trade and what it costs.
+ */
+export function roadsAndFurnitureQuery(b: OsmBbox, timeoutS = 120): string {
+  return `[out:json][timeout:${timeoutS}];
+(
+${roadsStatements(b)}
+${furnitureStatements(b)}
+);
 out geom;`;
 }
 

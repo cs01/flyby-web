@@ -64,6 +64,7 @@ import {
   addPavement,
   emptyPavement,
   hasPavement,
+  isCarriageway,
   KERB_HEIGHT_M,
   PAVEMENT_STATION_M,
   PAVEMENT_RING_M,
@@ -72,11 +73,7 @@ import {
 } from "../data/pavement";
 import {
   roadWidthM,
-  ROAD_BRIDGE,
   ROAD_LIFT_M,
-  ROAD_TUNNEL,
-  RoadClass,
-  type Road,
   type RoadPack,
 } from "../data/roadpack";
 
@@ -101,17 +98,6 @@ const FADE_FAR_M = 330;
  */
 const CLEARANCE_STEP_M = 1;
 const CLEARANCE_BIAS_M = 2;
-
-/**
- * Classes that block a pavement where they cross it.
- *
- * Everything a vehicle drives on, including the motorways and trunk roads that
- * get no pavement of their own: a footway laid across a freeway is the single
- * worst artefact this file could ship.
- */
-function isCarriageway(r: Road): boolean {
-  return r.cls <= RoadClass.Busway && (r.flags & (ROAD_TUNNEL | ROAD_BRIDGE)) === 0;
-}
 
 
 // --- shaders ----------------------------------------------------------------
@@ -434,6 +420,16 @@ export class Pavement {
     footprints: FootprintMask | null,
     shadow: SunShadowUniforms,
     budget: Budget,
+    /**
+     * The carriageway index, if the caller already has one.
+     *
+     * Three things now need "is this point on tarmac" -- the pavement, the lamp
+     * columns and the parked cars -- and building it is not free: Manhattan is
+     * 400k segments, five megabytes and about a hundred milliseconds. Passing
+     * one in is how the three of them share it. Omitted, it is built here, so a
+     * caller that only wants pavements still works.
+     */
+    carriagewayIndex?: RoadIndex,
   ) {
     this.pack = pack;
     this.budgetTriangles = budget.pavementTriangleBudget;
@@ -443,9 +439,8 @@ export class Pavement {
 
     // What opens the pavement at a junction: every carriageway, padded by its
     // own half width, so a query answers "is this point on tarmac".
-    const carriageways = pack.roads.filter(isCarriageway);
-    const blockers = new RoadIndex(
-      carriageways,
+    const blockers = carriagewayIndex ?? new RoadIndex(
+      pack.roads.filter(isCarriageway),
       (r) => roadWidthM(r.cls, r.lanes, r.flags) * 0.5,
     );
 

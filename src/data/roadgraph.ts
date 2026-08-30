@@ -51,6 +51,7 @@ import {
   ROAD_ONEWAY,
   ROAD_TUNNEL,
   LANE_WIDTH_M,
+  parkingStripM,
   roadWidthM,
   type Road,
 } from "./roadpack";
@@ -103,10 +104,19 @@ export function isDriveable(r: Road): boolean {
  *
  * A single-track service road comes out at 0, which is right: an alley has one
  * lane and its centre is the centreline.
+ *
+ * THE KERB LANE IS NOT THE KERBSIDE LANE. On a street with parking, the lane
+ * against the kerb is full of parked cars, and the nearside lane a driver can
+ * actually use starts inboard of them. Before there were parked cars this file
+ * could ignore that; it cannot now, because the player would be steering
+ * through a row of stationary vehicles at eye height. So the parking strip
+ * comes off first, taken from roadpack.ts, which is the one place a width is
+ * decided. On a narrow residential street the answer is zero, which is correct
+ * and is what such a street does: traffic runs down the middle and pulls in.
  */
 export function laneOffsetM(r: Road): number {
   const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
-  return Math.max(0, half - LANE_WIDTH_M * 0.5);
+  return Math.max(0, half - parkingStripM(r) - LANE_WIDTH_M * 0.5);
 }
 
 /**

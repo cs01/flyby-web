@@ -161,6 +161,22 @@ export const FACE_PAVEMENT_OPEN = 2;
 export const PAVEMENT_SIDE_STRIDE = 4;
 
 /** True if this way is the kind of thing that has a pavement beside it. */
+/**
+ * Classes that block a pavement where they cross it, and that a lamp column or
+ * a parked car must not be planted in the middle of.
+ *
+ * Everything a vehicle drives on, including the motorways and trunk roads that
+ * get no pavement of their own: a footway laid across a freeway is the single
+ * worst artefact this file could ship.
+ *
+ * Here rather than in render/pavement.ts because it is now three callers -- the
+ * pavement, the street lamps and the parked cars -- and all three have to agree
+ * on what tarmac is.
+ */
+export function isCarriageway(r: Road): boolean {
+  return r.cls <= RoadClass.Busway && (r.flags & (ROAD_TUNNEL | ROAD_BRIDGE)) === 0;
+}
+
 export function hasPavement(r: Road): boolean {
   if ((r.flags & (ROAD_TUNNEL | ROAD_BRIDGE)) !== 0) return false;
   return (PAVEMENT_WIDTH_M[r.cls] ?? 0) > 0;

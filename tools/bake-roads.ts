@@ -27,7 +27,13 @@ import {
   ROAD_CLASS_NAMES,
   type PackedWay,
 } from "../src/data/roadpack";
-import { QUANT, roadsFromOsm, roadsQuery } from "../src/data/osmroads";
+import { QUANT, roadsAndFurnitureQuery, roadsFromOsm } from "../src/data/osmroads";
+import { furnitureFromOsm, isFurnitureElement } from "../src/data/osmfurniture";
+import {
+  encodeStreetPack,
+  furnitureHistogram,
+  parseStreetPack,
+} from "../src/data/streetpack";
 import type { OsmBbox, OsmElement, OverpassResponse } from "../src/data/osm";
 
 // The repo's tsconfig deliberately carries no node/bun types (`types:
@@ -160,7 +166,7 @@ async function fetchCells(key: string, bbox: OsmBbox, force: boolean): Promise<O
 
   console.log(`  grid ${nx}x${ny} cells (~${(widthM / nx / 1000).toFixed(2)} km each)`);
 
-  const byId = new Map<number, OsmElement>();
+  const byId = new Map<string, OsmElement>();
   const total = nx * ny;
   for (let iy = 0; iy < ny; iy++) {
     for (let ix = 0; ix < nx; ix++) {
@@ -186,7 +192,7 @@ async function fetchCells(key: string, bbox: OsmBbox, force: boolean): Promise<O
       }
       if (body === null) {
         process.stdout.write(`  cell ${index + 1}/${total} fetching...`);
-        body = await overpass(roadsQuery(cell));
+        body = await overpass(roadsAndFurnitureQuery(cell));
         await Bun.write(cachePath, JSON.stringify(body));
         process.stdout.write(` ${(body.elements ?? []).length} elements\n`);
       } else {
@@ -196,7 +202,11 @@ async function fetchCells(key: string, bbox: OsmBbox, force: boolean): Promise<O
       }
 
       for (const el of body.elements ?? []) {
-        if (el.type === "way") byId.set(el.id, el);
+        // Ways AND nodes now: the query is a union of road centrelines and the
+        // furniture standing beside them. A way id and a node id are drawn from
+        // different sequences and DO collide, so the key has to carry the type;
+        // keying on the id alone silently replaced roads with hydrants.
+        if (el.type === "way" || el.type === "node") byId.set(`${el.type}${el.id}`, el);
       }
     }
   }
@@ -238,9 +248,13 @@ async function bake(city: City, force: boolean): Promise<boolean> {
   };
 
   const elements = await fetchCells(`${city.id}-roads`, bbox, force);
-  console.log(`  ${elements.length} unique OSM ways`);
+  const wayEls = elements.filter((el) => el.type === "way");
+  const furnitureEls = elements.filter(isFurnitureElement);
+  console.log(
+    `  ${wayEls.length} unique OSM ways, ${furnitureEls.length} furniture nodes`,
+  );
 
-  const { ways, skips, splits } = roadsFromOsm(elements, origin, city.radius);
+  const { ways, skips, splits } = roadsFromOsm(wayEls, origin, city.radius);
   const out = `${ROOT}public/cities/${city.id}.roads`;
   await Bun.write(out, encodeRoadPack(ways, city.lat, city.lon, city.radius));
   const onDiskSize = Bun.file(out).size;
@@ -259,6 +273,40 @@ async function bake(city: City, force: boolean): Promise<boolean> {
   }
   console.log(`  file        ${out}  ${onDiskSize} bytes`);
 
+  // --- the furniture sibling ---------------------------------------------
+  //
+  // Written only when there is something in it. An empty .street would be a
+  // 32 byte file saying "this city has no benches", which is exactly what a
+  // missing file already says, and it would make a city whose cells were
+  // fetched before the furniture query existed look surveyed and empty rather
+  // than unsurveyed.
+  const furniture = furnitureFromOsm(furnitureEls, origin, city.radius);
+  let streetOk = true;
+  if (furniture.items.length > 0) {
+    const streetOut = `${ROOT}public/cities/${city.id}.street`;
+    await Bun.write(
+      streetOut,
+      encodeStreetPack(furniture.items, city.lat, city.lon, city.radius),
+    );
+    const streetBack = parseStreetPack(await Bun.file(streetOut).arrayBuffer());
+    streetOk = streetBack.items.length === furniture.items.length;
+    console.log(`  furniture   ${furniture.items.length} nodes -> ${streetOut}`);
+    for (const [name, n] of furnitureHistogram(furniture.items)) {
+      console.log(`      ${n.toString().padStart(7)}  ${name}`);
+    }
+    console.log(`  STREET ROUNDTRIP ${streetOk ? "OK" : "FAIL"}`);
+  } else {
+    // Said out loud, because the two ways of getting here look identical in the
+    // output and are completely different facts: a suburb that genuinely has no
+    // mapped furniture, and a cache fetched before the query asked for any.
+    console.log(
+      "  furniture   NONE. Either nobody has surveyed this place, or these cells\n" +
+        "              were cached before the furniture query existed. The cache is\n" +
+        "              keyed by city and cell, not by query text, so it will not\n" +
+        "              refetch on its own: use --force to find out which.",
+    );
+  }
+
   // Re-read with the app's parser. It is the only proof the writer laid the
   // fields out the way the format says, and it catches a truncated write here
   // rather than in the browser.
@@ -274,7 +322,7 @@ async function bake(city: City, force: boolean): Promise<boolean> {
         back.roads[0].flags === first.flags &&
         back.roads[0].pts.length === first.dx.length * 2));
   console.log(`  ROUNDTRIP ${rtOk ? "OK" : "FAIL"}  (${back.roads.length} records re-read)`);
-  return rtOk && ways.length > 0;
+  return rtOk && streetOk && ways.length > 0;
 }
 
 /** public/cities/roads-index.json: the ids that actually have a road pack.

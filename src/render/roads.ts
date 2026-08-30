@@ -37,6 +37,10 @@ import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { addRibbon, emptyRibbon, ribbonTriangleCost, type RibbonScratch } from "../data/ribbon";
+// The lamp spacing table, and the GLSL copy of it that this shader indexes. It
+// is GENERATED from the same array render/streetlamps.ts places columns from,
+// so a post cannot end up between two pools.
+import { LAMP_GLSL } from "../data/streetfurniture";
 import {
   roadWidthM,
   roadLiftM,
@@ -182,6 +186,7 @@ ${ATMOSPHERE_GLSL}
 ${SUN_SHADOW_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
+${LAMP_GLSL}
 
 uniform vec3  uCameraPos;
 // The scene sky probe: what wet asphalt reflects.
@@ -508,27 +513,39 @@ void main() {
     // down every street, and the pools merged into a continuous glowing tube:
     // the city read as a diagram of its own road network rather than as a place
     // with lamps in it. A street lamp lights the STREET.
-    if (cls < 10.5 && !isTrack) {
-      const float SPACING = 52.0;
-      float su = u / SPACING;
+    float spacing = lampSpacingM(cls);
+    if (spacing > 0.0 && !isTrack) {
+      float su = u / spacing;
       float idx = floor(su);
       // On the kerb, alternating sides, with the lantern arm reaching a little
-      // over the carriageway.
-      float side = mod(idx, 2.0) < 1.0 ? 0.06 : 0.94;
-      float du = (fract(su) - 0.5) * SPACING;
+      // over the carriageway. render/streetlamps.ts stands a column over every
+      // one of these, at u = (idx + 0.5) * spacing and on the same side; the
+      // spacing table it places from is the one this array was generated FROM.
+      // Neither number exists twice. See data/streetfurniture.ts.
+      float side = mod(idx, 2.0) < 1.0 ? LAMP_POOL_V : 1.0 - LAMP_POOL_V;
+      float du = (fract(su) - 0.5) * spacing;
       float dv = (v - side) * width;
       float d2 = du * du + dv * dv;
       // ~5 m pool: tight enough that consecutive lamps do not run together, so
       // there is dark road between them the way there is on a real street.
-      // Not every lamp post has a working lamp, and a fully populated run reads
-      // as a light strip rather than as street lighting. Roughly half lit, with
-      // a wide brightness spread, gives the ragged rhythm a real road has.
-      float bright = step(0.46, hash11(idx * 1.7 + 5.0)) * (0.45 + 0.9 * hash11(idx * 3.3));
+      //
+      // EVERY LAMP IS LIT, and it did not used to be: half the pools were
+      // switched off by a hash. That was a good way to get
+      // the ragged rhythm a real run of lamps has, and it stopped being
+      // available the moment there were posts, because the post is placed in
+      // TypeScript and cannot evaluate this hash. A post over a dark pool is a
+      // broken lamp; half the posts over dark pools is a broken street. So the
+      // rhythm comes from the brightness spread alone, which is wider now to
+      // make up for it.
+      // Mean 0.75 against the old population's effective 0.49, so a street with
+      // every lamp working is about half a stop brighter than one with half of
+      // them out, rather than twice as bright.
+      float bright = 0.30 + 0.90 * hash11(idx * 3.3);
       float pool = exp(-d2 * 0.018) * bright;
       // Far away the pools are sub-pixel and must converge to their mean, or
       // the whole city crawls with aliasing as the camera moves.
       float lampDetail = smoothstep(1.6, 0.35, px);
-      float meanPool = 0.54 * 3.14159265 / (0.018 * SPACING * width);
+      float meanPool = 0.75 * 3.14159265 / (0.018 * spacing * width);
       pool = mix(min(meanPool, 0.22), pool, lampDetail);
       vec3 lampCol = mix(vec3(0.85, 0.90, 1.0), vec3(1.0, 0.72, 0.36),
                          smoothstep(0.05, 0.6, hash11(idx * 9.1 + 2.0)));
