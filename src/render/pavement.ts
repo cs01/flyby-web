@@ -279,10 +279,32 @@ void main() {
     albedo = mix(albedo, vec3(0.072, 0.070, 0.072), repair);
     roughness = mix(0.90, 0.84, repair);
 
+    // RELIEF. A joint is a groove, not a dark line.
+    //
+    // Everything above puts its detail in the albedo alone, which is why the
+    // pavement read as printed lino from a car: a groove and a painted stripe
+    // are the same pixel until the light moves across them. The slab grid is
+    // already an exact signed distance to the nearest joint, so it is also a
+    // height field, and one derivative turns it into one.
+    //
+    // Depth is deliberately small. A saw-cut control joint is 3 to 6 mm, and
+    // anything more reads as a trench. It fades on the same jointD the albedo
+    // uses, so the bump converges to flat exactly where the joint stops being
+    // resolvable rather than boiling into per-pixel noise.
+    float grooveDepth = 0.004 * jointD;
+    vec3 tanX = normalize(dFdx(vWorld));
+    vec3 tanY = normalize(dFdy(vWorld));
+    n = normalize(n - (tanX * dFdx(joint) + tanY * dFdy(joint))
+                      * grooveDepth / max(px, 1e-4));
+
     // Exposed aggregate, and the low-frequency dirt that collects on any
     // horizontal surface in a city. The dirt runs at two scales because at one
     // it reads as a pattern rather than as grime.
-    albedo *= 1.0 + (vnoise(w * 24.0) - 0.5) * 0.20 * fineD;
+    float aggFine = vnoise(w * 24.0);
+    albedo *= 1.0 + (aggFine - 0.5) * 0.20 * fineD;
+    // The aggregate is a height field too, at a millimetre or so.
+    n = normalize(n - (tanX * dFdx(aggFine) + tanY * dFdy(aggFine))
+                      * 0.0012 * fineD / max(px, 1e-4));
     albedo *= 1.0 - 0.16 * smoothstep(0.30, 0.85, vnoise(w * 0.45 + 29.0));
     albedo *= 1.0 - 0.10 * smoothstep(0.40, 0.90, vnoise(w * 1.7 + 7.0)) * jointD;
     // Road grime creeps up the first half metre from the kerb, and rain off the
