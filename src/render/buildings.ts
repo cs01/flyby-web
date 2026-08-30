@@ -1051,4 +1051,22 @@ export class Buildings {
       parapets, plantBoxes, families,
     };
   }
+
+  /**
+   * Release the GPU memory this group holds.
+   *
+   * A baked city is built once and lives for the page, so nothing needed this
+   * until the live path started building a Buildings per streamed tile. Without
+   * it a long flight leaks a facade table and a few megabytes of vertex buffers
+   * per tile on a device where memory is already the ceiling.
+   */
+  dispose(): void {
+    (this.uniforms.uFacade.value as THREE.Texture | null)?.dispose();
+    for (const child of this.group.children) {
+      const m = child as THREE.Mesh;
+      m.geometry?.dispose();
+      (m.material as THREE.Material | undefined)?.dispose();
+    }
+    this.group.clear();
+  }
 }

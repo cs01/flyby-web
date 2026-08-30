@@ -605,6 +605,24 @@ export class Foliage {
   }
 
   /**
+   * Throw away every placed tile, so the next `update` re-plants from the mask.
+   *
+   * The live path fills its coverage grid in as OSM tiles arrive, and the grid
+   * is handed to the field BY REFERENCE. Placement is cached per tile, so
+   * without this the trees would be the ones the first, empty grid implied --
+   * which is none -- for the rest of the flight. Nothing about a tree moves:
+   * the lattice is absolute, so re-placing the same cell over a grid that has
+   * only ever been RAISED can add trees and can never move one.
+   */
+  invalidate(): void {
+    this.tiles.clear();
+    // The repack early-out compares against the tile the buffers were packed
+    // for, so it has to be reset too or the next update returns immediately.
+    this.atX = -1e9;
+    this.atZ = -1e9;
+  }
+
+  /**
    * Rebuild the field around a camera position. Cheap and idempotent between
    * repack thresholds, so it is safe to call every frame.
    */

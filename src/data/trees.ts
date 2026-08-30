@@ -471,7 +471,19 @@ export class FootprintMask {
     this.extentM = extentM;
     this.n = Math.max(1, Math.ceil((extentM * 2) / FOOTPRINT_CELL_M));
     this.bits = new Uint32Array(Math.ceil((this.n * this.n) / 32));
+    this.add(buildings);
+  }
 
+  /**
+   * Stamp more footprints into the same grid.
+   *
+   * The live path learns where the buildings are one streamed tile at a time,
+   * and a mask rebuilt from scratch per tile would re-rasterise every footprint
+   * already known. Stamping is idempotent -- a bit that is set stays set -- so
+   * a footprint arriving twice costs time and changes nothing.
+   */
+  add(buildings: readonly { ring: Float32Array }[]): void {
+    const extentM = this.extentM;
     for (const b of buildings) {
       const ring = b.ring;
       if (ring.length < 6) continue;
@@ -544,10 +556,35 @@ function pointInRing(ring: Float32Array, x: number, z: number): boolean {
   return inside;
 }
 
+/**
+ * Anything that can say "a tree may not stand here because of tarmac".
+ *
+ * An interface rather than RoadIndex itself because the live path holds one
+ * index per streamed tile: a single CSR index cannot grow, and rebuilding it
+ * from every road so far on every tile is quadratic. See CompositeRoadIndex.
+ */
+export interface RoadBlocker {
+  blocked(x: number, z: number): boolean;
+}
+
+/** Several indexes queried as one. A point is blocked if any of them says so. */
+export class CompositeRoadIndex implements RoadBlocker {
+  private readonly parts: RoadBlocker[] = [];
+
+  add(part: RoadBlocker): void {
+    this.parts.push(part);
+  }
+
+  blocked(x: number, z: number): boolean {
+    for (const p of this.parts) if (p.blocked(x, z)) return true;
+    return false;
+  }
+}
+
 export interface TreeField {
   mask: TreeMask;
   heightAt: (x: number, z: number) => number;
-  roads?: RoadIndex | null;
+  roads?: RoadBlocker | null;
   footprints?: FootprintMask | null;
   /** Lattice pitch; defaults to TREE_SPACING_M. */
   spacingM?: number;
