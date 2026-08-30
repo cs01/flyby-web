@@ -14,6 +14,7 @@ import { computeLighting } from "./render/lighting";
 import { loadHeightfield, bboxAround, type Heightfield } from "./data/dem";
 import { stitchImagery, type StitchedImage } from "./data/imagery";
 import { fetchWeather, fetchForecast, beamOpacity, type Weather } from "./data/weather";
+import { clearCache } from "./data/cache";
 import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, cityAt, DEFAULT_CITY, type City } from "./cities";
@@ -1047,6 +1048,25 @@ async function main() {
       get time() { return now; },
       setOffsetHours: (h: number) => timebar.setOffset(h * 3600),
       setExposure: (v: number) => (exposureScale = v),
+    },
+  });
+
+  // An escape hatch, always available.
+  //
+  // Tiles, packs and weather live in IndexedDB for up to thirty days, so a
+  // reader who has hit a bad bake, a half-written pack or simply wants to prove
+  // they are seeing current data has no way to force a refetch short of finding
+  // the storage panel in devtools. `clearCache` existed for exactly this and was
+  // exported but never wired to anything, which made it dead code AND a missing
+  // feature at the same time.
+  //
+  // It does NOT clear the HTTP cache, and that distinction matters when
+  // diagnosing "am I on an old build": the JS bundle is a hashed filename served
+  // by the CDN, so stale CODE is always a stale index.html, never IndexedDB.
+  Object.assign(window as unknown as Record<string, unknown>, {
+    flybyClearCache: async () => {
+      await clearCache();
+      console.info("[flyby] tile cache cleared; reload to refetch");
     },
   });
 
