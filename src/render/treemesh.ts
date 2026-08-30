@@ -163,15 +163,23 @@ export interface TreeLodDef {
  * on; the far one is what 20,000 instances of a 55%-canopy suburb actually
  * costs.
  *
- * Side counts are 20 / 12 / 7 rather than a halving sequence because the
+ * Side counts are 20 / 14 / 9 rather than a halving sequence because the
  * angular prefilter kills whatever a level cannot resolve, so the only thing
  * that matters is that each is coprime enough with the lobe harmonics that the
  * SURVIVING ones are still sampled somewhere near their peaks.
+ *
+ * The far level's ring count is the one number here that was chosen against a
+ * measurement rather than by taste. Nine sides by five rings and nine by four
+ * agree with the near level's silhouette to within 11.4% and 11.8%
+ * respectively, which is the same picture, and the second costs 80 triangles
+ * against 98. On the 55%-canopy pose the far level is four instances in five,
+ * so that 18% is 340,000 triangles a frame, drawn four times over (the frame,
+ * two shadow cascades and the occlusion prepass).
  */
 export const TREE_LODS: readonly TreeLodDef[] = [
   { name: "near", sides: 20, rings: 11, trunkSides: 8, farM: 260 },
-  { name: "mid", sides: 14, rings: 8, trunkSides: 5, farM: 800 },
-  { name: "far", sides: 9, rings: 5, trunkSides: 4, farM: Infinity },
+  { name: "mid", sides: 14, rings: 8, trunkSides: 5, farM: 600 },
+  { name: "far", sides: 9, rings: 4, trunkSides: 4, farM: Infinity },
 ];
 
 export interface TreeMesh {
