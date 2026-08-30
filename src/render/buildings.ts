@@ -478,6 +478,42 @@ void main() {
     // darkening carries more of the effect than the normal does.
     albedo *= 1.0 - 0.38 * relief * (abs(gx) + abs(gy));
 
+    // THE WALL BETWEEN THE WINDOWS.
+    //
+    // Everything above shapes the openings and leaves the masonry itself dead
+    // flat: from a car the near wall was a single tan panel with a grid ruled
+    // on it. A wall is not flat. Brick has a mortar course every 75 mm and a
+    // perpend every 215; a concrete panel has a joint every few metres and a
+    // shutter mark inside it; stucco has a float texture. None of it is more
+    // than a few millimetres deep, which is exactly why it needs a NORMAL
+    // rather than a darker pixel: at a grazing sun those millimetres are the
+    // whole difference between masonry and cardboard.
+    //
+    // Frequency comes from the family so a curtain wall gets none of it.
+    // fp.relief is already the per-family measure of how modelled a facade is:
+    // near zero on glass, high on brick and stone.
+    float courseHz = mix(2.0, 13.3, fp.relief);      // 13.3/m is a 75 mm course
+    float coursePhase = vUv.y * courseHz;
+    float course = abs(fract(coursePhase) - 0.5) * 2.0;
+    // Perpends every 215 mm, offset half a brick on alternate courses, which is
+    // the bond pattern and the reason brick does not read as stripes.
+    float row = floor(coursePhase);
+    float perpHz = courseHz * 0.35;
+    float perp = abs(fract(vUv.x * perpHz + 0.5 * mod(row, 2.0)) - 0.5) * 2.0;
+
+    // Converge with the pixel footprint, like every other detail here: a
+    // mortar course is under a pixel from any distance worth flying and must
+    // fade to flat rather than alias into a moire.
+    float mortarFade = detailY * detailX * fp.relief;
+    float mortar = (1.0 - smoothstep(0.55, 0.95, course))
+                 + (1.0 - smoothstep(0.70, 0.97, perp)) * 0.6;
+    mortar *= mortarFade;
+
+    // 3 mm of recess, expressed as a slope along the wall's own tangent frame.
+    n = normalize(n + (vec3(0.0, 1.0, 0.0) * (fract(coursePhase) - 0.5)
+                       * mortarFade * 0.22));
+    albedo *= 1.0 - 0.10 * mortar;
+
     // A cornice: the last metre below the parapet is a projecting band, so it
     // is brighter on top and casts a line of shadow under itself. On a stone
     // or brick building this is a real moulding; on a curtain wall the relief
