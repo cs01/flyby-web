@@ -84,7 +84,7 @@ uniform vec3 uMoonDir;
 uniform vec3 uMoonLight;
 uniform sampler2D uUrban;
 uniform float uUrbanExtent;
-// Baked ESA WorldCover coverage: R water, G built, B vegetation, A bare/snow.
+// Baked ESA WorldCover coverage: R water, G built, B tree, A herbaceous.
 // Two levels, for the same reason the terrain has rings: 10 m over the city,
 // ~137 m out to the horizon.
 uniform sampler2D uLandNear;
@@ -99,9 +99,111 @@ float hash21(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
+/** Bilinear value noise on the world's own metre grid. */
+float vnoise2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = p - i;
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+             mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
 void main() {
   vec3 albedo = srgbToLinear(texture(uDrape, vUv).rgb);
   vec3 n = normalize(vNormal);
+
+  // Landcover, sampled once and used by both the water term and the night
+  // lighting. Near level inside its own extent, far level outside, crossfaded
+  // over the last tenth of the near extent: a hard switch would draw the near
+  // grid's 12 km square onto the ground as a visible edge, since the two levels
+  // disagree by a texel or two along any coastline they share.
+  vec2 lcUvN = vWorld.xz / (2.0 * uLandNearExtent) + 0.5;
+  vec2 lcUvF = vWorld.xz / (2.0 * uLandFarExtent) + 0.5;
+  // Chebyshev distance, not Euclidean: the near grid is a SQUARE, so this is
+  // the distance to the edge that actually runs out of data.
+  float lcR = max(abs(vWorld.x), abs(vWorld.z)) / max(1.0, uLandNearExtent);
+  vec4 lc = mix(texture(uLandNear, lcUvN), texture(uLandFar, lcUvF),
+                smoothstep(0.9, 1.0, lcR));
+  float lcWater = lc.r;
+  float lcBuilt = lc.g;
+  // Ground vegetation, from the two channels that exist to describe it. This
+  // is what stops Central Park being green paint: the drape carries the right
+  // large-scale pattern (mown against rough, the shadow of a stand of trees)
+  // but at 0.47 m per pixel at its very best it is a blur with no material in
+  // it, and every earlier attempt at "make the parks greener" was a uniform
+  // tint that made a car park green too.
+  //
+  // It MODULATES the drape rather than replacing it. Luminance is kept, so a
+  // lawn in the sun stays brighter than one in a photographed shadow, and only
+  // the chroma and the fine structure come from here.
+  float herb = lc.a * uHasLand;
+  float canopy = lc.b * uHasLand;
+  float veg = clamp(herb + canopy, 0.0, 1.0);
+  if (veg > 0.004) {
+    // Two distance gates, and the tighter one matters more than it looks.
+    //
+    // A procedural noise has no mip chain, so every octave aliases the moment
+    // its period drops under a pixel. The first version of this ran a 0.8 m
+    // octave out to a kilometre and turned a Californian hillside into
+    // high-contrast leopard print: from 200 m up, that period is two pixels.
+    // So the fine octave only exists within a couple of hundred metres, where
+    // it has pixels to be made of, and the coarse one carries everything else.
+    float detail = smoothstep(2600.0, 700.0, vViewDist);
+    float closeUp = smoothstep(300.0, 80.0, vViewDist);
+
+    // Clumps at ~8 m, which is what you actually see of rough grass from the
+    // air, and blade-cluster texture at ~1.6 m for the last few hundred feet.
+    //
+    // TWO octaves for the clump, not one, and the second is not a harmonic of
+    // the first. A single value noise is built on a square lattice and at 12%
+    // amplitude it reads as a regular field of DOTS, which is worse than the
+    // blur it replaced; an incommensurate second octave breaks the lattice up
+    // for one extra lookup.
+    float clump = vnoise2(vWorld.xz * 0.13) * 0.60
+                + vnoise2(vWorld.xz * 0.047 + vec2(17.3, 5.1)) * 0.40;
+    float fine = closeUp > 0.0 ? vnoise2(vWorld.xz * 0.62) : 0.5;
+    float tuft = mix(mix(0.5, clump, detail * 0.8), fine, closeUp * 0.35);
+
+    // SATURATE the drape's own colour; do not replace it. The satellite carries
+    // the season and this mask does not: WorldCover calls a Californian hill
+    // "grass" in June when it is straw gold, and an earlier version of this
+    // block that mixed toward chlorophyll painted the whole peninsula spring
+    // green. So the measurement decides how much MATERIAL a texel has and the
+    // drape decides what colour it is.
+    float lum = dot(albedo, vec3(0.299, 0.587, 0.114));
+    vec3 vegCol = vec3(lum) + (albedo - vec3(lum)) * (1.0 + 0.75 * veg);
+    // Clump variation, mostly in value with a little hue wobble, so a lawn is
+    // not one flat colour. This is the part the drape genuinely cannot supply:
+    // at 0.47 m a pixel it has no structure below a couple of metres.
+    vegCol *= 0.91 + 0.18 * tuft;
+    vegCol.g *= 1.0 + (tuft - 0.5) * 0.10 * veg;
+    albedo = mix(albedo, vegCol, veg * (0.45 + 0.40 * detail));
+
+    // Under a canopy the floor is genuinely dark, and the dapple stands in for
+    // the crown shadows the instanced trees stop drawing past their own fade.
+    // The handoff between the two is what keeps a forest reading as a forest
+    // all the way to the horizon instead of ending in a ring.
+    albedo *= 1.0 - canopy * (0.26 + 0.24 * (1.0 - tuft) * detail);
+
+    // A detail normal, so grass catches the sun rather than being a flat
+    // surface with a green photograph on it. Central differences of the same
+    // fine octave: four more lookups, on the same tight gate, for the same
+    // reason. A bump whose period is under a pixel is not texture, it is noise
+    // that swims when the camera moves.
+    if (closeUp > 0.0 && herb > 0.03) {
+      const float E = 0.55;
+      float hx = vnoise2((vWorld.xz + vec2(E, 0.0)) * 0.62)
+               - vnoise2((vWorld.xz - vec2(E, 0.0)) * 0.62);
+      float hz = vnoise2((vWorld.xz + vec2(0.0, E)) * 0.62)
+               - vnoise2((vWorld.xz - vec2(0.0, E)) * 0.62);
+      // 0.12, and the number matters more than it looks. hx and hz are the
+      // difference of two noise samples about a metre apart, so they reach
+      // ~0.6; at 0.55 that tilts the ground by nearly twenty degrees and under
+      // a low sun the hillside came out as a field of hard dark dots. This is
+      // a few degrees of shading variation, which is what grass actually is.
+      n = normalize(n + vec3(-hx, 0.0, -hz) * 0.12 * herb * closeUp);
+    }
+  }
 
   // Snow settles on flat ground and slides off anything steep. The slope test
   // is what keeps a snowy city from looking like it was dipped in paint.
@@ -150,21 +252,6 @@ void main() {
   vec3 ambient = occludedSkyIrradiance(n);
 
   vec3 lit = albedo * (beam + ambient);
-
-  // Landcover, sampled once and used by both the water term and the night
-  // lighting. Near level inside its own extent, far level outside, crossfaded
-  // over the last tenth of the near extent: a hard switch would draw the near
-  // grid's 12 km square onto the ground as a visible edge, since the two levels
-  // disagree by a texel or two along any coastline they share.
-  vec2 lcUvN = vWorld.xz / (2.0 * uLandNearExtent) + 0.5;
-  vec2 lcUvF = vWorld.xz / (2.0 * uLandFarExtent) + 0.5;
-  // Chebyshev distance, not Euclidean: the near grid is a SQUARE, so this is
-  // the distance to the edge that actually runs out of data.
-  float lcR = max(abs(vWorld.x), abs(vWorld.z)) / max(1.0, uLandNearExtent);
-  vec4 lc = mix(texture(uLandNear, lcUvN), texture(uLandFar, lcUvF),
-                smoothstep(0.9, 1.0, lcR));
-  float lcWater = lc.r;
-  float lcBuilt = lc.g;
 
   // Specular sheen on wet ground, and always on water (which the drape shows
   // as dark blue; using luminance as a water proxy is crude but it is right
@@ -216,6 +303,15 @@ void main() {
     vec3 hm = normalize(v + uMoonDir);
     float specM = pow(max(0.0, dot(n, hm)), shine);
     lit += uMoonLight * uSunSurface * specM * gloss * 1.6;
+  }
+
+  // Grass at a grazing angle goes pale and silvery: the blades are near
+  // vertical, so a low view direction sees their sides and the whole sward
+  // scatters forward. One power of a dot product, and it is the difference
+  // between a lawn and a green plane.
+  if (herb > 0.02) {
+    float sheen = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 4.0);
+    lit += ambient * albedo * sheen * herb * 0.85;
   }
 
   // Open water is not a dark diffuse surface. Its colour is almost entirely
@@ -332,9 +428,10 @@ void main() {
   //   1 albedo       2 direct        3 ambient      4 inscatter
   //   5 lit          6 transmittance 7 water        8 elevation/200
   //   9 landcover water          10 landcover built
-  //  11 landcover false-colour: blue water, red built, green vegetation,
-  //     white bare/snow. Black means no pack, which is the one thing the
+  //  11 landcover false-colour: blue water, red built, green tree, white
+  //     herbaceous. Black means no pack, which is the one thing the
   //     single-channel views cannot distinguish from "none of this class".
+  //  12 landcover tree           13 landcover herbaceous
   if (uDebug > 0.5) {
     if (uDebug < 1.5)       col = albedo;
     else if (uDebug < 2.5)  col = beam;
@@ -346,8 +443,10 @@ void main() {
     else if (uDebug < 8.5)  col = vec3(vWorld.y / 200.0);
     else if (uDebug < 9.5)  col = vec3(lcWater * uHasLand);
     else if (uDebug < 10.5) col = vec3(lcBuilt * uHasLand);
-    else col = (vec3(0.1, 0.3, 1.0) * lc.r + vec3(1.0, 0.15, 0.1) * lc.g
+    else if (uDebug < 11.5) col = (vec3(0.1, 0.3, 1.0) * lc.r + vec3(1.0, 0.15, 0.1) * lc.g
               + vec3(0.1, 0.8, 0.2) * lc.b + vec3(1.0) * lc.a) * uHasLand;
+    else if (uDebug < 12.5) col = vec3(canopy);
+    else col = vec3(herb);
   }
 
   fragColor = vec4(col, 1.0);

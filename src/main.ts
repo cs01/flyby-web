@@ -40,6 +40,9 @@ import { loadLandPack } from "./data/landcover-load";
 import { loadRoadPack } from "./data/roadpack-load";
 import { Roads } from "./render/roads";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
+import { Foliage } from "./render/trees";
+import { buildLandMaskRGBA } from "./data/landmask";
+import { FootprintMask, RoadIndex, treeRoadClearanceM } from "./data/trees";
 import { Composite } from "./render/composite";
 import { AoPass } from "./render/ao";
 import { SunShadow } from "./render/sunshadow";
@@ -388,6 +391,10 @@ async function main() {
     console.warn(`[flyby] no road pack for ${city.id}; run: bun tools/bake-roads.ts --city ${city.id}`);
   }
 
+  // The canopy. Declared here so setAo below can reach it; it cannot be BUILT
+  // until the landcover pack has arrived, which happens after the road pack.
+  let foliage: Foliage | null = null;
+
   /**
    * Point every surface material at this frame's occlusion buffer.
    *
@@ -399,6 +406,7 @@ async function main() {
     for (const u of terrain.uniforms) ao.apply(u, strength);
     if (buildings) ao.apply(buildings.uniforms, strength);
     if (roads) ao.apply(roads.uniforms, strength);
+    if (foliage) ao.apply(foliage.uniforms, strength);
   };
 
   // Where the city actually is, for night lighting. A place with no pack gets
@@ -430,6 +438,44 @@ async function main() {
     u.uLandFarExtent.value = land.farExtent;
     u.uHasLand.value = land.has ? 1 : 0;
     if (Number.isFinite(terrainDebug)) u.uDebug.value = terrainDebug;
+  }
+
+  // Trees, from the tree channel of the same pack the terrain shades from.
+  //
+  // Everything it needs is already here and none of it is a new download: the
+  // coverage grid says how many and where, the .roads centrelines keep them off
+  // the carriageway, and the .city rings keep them off the roofs. A city with
+  // no road or building pack still gets trees, just with the landcover's built
+  // class as the only guard.
+  if (landPack) {
+    const t0 = performance.now();
+    const level = landPack.levels[0];
+    const roadIndex = roadPack
+      ? new RoadIndex(roadPack.roads, treeRoadClearanceM)
+      : null;
+    const footprints = pack ? new FootprintMask(pack.buildings, pack.radiusM) : null;
+    foliage = new Foliage(
+      {
+        mask: { rgba: buildLandMaskRGBA(level), n: level.n, extentM: level.extentM },
+        heightAt: terrain.heightAt,
+        roads: roadIndex,
+        footprints,
+      },
+      sunShadow.uniforms,
+      budget.tier === "reduced",
+    );
+    const indexMs = performance.now() - t0;
+    foliage.update(0, 0);
+    scene.add(foliage.group);
+    const fs = foliage.stats;
+    console.log(
+      `[flyby] trees: ${fs.count} instances in ${fs.tiles} tiles, ` +
+      `${(fs.triangles / 1000).toFixed(0)}k triangles, ` +
+      `${roadIndex ? `${roadIndex.segments} road segments indexed` : "no road pack"}, ` +
+      `${footprints ? "footprints excluded" : "no building pack"}, ` +
+      `${indexMs.toFixed(0)} ms index + ${fs.rebuildMs.toFixed(0)} ms place` +
+      `${fs.clipped ? " (CLIPPED to the instance budget)" : ""}`,
+    );
   }
 
   const observed: Weather = await wxPromise;
@@ -933,6 +979,24 @@ async function main() {
       r.uCamAltitude.value = camAlt;
     }
 
+    if (foliage) {
+      // Rebuilt only when the camera crosses a 256 m tile; see render/trees.ts.
+      foliage.update(camera.position.x, camera.position.z);
+      const f = foliage.uniforms;
+      f.uCameraPos.value.copy(camera.position);
+      f.uSH.value = skyProbe.sh;
+      f.uSunDir.value.copy(light.sunDir);
+      f.uSunColor.value.copy(light.sunColor);
+      f.uSunIntensity.value = light.sunIntensity;
+      f.uNight.value = light.night;
+      f.uNightGlow.value.copy(light.nightGlow);
+      f.uMoonDir.value.copy(light.moonDir);
+      f.uMoonLight.value.copy(light.moonLight);
+      f.uMieG.value = light.mieG;
+      f.uTurbidity.value = light.turbidity;
+      f.uCamAltitude.value = camAlt;
+    }
+
     const p = model.uniforms;
     p.uSunDir.value.copy(light.sunDir);
     p.uSunColor.value.copy(light.sunColor);
@@ -955,7 +1019,11 @@ async function main() {
     // cadence rather than every frame; see render/skyprobe.ts.
     skyProbe.setSize(quality.scale < 0.8 ? 32 : 64);
     skyProbe.update(renderer, light, camAlt);
-    sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale);
+    // The canopy is instanced, so it cannot be drawn through the depth-only
+    // override the cascades and the AO prepass use; it comes in as its own
+    // scene carrying its own depth shader. See render/trees.ts.
+    const extraCasters = foliage ? [foliage.depthScene] : [];
+    sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale, extraCasters);
     // The environment probe renders the city into a cube with its own camera
     // and its own viewport, where a gl_FragCoord lookup into a buffer built for
     // the main frame would be reading the wrong pixel of the wrong picture.
@@ -963,7 +1031,7 @@ async function main() {
     setAo(0);
     model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
     sky.syncCamera(camera);
-    ao.render(renderer, scene, camera);
+    ao.render(renderer, scene, camera, extraCasters);
     setAo(1);
 
     // Drift angle: the difference between where the nose points and where the
@@ -1129,7 +1197,10 @@ async function main() {
         const sorted = a.sort((x, y) => x - y);
         return { mean, p99: sorted[Math.min(n - 1, Math.floor(n * 0.99))] };
       },
-      get triangles() { return buildings ? buildings.stats.triangles : 0; },
+      get triangles() {
+        return (buildings ? buildings.stats.triangles : 0) + (foliage ? foliage.stats.triangles : 0);
+      },
+      get trees() { return foliage ? foliage.stats.count : 0; },
       get lod() { return buildings ? buildings.stats.lod : 0; },
     },
     flyby: {

@@ -488,7 +488,12 @@ export class AoPass {
    * Depth prepass, horizon search, denoise. Once per frame, BEFORE the main
    * scene render and after everything that moves the camera.
    */
-  render(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.PerspectiveCamera): void {
+  render(
+    renderer: THREE.WebGLRenderer,
+    scene: THREE.Scene,
+    camera: THREE.PerspectiveCamera,
+    extra: readonly THREE.Scene[] = [],
+  ): void {
     if (!this.enabled) return;
     this.resize(renderer);
     renderer.getDrawingBufferSize(this.frameSize);
@@ -508,6 +513,15 @@ export class AoPass {
     renderer.setRenderTarget(this.depthTarget);
     renderer.clear(false, true, false);
     renderer.render(scene, camera);
+    // Casters whose vertex shader moves the geometry, in scenes of their own so
+    // the override does not replace the shader that positions them; see
+    // SunShadow.update. A canopy occludes the ground under it, and leaving the
+    // trees out of this buffer would have them read the sky occlusion of
+    // whatever is BEHIND them.
+    if (extra.length) {
+      scene.overrideMaterial = null;
+      for (const e of extra) renderer.render(e, camera);
+    }
 
     camera.layers.mask = prevLayers;
     scene.overrideMaterial = prevOverride;

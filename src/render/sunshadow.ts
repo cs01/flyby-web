@@ -41,6 +41,9 @@ const CASCADE_FAR = [350, 1400, 6000] as const;
  */
 const BACKOFF_M = 3000;
 
+/** How many cascades, innermost first, the `extra` casters are drawn into. */
+const EXTRA_CASTER_CASCADES = 2;
+
 /** Sine of the sun altitude below which shadows are off. ~1.1 degrees. */
 const SUN_MIN_Y = 0.02;
 /** Fully on by this sun altitude. ~3.4 degrees. */
@@ -284,13 +287,27 @@ export class SunShadow {
     };
   }
 
-  /** Fit the cascades to the camera and render the casters. Once per frame. */
+  /**
+   * Fit the cascades to the camera and render the casters. Once per frame.
+   *
+   * `extra` is for casters that cannot be drawn through `scene.overrideMaterial`
+   * because their vertex shader moves the geometry -- an instanced field is the
+   * case that exists -- so each one is a small scene of its own carrying its own
+   * depth material. They are rendered with the override OFF, which is why they
+   * have to be separate scenes rather than objects inside `scene`.
+   *
+   * They go into the NEAR cascades only. An instanced field is scattered props
+   * a few metres across, and the outer cascade covers 6 km on a 2048 map, so
+   * a whole tree there is one texel; drawing it costs a full pass over the
+   * instance buffer and changes nothing in the picture.
+   */
   update(
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
     camera: THREE.PerspectiveCamera,
     sunDir: THREE.Vector3,
     quality: number,
+    extra: readonly THREE.Scene[] = [],
   ): void {
     const u = this.uniforms;
 
@@ -334,6 +351,11 @@ export class SunShadow {
       renderer.setRenderTarget(c.target);
       renderer.clear(false, true, false);
       renderer.render(scene, c.camera);
+      if (extra.length && i < EXTRA_CASTER_CASCADES) {
+        scene.overrideMaterial = null;
+        for (const e of extra) renderer.render(e, c.camera);
+        scene.overrideMaterial = this.depthMaterial;
+      }
     }
 
     renderer.autoClear = prevAutoClear;

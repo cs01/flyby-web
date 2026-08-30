@@ -110,6 +110,18 @@ export const POSES: Pose[] = [
     what: "Chicago Loop, half past midnight",
   },
   {
+    name: "emeraldhills-canopy",
+    city: "emeraldhills",
+    // Over Emerald Lake looking west at the wooded ridge behind Cañada College.
+    // WorldCover measures this box at 55.1% tree, the highest of any city here,
+    // and no other pose covers it: it is the vegetation case, and before the
+    // trees existed it rendered as bare hillside under a green drape.
+    lat: 37.4650, lon: -122.2650, altM: 340, hdgDeg: 250, pitchDeg: -8,
+    t: D("2025-06-22T01:30:00Z"), // 18:30 PDT: raking light down the ridge
+    wx: CLEAR,
+    what: "Emerald Hills wooded ridge, evening",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is
@@ -207,6 +219,28 @@ async function main(): Promise<void> {
   mkdirSync(outDir, { recursive: true });
   const poses = only ? POSES.filter((p) => only.split(",").includes(p.name)) : POSES;
   if (!poses.length) throw new Error(`no pose matches --only ${only}`);
+
+  // Refuse to run if something else already holds the port.
+  //
+  // vite exits on a --strictPort collision, and the harness then happily
+  // screenshots whatever ELSE is serving there and reports plausible numbers
+  // for the wrong build. That is the worst possible failure for a tool whose
+  // entire job is before/after comparison: it does not error, it lies. It has
+  // already cost one bogus before/after pair, when another worktree's dev
+  // server was holding the default port.
+  try {
+    const probe = await fetch(`http://localhost:${port}/`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    throw new Error(
+      `port ${port} is already serving (HTTP ${probe.status}). Something else is ` +
+        `running there, and screenshotting it would silently measure the wrong ` +
+        `build. Use --port with a free port, or stop the other server.`,
+    );
+  } catch (err) {
+    // A connection failure is the GOOD case: nothing is listening.
+    if (err instanceof Error && err.message.startsWith(`port ${port} is already`)) throw err;
+  }
 
   const vite = Bun.spawn(["bunx", "vite", "--port", String(port), "--strictPort"], {
     cwd: new URL("..", import.meta.url).pathname,
