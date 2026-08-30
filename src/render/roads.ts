@@ -293,6 +293,27 @@ void main() {
             + mix(0.5, vnoise(w * 2.5 + 17.0), medium) * 0.55;
   albedo *= 1.0 + (agg - 0.5) * (unpaved ? 0.75 : 0.30);
 
+  // RELIEF. The aggregate is a height field, so use it as one.
+  //
+  // Until now every ground surface in this renderer returned one flat normal
+  // per triangle and put all its detail in the albedo. That is why asphalt read
+  // as painted lino from a car: a real road catches a low sun across the stone
+  // and this one could not, because there was nothing for the light to catch.
+  //
+  // The gradient is taken with dFdx/dFdy of the noise that was ALREADY
+  // evaluated, so the bump costs two derivatives rather than two more octaves,
+  // and it converges exactly like the albedo does because it is the same
+  // number: as px grows, agg goes to its mean, the gradient goes to zero, and
+  // the surface flattens instead of boiling into per-pixel noise.
+  //
+  // Strength is in metres of apparent depth over a metre of ground. Asphalt
+  // aggregate is a few millimetres and gravel is centimetres, hence the split.
+  float reliefScale = unpaved ? 0.055 : 0.018;
+  vec3 tangentX = normalize(dFdx(vWorld));
+  vec3 tangentY = normalize(dFdy(vWorld));
+  n = normalize(n - (tangentX * dFdx(agg) + tangentY * dFdy(agg))
+                    * reliefScale / max(px, 1e-4));
+
   // --- patch quilt --------------------------------------------------------
   // The most important layer here. Two low frequencies summed and then
   // QUANTISED, so the boundaries are hard the way a saw-cut repair edge is, and

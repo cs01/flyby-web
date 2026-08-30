@@ -656,7 +656,46 @@ void main() {
   vec3 ambient = occludedSkyIrradiance(n) * skyOcc
                + uNightGlow * (1.0 - 0.35 * n.y);
 
-  vec3 lit = albedo * (beam + ambient) + emissive;
+  // BOUNCE. The wall opposite is lit, and it is lit AT you.
+  //
+  // Once the exposure was corrected the shaded sides went blue-black, and that
+  // is not what a shaded wall looks like on a sunny day: the building across
+  // the street is in full sun, it is roughly mid-grey, and it throws a large
+  // fraction of that straight back. In a canyon the bounce can rival the sky.
+  //
+  // The probe cannot supply this. Its lower hemisphere is a flat ground plane
+  // and it contains no city, deliberately, because a probe that contained the
+  // buildings would feed its own output back into itself.
+  //
+  // So it is analytic, and skyOcc is exactly the right weight INVERTED: that
+  // term already measures how much of the sky dome a point up a wall has lost
+  // to the building opposite. Whatever it lost to, it gained a lit wall from.
+  // A rooftop (skyOcc 1) gets none; the foot of a canyon wall gets the most.
+  //
+  // Mean city albedo is about 0.2 and the bounce is one diffuse reflection off
+  // a vertical surface, so the coefficient is deliberately modest. Tinted by
+  // the sun through the same transmittance the direct beam uses, because the
+  // light doing the bouncing is sunlight and at low sun it is orange.
+  // The weight is what the AO pass MEASURED, not the height up the wall.
+  //
+  // skyOcc is analytic from vUv.y and saturates to 1 above about 48 m, so in a
+  // canyon at 65 m it contributed nothing and the bounce term multiplied to
+  // zero: exactly the frame that needed it most got none. A wall that high
+  // between two 150 m towers still faces a great deal of lit wall.
+  //
+  // sampleSkyOcclusion is the real geometry, so whatever sky it says this point
+  // has lost, it has gained a lit surface in the same direction. Both terms are
+  // kept: the analytic one still carries the far side of the street, which no
+  // screen-space search can see.
+  SkyOcclusion bounceOccl = sampleSkyOcclusion(n);
+  float bounceOcc = max(1.0 - bounceOccl.visibility, 1.0 - skyOcc);
+  float horizonWeight = 1.0 - abs(n.y);
+  vec3 bounce = uSunColor * uSunIntensity * uSunSurface * sunT
+              * (0.35 * bounceOcc * horizonWeight * max(0.0, uSunDir.y));
+
+  vec3 ambientTotal = ambient + bounce;
+
+  vec3 lit = albedo * (beam + ambientTotal) + emissive;
 
   vec3 v = normalize(uCameraPos - vWorld);
 
