@@ -255,6 +255,21 @@ export const CITIES: City[] = [
     ],
   },
   {
+    // The peninsula between the bay and the Santa Cruz range. Not a skyline, so
+    // the survey starts low: the point here is the hills and the tree cover,
+    // not a downtown. A 6 km radius reaches downtown Redwood City, Woodside,
+    // Emerald Hills and Filoli from one centre.
+    id: "emeraldhills", name: "Redwood City", country: "USA", continent: "North America",
+    lat: 37.4650, lon: -122.2650, radius: 6000, approach: 45, startAlt: 400,
+    landmarks: [
+      { name: "Filoli", lat: 37.4713, lon: -122.3167, height: 20 },
+      { name: "Ca\u00f1ada College", lat: 37.4553, lon: -122.2793, height: 20 },
+      { name: "Emerald Lake", lat: 37.4700, lon: -122.2670, height: 5 },
+      { name: "Port of Redwood City", lat: 37.5050, lon: -122.2130, height: 15 },
+      { name: "Woodside", lat: 37.4297, lon: -122.2539, height: 10 },
+    ],
+  },
+  {
     id: "grandcanyon", name: "Grand Canyon", country: "USA", continent: "North America",
     lat: 36.0980, lon: -112.0950, radius: 8000, approach: 60, startAlt: 700,
     landmarks: [
