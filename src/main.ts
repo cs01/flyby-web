@@ -664,7 +664,15 @@ async function main() {
     // airframe is a shell wrapped round the lens.
     // Always drawn while droning, whatever the chase rig had decided: flying
     // round your own parked Cessna is most of the fun of leaving it.
-    model.group.visible = droneActive || (chase.mode !== "cockpit" && chase.cockpitBlend < 0.9);
+    // Hide the airframe BEFORE the camera gets inside it, not after.
+    //
+    // The rig lerps from the chase offset (0, 3.5, 10) to the seat
+    // (0, 0.92, -0.15), and the tail sits at z = 4.25, so the camera crosses
+    // into the fuselage at a blend of about 0.57. The old threshold of 0.9 left
+    // a band where you were sitting inside the aeroplane with it still drawn:
+    // what you saw was the double-sided propeller-blur disc filling the screen
+    // as a grey dome, with the wings hanging in front of you.
+    model.group.visible = droneActive || (chase.mode !== "cockpit" && chase.cockpitBlend < 0.45);
     // Zeroed control surfaces while droning. W and A are the drone's now, and
     // a parked aeroplane waggling its ailerons at them looks haunted.
     model.update(dt, ac.throttle, droneActive ? 0 : axes.roll, ac.pitchDeg, droneActive ? 0 : axes.yaw);
