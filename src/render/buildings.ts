@@ -1115,34 +1115,43 @@ function buildMesh(s: Scratch, uniforms: BuildingUniforms): THREE.Mesh | null {
  * quantised, and because at ~60k buildings drawn the whole thing is under six
  * megabytes -- a tenth of what the geometry it describes costs.
  */
-const FACADE_TEX_WIDTH = 1024;
+export const FACADE_TEX_WIDTH = 1024;
 
-function buildFacadeTexture(params: FacadeParams[]): THREE.DataTexture {
-  // RGBA8, two bytes per value, NOT a float texture.
-  //
-  // This was RGBA32F, then RGBA16F, and an Android device returned all zeros
-  // from both while sampling every ordinary texture in the scene correctly.
-  // Every building then read a zero storey height, divided by it, and rendered
-  // NaN-black. Sixteen-bit fixed point in a plain byte texture is the format a
-  // photograph uses: nothing refuses to sample it, it is half the bytes of the
-  // fp32 table, and at 32/65535 the quantum is finer than fp16 managed.
-  const values = params.length * FACADE_FLOATS;
+/**
+ * The bytes the facade texture holds, without a GPU.
+ *
+ * Split out of buildFacadeTexture so test/facade.check.ts can walk the exact
+ * indexing the fragment shader walks. This is the path a LIVE-streamed city
+ * takes and a baked one never does: a baked city builds ONE table for 180,000
+ * buildings, while a streamed city builds one per tile, so the small-N cases
+ * (a tile with four buildings in it) are only ever exercised in the field.
+ */
+export function packFacadeBytes(params: FacadeParams[]): { data: Uint8Array; height: number } {
   const texels = params.length * FACADE_BYTE_TEXELS;
   const height = Math.max(1, Math.ceil(texels / FACADE_TEX_WIDTH));
   const data = new Uint8Array(FACADE_TEX_WIDTH * height * 4);
-
   const scratch = new Float32Array(FACADE_FLOATS);
   for (let i = 0; i < params.length; i++) {
     packFacade(params[i], scratch, 0);
     for (let v = 0; v < FACADE_FLOATS; v++) {
       const [lo, hi] = encodeFacadeValue(scratch[v]);
-      // Two values per texel: the first fills (r,g), the second (b,a).
       const byteIndex = (i * FACADE_FLOATS + v) * 2;
       data[byteIndex] = lo;
       data[byteIndex + 1] = hi;
     }
   }
-  void values;
+  return { data, height };
+}
+
+function buildFacadeTexture(params: FacadeParams[]): THREE.DataTexture {
+  // RGBA8, two bytes per value, NOT a float texture: an Android device returned
+  // all zeros from the same table as fp32 AND as fp16 while sampling every
+  // ordinary texture correctly, and every building then read a zero storey
+  // height, divided by it, and rendered NaN-black.
+  //
+  // The packing itself lives in packFacadeBytes so the gate can walk the same
+  // bytes the shader indexes, without a GPU.
+  const { data, height } = packFacadeBytes(params);
 
   const tex = new THREE.DataTexture(data, FACADE_TEX_WIDTH, height, THREE.RGBAFormat, THREE.UnsignedByteType);
   // Nearest and no mips: this is a lookup table, not an image. Any filtering

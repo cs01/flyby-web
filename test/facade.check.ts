@@ -23,10 +23,12 @@
 // Watched to fail; see the notes on each block.
 
 import { readdirSync } from "node:fs";
+import { packFacadeBytes, FACADE_TEX_WIDTH } from "../src/render/buildings";
 import { parseCityPack, BuildingKind } from "../src/data/citypack";
 import {
   CORE_PERIOD_MAX,
   CORE_PERIOD_MIN,
+  FACADE_BYTE_TEXELS,
   FACADE_ENCODE_MAX,
   FACADE_FLOATS,
   FACADE_GLSL,
@@ -434,6 +436,96 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
     "the range check would catch an over-range value",
     Math.abs(decodeFacadeValue(plo, phi) - FACADE_ENCODE_MAX * 4) > 1,
     `clamped to ${decodeFacadeValue(plo, phi).toFixed(1)} as it must be`,
+  );
+}
+
+
+// --- the per-tile lookup path ----------------------------------------------
+//
+// A LIVE-streamed city builds one facade table PER TILE, so a table with four
+// buildings in it is routine there and impossible in a baked city, which builds
+// one table for 180,000. That small-N path has never been exercised by any
+// gate, and a wrong row stride in it decodes every parameter as garbage, which
+// is what a city of randomly coloured buildings looks like.
+//
+// This walks the EXACT indexing the fragment shader walks, in TypeScript:
+//   t = bidx * FACADE_BYTE_TEXELS + k
+//   y = floor(t / width),  x = t - y * width
+// and one RGBA8 texel carries two 16-bit values, (r,g) then (b,a).
+{
+  // texelFetch takes an (x, y) and the TEXTURE's own width decides where that
+  // lands in memory. So the row arithmetic uses the width the shader believes,
+  // and the fetch uses the width the texture actually has. Passing one value
+  // for both cancels out algebraically and tests nothing, which is exactly what
+  // the probe below caught the first time this was written.
+  const shaderRead = (
+    data: Uint8Array,
+    believedWidth: number,
+    bidx: number,
+    valueIndex: number,
+    trueWidth = FACADE_TEX_WIDTH,
+  ): number => {
+    // Which of the twelve byte-texels holds this value, and which half of it.
+    const pair = Math.floor(valueIndex / 2);
+    const half = valueIndex % 2;
+    const t = bidx * FACADE_BYTE_TEXELS + pair;
+    const y = Math.floor(t / believedWidth);
+    const x = t - y * believedWidth;
+    const o = (y * trueWidth + x) * 4 + half * 2;
+    if (o + 1 >= data.length) return Number.NaN;
+    return decodeFacadeValue(data[o], data[o + 1]);
+  };
+
+  let worstErr = 0;
+  let checkedTiles = 0;
+  const scratch = new Float32Array(FACADE_FLOATS);
+  // 1 and 4 are real tile sizes; 85 crosses no row; 86 crosses exactly one row
+  // boundary (86 * 12 = 1032 > 1024), which is the case a stride bug hides in.
+  for (const n of [1, 4, 85, 86, 171, 512, 2000]) {
+    const params = [];
+    for (let i = 0; i < n; i++) params.push(facadeFor(i % 7, 4 + (i % 200), i * 7 + 1));
+    const { data, height } = packFacadeBytes(params);
+    checkedTiles++;
+    for (let i = 0; i < n; i++) {
+      packFacade(params[i], scratch, 0);
+      for (let v = 0; v < FACADE_FLOATS; v++) {
+        const got = shaderRead(data, FACADE_TEX_WIDTH, i, v);
+        worstErr = Math.max(worstErr, Math.abs(got - scratch[v]));
+      }
+    }
+    // The buffer must be big enough for the last building's last byte.
+    const needed = n * FACADE_FLOATS * 2;
+    check(
+      `a ${n}-building table is large enough`,
+      data.length >= needed,
+      `${data.length} bytes for ${needed} needed, ${height} rows`,
+    );
+  }
+  check(
+    "every building reads back through the shader's own indexing",
+    worstErr < 0.001,
+    `worst error ${worstErr.toExponential(2)} across ${checkedTiles} table sizes`,
+  );
+
+  // VACUITY PROBE: the read must FAIL if the stride is wrong, or it is checking
+  // nothing. 86 buildings is 1032 texels, so it spans two rows and a stride of
+  // width+1 misplaces every building after the first row.
+  const params86 = [];
+  for (let i = 0; i < 86; i++) params86.push(facadeFor(i % 7, 4 + i, i * 7 + 1));
+  const { data: d86 } = packFacadeBytes(params86);
+  let wrongStrideErr = 0;
+  for (let i = 0; i < 86; i++) {
+    packFacade(params86[i], scratch, 0);
+    for (let v = 0; v < FACADE_FLOATS; v++) {
+      const got = shaderRead(d86, FACADE_TEX_WIDTH + 1, i, v);
+      const err = Number.isNaN(got) ? Infinity : Math.abs(got - scratch[v]);
+      wrongStrideErr = Math.max(wrongStrideErr, err);
+    }
+  }
+  check(
+    "probe: a wrong row stride is detectable",
+    wrongStrideErr > 0.01,
+    `off-by-one stride gives ${wrongStrideErr.toExponential(2)} error, so the check above can fail`,
   );
 }
 
