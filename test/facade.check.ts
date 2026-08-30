@@ -378,5 +378,68 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
   check("brick walls are mostly wall", brickWorst <= 0.4, `worst ${brickWorst.toFixed(2)}`);
 }
 
+// --- fp16 round-trip --------------------------------------------------------
+//
+// The parameter table is uploaded as HalfFloatType, because an Android device
+// could not read it as fp32 at all (every building rendered magenta, which is
+// the shader's sentinel for an all-zero fetch). fp16 is only safe because every
+// value happens to be small; if a future field carries a large number, or a
+// value that has to survive an exact integer round-trip, this gate is what
+// notices before a phone does.
+{
+  const toHalf = (v: number): number => {
+    // Minimal float32 -> float16 -> float32, so the gate does not depend on
+    // THREE (this file runs under Bun with no DOM).
+    const f = new Float32Array(1);
+    const i = new Uint32Array(f.buffer);
+    f[0] = v;
+    const x = i[0];
+    const sign = (x >>> 16) & 0x8000;
+    let exp = ((x >>> 23) & 0xff) - 127 + 15;
+    let man = x & 0x7fffff;
+    if (exp <= 0) return sign === 0 ? 0 : -0;
+    if (exp >= 31) return sign ? -Infinity : Infinity;
+    // Round to nearest even on the 13 bits being dropped.
+    const round = (man & 0x1fff) > 0x1000 || ((man & 0x1fff) === 0x1000 && (man >>> 13) & 1);
+    man >>>= 13;
+    if (round) { man++; if (man === 0x400) { man = 0; exp++; } }
+    const h = sign | (exp << 10) | man;
+    // Back to float32.
+    const hs = h & 0x8000, he = (h >>> 10) & 0x1f, hm = h & 0x3ff;
+    const val = he === 0 ? hm * 2 ** -24 : (1 + hm / 1024) * 2 ** (he - 15);
+    return hs ? -val : val;
+  };
+
+  let worstAbs = 0;
+  let worstRel = 0;
+  let exactIntFailures = 0;
+  const out = new Float32Array(FACADE_FLOATS);
+  for (let seed = 0; seed < 4000; seed++) {
+    const kind = seed % 7;
+    const h = 3 + (seed % 300);
+    packFacade(facadeFor(kind, h, seed), out, 0);
+    for (let i = 0; i < FACADE_FLOATS; i++) {
+      const v = out[i];
+      const r = toHalf(v);
+      worstAbs = Math.max(worstAbs, Math.abs(r - v));
+      // Relative error is meaningless below fp16's smallest normal (6.1e-5):
+      // this converter flushes subnormals to zero, so a 1.8e-5 value reports
+      // 100% relative error while being visually and numerically zero either
+      // way. Exactly two values in the whole table are that small. The absolute
+      // bound below governs them, and it is the bound that actually matters for
+      // a storey height or a probability.
+      if (Math.abs(v) >= 1e-3) worstRel = Math.max(worstRel, Math.abs(r - v) / Math.abs(v));
+      // The packed group*8+family must survive EXACTLY: the shader recovers
+      // both with a floor and a subtraction, and a value of 15.9999 would
+      // decode as group 1 family 7.9999 instead of group 1 family 8.
+      if (Number.isInteger(v) && r !== v) exactIntFailures++;
+    }
+  }
+  check("fp16 keeps every facade value", worstRel < 1e-3, `worst relative ${worstRel.toExponential(2)}`);
+  check("fp16 absolute error is negligible", worstAbs < 0.02, `worst absolute ${worstAbs.toExponential(2)}`);
+  check("fp16 is exact on the packed integers", exactIntFailures === 0, `${exactIntFailures} integers changed`);
+}
+
 console.log(failures === 0 ? "\nall facade checks ok" : `\n${failures} facade check(s) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
+

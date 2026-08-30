@@ -913,7 +913,21 @@ function buildFacadeTexture(params: FacadeParams[]): THREE.DataTexture {
   const data = new Float32Array(FACADE_TEX_WIDTH * height * 4);
   for (let i = 0; i < params.length; i++) packFacade(params[i], data, i);
 
-  const tex = new THREE.DataTexture(data, FACADE_TEX_WIDTH, height, THREE.RGBAFormat, THREE.FloatType);
+  // HALF float, not full, and the reason is a real device.
+  //
+  // An Android phone rendered every building magenta, which is the sentinel in
+  // FACADE_GLSL for "every texelFetch came back zero": the RGBA32F table was
+  // not readable there at all. Measured, every value this table stores lies in
+  // 0..20, so fp16 (about 1e-3 relative, and exact for the small integers that
+  // pack group and family together) loses nothing, halves the upload, and is
+  // far more widely supported on mobile GL than fp32 sampling.
+  //
+  // Chicago goes from 10.6 MB to 5.3 MB, on a device that has already shown it
+  // is short of GPU memory.
+  const half = new Uint16Array(data.length);
+  for (let i = 0; i < data.length; i++) half[i] = THREE.DataUtils.toHalfFloat(data[i]);
+
+  const tex = new THREE.DataTexture(half, FACADE_TEX_WIDTH, height, THREE.RGBAFormat, THREE.HalfFloatType);
   // Nearest and no mips: this is a lookup table, not an image. Any filtering
   // would blend one building's storey height into its neighbour's.
   tex.minFilter = THREE.NearestFilter;

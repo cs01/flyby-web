@@ -3,9 +3,18 @@
 //
 //   R  water        (80, plus 0/nodata: the baker documents holes as open sea)
 //   G  built        (50)
-//   B  vegetation   (10 tree, 20 shrub, 30 grass, 40 crop, 90 wetland,
-//                    95 mangrove, 100 moss)
-//   A  bare or snow (60, 70)
+//   B  tree         (10 tree, 95 mangrove)
+//   A  herbaceous   (20 shrub, 30 grass, 40 crop, 90 wetland, 100 moss)
+//
+// Bare and snow (60, 70) are NOT given a channel: the packing is one-hot, so
+// they are exactly `1 - (R+G+B+A)` and cost nothing to carry implicitly.
+//
+// Tree used to share a channel with grass and crop, which threw away the one
+// distinction the vegetation data exists to make. A forest and a lawn need
+// different geometry (canopies versus a ground material), and no amount of
+// shader work recovers the difference once it has been averaged into a single
+// coverage number. WorldCover measured it; collapsing it here was discarding
+// the measurement.
 //
 // The classes are collapsed here rather than in the shader because a GPU cannot
 // filter a categorical raster: linear interpolation between class code 50 and
@@ -24,20 +33,26 @@ const CHANNEL_OF_CLASS: Readonly<Record<number, number>> = {
   [LandClass.Water]: 0,
   [LandClass.Built]: 1,
   [LandClass.Tree]: 2,
-  [LandClass.Shrub]: 2,
-  [LandClass.Grass]: 2,
-  [LandClass.Crop]: 2,
-  [LandClass.Wetland]: 2,
   [LandClass.Mangrove]: 2,
-  [LandClass.Moss]: 2,
-  [LandClass.Bare]: 3,
-  [LandClass.Snow]: 3,
+  [LandClass.Shrub]: 3,
+  [LandClass.Grass]: 3,
+  [LandClass.Crop]: 3,
+  [LandClass.Wetland]: 3,
+  [LandClass.Moss]: 3,
+  // Bare and snow deliberately have no channel; see the header. -1 means "no
+  // channel", which the writer skips, leaving the texel summing to under one.
+  [LandClass.Bare]: -1,
+  [LandClass.Snow]: -1,
 };
 
 export interface MaskSample {
   water: number;
   built: number;
-  veg: number;
+  /** Canopy: tree and mangrove. Drives where trees get planted. */
+  tree: number;
+  /** Grass, shrub, crop, wetland, moss. Drives ground material, not geometry. */
+  herb: number;
+  /** Derived, not stored: bare and snow are whatever the others are not. */
   bare: number;
 }
 
@@ -57,9 +72,15 @@ export function buildLandMaskRGBA(level: LandLevel): Uint8Array {
   const rgba = new Uint8Array(n * n * 4);
   for (let t = 0; t < cls.length; t++) {
     // An unknown code would be a decode bug in the baker, and calling it water
-    // would silently flood a city; call it bare, which is inert.
-    const ch = CHANNEL_OF_CLASS[cls[t]] ?? 3;
-    rgba[t * 4 + ch] = 255;
+    // would silently flood a city; leave it bare, which is inert and is also
+    // what an absent channel means.
+    //
+    // -1 is bare/snow, which is carried as the remainder rather than stored.
+    // Writing it would index t*4 - 1, i.e. the PREVIOUS texel's alpha, so the
+    // guard is not defensive padding: without it, every bare texel corrupts its
+    // neighbour.
+    const ch = CHANNEL_OF_CLASS[cls[t]] ?? -1;
+    if (ch >= 0) rgba[t * 4 + ch] = 255;
   }
   return rgba;
 }
@@ -104,5 +125,8 @@ export function sampleMaskBilinear(
     for (let c = 0; c < 4; c++) out[c] += w * (rgba[o + c] / 255);
   }
 
-  return { water: out[0], built: out[1], veg: out[2], bare: out[3] };
+  // Bare is the remainder, so a texel that is 100% bare reports every stored
+  // channel at zero and bare at one, and the five always sum to one.
+  const bare = Math.max(0, 1 - (out[0] + out[1] + out[2] + out[3]));
+  return { water: out[0], built: out[1], tree: out[2], herb: out[3], bare };
 }

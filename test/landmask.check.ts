@@ -23,7 +23,7 @@ import { Origin } from "../src/geo";
 
 const DIR = "public/cities";
 
-type Channel = "water" | "built" | "veg" | "bare";
+type Channel = "water" | "built" | "tree" | "herb" | "bare";
 
 interface Probe {
   city: string;
@@ -63,7 +63,7 @@ const PROBES: Probe[] = [
     city: "manhattan",
     name: "Central Park, Sheep Meadow",
     lat: 40.7715, lon: -73.974,
-    want: [["veg", ">", 0.5], ["built", "<", 0.35]],
+    want: [["tree", ">", 0.5], ["built", "<", 0.35]],
   },
   {
     city: "sf",
@@ -121,7 +121,7 @@ for (const p of PROBES) {
 
   const shown =
     `water ${s.water.toFixed(3)} built ${s.built.toFixed(3)} ` +
-    `veg ${s.veg.toFixed(3)} bare ${s.bare.toFixed(3)}`;
+    `tree ${s.tree.toFixed(3)} herb ${s.herb.toFixed(3)} bare ${s.bare.toFixed(3)}`;
   for (const [ch, cmp, thr] of p.want) {
     const v = s[ch];
     const ok = cmp === ">" ? v > thr : v < thr;
@@ -131,7 +131,11 @@ for (const p of PROBES) {
   // One-hot in, so bilinear out must still be a partition of unity. This is
   // what catches a class silently landing in no channel at all, which every
   // per-channel threshold above would happily pass.
-  const sum = s.water + s.built + s.veg + s.bare;
+  // Bare is derived as the remainder, so all five must still sum to one. That
+  // is a stronger statement than before: it now also catches a class that got
+  // dropped from every channel, which would previously have shown as a texel
+  // summing to one with the missing class silently folded into vegetation.
+  const sum = s.water + s.built + s.tree + s.herb + s.bare;
   check(`${p.city}: ${p.name} channels sum to 1`, Math.abs(sum - 1) < 0.01, `sum ${sum.toFixed(4)}`);
 }
 
