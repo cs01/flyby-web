@@ -1,7 +1,7 @@
 // The skyline: OSM footprints extruded to their real heights, lit by the same
 // atmosphere as everything else.
 //
-// Three decisions carry most of the quality here.
+// Four decisions carry most of the quality here.
 //
 // **Chunked, not one mesh.** The buildings are merged into ~1.5 km cells rather
 // than a single giant buffer. One mesh cannot be frustum-culled, so flying with
@@ -16,12 +16,26 @@
 // **The base is buried at the footprint's LOWEST ground sample.** Placing a
 // building at the terrain height of its centroid leaves half of it hanging in
 // the air on any slope, and San Francisco is nothing but slope.
+//
+// **The facade is a lookup, not a formula.** Everything about what a building
+// is made of comes out of render/facade.ts, once per building, on the CPU, and
+// reaches the shader through a parameter texture. See that file for why: it is
+// where the material families and the night occupancy model live, and it is
+// pure so that test/facade.check.ts can gate both.
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { triangulate, signedArea } from "./earcut";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
+import {
+  FACADE_FLOATS,
+  FACADE_GLSL,
+  facadeFor,
+  hash3,
+  packFacade,
+  type FacadeParams,
+} from "./facade";
 import { footprintGroundY, type Building, type CityPack } from "../data/citypack";
 
 const CELL_M = 1500;
@@ -48,6 +62,58 @@ const THIN_TO_M = 9000;
 const MAX_CUTOFF_M = 40;
 
 /**
+ * How far out roof detail survives.
+ *
+ * Both are INSIDE the distance at which whole buildings start being dropped
+ * (FULL_DETAIL_M / k), and that ordering is the point: a parapet or an air
+ * handler is a metre of relief on top of a thirty-metre box, so it stops being
+ * resolvable long before the box does. Spending the budget on clutter out at
+ * 6 km would be paying for sub-pixel geometry with buildings that are still
+ * several pixels across.
+ *
+ * Boxes go first, parapets second, buildings last.
+ */
+const CLUTTER_M = 1200;
+const PARAPET_M = 1600;
+
+/** Triangles a footprint costs: two per wall segment, plus the roof fan. */
+function triangleCost(vertCount: number): number {
+  return vertCount * 2 + Math.max(0, vertCount - 2);
+}
+
+/**
+ * What goes on the roof of one building, given how far out it is and how
+ * aggressive the LOD solver had to be.
+ *
+ * Area and height are both gates because both matter: a parapet round a 30 m2
+ * shed is invisible, and an air-handling plant on a two-storey house is wrong.
+ */
+export interface RoofExtras {
+  parapet: boolean;
+  /** Small plant boxes (air handlers, chillers, vents). */
+  boxes: number;
+  /** One larger box for the stair and lift overrun. */
+  overrun: boolean;
+}
+
+const NO_EXTRAS: RoofExtras = { parapet: false, boxes: 0, overrun: false };
+
+function roofExtras(distM: number, k: number, heightM: number, areaM2: number): RoofExtras {
+  if (heightM < 6 || areaM2 < 120) return NO_EXTRAS;
+  const parapet = distM < PARAPET_M / k;
+  if (!parapet) return NO_EXTRAS;
+  if (distM >= CLUTTER_M / k) return { parapet, boxes: 0, overrun: false };
+  const boxes = Math.min(4, Math.floor(areaM2 / 900));
+  const overrun = heightM >= 22 && areaM2 >= 350;
+  return { parapet, boxes, overrun };
+}
+
+/** Triangles the roof extras add: the parapet's inner face, plus 10 per box. */
+function extrasCost(vertCount: number, e: RoofExtras): number {
+  return (e.parapet ? vertCount * 2 : 0) + (e.boxes + (e.overrun ? 1 : 0)) * 10;
+}
+
+/**
  * Triangle budget for the whole skyline.
  *
  * Cities differ in density by more than a factor of five -- San Francisco bakes
@@ -58,22 +124,27 @@ const MAX_CUTOFF_M = 40;
  */
 const TRIANGLE_BUDGET = 1_500_000;
 
-/** Triangles a footprint costs: two per wall segment, plus the roof fan. */
-function triangleCost(vertCount: number): number {
-  return vertCount * 2 + Math.max(0, vertCount - 2);
-}
-
 /**
  * Find the smallest LOD aggression that fits the budget. Coarse steps, because
  * the difference between k=1 and k=1.5 is invisible and the loop is over every
  * building in the pack.
+ *
+ * Roof clutter is inside this sum, not bolted on after it. If it were not, the
+ * budget would be a number about walls and the actual triangle count would be
+ * whatever the clutter happened to add.
  */
 function solveLod(pack: CityPack): number {
   for (const k of [1, 1.4, 2, 3, 4.5, 7, 11, 18]) {
     let tris = 0;
     for (const b of pack.buildings) {
-      if (b.topM - b.baseM < minHeightAt(Math.hypot(b.cx, b.cz), k)) continue;
-      tris += triangleCost(b.ring.length / 2);
+      const h = b.topM - b.baseM;
+      const dist = Math.hypot(b.cx, b.cz);
+      if (h < minHeightAt(dist, k)) continue;
+      const n = b.ring.length / 2;
+      tris += triangleCost(n);
+      if (dist < PARAPET_M / k) {
+        tris += extrasCost(n, roofExtras(dist, k, h, Math.abs(signedArea(b.ring))));
+      }
       if (tris > TRIANGLE_BUDGET) break;
     }
     if (tris <= TRIANGLE_BUDGET) return k;
@@ -86,7 +157,7 @@ precision highp float;
 in vec3 position;
 in vec3 normal;
 in vec2 uv;        // x: metres along the wall, y: metres up the wall
-in vec4 info;      // seed, kind, isRoof, building height
+in vec4 info;      // building index, building height, isRoof, part
 
 uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
@@ -108,6 +179,12 @@ void main() {
 }
 `;
 
+/** info.w: which piece of the building a fragment belongs to. */
+const PART_WALL = 0;
+const PART_ROOF = 1;
+const PART_PARAPET = 2;
+const PART_CLUTTER = 3;
+
 const FRAG = /* glsl */ `
 precision highp float;
 in vec3 vNormal;
@@ -124,6 +201,7 @@ out vec4 fragColor;
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 ${SUN_SHADOW_GLSL}
+${FACADE_GLSL}
 
 uniform vec3  uCameraPos;
 uniform vec3  uAmbient;
@@ -146,58 +224,36 @@ float hash21(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
-// Facade materials.
-//
-// Keyed mostly on a per-building hash rather than on the OSM kind tag,
-// because kind does not vary: most of Manhattan is tagged building=yes, so
-// by kind alone produced a city of one grey with a second grey for anything
-// over 100 m. Real cities are brick beside sandstone beside concrete beside
-// glass, and that variety is most of what makes a skyline read as buildings
-// rather than as extruded polygons.
-//
-// Towers stay keyed on kind: something over 100 m really is steel and glass,
-// and giving one a brick facade looks wrong immediately.
-vec3 facadeColour(float kind, float seed) {
-  float h = hash11(seed * 1.7 + 0.3);
-  float v = hash11(seed * 3.1 + 5.2);
-  vec3 c;
+/**
+ * A narrow tent peaking at c. Used as the DERIVATIVE of the window mask: the
+ * mask itself steps up at one edge and down at the other, so a spike at each
+ * edge, positive then negative, is the slope of the surface a recessed window
+ * actually has. Perturbing the normal by it is what turns a flat painted-on
+ * window into one with a reveal that catches the light.
+ */
+float tent(float x, float c, float ew) {
+  return smoothstep(c - ew, c, x) * smoothstep(c + ew, c, x);
+}
 
-  if (kind > 5.5) {
-    // Tower: glass and steel, cool and fairly dark.
-    c = mix(vec3(0.24, 0.28, 0.34), vec3(0.44, 0.47, 0.51), v);
-  } else if (h < 0.24) {
-    // Brick, the colour most cities are actually made of.
-    c = mix(vec3(0.33, 0.16, 0.12), vec3(0.50, 0.27, 0.20), v);
-  } else if (h < 0.44) {
-    // Sandstone and warm render.
-    c = mix(vec3(0.50, 0.43, 0.32), vec3(0.68, 0.59, 0.44), v);
-  } else if (h < 0.63) {
-    // Pale concrete.
-    c = mix(vec3(0.52, 0.51, 0.49), vec3(0.72, 0.71, 0.68), v);
-  } else if (h < 0.82) {
-    // Grey concrete.
-    c = mix(vec3(0.34, 0.35, 0.36), vec3(0.50, 0.51, 0.52), v);
-  } else {
-    // Painted.
-    c = mix(vec3(0.56, 0.52, 0.45), vec3(0.74, 0.68, 0.57), v);
-  }
-
-  if (kind > 2.5 && kind < 3.5) c *= 0.88;   // industrial: grubbier
-  if (kind > 4.5 && kind < 5.5) c = mix(c, vec3(0.66, 0.62, 0.54), 0.4);  // civic: stone
-
-  // A small per-building shift on top, so neighbours in the same family differ.
-  vec3 jitter = vec3(hash11(seed + 11.3), hash11(seed + 19.7), hash11(seed + 27.1)) - 0.5;
-  return clamp(c * (1.0 + 0.16 * jitter.x) + 0.045 * jitter, 0.03, 0.94);
+/**
+ * The coping on top of a parapet. Pale grey stone or concrete whatever the
+ * wall below it is made of, which is exactly the line that makes a box read as
+ * a building from the air.
+ */
+vec3 parapetColour(Facade p) {
+  return mix(p.colour, vec3(0.42, 0.41, 0.39), 0.55 + 0.25 * hash11(p.seed * 31.0 + 5.0));
 }
 
 void main() {
-  float seed = vInfo.x;
-  float kind = vInfo.y;
+  float bidx  = vInfo.x;
+  float bldH  = vInfo.y;
   float isRoof = vInfo.z;
-  float bldH = vInfo.w;
+  float part  = vInfo.w;
+
+  Facade fp = readFacade(bidx);
 
   vec3 n = normalize(vNormal);
-  vec3 albedo = facadeColour(kind, seed);
+  vec3 albedo = fp.colour;
 
   // A lit window EMITS. It was being added into the albedo, which then went
   // through the sun and ambient terms like everything else -- so a lit window
@@ -205,21 +261,21 @@ void main() {
   // brightest thing on the building.
   vec3 emissive = vec3(0.0);
 
-  float glassiness = 0.0;
+  // How much of this fragment behaves as glass rather than as wall. Drives the
+  // Fresnel reflection and the sun glint, and nothing else.
+  float glassMask = 0.0;
 
   // How much of the sky dome this fragment can see, beyond its own orientation.
   // 1.0 on a roof; less and less as you go down into a street canyon.
   float skyOcc = 1.0;
 
-  if (isRoof < 0.5) {
+  if (part < 0.5) {
     // --- Facade ---------------------------------------------------------
-    // Storeys are ~3.2 m; window columns ~2.6 m. Quantising to a real storey
-    // height is what makes a building read at the right SIZE: get it wrong and
-    // a 40-storey tower looks like a 10-storey one from the same distance.
-    const float STOREY = 3.2;
-    const float COLUMN = 2.6;
-
-    vec2 grid = vec2(vUv.x / COLUMN, vUv.y / STOREY);
+    // Storey and column pitch are per BUILDING, out of the parameter texture.
+    // A curtain wall's mullions are 1.6 m apart and a brick terrace's windows
+    // are 3.3 m apart; sharing one grid between them is most of why a street
+    // of these used to read as wallpaper.
+    vec2 grid = vec2(vUv.x / fp.columnM, vUv.y / fp.storeyM);
     float floorIdx = floor(grid.y);
     float colIdx = floor(grid.x);
     vec2 cell = fract(grid);
@@ -247,29 +303,66 @@ void main() {
     // edge-on -- where a pixel really does span many windows -- converges even
     // though it is close.
     float detail = 1.0 - clamp(max(w.x, w.y) * 1.6, 0.0, 1.0);
-    const float WIN_MEAN = 0.68 * 0.62;
+    float winMean = (fp.win.y - fp.win.x) * (fp.win.w - fp.win.z);
 
-    // A tall building is mostly glass; a low one is mostly wall.
-    glassiness = smoothstep(18.0, 70.0, bldH) * 0.75 + 0.1;
-
-    // Window rectangle inside the cell, with a sill and a mullion, every edge
-    // softened by the footprint so it antialiases instead of stair-stepping.
+    // Window rectangle inside the cell, every edge softened by the pixel
+    // footprint so it antialiases instead of stair-stepping.
+    // The wall carries on past the roof slab to make the parapet, so the grid
+    // has to STOP at the roof line -- otherwise the coping gets a row of
+    // windows in it and the parapet reads as one more storey.
+    float capped = step(vUv.y, bldH);
     float winPattern =
-        smoothstep(0.16 - w.x, 0.16 + w.x, cell.x)
-      * smoothstep(0.84 + w.x, 0.84 - w.x, cell.x)
-      * smoothstep(0.30 - w.y, 0.30 + w.y, cell.y)
-      * smoothstep(0.92 + w.y, 0.92 - w.y, cell.y);
-    float win = mix(WIN_MEAN, winPattern, detail);
+        smoothstep(fp.win.x - w.x, fp.win.x + w.x, cell.x)
+      * smoothstep(fp.win.y + w.x, fp.win.y - w.x, cell.x)
+      * smoothstep(fp.win.z - w.y, fp.win.z + w.y, cell.y)
+      * smoothstep(fp.win.w + w.y, fp.win.w - w.y, cell.y);
+    winPattern *= capped;
+    float win = mix(winMean * capped, winPattern, detail);
 
     // Ground floor is taller and shopfront-like, not a repeated window.
-    if (vUv.y < STOREY * 1.15) win *= 0.35;
+    if (vUv.y < fp.storeyM * 1.15) win *= 0.35;
 
-    vec3 glass = mix(vec3(0.10, 0.13, 0.17), vec3(0.16, 0.22, 0.28), hash11(seed + 3.3));
-    albedo = mix(albedo, glass, win * glassiness);
+    glassMask = win * fp.glassFrac;
+
+    vec3 glass = mix(vec3(0.075, 0.095, 0.125), vec3(0.15, 0.19, 0.24), hash11(fp.seed + 3.3));
+    albedo = mix(albedo, glass, glassMask);
 
     // Horizontal banding between storeys: a thin darker line reads as a floor
     // slab and gives the facade its scale at distance.
     albedo *= 1.0 - 0.18 * detail * smoothstep(0.10 + w.y, 0.0, cell.y);
+
+    // --- Relief ---------------------------------------------------------
+    // Every facade used to be geometrically flat and lit as flat, which is a
+    // thing no photograph of a building has ever been. The window edges get a
+    // normal that tilts into the reveal, and the reveal itself is darkened,
+    // so the wall has depth from any angle the sun is in.
+    //
+    // Scaled by detail like everything else here: at two kilometres a 100 mm
+    // reveal is far under a pixel and perturbing the normal by it would just
+    // make the wall sparkle.
+    float ew = max(0.05, w.x * 2.0);
+    float ewy = max(0.05, w.y * 2.0);
+    float gx = tent(cell.x, fp.win.x, ew) - tent(cell.x, fp.win.y, ew);
+    float gy = tent(cell.y, fp.win.z, ewy) - tent(cell.y, fp.win.w, ewy);
+    float relief = fp.relief * detail;
+    // The wall's own tangent frame: along the wall, and straight up.
+    vec3 tang = normalize(vec3(n.z, 0.0, -n.x));
+    // 0.22, not the 0.55 this started at. A reveal is 100-200 mm deep on a
+    // 1.8 m window, so the surface it presents is a narrow chamfer, not a
+    // 20-degree fold -- and at 0.55 every window grew a bright mullion round
+    // it and a wall of them read as glazed tiles rather than as masonry.
+    n = normalize(n + (tang * gx + vec3(0.0, 1.0, 0.0) * gy) * relief * 0.22);
+    // Most of what a reveal actually does is cast a line of shadow, so the
+    // darkening carries more of the effect than the normal does.
+    albedo *= 1.0 - 0.38 * relief * (abs(gx) + abs(gy));
+
+    // A cornice: the last metre below the parapet is a projecting band, so it
+    // is brighter on top and casts a line of shadow under itself. On a stone
+    // or brick building this is a real moulding; on a curtain wall the relief
+    // parameter is near zero and it barely shows, which is also correct.
+    float belowTop = bldH - vUv.y;
+    albedo *= 1.0 - 0.45 * fp.relief * detail
+                  * smoothstep(0.0, 1.4, belowTop) * smoothstep(2.6, 1.4, belowTop);
 
     // Ambient occlusion down the wall -- on the SKY term, not the albedo.
     //
@@ -288,19 +381,26 @@ void main() {
 
     // --- Lit windows at night -------------------------------------------
     if (uNight > 0.02) {
-      float r = hash21(vec2(colIdx + seed * 31.0, floorIdx + seed * 17.0));
-      // Occupancy falls off up the building and varies per building.
-      float occupancy = mix(0.06, 0.40, hash11(seed + 5.1)) * mix(1.0, 0.55, smoothstep(0.0, 120.0, vUv.y));
+      // Upper floors empty first: the top of a tower is the executive floor
+      // and the plant room, and neither is occupied at two in the morning.
+      float heightFade = mix(1.0, 0.55, smoothstep(0.0, 120.0, vUv.y));
+      // Correlated occupancy: cores, then floors, then tenancies, then the
+      // individual window. See facade.ts -- an independent coin per cell is
+      // exactly what produced a checkerboard.
+      float litPattern = facadeLit(fp, colIdx, floorIdx, heightFade) * winPattern;
+      float occ = facadeMeanOccupancy(fp, heightFade);
       // Same treatment as the window pattern: resolve individual lit windows
       // up close, converge to the average glow of a lit building far away.
-      float litPattern = step(1.0 - occupancy, r) * winPattern;
-      float lit = mix(occupancy * WIN_MEAN, litPattern, detail);
+      float lit = mix(occ * winMean, litPattern, detail);
       // A third of the windows cool. Offices are fluorescent and LED, homes
       // are warm, and a city that is entirely sodium-orange at night is a city
-      // from before about 1995.
-      vec3 warm = mix(vec3(1.0, 0.74, 0.42), vec3(0.82, 0.88, 1.0), step(0.66, hash11(r * 91.0)));
+      // from before about 1995. Homes lean warm and offices lean cool, which
+      // is why the mix is keyed on the occupancy group and not on a coin.
+      float coolBias = fp.group < 0.5 ? 0.80 : 0.42;
+      vec3 warm = mix(vec3(1.0, 0.74, 0.42), vec3(0.82, 0.88, 1.0),
+                      step(coolBias, hash21(vec2(colIdx * 0.37 + fp.seed, floorIdx * 0.71))));
       // The number to watch is not the peak, it is the MEAN. Far away this
-      // converges to occupancy x 0.42 x scale over the whole facade, and at
+      // converges to occupancy x winMean x scale over the whole facade, and at
       // 0.2 that mean was about four times the wall's own night lighting: a
       // warm wash over every surface, which is what made the city read tan
       // however neutral the skyglow and the albedo were made. At 0.09 the mean
@@ -308,20 +408,44 @@ void main() {
       // it, and the peak is still 12x the wall up close where it should be.
       emissive += warm * lit * uNight * 0.09;
     }
-  } else {
+
+    if (capped < 0.5) {
+      albedo = parapetColour(fp);
+      skyOcc = 0.9;
+    }
+  } else if (part < 1.5) {
     // --- Roof -----------------------------------------------------------
     // Roofs are dirtier and flatter than facades, and they are what you see
     // most of from an aircraft, so they get their own noise rather than the
     // facade colour applied upward.
-    float g = hash21(floor(vWorld.xz * 0.35) + seed);
+    float g = hash21(floor(vWorld.xz * 0.35) + fp.seed * 97.0);
     // Real roofs are tar, black membrane and gravel: about 0.06-0.12 linear.
     // These were 0.26-0.42, two to three times too reflective, which made the
     // roof the BRIGHTEST surface in a top-down shot when in every aerial
     // photograph it is the darkest.
     albedo = mix(vec3(0.130, 0.130, 0.124), vec3(0.245, 0.238, 0.218), g);
-    // Rooftop plant: a few darker blocks scattered on the big roofs.
-    float plant = step(0.93, hash21(floor(vWorld.xz * 0.12) + seed * 3.0));
-    albedo = mix(albedo, vec3(0.105, 0.110, 0.115), plant * step(400.0, bldH * 40.0));
+    // Patchwork: membrane seams, ponding, a re-covered section. One more
+    // octave, at a scale a roof actually varies over.
+    float wear = hash21(floor(vWorld.xz * 0.09) + fp.seed * 13.0);
+    albedo *= 0.82 + 0.32 * wear;
+  } else if (part < 2.5) {
+    // --- Parapet --------------------------------------------------------
+    // The low wall round the roof edge. Coped in stone or concrete whatever
+    // the wall below is made of, so it is its own pale grey rather than the
+    // facade colour carried upward -- which is exactly the line that makes a
+    // box read as a building from the air.
+    albedo = parapetColour(fp);
+    // The inner face of the parapet is in permanent shade from the roof.
+    albedo *= n.y < -0.01 ? 0.7 : 1.0;
+    skyOcc = 0.85;
+  } else {
+    // --- Rooftop plant --------------------------------------------------
+    // Air handlers, chillers, stair overruns, tanks. Galvanised and painted
+    // metal, greyer and slightly glossier than the roof they stand on.
+    float g = hash21(floor(vWorld.xz * 0.6) + fp.seed * 41.0);
+    albedo = mix(vec3(0.30, 0.30, 0.31), vec3(0.46, 0.46, 0.45), g);
+    if (isRoof > 0.5) albedo *= 0.86;   // the tops streak and collect dirt
+    skyOcc = 0.8;
   }
 
   // At night a facade has no colour of its own. It is lit by skyglow and by
@@ -350,8 +474,6 @@ void main() {
   // what puts the facades back under the lights.
   vec3 beam = direct + uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
 
-  // Sky visibility: an upward face sees the whole dome, a wall sees half, and
-  // a wall down in the street sees less still.
   // Sky visibility. A vertical wall sees roughly half the dome and a roof sees
   // all of it. Under an overcast, where the direct term is almost gone, this is
   // the ONLY thing separating one face from another -- flat ambient across
@@ -366,15 +488,51 @@ void main() {
 
   vec3 lit = albedo * (beam + ambient) + emissive;
 
-  // Specular: strong on glass, present on wet stone, absent otherwise.
-  float gloss = max(glassiness * 0.8, uWetness);
+  vec3 v = normalize(uCameraPos - vWorld);
+
+  // --- Glass ------------------------------------------------------------
+  //
+  // A glass tower is a MIRROR, and that is not a detail: looking at one
+  // straight on you see a dark green-grey pane, and at a grazing angle you see
+  // the sky. The whole angular swing happens over about thirty degrees, and it
+  // is what separates a glass building from a grey one. Terrain does the same
+  // thing for water and for the same reason.
+  //
+  // There is no environment probe to afford here -- one per building is out of
+  // the question -- so the reflected radiance is the analytic sky: the ambient
+  // term, brighter toward the zenith, plus a little of the sun's own disc
+  // through the same transmittance the direct beam uses. It is not the real
+  // skyline reflected back, but it swings the right way by the right amount at
+  // the right angle, and that is what the eye is reading.
+  //
+  // Modulated by glassMask, so the spandrel panel between the floors stays
+  // matte. A tower that is shiny all over reads as plastic.
+  if (glassMask > 0.004) {
+    vec3 refl = reflect(-v, n);
+    float up = clamp(refl.y * 0.5 + 0.5, 0.0, 1.0);
+    // The multipliers are small on purpose. uAmbient is an irradiance-scale
+    // term, not a radiance, and the first version of this used 2.6x of it plus
+    // 1.4x the skyglow -- which at a grazing angle, where Fresnel is near one,
+    // replaced the whole wall with something several times brighter than the
+    // wall had ever been. A night city of pale grey towers was the result.
+    vec3 skyRefl = uAmbient * mix(0.75, 1.9, up)
+                 + uSunColor * uSunIntensity * uSunSurface * sunT * 0.04
+                 + uNightGlow * 0.4;
+    // Schlick, with the 4% normal-incidence reflectance of glass.
+    float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
+    float fres = 0.04 + 0.96 * f;
+    lit = mix(lit, skyRefl, fres * glassMask * (1.0 - fp.roughness * 0.6));
+  }
+
+  // Specular: a tight sun glint on glass, a broad one on wet stone.
+  float gloss = max(glassMask, uWetness);
   if (gloss > 0.02) {
-    vec3 v = normalize(uCameraPos - vWorld);
+    float shine = mix(900.0, 40.0, fp.roughness);
     vec3 h = normalize(v + uSunDir);
-    float spec = pow(max(0.0, dot(n, h)), 64.0);
-    lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.2 * sunVis;
+    float spec = pow(max(0.0, dot(n, h)), shine);
+    lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.4 * sunVis;
     vec3 hm = normalize(v + uMoonDir);
-    lit += uMoonLight * uSunSurface * pow(max(0.0, dot(n, hm)), 64.0) * gloss * 1.2;
+    lit += uMoonLight * uSunSurface * pow(max(0.0, dot(n, hm)), shine) * gloss * 1.4;
   }
 
   vec3 ro = atmoOrigin(uCamAltitude);
@@ -403,6 +561,11 @@ export interface BuildingUniforms extends SunShadowUniforms {
   uTurbidity: THREE.IUniform<number>;
   uCamAltitude: THREE.IUniform<number>;
   uMultiScatter: THREE.IUniform<number>;
+  /** Per-building facade parameters; see render/facade.ts. */
+  uFacade: THREE.IUniform<THREE.DataTexture | null>;
+  uFacadeWidth: THREE.IUniform<number>;
+  /** How busy homes / offices / everything else are at the scene's hour. */
+  uHourFactor: THREE.IUniform<THREE.Vector3>;
 }
 
 /**
@@ -428,6 +591,9 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uTurbidity: { value: 1 },
     uCamAltitude: { value: 100 },
     uMultiScatter: { value: 0.055 },
+    uFacade: { value: null },
+    uFacadeWidth: { value: 1 },
+    uHourFactor: { value: new THREE.Vector3(1, 1, 1) },
   };
 }
 
@@ -444,7 +610,125 @@ export function emptyScratch(): Scratch {
   return { pos: [], nrm: [], uv: [], info: [], idx: [] };
 }
 
-export function addBuilding(s: Scratch, b: Building, groundY: number, seed: number): void {
+/** True when (x, z) is inside the ring. Standard crossing count. */
+function insideRing(ring: Float32Array, x: number, z: number): boolean {
+  let inside = false;
+  const n = ring.length / 2;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = ring[i * 2], zi = ring[i * 2 + 1];
+    const xj = ring[j * 2], zj = ring[j * 2 + 1];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * A box standing on the roof. Five quads: four sides and a lid, no floor,
+ * because nothing ever sees under one.
+ */
+function addBox(
+  s: Scratch,
+  cx: number,
+  cz: number,
+  hx: number,
+  hz: number,
+  y0: number,
+  y1: number,
+  bidx: number,
+  bldH: number,
+): void {
+  const push = (
+    ax: number, ay: number, az: number,
+    bx: number, by: number, bz: number,
+    cx2: number, cy: number, cz2: number,
+    dx: number, dy: number, dz: number,
+    nx: number, ny: number, nz: number,
+    isRoof: number,
+  ) => {
+    const v = s.pos.length / 3;
+    s.pos.push(ax, ay, az, bx, by, bz, cx2, cy, cz2, dx, dy, dz);
+    for (let k = 0; k < 4; k++) {
+      s.nrm.push(nx, ny, nz);
+      s.uv.push(0, 0);
+      s.info.push(bidx, bldH, isRoof, PART_CLUTTER);
+    }
+    s.idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
+  };
+
+  const x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
+  // Each face wound so its geometric normal matches the shading normal given.
+  // test/roof.check.ts asserts exactly that, for every triangle in the pack.
+  push(x0, y0, z0, x0, y1, z0, x1, y1, z0, x1, y0, z0, 0, 0, -1, 0);
+  push(x1, y0, z1, x1, y1, z1, x0, y1, z1, x0, y0, z1, 0, 0, 1, 0);
+  push(x0, y0, z1, x0, y1, z1, x0, y1, z0, x0, y0, z0, -1, 0, 0, 0);
+  push(x1, y0, z0, x1, y1, z0, x1, y1, z1, x1, y0, z1, 1, 0, 0, 0);
+  push(x0, y1, z0, x0, y1, z1, x1, y1, z1, x1, y1, z0, 0, 1, 0, 1);
+}
+
+/**
+ * Scatter plant across a roof.
+ *
+ * Placement is rejection-sampled inside the footprint rather than laid on a
+ * grid, because a grid of air handlers is its own kind of tell. Everything --
+ * how many, how big, where -- comes off the building's seed, so the same
+ * building gets the same roof on every run and the screenshots stay comparable.
+ */
+function addRoofPlant(
+  s: Scratch,
+  b: Building,
+  top: number,
+  extras: RoofExtras,
+  bidx: number,
+  bldH: number,
+  seed: number,
+): void {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < b.ring.length; i += 2) {
+    minX = Math.min(minX, b.ring[i]); maxX = Math.max(maxX, b.ring[i]);
+    minZ = Math.min(minZ, b.ring[i + 1]); maxZ = Math.max(maxZ, b.ring[i + 1]);
+  }
+  const spanX = maxX - minX;
+  const spanZ = maxZ - minZ;
+  if (spanX < 6 || spanZ < 6) return;
+
+  const want = extras.boxes + (extras.overrun ? 1 : 0);
+  let placed = 0;
+  for (let attempt = 0; attempt < want * 6 && placed < want; attempt++) {
+    const rx = hash3(seed, 0x800 + attempt, 1);
+    const rz = hash3(seed, 0x800 + attempt, 2);
+    const px = minX + spanX * (0.12 + 0.76 * rx);
+    const pz = minZ + spanZ * (0.12 + 0.76 * rz);
+    if (!insideRing(b.ring, px, pz)) continue;
+
+    // The first one placed is the stair and lift overrun when the building is
+    // tall enough to have one: bigger, taller and squarer than a chiller.
+    const isOverrun = extras.overrun && placed === 0;
+    const r1 = hash3(seed, 0x900 + attempt, 3);
+    const r2 = hash3(seed, 0x900 + attempt, 4);
+    const r3 = hash3(seed, 0x900 + attempt, 5);
+    const hx = isOverrun ? 2.2 + 1.8 * r1 : 1.1 + 1.6 * r1;
+    const hz = isOverrun ? 2.0 + 1.8 * r2 : 1.0 + 1.5 * r2;
+    const hy = isOverrun ? 3.0 + 1.6 * r3 : 0.9 + 1.6 * r3;
+    // Only if the whole box is inside the roof: half a chiller hanging over
+    // the parapet is worse than no chiller.
+    if (
+      !insideRing(b.ring, px - hx, pz - hz) || !insideRing(b.ring, px + hx, pz - hz) ||
+      !insideRing(b.ring, px - hx, pz + hz) || !insideRing(b.ring, px + hx, pz + hz)
+    ) continue;
+
+    addBox(s, px, pz, hx, hz, top, top + hy, bidx, bldH);
+    placed++;
+  }
+}
+
+export function addBuilding(
+  s: Scratch,
+  b: Building,
+  groundY: number,
+  bidx: number,
+  extras: RoofExtras = NO_EXTRAS,
+  params?: FacadeParams,
+): void {
   const n = b.ring.length / 2;
   if (n < 3) return;
 
@@ -456,8 +740,15 @@ export function addBuilding(s: Scratch, b: Building, groundY: number, seed: numb
   // Sink the base so the walls meet sloping terrain instead of hovering.
   const sunk = base - 3.0;
 
-  const kind = b.kind;
-  const pushInfo = () => s.info.push(seed, kind, 0, b.topM - b.baseM);
+  // The parapet is drawn by carrying the WALL up past the roof slab rather
+  // than as its own ring of geometry: the outer face is already there, so the
+  // only new triangles are the inner face looking back down at the roof. The
+  // shader knows where the building stops (info.y) and stops the window grid
+  // there, so the band above it comes out as the coping it is.
+  const parapetM = extras.parapet && params ? Math.max(0.4, params.parapetM) : 0;
+  const wallTop = top + parapetM;
+
+  const pushInfo = (isRoof: number, part: number) => s.info.push(bidx, height, isRoof, part);
 
   // --- Walls ---
   let run = 0;
@@ -474,14 +765,14 @@ export function addBuilding(s: Scratch, b: Building, groundY: number, seed: numb
     const nz = -dx / len;
 
     const v0 = s.pos.length / 3;
-    s.pos.push(x0, sunk, z0,  x1, sunk, z1,  x1, top, z1,  x0, top, z0);
+    s.pos.push(x0, sunk, z0,  x1, sunk, z1,  x1, wallTop, z1,  x0, wallTop, z0);
     for (let k = 0; k < 4; k++) s.nrm.push(nx, 0, nz);
     // v runs from 0 at the true base (not the sunk base) so the storey grid
     // lines up with the visible building rather than with the buried part.
     const vBot = sunk - base;
-    const vTop = height;
+    const vTop = height + parapetM;
     s.uv.push(run, vBot, run + len, vBot, run + len, vTop, run, vTop);
-    for (let k = 0; k < 4; k++) pushInfo();
+    for (let k = 0; k < 4; k++) pushInfo(0, PART_WALL);
 
     // Winding must agree with the normal above, or backface culling removes the
     // wrong side. It did: the triangle (v0,v1,v2) faces (-dz, 0, dx) while the
@@ -490,6 +781,22 @@ export function addBuilding(s: Scratch, b: Building, groundY: number, seed: numb
     // shells you could see inside, lit by normals pointing away from the face
     // actually on screen.
     s.idx.push(v0, v0 + 2, v0 + 1, v0, v0 + 3, v0 + 2);
+
+    if (parapetM > 0) {
+      // The inner face, looking back across the roof. Zero thickness: a real
+      // parapet is a few hundred millimetres thick and that is under a pixel
+      // from anywhere you would ever see it from, so the coping is a line
+      // where the two faces meet rather than a cap costing another quad a
+      // segment across a hundred thousand buildings.
+      const p0 = s.pos.length / 3;
+      s.pos.push(x0, top, z0,  x1, top, z1,  x1, wallTop, z1,  x0, wallTop, z0);
+      for (let k = 0; k < 4; k++) s.nrm.push(-nx, 0, -nz);
+      s.uv.push(run, height, run + len, height, run + len, vTop, run, vTop);
+      for (let k = 0; k < 4; k++) pushInfo(0, PART_PARAPET);
+      // Reversed against the outer wall, because the normal is.
+      s.idx.push(p0, p0 + 1, p0 + 2, p0, p0 + 2, p0 + 3);
+    }
+
     run += len;
   }
 
@@ -501,7 +808,7 @@ export function addBuilding(s: Scratch, b: Building, groundY: number, seed: numb
       s.pos.push(b.ring[i * 2], top, b.ring[i * 2 + 1]);
       s.nrm.push(0, 1, 0);
       s.uv.push(b.ring[i * 2], b.ring[i * 2 + 1]);
-      s.info.push(seed, kind, 1, b.topM - b.baseM);
+      s.info.push(bidx, height, 1, PART_ROOF);
     }
     // REVERSED against the ring's own winding, and that is not a typo.
     //
@@ -518,6 +825,10 @@ export function addBuilding(s: Scratch, b: Building, groundY: number, seed: numb
     for (let i = 0; i + 2 < tri.length; i += 3) {
       s.idx.push(v0 + tri[i], v0 + tri[i + 2], v0 + tri[i + 1]);
     }
+  }
+
+  if (extras.boxes > 0 || extras.overrun) {
+    addRoofPlant(s, b, top, extras, bidx, height, params ? params.seed * 4096 : bidx);
   }
 }
 
@@ -541,6 +852,32 @@ function buildMesh(s: Scratch, uniforms: BuildingUniforms): THREE.Mesh | null {
   return new THREE.Mesh(geo, mat);
 }
 
+/**
+ * The per-building parameter texture.
+ *
+ * One row is a run of buildings, six RGBA texels each. Float32 because the
+ * values are probabilities and metres and colours and none of them wants to be
+ * quantised, and because at ~60k buildings drawn the whole thing is under six
+ * megabytes -- a tenth of what the geometry it describes costs.
+ */
+const FACADE_TEX_WIDTH = 1024;
+
+function buildFacadeTexture(params: FacadeParams[]): THREE.DataTexture {
+  const texels = params.length * (FACADE_FLOATS / 4);
+  const height = Math.max(1, Math.ceil(texels / FACADE_TEX_WIDTH));
+  const data = new Float32Array(FACADE_TEX_WIDTH * height * 4);
+  for (let i = 0; i < params.length; i++) packFacade(params[i], data, i);
+
+  const tex = new THREE.DataTexture(data, FACADE_TEX_WIDTH, height, THREE.RGBAFormat, THREE.FloatType);
+  // Nearest and no mips: this is a lookup table, not an image. Any filtering
+  // would blend one building's storey height into its neighbour's.
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 export interface BuildingStats {
   drawn: number;
   skippedFar: number;
@@ -550,6 +887,11 @@ export interface BuildingStats {
   cells: number;
   /** LOD aggression the budget solver settled on; 1 means everything fits. */
   lod: number;
+  /** Buildings that got a parapet, and rooftop boxes placed. */
+  parapets: number;
+  plantBoxes: number;
+  /** Facade families in use, indexed by FacadeFamily. */
+  families: number[];
 }
 
 export class Buildings {
@@ -565,9 +907,13 @@ export class Buildings {
     this.uniforms = makeUniforms(shadow);
     const lodK = solveLod(pack);
     const cells = new Map<string, Scratch>();
+    const params: FacadeParams[] = [];
+    const families: number[] = new Array(5).fill(0);
     let drawn = 0;
     let skippedFar = 0;
     let skippedFlat = 0;
+    let parapets = 0;
+    let plantBoxes = 0;
 
     for (let i = 0; i < pack.buildings.length; i++) {
       const b = pack.buildings[i];
@@ -585,10 +931,8 @@ export class Buildings {
       // stadium, a convention centre, a big-box store) clears 8 m easily, so
       // the pair of conditions is narrow: 50 of Manhattan's 187k, 7 of San
       // Francisco's 62k.
-      if (h < 8) {
-        const area = Math.abs(signedArea(b.ring));
-        if (area > 20000) { skippedFlat++; continue; }
-      }
+      const area = Math.abs(signedArea(b.ring));
+      if (h < 8 && area > 20000) { skippedFlat++; continue; }
 
       // Winding must be counter-clockwise for the wall normals and the ear
       // clipper to agree. The baker normalises it, but a pack from an older
@@ -611,9 +955,24 @@ export class Buildings {
       let s = cells.get(key);
       if (!s) { s = emptyScratch(); cells.set(key, s); }
 
-      addBuilding(s, b, groundY, (i * 2654435761) % 1024 / 1024);
+      // The seed is the building's index in the pack, so a facade is stable
+      // across runs and traceable back to one record.
+      const fp = facadeFor(b.kind, h, i);
+      const bidx = params.length;
+      params.push(fp);
+      families[fp.family]++;
+
+      const extras = roofExtras(dist, lodK, h, area);
+      if (extras.parapet) parapets++;
+      plantBoxes += extras.boxes + (extras.overrun ? 1 : 0);
+
+      addBuilding(s, b, groundY, bidx, extras, fp);
       drawn++;
     }
+
+    const tex = buildFacadeTexture(params);
+    this.uniforms.uFacade.value = tex;
+    this.uniforms.uFacadeWidth.value = FACADE_TEX_WIDTH;
 
     let triangles = 0;
     for (const s of cells.values()) {
@@ -627,6 +986,9 @@ export class Buildings {
       }
     }
 
-    this.stats = { drawn, skippedFar, skippedFlat, triangles, cells: cells.size, lod: lodK };
+    this.stats = {
+      drawn, skippedFar, skippedFlat, triangles, cells: cells.size, lod: lodK,
+      parapets, plantBoxes, families,
+    };
   }
 }

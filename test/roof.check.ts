@@ -20,7 +20,8 @@
 
 import { readdirSync } from "node:fs";
 import { parseCityPack } from "../src/data/citypack";
-import { addBuilding, emptyScratch } from "../src/render/buildings";
+import { facadeFor } from "../src/render/facade";
+import { addBuilding, emptyScratch, type RoofExtras } from "../src/render/buildings";
 
 const DIR = "public/cities";
 let failures = 0;
@@ -36,7 +37,14 @@ for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
   // A slice, not the whole pack: 3000 footprints is tens of thousands of
   // triangles, which is plenty to catch a systematic winding flip, and the
   // whole suite has to stay fast enough that people run it.
-  for (const [i, b] of pack.buildings.slice(0, 3000).entries()) addBuilding(s, b, 0, i);
+  // WITH the roof extras on, always. The parapet's inner face and the five
+  // faces of every plant box are new windings, they are exactly the kind of
+  // thing that comes out inside-out, and backface culling would hide it from
+  // anyone not standing in precisely the wrong place.
+  const extras: RoofExtras = { parapet: true, boxes: 3, overrun: true };
+  for (const [i, b] of pack.buildings.slice(0, 3000).entries()) {
+    addBuilding(s, b, 0, i, extras, facadeFor(b.kind, b.topM - b.baseM, i));
+  }
 
   let roofUp = 0, roofDown = 0, wallOut = 0, wallIn = 0, degenerate = 0;
 

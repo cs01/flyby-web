@@ -31,6 +31,7 @@ import { Timebar, LocalClock } from "./app/timebar";
 import { Beacon } from "./render/beacon";
 import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
+import { hourFactors } from "./render/facade";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { loadLandPack } from "./data/landcover-load";
 import { loadRoadPack } from "./data/roadpack-load";
@@ -122,6 +123,31 @@ function wxOverride(observed: Weather): Weather | null {
   return out;
 }
 
+/**
+ * A pinned camera: `?cam=lat,lon,altM,headingDeg,pitchDeg`.
+ *
+ * The screenshot harness has to put the lens in exactly the same place across
+ * two builds or the comparison is worthless, and there is no way to do that by
+ * flying. Altitude is metres AMSL rather than above ground, because AMSL is a
+ * number and "above ground" is a terrain lookup that would move the shot if the
+ * DEM cache came back with a different tile.
+ */
+interface PinnedCam {
+  lat: number;
+  lon: number;
+  altM: number;
+  hdgDeg: number;
+  pitchDeg: number;
+}
+
+function pinnedCam(): PinnedCam | null {
+  const spec = new URLSearchParams(location.search).get("cam");
+  if (!spec) return null;
+  const f = spec.split(",").map(Number);
+  if (f.length < 5 || !f.every((v) => Number.isFinite(v))) return null;
+  return { lat: f[0], lon: f[1], altM: f[2], hdgDeg: f[3], pitchDeg: f[4] };
+}
+
 /** Three decimals is ~110 m: enough to fly, not enough to be an address. */
 function goToCoords(lat: number, lon: number): void {
   const params = new URLSearchParams(location.search);
@@ -203,6 +229,21 @@ async function main() {
     composite.resize(renderer);
   };
   addEventListener("resize", resizeTargets);
+
+  // --- Screenshot mode ----------------------------------------------------
+  // `?shot` says a machine is looking, not a person: no overlay, no adaptive
+  // resolution, no animation clock. Everything that would differ between two
+  // runs of the same URL is nailed down here in one place.
+  const shotMode = new URLSearchParams(location.search).has("shot");
+  const shotCam = pinnedCam();
+  const pinScale = Number(new URLSearchParams(location.search).get("scale"));
+  if (Number.isFinite(pinScale) && pinScale > 0) {
+    quality.pin(pinScale);
+    quality.apply(renderer);
+    renderer.setSize(canvas.clientWidth || innerWidth, canvas.clientHeight || innerHeight, false);
+    resizeTargets();
+  }
+  if (shotMode) ui.style.display = "none";
 
   const sky = new Sky();
   scene.add(sky.mesh);
@@ -516,9 +557,19 @@ async function main() {
   const clock = new THREE.Clock();
   let elapsed = 0;
 
+  // Frames drawn since the loop started, and their raw costs. The harness waits
+  // on the count (a first frame still has shaders compiling and textures
+  // uploading in it) and reads the ring for the frame-cost number.
+  let shotFrames = 0;
+  let timedFrames = 0;
+  const frameRing = new Float64Array(600);
+
   renderer.setAnimationLoop(() => {
     const dt = Math.min(0.05, clock.getDelta());
-    elapsed += dt;
+    // The animation clock stays at zero for a screenshot. It drives the cloud
+    // drift, the sky and the beacon, and a wall-clock-derived phase is the one
+    // thing that would make two runs of the same URL differ.
+    if (!shotMode) elapsed += dt;
 
     // --- Which machine is flying ------------------------------------------
     if (input.droneToggled > 0) {
@@ -645,6 +696,23 @@ async function main() {
       chase.update(camera, ac, dt, input.lookBack, terrain.heightAt(camera.position.x, camera.position.z));
     }
 
+    // A pinned lens overrides whichever rig just ran. Heading is a COMPASS
+    // bearing and the Euler about +y runs the other way, the same sign trap
+    // Aircraft.reset carries a note about.
+    if (shotCam) {
+      const w = origin.toWorld(shotCam.lat, shotCam.lon);
+      camera.position.set(w.x, shotCam.altM, w.z);
+      camera.quaternion.setFromEuler(
+        new THREE.Euler(
+          (shotCam.pitchDeg * Math.PI) / 180,
+          (-shotCam.hdgDeg * Math.PI) / 180,
+          0,
+          "YXZ",
+        ),
+      );
+      camera.up.set(0, 1, 0);
+    }
+
     // Ease the lens. ~0.4 s to settle, and the projection matrix is rebuilt
     // only while it is actually moving.
     const wantFov = droneActive ? DRONE_FOV : PLANE_FOV;
@@ -672,7 +740,12 @@ async function main() {
     // a band where you were sitting inside the aeroplane with it still drawn:
     // what you saw was the double-sided propeller-blur disc filling the screen
     // as a grey dome, with the wings hanging in front of you.
-    model.group.visible = droneActive || (chase.mode !== "cockpit" && chase.cockpitBlend < 0.45);
+    //
+    // The shot camera never draws it at all: a fixed-pose screenshot is about
+    // the city, and an aeroplane parked in the middle of it would be the most
+    // prominent thing that changed between two otherwise identical frames.
+    model.group.visible =
+      !shotCam && (droneActive || (chase.mode !== "cockpit" && chase.cockpitBlend < 0.45));
     // Zeroed control surfaces while droning. W and A are the drone's now, and
     // a parked aeroplane waggling its ailerons at them looks haunted.
     model.update(dt, ac.throttle, droneActive ? 0 : axes.roll, ac.pitchDeg, droneActive ? 0 : axes.yaw);
@@ -731,6 +804,14 @@ async function main() {
       b.uTurbidity.value = light.turbidity;
       b.uCamAltitude.value = camAlt;
       b.uExposure.value = light.exposure * exposureScale;
+      // Local SOLAR hour, from UTC and the longitude, rather than the civil
+      // hour: it needs no timezone database, it is what the sun is actually
+      // doing, and the lights coming on want to track the evening rather than
+      // a political line on a map.
+      const localHour =
+        (now.getUTCHours() + now.getUTCMinutes() / 60 + city.lon / 15 + 24) % 24;
+      const hf = hourFactors(localHour);
+      b.uHourFactor.value.set(hf.residential, hf.office, hf.other);
     }
 
     if (roads) {
@@ -831,7 +912,13 @@ async function main() {
     composite.update(camera, wx, light, elapsed);
     composite.uniforms.uSunSurfaceCloud.value = 0.105;
     composite.presentUniforms.uExposure.value = light.exposure * exposureScale;
+    composite.presentUniforms.uNight.value = light.night;
+    composite.brightUniforms.uExposure.value = light.exposure * exposureScale;
+    composite.brightUniforms.uNight.value = light.night;
     composite.render(renderer, target.texture, target.depthTexture);
+
+    if (timedFrames < frameRing.length) frameRing[timedFrames++] = dt * 1000;
+    shotFrames++;
 
     smoothedMs += (dt * 1000 - smoothedMs) * 0.06;
     if (quality.update(smoothedMs, dt)) {
@@ -888,7 +975,37 @@ async function main() {
     return `${name} = ${value} (${hit} materials)`;
   };
 
+  // The screenshot harness's whole interface to the page. Deliberately tiny:
+  // "have you drawn enough frames to be worth looking at", "give me the pixels"
+  // and "what did the last N frames cost".
   Object.assign(window as unknown as Record<string, unknown>, {
+    flybyShot: {
+      get frames() { return shotFrames; },
+      capture: () => canvas.toDataURL("image/png"),
+      // A coarse numeric fingerprint of the frame. Two PNGs that differ by one
+      // bit are "not identical" and nothing more; this is what lets the harness
+      // say HOW different two runs were without shipping a PNG decoder.
+      signature: (n: number) => {
+        const c = document.createElement("canvas");
+        c.width = n;
+        c.height = n;
+        const g = c.getContext("2d")!;
+        g.drawImage(canvas, 0, 0, n, n);
+        return Array.from(g.getImageData(0, 0, n, n).data);
+      },
+      /** Start a fresh timing window, so warm-up frames are not in the sample. */
+      resetTiming: () => { timedFrames = 0; },
+      get timed() { return timedFrames; },
+      // Median, not mean: one 200 ms hitch from a texture upload or a GC would
+      // dominate a mean over a few hundred frames and say nothing about the
+      // cost of a frame.
+      frameMs: () => {
+        const s = Array.from(frameRing.slice(0, timedFrames)).sort((a, b) => a - b);
+        return s.length ? s[s.length >> 1] : 0;
+      },
+      get triangles() { return buildings ? buildings.stats.triangles : 0; },
+      get lod() { return buildings ? buildings.stats.lod : 0; },
+    },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
       sunShadow, drone,

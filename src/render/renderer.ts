@@ -26,6 +26,11 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
     stencil: false,
     // The sky always covers every pixel, so there is nothing to see through to.
     alpha: false,
+    // Only under `?shot`, where tools/shots.ts reads the frame back with
+    // canvas.toDataURL(). Without it the drawing buffer is thrown away as soon
+    // as the frame is composited and the read comes back transparent black. It
+    // costs a copy per frame, so it stays off for anyone actually flying.
+    preserveDrawingBuffer: new URLSearchParams(location.search).has("shot"),
   });
 
   // Cap at 1.5x. This renderer is fragment-bound -- a full-screen atmosphere on
