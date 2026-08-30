@@ -99,7 +99,32 @@ function wxOverride(observed: Weather): Weather | null {
   const spec = new URLSearchParams(location.search).get("wx");
   if (!spec) return null;
 
-  const out: Weather = { ...observed, source: "simulated" };
+  // Everything the shading reads is pinned, not just the decks.
+  //
+  // This used to be `{...observed}` with only the named decks replaced, which
+  // left temperature, wind and precipitation as the LIVE observation. Those
+  // feed wetness, lying snow and the sun tint, so the screenshot harness was
+  // reproducible back to back and drifted over hours: a build rendered today
+  // could not be compared byte for byte against the same build rendered
+  // yesterday, which is the one thing the harness exists to do. Measured: the
+  // same commit, same pose, thirty minutes apart, produced different bytes,
+  // while two runs a minute apart were identical.
+  //
+  // A pinned sky has to pin the whole sky.
+  const out: Weather = {
+    ...observed,
+    source: "simulated",
+    tempC: 15,
+    dewC: 8,
+    humidity: 0.63,
+    pressureHpa: 1013,
+    windSpeed: 4,
+    windDir: 270,
+    gust: 6,
+    precip: 0,
+    precipKind: "none",
+    visibility: 20000,
+  };
   for (const term of spec.split(",")) {
     const f = term.split(":");
     const num = (i: number, fallback: number): number => {
