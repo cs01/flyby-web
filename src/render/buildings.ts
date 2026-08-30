@@ -423,11 +423,11 @@ void main() {
     // These were 0.26-0.42, two to three times too reflective, which made the
     // roof the BRIGHTEST surface in a top-down shot when in every aerial
     // photograph it is the darkest.
-    albedo = mix(vec3(0.130, 0.130, 0.124), vec3(0.245, 0.238, 0.218), g);
+    albedo = mix(vec3(0.128, 0.128, 0.122), vec3(0.205, 0.199, 0.184), g);
     // Patchwork: membrane seams, ponding, a re-covered section. One more
     // octave, at a scale a roof actually varies over.
     float wear = hash21(floor(vWorld.xz * 0.09) + fp.seed * 13.0);
-    albedo *= 0.82 + 0.32 * wear;
+    albedo *= 0.80 + 0.30 * wear;
   } else if (part < 2.5) {
     // --- Parapet --------------------------------------------------------
     // The low wall round the roof edge. Coped in stone or concrete whatever

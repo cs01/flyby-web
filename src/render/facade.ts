@@ -143,8 +143,8 @@ type Weights = [number, number, number, number, number]; // glass, brick, stucco
 const GENERIC_BY_BAND: Weights[] = [
   [0.02, 0.34, 0.34, 0.18, 0.12],
   [0.08, 0.34, 0.24, 0.24, 0.10],
-  [0.30, 0.14, 0.08, 0.32, 0.16],
-  [0.52, 0.03, 0.03, 0.28, 0.14],
+  [0.34, 0.14, 0.08, 0.30, 0.14],
+  [0.60, 0.02, 0.02, 0.25, 0.11],
 ];
 
 /** Multipliers applied to the band weights for a kind that IS tagged. */
@@ -331,7 +331,12 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
 
   // Glass is a property of the family first and of the height second. A tall
   // brick building does not become a curtain wall, it just has bigger windows.
-  const glassFrac = clamp01(s.glass * (0.82 + 0.36 * h1(seed, 0x44)) * (1 + 0.25 * tall));
+  // Height pushes the glass fraction up hard. A four-storey concrete building
+  // has punched windows; the same concrete at forty storeys is a ribbon window
+  // with a spandrel panel between the floors, which is far more glass and far
+  // darker. Without this, tall non-glass buildings came out as pale slabs and
+  // a night skyline was full of them.
+  const glassFrac = clamp01(s.glass * (0.82 + 0.36 * h1(seed, 0x44)) * (1 + 0.55 * tall));
 
   const group = occupancyGroup(family, kind, heightM);
   const office = group === 1;
