@@ -23,6 +23,43 @@ function el(cls: string, html: string): HTMLDivElement {
   return d;
 }
 
+/**
+ * Where the buildings, roads and trees in front of you came from.
+ *
+ * The weather panel already refuses to say "live" over a forecast, for the
+ * reason that a panel which quietly implies a measurement it does not have is
+ * the one dishonesty this app is built against. The same question applies to
+ * the city: a place with a baked pack has been converted offline from a whole
+ * Overpass fetch and verified, and a place being streamed right now has
+ * whatever has arrived so far and no more. Those are not the same fidelity and
+ * the panel must not present them as if they were.
+ */
+export interface DataSource {
+  kind: "baked" | "live" | "none";
+  /** Live only: tiles whose geometry is in the scene, and whether one is in flight. */
+  tiles?: number;
+  fetching?: boolean;
+  /** Live only: tiles asked for that failed outright. */
+  failed?: number;
+}
+
+function dataBadge(d: DataSource): string {
+  if (d.kind === "baked") {
+    return `<span class="tag tag-live" title="Buildings, roads and landcover were baked offline from OpenStreetMap and ESA WorldCover, and verified">Baked city</span>`;
+  }
+  if (d.kind === "none") {
+    return `<span class="tag tag-stale" title="Terrain, imagery and weather only: nothing here is mapped as buildings">Terrain only</span>`;
+  }
+  const tiles = d.tiles ?? 0;
+  const label = d.fetching
+    ? `Live OSM \u00b7 ${tiles} tile${tiles === 1 ? "" : "s"} \u00b7 loading`
+    : tiles === 0
+      ? `Live OSM \u00b7 waiting`
+      : `Live OSM \u00b7 ${tiles} tile${tiles === 1 ? "" : "s"}`;
+  const failed = (d.failed ?? 0) > 0 ? ` (${d.failed} refused)` : "";
+  return `<span class="tag tag-fc" title="Fetched from Overpass in this browser, tile by tile, as you fly. Not the same as a baked city: only what has arrived is here, heights are whatever OSM carries, and there is no measured landcover.">${label}${failed}</span>`;
+}
+
 export class Hud {
   private root: HTMLElement;
   private wxPanel: HTMLDivElement;
@@ -85,10 +122,11 @@ export class Hud {
    * whole point of the sun being computed properly is that the time of day is
    * something you can SEE. The local time is what agrees with the picture.
    */
-  setPlace(city: City, localTime: string, zone: string): void {
+  setPlace(city: City, localTime: string, zone: string, data: DataSource | null = null): void {
     this.placePanel.innerHTML = `
       <h2>${city.name}</h2>
-      <div class="row"><span>${city.country}</span><b>${localTime} <i>${zone}</i></b></div>`;
+      <div class="row"><span>${city.country}</span><b>${localTime} <i>${zone}</i></b></div>` +
+      (data ? dataBadge(data) : "");
   }
 
   /**

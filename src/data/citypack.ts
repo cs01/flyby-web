@@ -18,6 +18,9 @@
 
 
 export const CITY_MAGIC = 0x43495459;
+const CITY_VERSION = 1;
+const CITY_HEADER_BYTES = 32;
+const CITY_RECORD_BYTES = 20;
 
 /** Quarter-metre fixed point for footprint vertices, relative to the centroid. */
 const VERT_SCALE = 0.25;
@@ -58,6 +61,104 @@ export interface CityPack {
   buildings: Building[];
 }
 
+/**
+ * A building as it sits IN the pack: geometry still quantised to i16 quarter-
+ * metre offsets from the centroid, before a reader adds the centroid back.
+ *
+ * The converter in src/data/osmbuildings.ts produces these and the writer below
+ * consumes them, so the quantisation happens exactly once and in one place. A
+ * runtime path that skipped it would build a subtly different city from the
+ * same OSM data than the baked pack does, which is precisely the drift this
+ * shared core exists to make impossible.
+ */
+export interface PackedBuilding {
+  cx: number;
+  cz: number;
+  baseM: number;
+  topM: number;
+  kind: BuildingKind;
+  roof: RoofShape;
+  /** i16 units of VERT_SCALE metres, offsets from the centroid. */
+  dx: Int16Array;
+  dz: Int16Array;
+}
+
+/**
+ * Write a .city pack. The inverse of parseCityPack, and it lives beside it
+ * because a format defined in two files is a format that eventually disagrees
+ * with itself.
+ */
+export function encodeCityPack(
+  buildings: readonly PackedBuilding[],
+  lat0: number,
+  lon0: number,
+  radiusM: number,
+): Uint8Array {
+  let size = CITY_HEADER_BYTES;
+  for (const b of buildings) size += CITY_RECORD_BYTES + 4 * b.dx.length;
+
+  const buf = new ArrayBuffer(size);
+  const dv = new DataView(buf);
+  let o = 0;
+  dv.setUint32(o, CITY_MAGIC, true); o += 4;
+  dv.setUint32(o, CITY_VERSION, true); o += 4;
+  dv.setFloat64(o, lat0, true); o += 8;
+  dv.setFloat64(o, lon0, true); o += 8;
+  dv.setFloat32(o, radiusM, true); o += 4;
+  dv.setUint32(o, buildings.length, true); o += 4;
+
+  for (const b of buildings) {
+    dv.setFloat32(o, b.cx, true); o += 4;
+    dv.setFloat32(o, b.cz, true); o += 4;
+    dv.setFloat32(o, b.baseM, true); o += 4;
+    dv.setFloat32(o, b.topM, true); o += 4;
+    dv.setUint8(o, b.kind); o += 1;
+    dv.setUint8(o, b.roof); o += 1;
+    dv.setUint16(o, b.dx.length, true); o += 2;
+    for (let i = 0; i < b.dx.length; i++) {
+      dv.setInt16(o, b.dx[i], true); o += 2;
+      dv.setInt16(o, b.dz[i], true); o += 2;
+    }
+  }
+  return new Uint8Array(buf);
+}
+
+/**
+ * Packed records to the records a reader hands the renderer, WITHOUT going
+ * through a file.
+ *
+ * `Math.fround` is not decoration. Every scalar in the format is an f32, so a
+ * pack that has been written and read back carries f32 values, and a runtime
+ * path that kept the f64 the arithmetic produced would place its buildings a
+ * few micrometres off the baked ones and stop being comparable. Rounding here
+ * is what makes "the live path and the pack agree exactly" an assertion the
+ * gate can make.
+ */
+export function unpackBuildings(packed: readonly PackedBuilding[]): Building[] {
+  const out: Building[] = new Array(packed.length);
+  for (let i = 0; i < packed.length; i++) {
+    const p = packed[i];
+    const cx = Math.fround(p.cx);
+    const cz = Math.fround(p.cz);
+    const n = p.dx.length;
+    const ring = new Float32Array(n * 2);
+    for (let v = 0; v < n; v++) {
+      ring[v * 2] = cx + p.dx[v] * VERT_SCALE;
+      ring[v * 2 + 1] = cz + p.dz[v] * VERT_SCALE;
+    }
+    out[i] = {
+      cx,
+      cz,
+      baseM: Math.fround(p.baseM),
+      topM: Math.fround(p.topM),
+      kind: p.kind,
+      roof: p.roof,
+      ring,
+    };
+  }
+  return out;
+}
+
 export function parseCityPack(buf: ArrayBuffer): CityPack {
   const dv = new DataView(buf);
   let o = 0;
@@ -67,7 +168,7 @@ export function parseCityPack(buf: ArrayBuffer): CityPack {
     throw new Error(`not a .city pack (magic 0x${magic.toString(16)})`);
   }
   const version = dv.getUint32(o, true); o += 4;
-  if (version !== 1) throw new Error(`unsupported .city version ${version}`);
+  if (version !== CITY_VERSION) throw new Error(`unsupported .city version ${version}`);
 
   const lat0 = dv.getFloat64(o, true); o += 8;
   const lon0 = dv.getFloat64(o, true); o += 8;

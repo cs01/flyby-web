@@ -160,6 +160,38 @@ desktop tier never gets one.
   budget already dominated by per-fragment work, and `skyprobe.ts` already feeds
   wet-road reflections.
 
+## Live OSM: what is measured about the sources
+
+Buildings, roads and canopy are no longer bake-only. Where a place has no
+`.city` pack the app streams OSM around the camera (`src/app/live.ts`), through
+the same converters the bakers use (`src/data/osm*.ts`). The numbers that
+decided the design, all measured rather than assumed:
+
+- **Seven cities have a `.city` pack and four have `.roads`**, not thirty-seven.
+  Thirty-six have `.land`. So "the baked cities" is a much smaller set than the
+  menu suggests, and everywhere else was bare boxes-free ground.
+- **A browser has very few Overpass endpoints.** `overpass.kumi.systems` and
+  `overpass.private.coffee` answer the baker and send no
+  `Access-Control-Allow-Origin`, so a page cannot read them at all.
+  `overpass.osm.ch` DOES send it and is useless anyway: it carries Switzerland
+  only and answers everywhere else with an empty element list, which reads as a
+  place with no buildings rather than as an error.
+- **WorldCover cannot stream.** The `.land` source is 87 MB Deflate-tiled COGs
+  on an S3 bucket with no CORS headers. Runtime canopy therefore comes from OSM
+  landuse polygons and `natural=tree` nodes (`src/data/osmveg.ts`), rasterised
+  into the same coverage grid `src/data/trees.ts` already plants from. Where a
+  `.land` pack exists it stays the better source and wins.
+- **One request per tile, not three.** Requests are what a public instance
+  rate-limits on, so buildings, roads and vegetation share one union query built
+  from the same statement fragments the three bake queries use.
+- **Cache hit rate on a second visit is 100%.** Measured over Santa Rosa: 23
+  requests on the first load, 0 on the second, because an answer for a fixed
+  bbox is immutable and the IndexedDB entries have no TTL.
+
+`tools/overpass-replay.ts` serves cached real answers on a local port so the
+screenshot harness can capture an unbaked place without asking a volunteer
+server the same question on every run. `?nolive` turns the whole path off.
+
 ## Constraints that decide designs
 
 - **Per-fragment work is the scarce resource, geometry is not.** Measured: the

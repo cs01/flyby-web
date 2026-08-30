@@ -37,7 +37,17 @@ const CLEAR = "low:0:900:2100,mid:0:3800:5000,high:0:8500:9400,precip:0";
 
 export interface Pose {
   name: string;
+  /** A curated city id, or "" when the pose flies a bare coordinate. */
   city: string;
+  /**
+   * `lat,lon` for a place with no curated entry, written to `?at=`.
+   *
+   * The whole point of the live path is that a place needs no entry in
+   * src/cities.ts to have buildings, so the harness has to be able to point at
+   * one that has none. `?at=` outranks `?city=` in main.ts, the same way the
+   * geolocation card writes it.
+   */
+  at?: string;
   /** Metres AMSL, not above ground: a terrain lookup would move the shot. */
   lat: number;
   lon: number;
@@ -48,6 +58,15 @@ export interface Pose {
   t: number;
   wx: string;
   what: string;
+  /**
+   * An extra condition to wait for before capturing, as a JS expression.
+   *
+   * A pose over an unbaked place is not worth a screenshot until something has
+   * actually streamed in: the frame counter says the renderer is running, not
+   * that the city has arrived. Without this the harness would faithfully
+   * capture an empty field and report it as the live path working.
+   */
+  waitFor?: { expr: string; timeoutMs: number; why: string };
 }
 
 const D = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
@@ -146,6 +165,30 @@ export const POSES: Pose[] = [
     wx: CLEAR,
     what: "Chicago Loop by day",
   },
+  {
+    // Santa Rosa, California. Nobody has baked this and nobody is going to:
+    // the point is that a place with no pack now has buildings, roads and
+    // trees, fetched from OpenStreetMap while the aeroplane is in the air.
+    //
+    // Low and looking north up Santa Rosa Avenue into the downtown blocks, in
+    // late afternoon sun so the boxes have a readable light side and a shadow
+    // side rather than the flat noon wash the roadmap warns about.
+    name: "santa-rosa-live",
+    city: "",
+    at: "38.4405,-122.7141",
+    lat: 38.4330, lon: -122.7145, altM: 260, hdgDeg: 2, pitchDeg: -6,
+    t: D("2025-06-22T01:40:00Z"), // 18:40 PDT
+    wx: CLEAR,
+    what: "Santa Rosa CA, no baked pack, streamed live from OSM",
+    // The scheduler running dry, not the first tile landing: a frame captured
+    // as soon as something appears is a picture of one square of a city, and
+    // would look identical however much more had been on its way.
+    waitFor: {
+      expr: "window.flybyShot.liveBuildings > 500 && window.flybyShot.liveIdle",
+      timeoutMs: 420_000,
+      why: "the live OSM scheduler to run dry",
+    },
+  },
 ];
 
 /** Extra query parameters appended to every pose, e.g. `--query terrainDebug=3`. */
@@ -153,7 +196,7 @@ let extraQuery = "";
 
 function url(base: string, p: Pose): string {
   const q = new URLSearchParams({
-    city: p.city,
+    ...(p.at ? { at: p.at } : { city: p.city }),
     cam: `${p.lat},${p.lon},${p.altM},${p.hdgDeg},${p.pitchDeg}`,
     t: String(p.t),
     wx: p.wx,
@@ -197,6 +240,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   // uploading and the sun shadow cascades filling in.
   await cdp.waitFor("window.flybyShot", 240_000, `${p.name} to load`);
   await cdp.waitFor("window.flybyShot.frames > 60", 60_000, `${p.name} to settle`);
+  if (p.waitFor) await cdp.waitFor(p.waitFor.expr, p.waitFor.timeoutMs, p.waitFor.why);
 
   await cdp.eval("window.flybyShot.resetTiming()");
   await cdp.waitFor("window.flybyShot.timed > 240", 60_000, `${p.name} timing sample`);

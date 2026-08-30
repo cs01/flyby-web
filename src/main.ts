@@ -42,7 +42,13 @@ import { Roads } from "./render/roads";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { Foliage, TREE_LOD_TRIANGLES } from "./render/trees";
 import { buildLandMaskRGBA } from "./data/landmask";
-import { FootprintMask, RoadIndex, treeRoadClearanceM } from "./data/trees";
+import { CompositeRoadIndex, FootprintMask, RoadIndex, treeRoadClearanceM } from "./data/trees";
+import { LiveVegetation } from "./data/osmveg";
+import { bakedCityCoverage, LiveWorld, LIVE_EXTENT_M } from "./app/live";
+import { Overpass } from "./data/overpass";
+import type { DataSource } from "./app/hud";
+import type { BuildingUniforms } from "./render/buildings";
+import type { RoadUniforms } from "./render/roads";
 import { Composite } from "./render/composite";
 import { AoPass } from "./render/ao";
 import { SunShadow } from "./render/sunshadow";
@@ -341,6 +347,10 @@ async function main() {
   // origin, so overlapping the two fetches costs nothing and saves a round trip.
   const landPromise = loadLandPack(city.id);
   const roadPromise = loadRoadPack(city.id);
+  // Where a .city pack already covers the ground, so the live path never asks
+  // Overpass for a square somebody has already baked. Same origin, one small
+  // JSON, already in the cache from the start screen.
+  const bakedPromise = bakedCityCoverage();
   const pack = await loadCityPack(city.id);
   let buildings: Buildings | null = null;
   // The rooftops as a height field, so the aeroplane has a floor over a city
@@ -395,6 +405,13 @@ async function main() {
   // until the landcover pack has arrived, which happens after the road pack.
   let foliage: Foliage | null = null;
 
+  // Every building and road material whose uniforms the frame loop must keep
+  // current. One entry each for the baked packs, and one more per streamed
+  // tile. Arrays rather than a rebuilt list, because this is walked every frame
+  // and allocating a new one per frame to hold two objects is pure garbage.
+  const buildingUniformSets: BuildingUniforms[] = buildings ? [buildings.uniforms] : [];
+  const roadUniformSets: RoadUniforms[] = roads ? [roads.uniforms] : [];
+
   /**
    * Point every surface material at this frame's occlusion buffer.
    *
@@ -404,8 +421,8 @@ async function main() {
    */
   const setAo = (strength: number): void => {
     for (const u of terrain.uniforms) ao.apply(u, strength);
-    if (buildings) ao.apply(buildings.uniforms, strength);
-    if (roads) ao.apply(roads.uniforms, strength);
+    for (const u of buildingUniformSets) ao.apply(u, strength);
+    for (const u of roadUniformSets) ao.apply(u, strength);
     if (foliage) ao.apply(foliage.uniforms, strength);
   };
 
@@ -440,6 +457,17 @@ async function main() {
     if (Number.isFinite(terrainDebug)) u.uDebug.value = terrainDebug;
   }
 
+  // What the canopy must not stand on. Both start from whatever packs loaded
+  // and GROW as live tiles arrive, which is why they are built here rather than
+  // inside the branch that happens to plant the first trees: a place with a
+  // .land pack and no .city pack gets its roofs from the streamed buildings.
+  const treeFootprints = new FootprintMask(
+    pack ? pack.buildings : [],
+    pack ? pack.radiusM : LIVE_EXTENT_M,
+  );
+  const treeRoads = new CompositeRoadIndex();
+  if (roadPack) treeRoads.add(new RoadIndex(roadPack.roads, treeRoadClearanceM));
+
   // Trees, from the tree channel of the same pack the terrain shades from.
   //
   // Everything it needs is already here and none of it is a new download: the
@@ -450,16 +478,12 @@ async function main() {
   if (landPack) {
     const t0 = performance.now();
     const level = landPack.levels[0];
-    const roadIndex = roadPack
-      ? new RoadIndex(roadPack.roads, treeRoadClearanceM)
-      : null;
-    const footprints = pack ? new FootprintMask(pack.buildings, pack.radiusM) : null;
     foliage = new Foliage(
       {
         mask: { rgba: buildLandMaskRGBA(level), n: level.n, extentM: level.extentM },
         heightAt: terrain.heightAt,
-        roads: roadIndex,
-        footprints,
+        roads: treeRoads,
+        footprints: treeFootprints,
       },
       sunShadow.uniforms,
       budget.tier === "reduced",
@@ -472,10 +496,67 @@ async function main() {
       `[flyby] trees: ${fs.count} instances in ${fs.tiles} tiles ` +
       `(lod ${fs.lodCounts.join("/")} of ${TREE_LOD_TRIANGLES.join("/")} tris), ` +
       `${(fs.triangles / 1000).toFixed(0)}k triangles, ` +
-      `${roadIndex ? `${roadIndex.segments} road segments indexed` : "no road pack"}, ` +
-      `${footprints ? "footprints excluded" : "no building pack"}, ` +
+      `${roadPack ? "roads excluded" : "no road pack"}, ` +
+      `${pack ? "footprints excluded" : "no building pack"}, ` +
       `${indexMs.toFixed(0)} ms index + ${fs.rebuildMs.toFixed(0)} ms place` +
       `${fs.clipped ? " (CLIPPED to the instance budget)" : ""}`,
+    );
+  }
+
+  // --- Live OSM, for the ground nobody baked --------------------------------
+  //
+  // Terrain, imagery, weather and landmarks have always worked anywhere on
+  // Earth. Buildings, roads and trees only existed where somebody had run the
+  // bakers, which is seven cities. Where there is no .city pack the app now
+  // streams OSM around the camera instead, through exactly the converters the
+  // bakers use. Off with `?nolive`, which is also how a baked city is compared
+  // against a live one over the same ground.
+  //
+  // Deliberately NOT awaited: nothing below waits for a tile, and the flight
+  // starts on terrain alone exactly as it does today.
+  const liveOff = new URLSearchParams(location.search).has("nolive");
+  let live: LiveWorld | null = null;
+  if (!pack && !liveOff) {
+    // A .land pack is measured 10 m raster and OSM landuse is a drawn boundary,
+    // so where one exists it stays the canopy source and the live path only
+    // contributes buildings and roads. Where there is none, OSM is the only
+    // canopy a browser can reach at all: WorldCover's COGs send no CORS header.
+    const liveVeg = landPack ? null : new LiveVegetation(LIVE_EXTENT_M);
+    if (liveVeg && !foliage) {
+      foliage = new Foliage(
+        {
+          mask: { rgba: liveVeg.rgba, n: liveVeg.n, extentM: liveVeg.extentM },
+          heightAt: terrain.heightAt,
+          roads: treeRoads,
+          footprints: treeFootprints,
+        },
+        sunShadow.uniforms,
+        budget.tier === "reduced",
+      );
+      foliage.update(0, 0);
+      scene.add(foliage.group);
+    }
+    const endpoint = new URLSearchParams(location.search).get("overpass");
+    live = new LiveWorld({
+      origin,
+      scene,
+      heightAt: terrain.heightAt,
+      shadow: sunShadow.uniforms,
+      budget,
+      packs: await bakedPromise,
+      vegetation: liveVeg,
+      footprints: treeFootprints,
+      roadBlockers: treeRoads,
+      buildingUniforms: buildingUniformSets,
+      roadUniforms: roadUniformSets,
+      onVegetation: () => foliage?.invalidate(),
+      // `?overpass=` is a dev knob, and the only way the screenshot harness can
+      // capture this without asking a volunteer server the same question on
+      // every run.
+      overpass: new Overpass(endpoint ? [endpoint] : undefined),
+    });
+    console.log(
+      `[flyby] live OSM enabled for ${city.name}: no .city pack, streaming from Overpass`,
     );
   }
 
@@ -488,6 +569,26 @@ async function main() {
 
   const hud = new Hud(ui);
   hud.setWeather(wx, 0);
+
+  /**
+   * What the panel says about where the city came from.
+   *
+   * A baked pack and a live stream are not the same fidelity and the HUD must
+   * not imply they are: the baked one was converted from a whole-city Overpass
+   * fetch offline and gated by the verifiers, the live one is whatever tiles
+   * have arrived in the last minute with no measured landcover behind them.
+   */
+  const dataSource = (): DataSource => {
+    if (pack) return { kind: "baked" };
+    if (!live) return { kind: "none" };
+    return {
+      kind: "live",
+      tiles: live.stats.tiles,
+      fetching: live.stats.fetching,
+      failed: live.stats.failed,
+    };
+  };
+  hud.setPlace(city, wallClock.parts(now).time, wallClock.abbrev(now), dataSource());
 
   // Start the aircraft upwind of the centre, pointed at the city, at the
   // altitude this place looks best from.
@@ -932,8 +1033,14 @@ async function main() {
     }
     sky.uniforms.uExposure.value = light.exposure * exposureScale;
 
-    if (buildings) {
-      const b = buildings.uniforms;
+    // Local SOLAR hour, from UTC and the longitude, rather than the civil
+    // hour: it needs no timezone database, it is what the sun is actually
+    // doing, and the lights coming on want to track the evening rather than
+    // a political line on a map.
+    const localHour =
+      (now.getUTCHours() + now.getUTCMinutes() / 60 + city.lon / 15 + 24) % 24;
+    const hf = hourFactors(localHour);
+    for (const b of buildingUniformSets) {
       b.uCameraPos.value.copy(camera.position);
       b.uSH.value = skyProbe.sh;
       b.uEnv.value = skyProbe.texture;
@@ -950,18 +1057,10 @@ async function main() {
       b.uTurbidity.value = light.turbidity;
       b.uCamAltitude.value = camAlt;
       b.uExposure.value = light.exposure * exposureScale;
-      // Local SOLAR hour, from UTC and the longitude, rather than the civil
-      // hour: it needs no timezone database, it is what the sun is actually
-      // doing, and the lights coming on want to track the evening rather than
-      // a political line on a map.
-      const localHour =
-        (now.getUTCHours() + now.getUTCMinutes() / 60 + city.lon / 15 + 24) % 24;
-      const hf = hourFactors(localHour);
       b.uHourFactor.value.set(hf.residential, hf.office, hf.other);
     }
 
-    if (roads) {
-      const r = roads.uniforms;
+    for (const r of roadUniformSets) {
       r.uCameraPos.value.copy(camera.position);
       r.uSH.value = skyProbe.sh;
       r.uEnv.value = skyProbe.texture;
@@ -979,6 +1078,11 @@ async function main() {
       r.uTurbidity.value = light.turbidity;
       r.uCamAltitude.value = camAlt;
     }
+
+    // Ask for the ground ahead. Cheap every frame: it only rescans once the
+    // camera has moved a few hundred metres, and the rate limiter decides when
+    // anything is actually sent.
+    live?.update(camera.position.x, camera.position.z);
 
     if (foliage) {
       // Rebuilt only when the camera has moved far enough for a tree's level of
@@ -1136,7 +1240,7 @@ async function main() {
         );
       }
       hud.setWeather(wx, clockOffset);
-      hud.setPlace(city, wallClock.parts(now).time, wallClock.abbrev(now));
+      hud.setPlace(city, wallClock.parts(now).time, wallClock.abbrev(now), dataSource());
       places.update(ac.position.x, ac.position.z);
       // Re-sorted only after a kilometre of travel. Sorting every tick would
       // reorder the rows under the cursor while you were reaching for one.
@@ -1204,7 +1308,24 @@ async function main() {
         return { mean, p99: sorted[Math.min(n - 1, Math.floor(n * 0.99))] };
       },
       get triangles() {
-        return (buildings ? buildings.stats.triangles : 0) + (foliage ? foliage.stats.triangles : 0);
+        return (
+          (buildings ? buildings.stats.triangles : 0) +
+          (foliage ? foliage.stats.triangles : 0) +
+          (live ? live.stats.triangles : 0)
+        );
+      },
+      /** What the live path has managed to fetch and build. The harness waits
+       *  on this: a pose over an unbaked place is not worth capturing until
+       *  something has actually streamed in. */
+      get liveTiles() { return live ? live.stats.tiles : 0; },
+      /** True once the scheduler has nothing left to ask about, which is the
+       *  only point at which the frame shows everything this place has. */
+      get liveIdle() { return live ? !live.stats.fetching && live.pending === 0 : true; },
+      get liveBuildings() { return live ? live.stats.buildings : 0; },
+      get liveStats() {
+        return live
+          ? { ...live.stats, latency: live.latency(), overpass: { ...live.overpass.stats, latencyMs: undefined } }
+          : null;
       },
       get trees() { return foliage ? foliage.stats.count : 0; },
       /** Instances at each level of detail, and their triangles. The frame

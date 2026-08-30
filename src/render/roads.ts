@@ -790,4 +790,14 @@ export class Roads {
       triangles, meshes, lod, buildMs: performance.now() - t0,
     };
   }
+
+  /** Release the GPU memory this group holds; see Buildings.dispose. */
+  dispose(): void {
+    for (const child of this.group.children) {
+      const m = child as THREE.Mesh;
+      m.geometry?.dispose();
+      (m.material as THREE.Material | undefined)?.dispose();
+    }
+    this.group.clear();
+  }
 }

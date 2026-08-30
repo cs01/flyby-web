@@ -28,6 +28,15 @@ const DB_VERSION = 2;
 
 export const TTL_STATIC = 30 * 24 * 3600 * 1000;
 export const TTL_WEATHER = 10 * 60 * 1000;
+/**
+ * No expiry at all, for a response that cannot go stale in a way that matters.
+ *
+ * An Overpass answer for a fixed bbox and a fixed query is effectively
+ * immutable: OSM changes, but not in ways a skyline notices, and re-asking
+ * costs a volunteer server a query that has already been answered. The offline
+ * bake cache has had no TTL for the same reason and for the same server.
+ */
+export const TTL_FOREVER = Infinity;
 
 /** Ceiling when the browser will not say how much room there is. */
 const FALLBACK_BUDGET = 512 * 1024 * 1024;
@@ -163,7 +172,16 @@ async function evictTo(db: IDBDatabase, acc: { budget: number; total: number }):
   });
 }
 
-async function cacheGet(url: string, ttl: number): Promise<ArrayBuffer | null> {
+/**
+ * Read one entry, or null when it is absent or older than `ttl`.
+ *
+ * Exported so a caller whose transport is not a plain GET can still use this
+ * store rather than growing a second one. src/data/overpass.ts is that caller:
+ * it needs the response HEADERS (Retry-After) and a rate limiter around the
+ * network half, but the bytes it ends up with belong in the same LRU with the
+ * same byte budget as every tile.
+ */
+export async function cacheGet(url: string, ttl: number): Promise<ArrayBuffer | null> {
   const db = await openDb();
   if (!db) return null;
   return new Promise((resolve) => {
@@ -213,7 +231,8 @@ async function touch(url: string): Promise<void> {
   }
 }
 
-async function cachePut(url: string, body: ArrayBuffer): Promise<void> {
+/** Store one entry, evicting least-recently-used down to budget if needed. */
+export async function cachePut(url: string, body: ArrayBuffer): Promise<void> {
   const db = await openDb();
   if (!db) return;
 

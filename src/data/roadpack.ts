@@ -17,6 +17,9 @@
 // browser could not be the oracle for the writer.
 
 export const ROAD_MAGIC = 0x524f4144; // "ROAD"
+const ROAD_VERSION = 1;
+const ROAD_HEADER_BYTES = 32;
+const ROAD_RECORD_BYTES = 16;
 
 /** Quarter-metre fixed point for centreline vertices, relative to the centroid. */
 const VERT_SCALE = 0.25;
@@ -169,6 +172,85 @@ export interface RoadPack {
   roads: Road[];
 }
 
+/**
+ * A way as it sits IN the pack: geometry still quantised to i16 quarter-metre
+ * offsets from the piece's bbox centre. See PackedBuilding in citypack.ts for
+ * why the quantisation happens once, in the shared converter, rather than in
+ * whichever caller happens to want a pack.
+ */
+export interface PackedWay {
+  cls: RoadClass;
+  lanes: number;
+  flags: number;
+  layer: number;
+  surface: SurfaceKind;
+  cx: number;
+  cz: number;
+  dx: Int16Array;
+  dz: Int16Array;
+}
+
+/** Write a .roads pack. The inverse of parseRoadPack, beside it on purpose. */
+export function encodeRoadPack(
+  ways: readonly PackedWay[],
+  lat0: number,
+  lon0: number,
+  radiusM: number,
+): Uint8Array {
+  let size = ROAD_HEADER_BYTES;
+  for (const w of ways) size += ROAD_RECORD_BYTES + 4 * w.dx.length;
+
+  const buf = new ArrayBuffer(size);
+  const dv = new DataView(buf);
+  let o = 0;
+  dv.setUint32(o, ROAD_MAGIC, true); o += 4;
+  dv.setUint32(o, ROAD_VERSION, true); o += 4;
+  dv.setFloat64(o, lat0, true); o += 8;
+  dv.setFloat64(o, lon0, true); o += 8;
+  dv.setFloat32(o, radiusM, true); o += 4;
+  dv.setUint32(o, ways.length, true); o += 4;
+
+  for (const w of ways) {
+    dv.setUint8(o, w.cls); o += 1;
+    dv.setUint8(o, w.lanes); o += 1;
+    dv.setUint8(o, w.flags); o += 1;
+    dv.setInt8(o, w.layer); o += 1;
+    dv.setUint8(o, w.surface); o += 1;
+    dv.setUint8(o, 0); o += 1; // reserved padding
+    dv.setUint16(o, w.dx.length, true); o += 2;
+    dv.setFloat32(o, w.cx, true); o += 4;
+    dv.setFloat32(o, w.cz, true); o += 4;
+    for (let i = 0; i < w.dx.length; i++) {
+      dv.setInt16(o, w.dx[i], true); o += 2;
+      dv.setInt16(o, w.dz[i], true); o += 2;
+    }
+  }
+  return new Uint8Array(buf);
+}
+
+/** Packed records to renderer records, without going through a file. The
+ *  `Math.fround` is what makes the runtime path and a pack agree exactly; see
+ *  unpackBuildings in citypack.ts. */
+export function unpackRoads(packed: readonly PackedWay[]): Road[] {
+  const out: Road[] = new Array(packed.length);
+  for (let i = 0; i < packed.length; i++) {
+    const p = packed[i];
+    const cx = Math.fround(p.cx);
+    const cz = Math.fround(p.cz);
+    const n = p.dx.length;
+    const pts = new Float32Array(n * 2);
+    for (let v = 0; v < n; v++) {
+      pts[v * 2] = cx + p.dx[v] * VERT_SCALE;
+      pts[v * 2 + 1] = cz + p.dz[v] * VERT_SCALE;
+    }
+    out[i] = {
+      cls: p.cls, lanes: p.lanes, flags: p.flags, layer: p.layer,
+      surface: p.surface, cx, cz, pts,
+    };
+  }
+  return out;
+}
+
 export function parseRoadPack(buf: ArrayBuffer): RoadPack {
   const dv = new DataView(buf);
   let o = 0;
@@ -178,7 +260,7 @@ export function parseRoadPack(buf: ArrayBuffer): RoadPack {
     throw new Error(`not a .roads pack (magic 0x${magic.toString(16)})`);
   }
   const version = dv.getUint32(o, true); o += 4;
-  if (version !== 1) throw new Error(`unsupported .roads version ${version}`);
+  if (version !== ROAD_VERSION) throw new Error(`unsupported .roads version ${version}`);
 
   const lat0 = dv.getFloat64(o, true); o += 8;
   const lon0 = dv.getFloat64(o, true); o += 8;
