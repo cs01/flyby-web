@@ -86,6 +86,25 @@ export function createSceneTarget(renderer: THREE.WebGLRenderer): THREE.WebGLRen
   depth.minFilter = THREE.NearestFilter;
   depth.magFilter = THREE.NearestFilter;
 
+  // MSAA has to be asked for HERE, not on the renderer.
+  //
+  // `antialias: true` on WebGLRenderer only ever applies to the DEFAULT
+  // framebuffer. Every frame in this app is rendered into this offscreen target
+  // and then composited, so that flag has been doing nothing since the
+  // composite pass existed, and every edge in the scene was aliased: hard
+  // stair-stepped roof lines against the sky, crawling on the window grid, and
+  // the drape shimmering at the horizon. On a scene made almost entirely of
+  // hard vertical and horizontal building edges, that is most of what read as
+  // dated.
+  //
+  // 4x is the sweet spot: WebGL2 guarantees at least 4, it costs one extra
+  // resolve, and going to 8 is not visible on this content. A coarse-pointer
+  // device gets 0, because the multisampled colour buffer is 4x the memory of
+  // the target and phones are already the constrained case (see the drape plan
+  // in terrain.ts, which exists for the same reason).
+  const coarse =
+    typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+
   const rt = new THREE.WebGLRenderTarget(size.x, size.y, {
     type: THREE.HalfFloatType,
     format: THREE.RGBAFormat,
@@ -94,6 +113,7 @@ export function createSceneTarget(renderer: THREE.WebGLRenderer): THREE.WebGLRen
     depthBuffer: true,
     stencilBuffer: false,
     depthTexture: depth,
+    samples: coarse ? 0 : 4,
   });
   return rt;
 }
