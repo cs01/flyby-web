@@ -40,6 +40,7 @@ import { loadRoadPack } from "./data/roadpack-load";
 import { Roads } from "./render/roads";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { Composite } from "./render/composite";
+import { AoPass } from "./render/ao";
 import { SunShadow } from "./render/sunshadow";
 import { SkyProbe } from "./render/skyprobe";
 import { Skyline } from "./sim/skyline";
@@ -235,12 +236,16 @@ async function main() {
   const { renderer, scene, camera } = createRenderer(canvas);
   const composite = new Composite(renderer);
   const target = createSceneTarget(renderer);
+  // Screen-space sky occlusion. Runs before the main pass, because the surface
+  // shaders read its result rather than the composite doing so; see render/ao.ts.
+  const ao = new AoPass(renderer);
   const quality = new AdaptiveQuality(renderer);
 
   const resizeTargets = () => {
     const s2 = renderer.getDrawingBufferSize(new THREE.Vector2());
     target.setSize(s2.x, s2.y);
     composite.resize(renderer);
+    ao.resize(renderer);
   };
   addEventListener("resize", resizeTargets);
 
@@ -270,6 +275,7 @@ async function main() {
   // surface and a prefiltered cube for the glass and the wet tarmac.
   const skyProbe = new SkyProbe();
   if (new URLSearchParams(location.search).get("shadows") === "0") sunShadow.enabled = false;
+  if (new URLSearchParams(location.search).get("ao") === "0") ao.enabled = false;
 
   const terrain = new Terrain(origin, fields, drapes, sunShadow.uniforms);
   scene.add(terrain.group);
@@ -330,6 +336,19 @@ async function main() {
   } else {
     console.warn(`[flyby] no road pack for ${city.id}; run: bun tools/bake-roads.ts --city ${city.id}`);
   }
+
+  /**
+   * Point every surface material at this frame's occlusion buffer.
+   *
+   * Zero is not "no occlusion pass", it is "this draw is not the main frame":
+   * the buffer is indexed by gl_FragCoord, so it only means anything while the
+   * main camera is the one drawing.
+   */
+  const setAo = (strength: number): void => {
+    for (const u of terrain.uniforms) ao.apply(u, strength);
+    if (buildings) ao.apply(buildings.uniforms, strength);
+    if (roads) ao.apply(roads.uniforms, strength);
+  };
 
   // Where the city actually is, for night lighting. A place with no pack gets
   // an all-dark mask: unlit open country is a more honest answer than guessing
@@ -582,7 +601,14 @@ async function main() {
   const frameRing = new Float64Array(600);
 
   renderer.setAnimationLoop(() => {
-    const dt = Math.min(0.05, clock.getDelta());
+    // The RAW delta is what the frame-cost metric records; `dt` is the clamped
+    // one the simulation integrates with. Keeping them separate is the whole
+    // point: the clamp exists so one long stall cannot teleport the aeroplane
+    // through a building, and feeding the clamped value to the metric made p99
+    // report the CLAMP. It came back as exactly 50.00 ms for every pose in
+    // every build, which is a tail metric that cannot distinguish anything.
+    const rawDt = clock.getDelta();
+    const dt = Math.min(0.05, rawDt);
     // The animation clock stays at zero for a screenshot. It drives the cloud
     // drift, the sky and the beacon, and a wall-clock-derived phase is the one
     // thing that would make two runs of the same URL differ.
@@ -862,7 +888,7 @@ async function main() {
     p.uSunIntensity.value = light.sunIntensity;
     p.uMoonDir.value.copy(light.moonDir);
     p.uMoonLight.value.copy(light.moonLight);
-    p.uAmbient.value.copy(light.ambient);
+    p.uSH.value = skyProbe.sh;
     p.uCameraPos.value.copy(camera.position);
 
     // The extra passes, in order: the sun's cascaded shadow maps over the whole
@@ -879,8 +905,15 @@ async function main() {
     skyProbe.setSize(quality.scale < 0.8 ? 32 : 64);
     skyProbe.update(renderer, light, camAlt);
     sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale);
+    // The environment probe renders the city into a cube with its own camera
+    // and its own viewport, where a gl_FragCoord lookup into a buffer built for
+    // the main frame would be reading the wrong pixel of the wrong picture.
+    // Off for that pass, back on for this one.
+    setAo(0);
     model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
     sky.syncCamera(camera);
+    ao.render(renderer, scene, camera);
+    setAo(1);
 
     // Drift angle: the difference between where the nose points and where the
     // machine is actually going over the ground.
@@ -945,7 +978,7 @@ async function main() {
     composite.brightUniforms.uNight.value = light.night;
     composite.render(renderer, target.texture, target.depthTexture);
 
-    if (timedFrames < frameRing.length) frameRing[timedFrames++] = dt * 1000;
+    if (timedFrames < frameRing.length) frameRing[timedFrames++] = rawDt * 1000;
     shotFrames++;
 
     smoothedMs += (dt * 1000 - smoothedMs) * 0.06;
@@ -1024,9 +1057,6 @@ async function main() {
       /** Start a fresh timing window, so warm-up frames are not in the sample. */
       resetTiming: () => { timedFrames = 0; },
       get timed() { return timedFrames; },
-      // Median, not mean: one 200 ms hitch from a texture upload or a GC would
-      // dominate a mean over a few hundred frames and say nothing about the
-      // cost of a frame.
       // Mean and p99, never the median.
       //
       // The median is what this used to report, and it lied by a factor of five.
@@ -1053,7 +1083,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe,
+      sunShadow, drone, skyProbe, ao,
       get droneActive() { return droneActive; },
       get wx() { return wx; },
       get time() { return now; },
@@ -1086,6 +1116,7 @@ async function main() {
   if (showPerf) {
     Object.assign(window as unknown as Record<string, unknown>, {
       __cloudMetric: () => composite.measureBanding(renderer),
+      __aoMetric: () => ao.measure(renderer),
     });
   }
 }

@@ -23,6 +23,7 @@ import type { StitchedImage } from "../data/imagery";
 import { Origin } from "../geo";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
+import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 
 export interface TerrainRing {
   /** Half-width in metres. */
@@ -146,6 +147,7 @@ ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 ${SUN_SHADOW_GLSL}
 ${SH_GLSL}
+${AO_GLSL}
 
 uniform sampler2D uDrape;
 uniform vec3  uCameraPos;
@@ -219,7 +221,13 @@ void main() {
   // the sunset is warm while the one behind it is blue: the nine coefficients
   // carry the sky's actual distribution, which the hemispherical constant this
   // replaces could not express at all -- it had no azimuth in it.
-  vec3 ambient = shIrradiance(n);
+  // Screen-space sky occlusion, on the SKY term alone. The bent normal is
+  // what makes it read as enclosure rather than as dirt: ground at the foot of
+  // a tower gets the light from the strip of sky it can actually see instead
+  // of a dimmed average of the whole dome. The direct beam above is untouched
+  // -- multiplying sunlight by a screen-space term is what produces dark
+  // smears that swim with the camera.
+  vec3 ambient = occludedSkyIrradiance(n);
 
   vec3 lit = albedo * (beam + ambient);
 
@@ -426,7 +434,7 @@ void main() {
 }
 `;
 
-export interface TerrainUniforms extends SunShadowUniforms {
+export interface TerrainUniforms extends SunShadowUniforms, AoUniforms {
   uDrape: THREE.IUniform<THREE.Texture | null>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -464,6 +472,7 @@ export interface TerrainUniforms extends SunShadowUniforms {
 export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms {
   return {
     ...shadow,
+    ...aoUniforms(),
     uDrape: { value: null },
     // Held at the hemispherical ambient the shader used before the probe
     // existed, so frame one shades correctly whatever happens to the probe.

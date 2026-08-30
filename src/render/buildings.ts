@@ -29,6 +29,7 @@ import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { triangulate, signedArea } from "./earcut";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
+import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import {
   FACADE_FLOATS,
   FACADE_GLSL,
@@ -203,6 +204,7 @@ ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 ${SUN_SHADOW_GLSL}
 ${SH_GLSL}
+${AO_GLSL}
 ${FACADE_GLSL}
 
 uniform vec3  uCameraPos;
@@ -381,6 +383,16 @@ void main() {
     // term alone it can be far stronger and go far deeper, because a sunlit
     // wall at street level keeps its whole beam and stays bright -- which is
     // what a photograph of a city at low sun actually looks like.
+    //
+    // The floor stays at 0.34 even though GTAO now measures contact occlusion
+    // directly, because inside a canyon the two barely overlap. Measured on the
+    // 7th Ave pose, the screen-space pass finds occlusion on 7% of its buffer
+    // against 34% to 63% on the rooftop and residential poses: from a camera in
+    // the street the far wall is most of a screen width away and the pavement
+    // at the foot of this one is usually not in the frame at all, so there is
+    // almost nothing for it to find. The overlap is a narrow band at the base
+    // of a wall whose pavement happens to be visible, and there the extra
+    // darkening is the right answer anyway.
     skyOcc = mix(0.34, 1.0, smoothstep(0.0, 48.0, vUv.y));
 
     // --- Lit windows at night -------------------------------------------
@@ -488,9 +500,26 @@ void main() {
   // little brighter; the probe measures that instead, and gets the sunset case
   // right for the same cost, because an SH evaluation IS nine multiply-adds.
   //
-  // skyOcc stays: it is the street canyon, which is geometry the probe cannot
-  // see. Skyglow reaches walls better than roofs, it comes from the street.
-  vec3 ambient = shIrradiance(n) * skyOcc + uNightGlow * (1.0 - 0.35 * n.y);
+  // Two occlusions, at two scales, and they do not overlap.
+  //
+  //   skyOcc is the STREET CANYON: the building across the road, forty metres
+  //   away and frequently outside the frame. Analytic, from the height up the
+  //   wall, because no screen-space search can see it.
+  //
+  //   sampleSkyOcclusion is the CONTACT: the pavement at the foot of the wall,
+  //   the inside corner where two wings meet, the parapet, the plant room. Six
+  //   metres of measured geometry.
+  //
+  // The bent normal is what turns the second one into enclosure rather than
+  // dirt in the corners. A wall in a canyon looks the sky up along the strip it
+  // can actually see -- upward, and out along the street -- instead of getting
+  // a uniformly dimmed sample of the whole dome.
+  //
+  // Both multiply the SKY term and neither touches the beam above. Skyglow is
+  // left alone as well: it comes from the street, not from the dome, so a
+  // hemisphere-shaped occlusion is the wrong instrument for it.
+  vec3 ambient = occludedSkyIrradiance(n) * skyOcc
+               + uNightGlow * (1.0 - 0.35 * n.y);
 
   vec3 lit = albedo * (beam + ambient) + emissive;
 
@@ -551,7 +580,7 @@ void main() {
 }
 `;
 
-export interface BuildingUniforms extends SunShadowUniforms {
+export interface BuildingUniforms extends SunShadowUniforms, AoUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -586,6 +615,7 @@ export interface BuildingUniforms extends SunShadowUniforms {
 function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
   return {
     ...shadow,
+    ...aoUniforms(),
     uCameraPos: { value: new THREE.Vector3() },
     // The hemispherical ambient the shader ran before the probe existed, so a
     // frame drawn before the first capture is the old picture, not a black one.

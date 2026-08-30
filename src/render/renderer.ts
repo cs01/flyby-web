@@ -50,8 +50,17 @@ export function createRenderer(canvas: HTMLCanvasElement): RendererBundle {
   const scene = new THREE.Scene();
 
   // Near at 2 m so the aircraft nose does not clip; far at 200 km so the
-  // horizon ring and distant mountains are inside the frustum. The ratio is
-  // large but a logarithmic depth buffer absorbs it.
+  // horizon ring and distant mountains are inside the frustum.
+  //
+  // There is NO logarithmic depth buffer, whatever this comment used to claim.
+  // three.js only injects one into materials it builds itself and every
+  // material here is a RawShaderMaterial, so `logarithmicDepthBuffer` would be
+  // ignored even if it were set. The frustum ratio is absorbed instead by the
+  // fact that the NEAR plane, not the far one, sets the quantisation: a 24-bit
+  // fixed-point depth is good to z^2 * 3.0e-8 metres, which is sub-millimetre
+  // at 100 m and metres at 10 km. Anything that reconstructs position from this
+  // buffer has to fade out with distance rather than trust the far end of it;
+  // see render/ao.ts.
   const camera = new THREE.PerspectiveCamera(62, 1, 2, 200000);
 
   const resize = () => {

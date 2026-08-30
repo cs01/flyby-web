@@ -176,6 +176,28 @@ const DEPTH_FRAG = /* glsl */ `precision highp float;
 out vec4 c;
 void main() { c = vec4(1.0); }`;
 
+/**
+ * A scene.overrideMaterial that writes depth and nothing else.
+ *
+ * Shared with the ambient-occlusion prepass (render/ao.ts), which needs exactly
+ * the same thing from the main camera. One definition, because the reason it
+ * works at all is subtle: every geometry in this scene is drawn from `position`
+ * and the standard matrices with no vertex displacement anywhere, so one
+ * trivial vertex shader can stand in for all of them. A second copy would be
+ * one more place for that invariant to be broken silently.
+ */
+export function createDepthOnlyMaterial(): THREE.RawShaderMaterial {
+  return new THREE.RawShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: DEPTH_VERT,
+    fragmentShader: DEPTH_FRAG,
+    side: THREE.DoubleSide,
+    // Depth is the entire product of this pass. Writing colour as well cost a
+    // measured 1.5 ms a frame over three 2048 maps, for a buffer nothing reads.
+    colorWrite: false,
+  });
+}
+
 function makeTarget(size: number): THREE.WebGLRenderTarget {
   const depth = new THREE.DepthTexture(size, size);
   depth.type = THREE.UnsignedIntType;
@@ -238,16 +260,7 @@ export class SunShadow {
       });
     }
 
-    this.depthMaterial = new THREE.RawShaderMaterial({
-      glslVersion: THREE.GLSL3,
-      vertexShader: DEPTH_VERT,
-      fragmentShader: DEPTH_FRAG,
-      side: THREE.DoubleSide,
-      // Depth is the entire product of this pass. Writing colour as well cost a
-      // measured 1.5 ms a frame over three 2048 maps, for a buffer nothing
-      // reads.
-      colorWrite: false,
-    });
+    this.depthMaterial = createDepthOnlyMaterial();
 
     this.uniforms = {
       uShadowMap0: { value: this.cascades[0].target.depthTexture },

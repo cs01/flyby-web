@@ -34,6 +34,7 @@ import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
+import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { addRibbon, emptyRibbon, ribbonTriangleCost, type RibbonScratch } from "../data/ribbon";
 import {
   roadWidthM,
@@ -206,6 +207,7 @@ out vec4 fragColor;
 ${ATMOSPHERE_GLSL}
 ${SUN_SHADOW_GLSL}
 ${SH_GLSL}
+${AO_GLSL}
 
 uniform vec3  uCameraPos;
 // The scene sky probe: what wet asphalt reflects.
@@ -478,7 +480,11 @@ void main() {
   // Sky irradiance from the scene probe, in place of the hemispherical constant
   // this used to run. A road is close to horizontal, so the diffuse change here
   // is small; what the probe buys on a road is the reflection below.
-  vec3 ambient = shIrradiance(n);
+  // Screen-space sky occlusion on the sky term only, exactly as in terrain.ts.
+  // A road is horizontal and open, so this is near 1 in the middle of a
+  // carriageway and does its work at the kerb and under the buildings that
+  // stand on it.
+  vec3 ambient = occludedSkyIrradiance(n);
   vec3 lit = albedo * (beam + ambient);
 
   // Wet asphalt is a MIRROR, and a rainy city is mostly that: a bright sky
@@ -568,7 +574,7 @@ void main() {
 }
 `;
 
-export interface RoadUniforms extends SunShadowUniforms {
+export interface RoadUniforms extends SunShadowUniforms, AoUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -600,6 +606,7 @@ export interface RoadUniforms extends SunShadowUniforms {
 function makeUniforms(shadow: SunShadowUniforms): RoadUniforms {
   return {
     ...shadow,
+    ...aoUniforms(),
     uCameraPos: { value: new THREE.Vector3() },
     // The hemispherical ambient this shader ran before the probe existed, so a
     // frame drawn before the first capture is the old picture, not a black one.

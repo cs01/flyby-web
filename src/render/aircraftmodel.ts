@@ -30,6 +30,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { SHADOW_CASTER_LAYER } from "./sunshadow";
+import { SH_GLSL, shHemispherical } from "./sh";
 
 /** Wing semi-span in metres. The real 182 is 10.97 m tip to tip. */
 export const SEMI_SPAN = 5.46;
@@ -63,6 +64,7 @@ void main() {
 const FRAG = /* glsl */ `
 precision highp float;
 ${TONEMAP_GLSL}
+${SH_GLSL}
 
 in vec3 vWorldPos;
 in vec3 vWorldNormal;
@@ -75,7 +77,6 @@ uniform float uSunIntensity;
 uniform float uSunSurface;
 uniform vec3  uMoonDir;
 uniform vec3  uMoonLight;
-uniform vec3  uAmbient;
 uniform vec3  uCameraPos;
 
 uniform sampler2D   uMap;
@@ -217,9 +218,19 @@ void main() {
     lit += uEnvStrength * (pre * Fenv + irr * diffuseColor * (1.0 - uMetalness));
   }
 
-  // A floor under everything, so a surface facing away from sun, moon and sky
-  // still has colour rather than going to pure black.
-  lit += uAmbient * diffuseColor * (0.55 + 0.45 * N.y);
+  // Sky irradiance from the SCENE probe, in place of the hemispherical
+  // constant this was the last shader in the renderer still running.
+  //
+  // Two probes, deliberately, and they are not the same measurement. The cube
+  // above is captured AT THE AIRCRAFT and has the ground, the city and the
+  // runway in it, which is what a fuselage actually reflects; the scene probe
+  // is sky only. So the cube keeps the reflection and the near-field bounce,
+  // and this supplies the floor under everything -- the term that stops a
+  // surface facing away from sun, moon and sky going to pure black -- with the
+  // sky's real distribution instead of a fudge in N.y. Both are normalised to
+  // the same scene ambient, so nothing changes level; what changes is that a
+  // wing under a sunset is now warm on the side facing it.
+  lit += shIrradiance(N) * diffuseColor;
 
   // Navigation lights emit rather than reflect, which is the only way they can
   // still be visible at night -- the whole point of having them.
@@ -237,7 +248,8 @@ export interface AircraftUniforms extends Record<string, THREE.IUniform> {
   uSunSurface: THREE.IUniform<number>;
   uMoonDir: THREE.IUniform<THREE.Vector3>;
   uMoonLight: THREE.IUniform<THREE.Color>;
-  uAmbient: THREE.IUniform<THREE.Color>;
+  /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
+  uSH: THREE.IUniform<Float32Array>;
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uEnv: THREE.IUniform<THREE.CubeTexture | THREE.Texture | null>;
   uEnvMaxLod: THREE.IUniform<number>;
@@ -515,7 +527,9 @@ export class AircraftModel {
       uSunSurface: { value: 0.105 },
       uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
       uMoonLight: { value: new THREE.Color(0, 0, 0) },
-      uAmbient: { value: new THREE.Color(0.2, 0.24, 0.3) },
+      // The hemispherical ambient this shader ran before the probe existed,
+      // so a frame drawn before the first capture is the old picture.
+      uSH: { value: shHemispherical([0.2, 0.24, 0.3], 0.55, 0.45) },
       uCameraPos: { value: new THREE.Vector3() },
       uEnv: { value: this.env.target.texture },
       uEnvMaxLod: { value: this.env.maxLod },
