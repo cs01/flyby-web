@@ -24,6 +24,8 @@ export class AdaptiveQuality {
   private slowFrames = 0;
   private fastFrames = 0;
   private cooldown = 0;
+  /** Non-null while the scale is pinned; see `pin`. */
+  private pinned: number | null = null;
 
   /** Base pixel ratio before scaling. */
   readonly baseRatio: number;
@@ -33,7 +35,20 @@ export class AdaptiveQuality {
   }
 
   get scale(): number {
-    return STEPS[this.index];
+    return this.pinned ?? STEPS[this.index];
+  }
+
+  /**
+   * Hold the render scale still.
+   *
+   * The screenshot harness compares two builds pixel for pixel, and a
+   * controller that reacts to frame time would pick a different scale on the
+   * slower of the two -- so the comparison would be measuring the resolution
+   * rather than the change. Pinning makes the render scale an INPUT of a shot
+   * rather than an output of whatever else the machine was doing.
+   */
+  pin(scale: number): void {
+    this.pinned = scale;
   }
 
   /**
@@ -41,6 +56,7 @@ export class AdaptiveQuality {
    * the caller's cue to resize its render targets.
    */
   update(smoothedMs: number, dt: number): boolean {
+    if (this.pinned !== null) return false;
     if (this.cooldown > 0) {
       this.cooldown -= dt;
       return false;
