@@ -41,8 +41,16 @@ import { hourFactors } from "./render/facade";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { loadLandPack } from "./data/landcover-load";
 import { loadRoadPack } from "./data/roadpack-load";
+import { loadStreetPack } from "./data/streetpack-load";
+import { FurnitureKind } from "./data/streetpack";
+import { PointIndex, LAMP_SNAP_M, type StreetWorld } from "./data/streetfurniture";
 import { Roads } from "./render/roads";
 import { Pavement } from "./render/pavement";
+import { isCarriageway } from "./data/pavement";
+import { roadWidthM } from "./data/roadpack";
+import { StreetLamps, LAMP_TRIANGLES } from "./render/streetlamps";
+import type { StreetLampUniforms } from "./render/streetlamps";
+import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { Foliage, TREE_LOD_TRIANGLES } from "./render/trees";
 import { buildLandMaskRGBA } from "./data/landmask";
@@ -357,6 +365,10 @@ async function main() {
   // origin, so overlapping the two fetches costs nothing and saves a round trip.
   const landPromise = loadLandPack(city.id);
   const roadPromise = loadRoadPack(city.id);
+  // The surveyed furniture, if anybody has surveyed this place. Fetched
+  // alongside the roads rather than after them: it is a few tens of kilobytes
+  // and waiting on it would put it on the load's critical path for nothing.
+  const streetPromise = loadStreetPack(city.id);
   // Where a .city pack already covers the ground, so the live path never asks
   // Overpass for a square somebody has already baked. Same origin, one small
   // JSON, already in the cache from the start screen.
@@ -431,12 +443,25 @@ async function main() {
   // until the landcover pack has arrived, which happens after the road pack.
   let foliage: Foliage | null = null;
 
+  // The street: lamps, moving traffic and parked cars. Declared here for the
+  // same reason the canopy is -- setAo below has to reach them -- and built
+  // after the road pack, beside the pavements they share a carriageway index
+  // with.
+  let lamps: StreetLamps | null = null;
+  let traffic: Traffic | null = null;
+  let parkedCars: ParkedCars | null = null;
+
   // Every building and road material whose uniforms the frame loop must keep
   // current. One entry each for the baked packs, and one more per streamed
   // tile. Arrays rather than a rebuilt list, because this is walked every frame
   // and allocating a new one per frame to hold two objects is pure garbage.
   const buildingUniformSets: BuildingUniforms[] = buildings ? [buildings.uniforms] : [];
   const roadUniformSets: RoadUniforms[] = roads ? [roads.uniforms] : [];
+  // The street objects. TrafficUniforms is a superset of StreetLampUniforms, so
+  // one array holds all three fields and the frame loop writes the shared half
+  // once; the one uniform only the cars have, the animation clock, is set
+  // beside it.
+  const streetUniformSets: StreetLampUniforms[] = [];
 
   /**
    * Point every surface material at this frame's occlusion buffer.
@@ -450,6 +475,9 @@ async function main() {
     for (const u of buildingUniformSets) ao.apply(u, strength);
     for (const u of roadUniformSets) ao.apply(u, strength);
     if (foliage) ao.apply(foliage.uniforms, strength);
+    if (lamps) ao.apply(lamps.uniforms, strength);
+    if (traffic) ao.apply(traffic.uniforms, strength);
+    if (parkedCars) ao.apply(parkedCars.uniforms, strength);
   };
 
   // Where the city actually is, for night lighting. A place with no pack gets
@@ -496,6 +524,25 @@ async function main() {
 
   let pavement: Pavement | null = null;
 
+  // What counts as tarmac, for everything that has to stay off it: the pavement
+  // opens at junctions, and a lamp column or a parked car must not stand in the
+  // middle of one. One index, because Manhattan's is 400k segments and a second
+  // copy of it is five megabytes and a hundred milliseconds for the same
+  // answer.
+  const packRoads = roadPack?.roads ?? [];
+  const carriagewayIds: number[] = [];
+  for (let i = 0; i < packRoads.length; i++) {
+    if (isCarriageway(packRoads[i])) carriagewayIds.push(i);
+  }
+  const carriageways = new RoadIndex(
+    carriagewayIds.map((i) => packRoads[i]),
+    (r) => roadWidthM(r.cls, r.lanes, r.flags) * 0.5,
+    32,
+    // Positions in the PACK, not in the filtered copy: blockedExcept is asked
+    // "is this point on a carriageway other than mine" with a pack index.
+    (_r, i) => carriagewayIds[i],
+  );
+
   // Pavements. Built here rather than beside the road ribbons because they need
   // the footprint mask above to know where the building line is, and that mask
   // needs the .city pack. A city with roads and no buildings still gets kerbs,
@@ -507,6 +554,7 @@ async function main() {
       pack ? treeFootprints : null,
       sunShadow.uniforms,
       budget,
+      carriageways,
     );
     scene.add(pavement.group);
     roadUniformSets.push(pavement.uniforms);
@@ -516,6 +564,54 @@ async function main() {
     // to be somewhere else -- which it is on every pinned pose.
     console.log(
       `[flyby] pavements: ${pavement.stats.indexedTiles} tiles of kerbable carriageway indexed`,
+    );
+  }
+
+  // --- the street, from a car rather than from an aeroplane ----------------
+  //
+  // Lamps, moving traffic and parked cars, all placed from the SAME .roads
+  // centrelines the ribbons are drawn from and the pavements are kerbed from.
+  // Three fields rather than one because they are drawn to three different
+  // distances: a moving car reads at a kilometre and a parked one does not read
+  // at all past a few hundred metres. See render/traffic.ts.
+  const streetPack = await streetPromise;
+  // Off with `?nostreet`, which is how a before-and-after of the street is
+  // taken on one build: the same reason `?nolive` exists. Nothing else in the
+  // frame changes, so the difference between the two captures is exactly the
+  // lamps, the traffic and the parked cars.
+  const streetOff = new URLSearchParams(location.search).has("nostreet");
+  if (roadPack && !streetOff) {
+    // Where a surveyor has actually been. Only the lamps are used, and only to
+    // move a procedurally placed column onto a real one within LAMP_SNAP_M; see
+    // data/streetfurniture.ts for why it cannot do more than that.
+    const surveyedLamps = (streetPack?.items ?? []).filter(
+      (f) => f.kind === FurnitureKind.StreetLamp,
+    );
+    const lampIndex = surveyedLamps.length
+      ? new PointIndex(surveyedLamps, LAMP_SNAP_M)
+      : null;
+
+    const streetWorld: StreetWorld = {
+      groundY: terrain.heightAt,
+      occupied: pack ? (x, z) => treeFootprints.occupied(x, z) : null,
+      onCarriageway: (x, z, except) => carriageways.blockedExcept(x, z, except),
+      nearestMeasuredLamp: lampIndex
+        ? (x, z, maxM) => lampIndex.nearest(x, z, maxM)
+        : null,
+    };
+
+    lamps = new StreetLamps(roadPack, streetWorld, sunShadow.uniforms, budget);
+    scene.add(lamps.group);
+    traffic = new Traffic(roadPack, streetWorld, sunShadow.uniforms, budget);
+    scene.add(traffic.group);
+    parkedCars = new ParkedCars(roadPack, streetWorld, sunShadow.uniforms, budget);
+    scene.add(parkedCars.group);
+    streetUniformSets.push(lamps.uniforms, traffic.uniforms, parkedCars.uniforms);
+    console.log(
+      `[flyby] street: ${lamps.stats.indexedTiles} tiles of lit carriageway, ` +
+      `${surveyedLamps.length} surveyed lamp nodes` +
+      `${streetPack ? "" : " (no .street pack: every lamp is placed procedurally)"}, ` +
+      `${streetPack?.items.length ?? 0} furniture nodes in the pack`,
     );
   }
 
@@ -1225,6 +1321,36 @@ async function main() {
     // the camera has crossed a 400 m tile boundary.
     pavement?.update(camera.position.x, camera.position.z);
 
+    // The street fields follow the same 400 m tiles, and each of them holds a
+    // ring of its own size around the camera; see render/traffic.ts for why the
+    // moving cars reach four times further than the parked ones.
+    lamps?.update(camera.position.x, camera.position.z);
+    traffic?.update(camera.position.x, camera.position.z);
+    parkedCars?.update(camera.position.x, camera.position.z);
+    for (const u of streetUniformSets) {
+      u.uCameraPos.value.copy(camera.position);
+      u.uSH.value = skyProbe.sh;
+      u.uSunDir.value.copy(light.sunDir);
+      u.uSunColor.value.copy(light.sunColor);
+      u.uSunIntensity.value = light.sunIntensity;
+      u.uNight.value = light.night;
+      u.uNightGlow.value.copy(light.nightGlow);
+      u.uMoonDir.value.copy(light.moonDir);
+      u.uMoonLight.value.copy(light.moonLight);
+      u.uMieG.value = light.mieG;
+      u.uTurbidity.value = light.turbidity;
+      u.uCamAltitude.value = camAlt;
+    }
+    for (const u of [traffic, parkedCars]) {
+      if (!u) continue;
+      // The animation clock, and nothing else: the car shader takes its sky
+      // reflection from the SH probe rather than from the prefiltered cube, so
+      // unlike the roads it has no environment map to point at. The animation
+      // clock is what `?shot` holds at zero, so traffic that moved on wall-clock
+      // phase would make two runs of the same pinned URL differ.
+      u.uniforms.uTime.value = elapsed;
+    }
+
     if (foliage) {
       // Rebuilt only when the camera has moved far enough for a tree's level of
       // detail to be stale; see render/trees.ts.
@@ -1273,8 +1399,26 @@ async function main() {
     // The canopy is instanced, so it cannot be drawn through the depth-only
     // override the cascades and the AO prepass use; it comes in as its own
     // scene carrying its own depth shader. See render/trees.ts.
+    // Instanced fields cannot be drawn through the depth-only override the
+    // cascades and the AO prepass use, because that override would replace
+    // their vertex shaders and stack every instance on the origin. Each brings
+    // its own depth scene carrying its own depth shader; see render/trees.ts.
+    //
+    // The cars are in the SUN cascades and not in the ambient-occlusion
+    // prepass, and the split is measured rather than tidy: the two extra depth
+    // scenes cost 1.0 ms of a 9.9 ms frame on `sf-street`, and the cost is the
+    // vertex fetch over a million triangles four times rather than anything the
+    // fade could cull. A car's contact shadow is most of what stops it looking
+    // pasted onto the road, so the cascades keep it; screen-space occlusion
+    // around a 4.6 m box that already has a hard shadow under it is the quarter
+    // of that cost with the least to show for it.
+    const shadowCasters = [
+      ...(foliage ? [foliage.depthScene] : []),
+      ...(traffic ? [traffic.depthScene] : []),
+      ...(parkedCars ? [parkedCars.depthScene] : []),
+    ];
     const extraCasters = foliage ? [foliage.depthScene] : [];
-    sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale, extraCasters);
+    sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale, shadowCasters);
     // The environment probe renders the city into a cube with its own camera
     // and its own viewport, where a gl_FragCoord lookup into a buffer built for
     // the main frame would be reading the wrong pixel of the wrong picture.
@@ -1455,11 +1599,43 @@ async function main() {
       /** Pavement triangles actually built, so the harness can say whether the
        *  kerbs are in the frame rather than assuming they are. */
       get pavementTriangles() { return pavement ? pavement.stats.triangles : 0; },
+      /** The street: columns standing, cars moving, cars parked, and what the
+       *  three of them cost. Reported separately from the total because "is
+       *  there any traffic in this frame at all" is the first question to ask
+       *  of a before/after pair, and a total cannot answer it. */
+      get lamps() { return lamps ? lamps.stats.count : 0; },
+      get lampsMeasured() { return lamps ? lamps.stats.measured : 0; },
+      get cars() { return traffic ? traffic.stats.count : 0; },
+      get parkedCars() { return parkedCars ? parkedCars.stats.count : 0; },
+      /** Instances the fields wanted and could not hold. Reported because the
+       *  first version of the archetype split clipped 185 parked cars on one
+       *  pose and said nothing; a number nobody can see is a budget nobody can
+       *  argue with. */
+      get streetClipped() {
+        return (
+          (lamps ? lamps.stats.clipped : 0) +
+          (traffic ? traffic.stats.clipped : 0) +
+          (parkedCars ? parkedCars.stats.clipped : 0)
+        );
+      },
+      get streetTriangles() {
+        return (
+          (lamps ? lamps.stats.triangles : 0) +
+          (traffic ? traffic.stats.triangles : 0) +
+          (parkedCars ? parkedCars.stats.triangles : 0)
+        );
+      },
+      /** Triangles in ONE lamp and in each car archetype, so the harness can
+       *  say what a count costs without hard-coding either. */
+      get streetUnitTriangles() { return [LAMP_TRIANGLES, ...CAR_TRIANGLES]; },
       get triangles() {
         return (
           (buildings ? buildings.stats.triangles : 0) +
           (foliage ? foliage.stats.triangles : 0) +
-          (live ? live.stats.triangles : 0)
+          (live ? live.stats.triangles : 0) +
+          (lamps ? lamps.stats.triangles : 0) +
+          (traffic ? traffic.stats.triangles : 0) +
+          (parkedCars ? parkedCars.stats.triangles : 0)
         );
       },
       /** What the live path has managed to fetch and build. The harness waits

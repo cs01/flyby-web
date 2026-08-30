@@ -105,14 +105,19 @@ that are not extrusions, and motion.
 7. **Water.** Every hero city is on water and the Hudson renders flat grey. A
    normal-mapped wave field with sun glitter off the existing probe is in a
    large fraction of the pixels of any Manhattan flight.
-8. **Traffic, then the night pass.** Moving cars beat parked ones from the
-   aircraft camera: a parked car is 2 px at 300 m, a headlight stream is the
-   single biggest "alive" signal in `chicago-loop-night`. Road centrelines are
-   already ribbons, so traffic is a vertex-shader particle system (route
-   parameter plus a time uniform, no per-instance matrices). Night today is
-   mid-grey facades with a random dot pattern and a hard orange horizon band;
-   `nightGlow` should fall off with height above street, the skyglow dome
-   should be smooth, and lights need bloom.
+8. **Traffic: DONE. The night pass: not.** Moving cars, parked cars and street
+   lamps are in: `data/streetfurniture.ts` places all three from the .roads
+   centrelines, `render/traffic.ts` and `render/streetlamps.ts` draw them. The
+   motion is where this said it should be -- an instance carries the two ends of
+   a straight run, a phase and a speed, and `fract(phase + t * speed / length)`
+   is the whole simulation, so nothing is uploaded between rebuilds of the ring.
+   Density follows road class, and the lamps stand over the pools the road
+   shader was already painting because the shader indexes a spacing table
+   GENERATED from the placement's. What is NOT done is the night pass: nightGlow
+   still does not fall off with height above street, the skyglow dome is not
+   smooth, and the lamp lantern has to be faded with distance by hand because a
+   sub-pixel emitter blooms into a blob rather than into a point. Bloom that
+   knows how big the light is would fix that properly.
 9. **Pitched roofs.** `RoofShape` is already baked into every pack
    (`citypack.ts`) and `buildings.ts` never reads it. But the baked flag is
    itself mostly a fallback, because `classifyRoof` keys on OSM `roof:shape`
@@ -130,7 +135,10 @@ that are not extrusions, and motion.
     cover there) and SF residential is block after block of bare boxes.
     Individually mapped OSM nodes where they exist (Paris 3,564 per 1.7x2.5 km
     box, Manhattan 833, a suburb 2), procedural fallback seeded by WorldCover
-    coverage elsewhere.
+    coverage elsewhere. `tools/bake-roads.ts` already carries the neighbouring
+    node kinds -- lamps, signals, benches, bins, hydrants -- into a `.street`
+    sibling pack in the same request the roads come in, so the same trick is
+    available to the trees whenever Overpass answers again.
 12. **Street level, only if walk mode is real.** Pavements and ground floors
     are DONE: `render/pavement.ts` draws a kerbed, raised, concrete footway
     from the carriageway edge to the building line (`data/pavement.ts` is the
@@ -145,7 +153,10 @@ that are not extrusions, and motion.
     trademarked, do not ship rips). All of it pays within 50 m and nowhere
     else, which is why the pavement is a ring round the CAMERA rather than a
     radius round the city centre and why its fragment shader throws every
-    fragment away past 330 m.
+    fragment away past 330 m. The parked cars are now done, on that same plan:
+    a 340 m ring of instanced procedural archetypes in a kerbside strip that
+    `laneOffsetM` in `data/roadgraph.ts` now steps inboard of, so the driver no
+    longer steers through the row. Junction corners and interior mapping remain.
 
 ## Quality is a profile, not a phone veto
 

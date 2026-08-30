@@ -137,6 +137,73 @@ export const FIXED_WIDTH_M: (number | null)[] = [
 /** A link ramp is one lane whatever its parent class says. */
 const LINK_LANES = 1;
 
+// --- kerbside parking -------------------------------------------------------
+
+/**
+ * Width of one kerbside parking strip, in metres.
+ *
+ * A parked car is 1.8 m wide and wants a little either side of it, which is why
+ * this is not 1.8. It lives here with the other widths for the reason the file
+ * header gives: three things need it and they must not be able to disagree.
+ * Those three are the parked cars themselves, the moving traffic that must NOT
+ * be driven through them, and `laneOffsetM` in roadgraph.ts, which is where the
+ * player's own car sits.
+ */
+export const PARKING_STRIP_M = 2.2;
+
+/**
+ * Running surface a street must keep between the two rows of parked cars.
+ *
+ * Three metres, which is a single shared lane. That is not a compromise, it is
+ * what a narrow residential street with cars down both sides actually is, and
+ * it is why the lane offset on such a street comes out at zero: traffic really
+ * does drive down the middle and pull in.
+ */
+export const MIN_RUNNING_WIDTH_M = 3.0;
+
+/** Narrowest strip worth calling a parking strip. Under this a car would be
+ *  hanging into the running surface and there is no parking here at all. */
+export const MIN_PARKING_STRIP_M = 1.9;
+
+/**
+ * Classes that have cars parked along the kerb.
+ *
+ * A motorway and a trunk road do not, by construction. Everything urban does,
+ * which is most of what a street looks like at eye height, and the width test
+ * below is what stops a 3.5 m alley growing two rows of them.
+ */
+const PARKING_BY_CLASS: boolean[] = [
+  false, // motorway
+  false, // trunk
+  true,  // primary
+  true,  // secondary
+  true,  // tertiary
+  true,  // residential
+  true,  // unclassified
+  false, // service        an aisle or an alley; the bays are off it, not on it
+  true,  // living_street
+  false, // busway
+  false, // pedestrian
+  false, // footway
+  false, // cycleway
+  false, // track
+];
+
+/**
+ * Width of the kerbside parking strip on this way, in metres. Zero for none.
+ *
+ * A bridge deck gets none: bridges do not have parking on them and a row of
+ * cars along the Golden Gate is the sort of thing that is noticed once and
+ * never forgotten.
+ */
+export function parkingStripM(r: { cls: RoadClass; lanes: number; flags: number }): number {
+  if (!PARKING_BY_CLASS[r.cls]) return 0;
+  if ((r.flags & (ROAD_BRIDGE | ROAD_TUNNEL | ROAD_LINK)) !== 0) return 0;
+  const w = roadWidthM(r.cls, r.lanes, r.flags);
+  const strip = Math.min(PARKING_STRIP_M, (w - MIN_RUNNING_WIDTH_M) * 0.5);
+  return strip >= MIN_PARKING_STRIP_M ? strip : 0;
+}
+
 // --- surface height ---------------------------------------------------------
 
 /**

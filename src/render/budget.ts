@@ -160,6 +160,12 @@ export interface Budget {
   buildingTriangleBudget: number;
   roadTriangleBudget: number;
   pavementTriangleBudget: number;
+  /** Street lamp columns resident at once. */
+  lampInstanceBudget: number;
+  /** Moving cars resident at once. */
+  trafficInstanceBudget: number;
+  /** Parked cars resident at once. */
+  parkedInstanceBudget: number;
   memory: MemoryEstimate;
 }
 
@@ -282,6 +288,40 @@ const ROAD_BYTES_PER_TRIANGLE = 36 + 3 * 4;
  * + info = 36 bytes, and six indices per four triangles.
  */
 const PAVEMENT_BYTES_PER_TRIANGLE = 36 + 1.5 * 4;
+/**
+ * Street furniture and traffic, per INSTANCE rather than per triangle.
+ *
+ * Instanced fields invert the usual accounting: the base mesh is uploaded once
+ * (a car is ~80 triangles and there are four archetypes, so under 30 KB in
+ * total) and the resident cost is the per-instance attributes, allocated once
+ * at capacity and never grown. A lamp carries two vec4s and a car carries two
+ * vec4s and a vec2; see render/instanced.ts for why it is vec4s and not a mat4.
+ *
+ * Counting instances also makes the line item say the useful thing. "4,000 cars"
+ * is a number the owner can argue with; "320k triangles of car" is not.
+ */
+const LAMP_BYTES_PER_INSTANCE = 2 * 16;
+const CAR_BYTES_PER_INSTANCE = 2 * 16 + 8;
+/** Base meshes, uploaded once each and shared by every instance. */
+const STREET_BASE_MESH_BYTES = 64 * 1024;
+
+/**
+ * Headroom on each car archetype's share of the car budget.
+ *
+ * The cars are drawn from four archetype meshes, so the budget is split four
+ * ways and each split is allocated at its own fixed size. An EVEN split is
+ * wrong, and quietly: the archetype is a hash, so the four counts are a
+ * multinomial and land within a couple of per cent of each other, which is
+ * exactly close enough to the cap for one of them to go over. Measured on the
+ * `sf-residential` pose, the four parked buckets wanted 883, 969, 881 and 929
+ * against an even cap of 875, and 185 parked cars were dropped with nothing
+ * said about it.
+ *
+ * A quarter of headroom covers a spread far wider than a hash produces, and it
+ * is counted HERE, in the memory estimate, so the allocation the tier makes and
+ * the allocation this file reports are the same number.
+ */
+export const CAR_BUCKET_HEADROOM = 1.25;
 
 /**
  * What the classifier believes about system memory.
@@ -385,6 +425,20 @@ const FULL_PLAN: Plan = {
   // before the detail drape restitches, not skyline. A quarter of the road
   // budget covers about two kilometres of San Francisco at full density.
   pavementTriangleBudget: 260_000,
+  // Measured over a 950 m ring on Chicago's Loop: about 1,500 columns, at 36
+  // triangles each. The headroom is for Manhattan, which has half again the
+  // road length per square kilometre.
+  lampInstanceBudget: 3_000,
+  // A 1,500 m ring is 7 square kilometres of city. Manhattan runs roughly 20 km
+  // of driveable centreline per square kilometre and the class table averages
+  // about 22 cars per kilometre per lane over two lanes, which lands near 6,200;
+  // this is that with room to spare, and the ring drops its outermost tiles
+  // rather than growing past it.
+  trafficInstanceBudget: 9_000,
+  // A 340 m ring at both kerbs of every parkable street, 6.4 m a bay, 62%
+  // occupied. Measured at 3,662 over the Marina, which is the densest street
+  // grid in the set; 3,500 was the first figure and it clipped there.
+  parkedInstanceBudget: 4_200,
 };
 
 const REDUCED_PLAN: Plan = {
@@ -409,6 +463,13 @@ const REDUCED_PLAN: Plan = {
   buildingTriangleBudget: 750_000,
   roadTriangleBudget: 350_000,
   pavementTriangleBudget: 110_000,
+  // Halved along with the rest of the plan, on top of ring radii that are
+  // already halved in render/streetlamps.ts and render/traffic.ts. Both cuts
+  // are needed: the ring alone would leave the near field, where the fragments
+  // are, exactly as dense as a desktop's.
+  lampInstanceBudget: 1_200,
+  trafficInstanceBudget: 3_000,
+  parkedInstanceBudget: 1_500,
 };
 
 const PLANS: Record<QualityTier, Plan> = { full: FULL_PLAN, reduced: REDUCED_PLAN };
@@ -462,6 +523,17 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
     {
       what: `pavement geometry ${(plan.pavementTriangleBudget / 1000).toFixed(0)}k tris`,
       bytes: plan.pavementTriangleBudget * PAVEMENT_BYTES_PER_TRIANGLE,
+    },
+    {
+      what: `street lamps ${plan.lampInstanceBudget} instances`,
+      bytes: plan.lampInstanceBudget * LAMP_BYTES_PER_INSTANCE + STREET_BASE_MESH_BYTES,
+    },
+    {
+      what: `cars ${plan.trafficInstanceBudget} moving + ${plan.parkedInstanceBudget} parked`,
+      bytes:
+        (plan.trafficInstanceBudget + plan.parkedInstanceBudget) *
+          CAR_BYTES_PER_INSTANCE * CAR_BUCKET_HEADROOM +
+        STREET_BASE_MESH_BYTES,
     },
   ];
 

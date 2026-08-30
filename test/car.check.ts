@@ -136,6 +136,30 @@ const MAX_BRIDGE_CLEARANCE_M = 32;
 
 /** Metres the lane offset may differ from what roadpack's width table implies. */
 const MAX_LANE_ERROR_M = 0.01;
+/**
+ * The kerbside parking strip, as LITERALS, so this file can re-derive the lane
+ * offset without importing the constants it is checking.
+ *
+ * These three numbers are the parking rule in src/data/roadpack.ts written out
+ * again: a 2.2 m strip each side, only where at least 3 m of running surface is
+ * left between the two rows, and never a strip under 1.9 m. The lane a driver
+ * can use starts inboard of that strip, which is what laneOffsetM has to say.
+ */
+const PARK_STRIP_M = 2.2;
+const PARK_MIN_RUNNING_M = 3.0;
+const PARK_MIN_STRIP_M = 1.9;
+/** Classes with kerbside parking, in the roadpack class order. */
+const PARK_CLASSES = [false, false, true, true, true, true, true, false, true, false, false, false, false, false];
+
+/** The parking strip a way has, from literals only. */
+function parkStrip(e: { cls: number; lanes: number; flags: number }): number {
+  if (!PARK_CLASSES[e.cls]) return 0;
+  // A bridge, a tunnel and a link ramp have no parking on them.
+  if ((e.flags & (2 | 4 | 8)) !== 0) return 0;
+  const w = roadWidthM(e.cls, e.lanes, e.flags);
+  const strip = Math.min(PARK_STRIP_M, (w - PARK_MIN_RUNNING_M) * 0.5);
+  return strip >= PARK_MIN_STRIP_M ? strip : 0;
+}
 /** Share of sampled one-way edges that must put the car strictly to the right
  *  of the direction of travel. Not 1: a single-track service road is one lane
  *  wide and its lane centre IS the centreline, correctly. */
@@ -460,7 +484,9 @@ for (const id of ["sf", "manhattan"]) {
     const want = laneOffsetM(e);
     // The formula, checked against the width table independently of the code
     // that produced it.
-    if (Math.abs(want - Math.max(0, half - LANE_WIDTH_M * 0.5)) > MAX_LANE_ERROR_M) wrongWidth++;
+    if (Math.abs(want - Math.max(0, half - parkStrip(e) - LANE_WIDTH_M * 0.5)) > MAX_LANE_ERROR_M) {
+      wrongWidth++;
+    }
 
     const car = new Car(g);
     // Enter at the start of this edge, pointing along it, so the direction of
