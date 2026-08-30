@@ -71,6 +71,22 @@ const MOON_SKY = new THREE.Color(0.010, 0.013, 0.022);
  * degrees up, which is the brightest night this app can produce.
  */
 const MOON_BEAM = 0.42;
+
+/** Exposure in full daylight. See the note where it is used. */
+const DAY_EXPOSURE = 0.54;
+
+/**
+ * Sky irradiance reaching the surface, scaled to the same units as the direct
+ * term. Hoisted out of computeLighting so the lighting gate can read the value
+ * rather than keep a copy of it: a gate holding its own copy of the constant
+ * it checks is one of the ways this repo has produced gates that cannot fail.
+ */
+const AMBIENT_SCALE = 0.34;
+
+// Exported for test/lighting.check.ts so the gate cannot hold a stale copy of
+// the two numbers it exists to protect.
+export const DAY_EXPOSURE_FOR_TEST = DAY_EXPOSURE;
+export const AMBIENT_SCALE_FOR_TEST = AMBIENT_SCALE;
 /** Moonlight is neutral, but a dark-adapted eye reports it as blue. */
 const MOON_TINT = new THREE.Color(0.72, 0.82, 1.0);
 
@@ -93,7 +109,6 @@ export function computeLighting(solar: SolarState, wx: Weather): SceneLighting {
   // Ambient is sky irradiance reaching the surface, in the same units as the
   // direct term above. It has to be scaled to match, or the shaded side of
   // every hill sits at a different exposure than the lit side.
-  const AMBIENT_SCALE = 0.34;
 
   // Overcast ambient goes grey and slightly warm; clear ambient stays sky-blue.
   const clearAmb = new THREE.Color(0.26, 0.38, 0.58);
@@ -155,11 +170,29 @@ export function computeLighting(solar: SolarState, wx: Weather): SceneLighting {
     snow,
     mieG: 0.62 + 0.22 * Math.max(0, Math.min(1, (wx.humidity - 30) / 60)),
     turbidity: Math.max(0.6, Math.min(12, 34 / visKm)),
-    // Night needs an exposure lift or the tone curve crushes the frame to
-    // black; the eye adapts and so must this. But the lift multiplies the
-    // EMISSIVE terms too -- street lights, lit windows -- so it has to stay
-    // modest or a city at night blows out brighter than the same city at noon.
-    exposure: 1 + 1.7 * night * night,
+    // Daylight was about 1.3 stops hot, and that is why it looked WASHED OUT
+    // rather than merely bright.
+    //
+    // Measured on the sf-residential pose: the stitched drape is a normal
+    // grey-green (mean sRGB 118,127,112), snow and wetness are zero, and the
+    // direct term alone lifted an 18% grey horizontal to sRGB ~181 where
+    // middle grey belongs near 118. Every pale roof and street then clipped
+    // toward white, which is what read as San Francisco under snow, and the
+    // Esri capture's green cast came through the clipping as mint.
+    //
+    // The flatness was the SAME defect, not a second one. Reproducing the
+    // shader path in TypeScript gives a sun:sky ratio of 15:1 on a horizontal
+    // at noon, well ABOVE the 4-9 a clear day actually has. The scene was not
+    // low contrast; it was sitting so far up the ACES shoulder that the curve
+    // crushed the contrast it had. So this is a pure exposure correction and
+    // deliberately does NOT touch the sun:sky ratio: halving the ambient
+    // instead, which I tried, buys punch by crushing the shade to murk.
+    //
+    // 0.54 puts that 18% grey at sRGB 119. The night coefficient is raised
+    // from 1.7 to 2.16 so the night exposure lands exactly where it did
+    // before (0.54 + 2.16 = 2.70), because the night frames were not the
+    // problem and must not move.
+    exposure: DAY_EXPOSURE + 2.16 * night * night,
     fogEnd: Math.min(160000, wx.visibility * 2.6),
   };
 }
