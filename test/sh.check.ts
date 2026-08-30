@@ -396,7 +396,7 @@ function irradianceAt(sh: SH9, d: number[]): Float32Array {
 //     not finite) and the near-black sky was scaled to 1.10e-1, 1e8 times what
 //     it was. Only the last assertion went red, which is why it is separate.
 {
-  const sh = project((x, y, z, out) => {
+  const sh = project((_x, y, _z, out) => {
     const up = Math.max(0, y);
     out[0] = 0.1 + 0.4 * up;
     out[1] = 0.2 + 0.5 * up;
