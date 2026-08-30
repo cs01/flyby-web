@@ -213,6 +213,21 @@ void main() {
   // Wet ground is darker and shinier. Both, or it reads as mud.
   albedo *= (1.0 - 0.42 * uWetness);
 
+  // Night flattening applies to ALL ground, not just built-up ground.
+  //
+  // This used to live down in the skyglow block, multiplied by the urban mask,
+  // which conflated two different things: light a city ADDS to its surroundings
+  // is genuinely urban-only, but a dark-adapted eye taking almost no colour or
+  // texture off a surface is a property of the eye and applies everywhere.
+  //
+  // The visible result was San Francisco at night with the Presidio and the
+  // western hills glowing sand-tan, brighter than the lit city beside them:
+  // unbuilt ground kept its full daytime drape albedo, and moonlight on a
+  // bright hillside beat street lighting. It read as a desert.
+  float nightGrey = dot(albedo, vec3(0.299, 0.587, 0.114));
+  nightGrey = mix(0.30, nightGrey, 0.40);
+  albedo = mix(albedo, mix(vec3(nightGrey), albedo, 0.12), uNight);
+
   float ndl = max(0.0, dot(n, uSunDir));
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
   // uSunIntensity is the scale the ATMOSPHERE integral wants: it gets multiplied
@@ -398,21 +413,25 @@ void main() {
     // is what the far field must use.
     vec3 lampColour = mix(vec3(1.0, 0.78, 0.50), tint, detail);
 
-    lit += lampColour * lamps * urban * uNight * 1.15;
+    // No street lamps on water.
+    //
+    // The urban mask is a blurred coverage grid, so it bleeds past a shoreline
+    // by design (street lighting really does spill past the last building), and
+    // a pier or a bridge approach carries footprints right up to the edge. The
+    // result was rows of lamps standing out on the bay and down the middle of
+    // rivers. The landcover water channel is a measurement rather than an
+    // inference, so it is the right thing to veto with.
+    float dryLand = 1.0 - clamp(water, 0.0, 1.0);
+    lit += lampColour * lamps * urban * dryLand * uNight * 1.15;
 
     // Skyglow on the built-up ground only, and nearly monochrome: at this light
     // level the eye takes almost no colour off a surface, and carrying the
     // drape's daytime hue through is what made the city look like a dimmed
     // photograph rather than a dark place with lights in it.
-    float grey = dot(albedo, vec3(0.299, 0.587, 0.114));
-    // FLATTENED, not just desaturated. Carrying the drape's daytime contrast
-    // through at night is what made the ground read as a dimmed photograph
-    // with lights sprinkled on it: every road, roof and car park still legible
-    // at midnight. A dark-adapted eye takes almost no texture off a surface
-    // either, so the luminance is compressed most of the way to a constant and
-    // only a trace of the drape's own shape survives.
-    grey = mix(0.30, grey, 0.40);
-    lit += mix(vec3(grey), albedo, 0.12) * uNightGlow * urban * 0.85;
+    // Skyglow, which a city genuinely does add to its own surroundings, so
+    // this one IS gated on the urban mask. The flattening it used to carry has
+    // moved up to the albedo, where it belongs.
+    lit += albedo * uNightGlow * urban * dryLand * 0.85;
   }
 
   // Aerial perspective: the same integral the sky uses, over the distance to
