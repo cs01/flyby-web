@@ -222,6 +222,27 @@ float hash21(vec2 p) {
   return fract((p3.x + p3.y) * p3.z);
 }
 
+// Smooth value noise, for surfaces whose variation is CONTINUOUS.
+//
+// hash21 of a floored coordinate is a lattice of flat random squares, and on a
+// roof seen from directly above that is the single largest surface in an aerial
+// frame: it reads as pixelation, because that is exactly what it is. Tar,
+// gravel and weathering vary smoothly, so they want an interpolated noise.
+//
+// Hard-edged cells are still right for the things that genuinely have edges (a
+// re-covered section, a membrane seam), which is why hash21 stays.
+float vnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  // Smoothstep weights, so there is no directional bias along the cell edges.
+  vec2 w = f * f * (3.0 - 2.0 * f);
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, w.x), mix(c, d, w.x), w.y);
+}
+
 /**
  * A narrow tent peaking at c. Used as the DERIVATIVE of the window mask: the
  * mask itself steps up at one edge and down at the other, so a spike at each
@@ -543,7 +564,12 @@ void main() {
     // chessboard, which from directly above is the largest single surface in
     // the frame and the most obviously fake thing in it.
     vec2 rp = mat2(0.88, 0.47, -0.47, 0.88) * vWorld.xz;
-    float g = hash21(floor(vWorld.xz * 0.33) + fp.seed * 97.0);
+    vec2 sp = vWorld.xz + fp.seed * 97.0;
+    // Three smooth octaves, from gravel grain up to the scale a roof soils
+    // over. Continuous, so no lattice survives to be seen as pixels.
+    float g = 0.55 * vnoise(sp * 1.9)
+            + 0.30 * vnoise(rp * 0.55 + fp.seed * 7.0)
+            + 0.15 * vnoise(sp * 0.19);
     // Real roofs are tar, black membrane and gravel: about 0.06-0.12 linear.
     // These were 0.26-0.42, two to three times too reflective, which made the
     // roof the BRIGHTEST surface in a top-down shot when in every aerial
@@ -551,8 +577,13 @@ void main() {
     albedo = mix(vec3(0.128, 0.128, 0.122), vec3(0.188, 0.183, 0.170), g);
     // Patchwork: membrane seams, ponding, a re-covered section. One more
     // octave, at a scale a roof actually varies over.
-    float wear = hash21(floor(rp * 0.085) + fp.seed * 13.0);
-    albedo *= 0.84 + 0.26 * wear;
+    // Re-covered sections DO have hard edges, so this layer keeps its lattice.
+    // What changes is that it is sparse: a roof has a couple of patches, not a
+    // different value in every cell. Everything else is the smooth grain above.
+    float patchCell = hash21(floor(rp * 0.085) + fp.seed * 13.0);
+    float repatch = step(0.72, patchCell) * (0.5 + 0.5 * hash21(floor(rp * 0.085) + 3.7));
+    albedo *= 0.88 + 0.20 * g;
+    albedo *= 1.0 - 0.14 * repatch;
   } else if (part < 2.5) {
     // --- Parapet --------------------------------------------------------
     // The low wall round the roof edge. Coped in stone or concrete whatever
@@ -567,7 +598,7 @@ void main() {
     // --- Rooftop plant --------------------------------------------------
     // Air handlers, chillers, stair overruns, tanks. Galvanised and painted
     // metal, greyer and slightly glossier than the roof they stand on.
-    float g = hash21(floor(vWorld.xz * 0.6) + fp.seed * 41.0);
+    float g = vnoise(vWorld.xz * 0.6 + fp.seed * 41.0);
     albedo = mix(vec3(0.30, 0.30, 0.31), vec3(0.46, 0.46, 0.45), g);
     if (isRoof > 0.5) albedo *= 0.86;   // the tops streak and collect dirt
     skyOcc = 0.8;
