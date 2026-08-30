@@ -99,6 +99,22 @@ export const CITIES: City[] = [
     ],
   },
   {
+    // Centred NORTH of the summit rather than on it, with the approach pointed
+    // south. Sitting on top of a 3776 m cone means starting inside cloud with
+    // the mountain directly below and invisible; from 7 km out it fills the
+    // windscreen, which is the shot. The radius reaches the summit, the 5th
+    // Station and the Hoei crater on the south-east flank.
+    id: "fuji", name: "Mount Fuji", country: "Japan", continent: "Asia",
+    lat: 35.4200, lon: 138.7300, radius: 9000, approach: 195, startAlt: 1100,
+    landmarks: [
+      { name: "Mount Fuji summit", lat: 35.3606, lon: 138.7274, height: 3776 },
+      { name: "Hoei Crater", lat: 35.3350, lon: 138.7480, height: 2693 },
+      { name: "Subaru Line 5th Station", lat: 35.3936, lon: 138.7331, height: 2305 },
+      { name: "Lake Kawaguchi", lat: 35.5171, lon: 138.7519, height: 833 },
+      { name: "Chureito Pagoda", lat: 35.5001, lon: 138.8003, height: 650 },
+    ],
+  },
+  {
     id: "hongkong", name: "Hong Kong", country: "Hong Kong SAR", continent: "Asia",
     lat: 22.2860, lon: 114.1580, radius: 7000, approach: 180, startAlt: 750,
     landmarks: [
@@ -177,6 +193,17 @@ export const CITIES: City[] = [
     ],
   },
   {
+    id: "florence", name: "Florence", country: "Italy", continent: "Europe",
+    lat: 43.7731, lon: 11.2560, radius: 5000, approach: 200, startAlt: 450,
+    landmarks: [
+      { name: "Duomo", lat: 43.7731, lon: 11.2560, height: 114 },
+      { name: "Palazzo Vecchio", lat: 43.7694, lon: 11.2558, height: 94 },
+      { name: "Ponte Vecchio", lat: 43.7680, lon: 11.2531, height: 12 },
+      { name: "Uffizi", lat: 43.7678, lon: 11.2553, height: 25 },
+      { name: "Piazzale Michelangelo", lat: 43.7629, lon: 11.2650, height: 20 },
+    ],
+  },
+  {
     id: "istanbul", name: "Istanbul", country: "Turkiye", continent: "Europe",
     lat: 41.0086, lon: 28.9802, radius: 7000, approach: 45, startAlt: 600,
     landmarks: [
@@ -188,6 +215,20 @@ export const CITIES: City[] = [
     ],
   },
   {
+    // The cliff villages, not a city. A low approach along the coast is the
+    // whole point here: the terrain is the subject and the buildings are
+    // scenery clinging to it.
+    id: "cinqueterre", name: "Cinque Terre", country: "Italy", continent: "Europe",
+    lat: 44.1220, lon: 9.7080, radius: 6000, approach: 315, startAlt: 380,
+    landmarks: [
+      { name: "Manarola", lat: 44.1069, lon: 9.7276, height: 20 },
+      { name: "Riomaggiore", lat: 44.0993, lon: 9.7375, height: 20 },
+      { name: "Corniglia", lat: 44.1200, lon: 9.7100, height: 30 },
+      { name: "Vernazza", lat: 44.1350, lon: 9.6840, height: 25 },
+      { name: "Monterosso al Mare", lat: 44.1461, lon: 9.6547, height: 20 },
+    ],
+  },
+  {
     id: "london", name: "London", country: "UK", continent: "Europe",
     lat: 51.5045, lon: -0.0865, radius: 7000, approach: 260, startAlt: 600,
     landmarks: [
@@ -196,6 +237,17 @@ export const CITIES: City[] = [
       { name: "Big Ben", lat: 51.5007, lon: -0.1246, height: 96 },
       { name: "London Eye", lat: 51.5033, lon: -0.1196, height: 135 },
       { name: "The Gherkin", lat: 51.5145, lon: -0.0803, height: 180 },
+    ],
+  },
+  {
+    id: "rome", name: "Rome", country: "Italy", continent: "Europe",
+    lat: 41.8925, lon: 12.4853, radius: 7000, approach: 290, startAlt: 600,
+    landmarks: [
+      { name: "Colosseum", lat: 41.8902, lon: 12.4922, height: 48 },
+      { name: "St Peter's Basilica", lat: 41.9022, lon: 12.4539, height: 136 },
+      { name: "Pantheon", lat: 41.8986, lon: 12.4769, height: 43 },
+      { name: "Trevi Fountain", lat: 41.9009, lon: 12.4833, height: 26 },
+      { name: "Altare della Patria", lat: 41.8947, lon: 12.4830, height: 81 },
     ],
   },
   {
