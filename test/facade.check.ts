@@ -27,8 +27,11 @@ import { parseCityPack, BuildingKind } from "../src/data/citypack";
 import {
   CORE_PERIOD_MAX,
   CORE_PERIOD_MIN,
+  FACADE_ENCODE_MAX,
   FACADE_FLOATS,
   FACADE_GLSL,
+  decodeFacadeValue,
+  encodeFacadeValue,
   FAMILY_COUNT,
   FAMILY_NAMES,
   FacadeFamily,
@@ -378,66 +381,60 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
   check("brick walls are mostly wall", brickWorst <= 0.4, `worst ${brickWorst.toFixed(2)}`);
 }
 
-// --- fp16 round-trip --------------------------------------------------------
+// --- fixed-point round-trip ------------------------------------------------
 //
-// The parameter table is uploaded as HalfFloatType, because an Android device
-// could not read it as fp32 at all (every building rendered magenta, which is
-// the shader's sentinel for an all-zero fetch). fp16 is only safe because every
-// value happens to be small; if a future field carries a large number, or a
-// value that has to survive an exact integer round-trip, this gate is what
-// notices before a phone does.
+// The parameter table is RGBA8 with two bytes per value, because an Android
+// device returned all zeros from the same table as fp32 AND as fp16 while
+// reading every ordinary texture correctly. Fixed point in a byte texture is
+// the format a photograph uses and nothing refuses to sample it.
+//
+// What has to hold: the round trip is accurate enough that no facade visibly
+// changes, and EXACT on the packed integer field, because the shader recovers
+// group and family with a floor and a subtraction.
 {
-  const toHalf = (v: number): number => {
-    // Minimal float32 -> float16 -> float32, so the gate does not depend on
-    // THREE (this file runs under Bun with no DOM).
-    const f = new Float32Array(1);
-    const i = new Uint32Array(f.buffer);
-    f[0] = v;
-    const x = i[0];
-    const sign = (x >>> 16) & 0x8000;
-    let exp = ((x >>> 23) & 0xff) - 127 + 15;
-    let man = x & 0x7fffff;
-    if (exp <= 0) return sign === 0 ? 0 : -0;
-    if (exp >= 31) return sign ? -Infinity : Infinity;
-    // Round to nearest even on the 13 bits being dropped.
-    const round = (man & 0x1fff) > 0x1000 || ((man & 0x1fff) === 0x1000 && (man >>> 13) & 1);
-    man >>>= 13;
-    if (round) { man++; if (man === 0x400) { man = 0; exp++; } }
-    const h = sign | (exp << 10) | man;
-    // Back to float32.
-    const hs = h & 0x8000, he = (h >>> 10) & 0x1f, hm = h & 0x3ff;
-    const val = he === 0 ? hm * 2 ** -24 : (1 + hm / 1024) * 2 ** (he - 15);
-    return hs ? -val : val;
-  };
-
   let worstAbs = 0;
   let worstRel = 0;
-  let exactIntFailures = 0;
+  let intFailures = 0;
+  let overRange = 0;
   const out = new Float32Array(FACADE_FLOATS);
   for (let seed = 0; seed < 4000; seed++) {
-    const kind = seed % 7;
-    const h = 3 + (seed % 300);
-    packFacade(facadeFor(kind, h, seed), out, 0);
+    packFacade(facadeFor(seed % 7, 3 + (seed % 300), seed), out, 0);
     for (let i = 0; i < FACADE_FLOATS; i++) {
       const v = out[i];
-      const r = toHalf(v);
+      if (v > FACADE_ENCODE_MAX || v < 0) overRange++;
+      const [lo, hi] = encodeFacadeValue(v);
+      const r = decodeFacadeValue(lo, hi);
       worstAbs = Math.max(worstAbs, Math.abs(r - v));
-      // Relative error is meaningless below fp16's smallest normal (6.1e-5):
-      // this converter flushes subnormals to zero, so a 1.8e-5 value reports
-      // 100% relative error while being visually and numerically zero either
-      // way. Exactly two values in the whole table are that small. The absolute
-      // bound below governs them, and it is the bound that actually matters for
-      // a storey height or a probability.
-      if (Math.abs(v) >= 1e-3) worstRel = Math.max(worstRel, Math.abs(r - v) / Math.abs(v));
-      // The packed group*8+family must survive EXACTLY: the shader recovers
-      // both with a floor and a subtraction, and a value of 15.9999 would
-      // decode as group 1 family 7.9999 instead of group 1 family 8.
-      if (Number.isInteger(v) && r !== v) exactIntFailures++;
+      // Fixed point has uniform ABSOLUTE error by construction (half a quantum,
+      // 2.44e-4), so relative error necessarily grows without bound as the
+      // value approaches zero. That is the opposite of fp16, which this
+      // replaced, and it means the absolute bound below is the real invariant.
+      // The relative bound is kept only where it is meaningful: above 0.05 it
+      // still catches a scale or endianness mistake, which absolute error
+      // alone would not.
+      if (Math.abs(v) >= 0.05) worstRel = Math.max(worstRel, Math.abs(r - v) / Math.abs(v));
+      // group * 8 + family must survive to better than half a count, or the
+      // floor recovers the wrong family.
+      if (Number.isInteger(v) && Math.abs(r - v) > 0.002) intFailures++;
     }
   }
-  check("fp16 keeps every facade value", worstRel < 1e-3, `worst relative ${worstRel.toExponential(2)}`);
-  check("fp16 absolute error is negligible", worstAbs < 0.02, `worst absolute ${worstAbs.toExponential(2)}`);
-  check("fp16 is exact on the packed integers", exactIntFailures === 0, `${exactIntFailures} integers changed`);
+  check("no facade value escapes the encode range", overRange === 0, `${overRange} outside 0..${FACADE_ENCODE_MAX}`);
+  // 1% is a bound on what is VISIBLE, deliberately not derived from the
+  // encoder's own quantum: a gate whose threshold comes from the constant it
+  // checks moves its goalposts with it, which this repo has shipped five times.
+  // A storey height or a window fraction wrong by 1% is not perceptible; wrong
+  // by a scale factor or a swapped byte order is, and that is what this catches.
+  check("fixed point keeps every value", worstRel < 0.01, `worst relative ${worstRel.toExponential(2)}`);
+  check("fixed point absolute error is negligible", worstAbs < 0.001, `worst absolute ${worstAbs.toExponential(2)}`);
+  check("fixed point is safe on the packed integers", intFailures === 0, `${intFailures} integers drifted`);
+
+  // VACUITY PROBE: the range assertion must reject a value that does not fit.
+  const [plo, phi] = encodeFacadeValue(FACADE_ENCODE_MAX * 4);
+  check(
+    "the range check would catch an over-range value",
+    Math.abs(decodeFacadeValue(plo, phi) - FACADE_ENCODE_MAX * 4) > 1,
+    `clamped to ${decodeFacadeValue(plo, phi).toFixed(1)} as it must be`,
+  );
 }
 
 console.log(failures === 0 ? "\nall facade checks ok" : `\n${failures} facade check(s) FAILED`);

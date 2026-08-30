@@ -286,8 +286,43 @@ export interface FacadeParams {
 }
 
 /** Numbers per building written into the parameter texture (6 RGBA texels). */
+/**
+ * Six RGBA values per building, stored as TWELVE RGBA8 texels.
+ *
+ * Every value is carried as 16-bit fixed point across two bytes, so one RGBA8
+ * texel holds two of them. That is twice the texels of an RGBA32F table and
+ * half the bytes, and unlike a float texture it is readable on every GL that
+ * exists.
+ *
+ * The float table was not a premature optimisation, it was a bug: at least one
+ * Android device returned all zeros from it as fp32 AND as fp16, while reading
+ * every ordinary texture in the scene correctly. Every building then divided by
+ * a zero storey height and rendered NaN-black. A plain 8-bit texture is the
+ * format a photograph uses and nothing anywhere refuses to sample it.
+ */
 export const FACADE_TEXELS = 6;
 export const FACADE_FLOATS = FACADE_TEXELS * 4;
+/** RGBA8 texels per building: two bytes per value. */
+export const FACADE_BYTE_TEXELS = FACADE_FLOATS / 2;
+
+/**
+ * Fixed-point range. Every value this table stores was measured to lie in
+ * 0..20 across every baked city, so 32 leaves headroom without wasting bits:
+ * the quantum is 32 / 65535, about 0.0005, which is far finer than fp16 gave.
+ */
+export const FACADE_ENCODE_MAX = 32;
+
+/** One value to two bytes, low byte first. */
+export function encodeFacadeValue(v: number): [number, number] {
+  const c = Math.max(0, Math.min(1, v / FACADE_ENCODE_MAX));
+  const q = Math.round(c * 65535);
+  return [q & 0xff, (q >> 8) & 0xff];
+}
+
+/** The exact inverse, so the gate can prove the round-trip. */
+export function decodeFacadeValue(lo: number, hi: number): number {
+  return ((lo + hi * 256) / 65535) * FACADE_ENCODE_MAX;
+}
 
 /**
  * Everything about one building's surface, from its tag, its height and its
@@ -504,10 +539,27 @@ struct Facade {
   float parapetM;
 };
 
-vec4 facadeTexel(float bidx, float k) {
-  float t = bidx * ${FACADE_TEXELS}.0 + k;
+// One RGBA8 texel is two 16-bit values: (r,g) is the first, (b,a) the second.
+// texture() returns 0..1, so a byte is that times 255, and rounding matters
+// because 0.5/255 of drift in the high byte is 128 counts of the value.
+vec2 facadePair(float bidx, float k) {
+  float t = bidx * ${FACADE_BYTE_TEXELS}.0 + k;
   float y = floor(t / uFacadeWidth);
-  return texelFetch(uFacade, ivec2(int(t - y * uFacadeWidth), int(y)), 0);
+  vec4 e = texelFetch(uFacade, ivec2(int(t - y * uFacadeWidth), int(y)), 0);
+  float lo0 = floor(e.r * 255.0 + 0.5);
+  float hi0 = floor(e.g * 255.0 + 0.5);
+  float lo1 = floor(e.b * 255.0 + 0.5);
+  float hi1 = floor(e.a * 255.0 + 0.5);
+  return vec2((lo0 + hi0 * 256.0) / 65535.0, (lo1 + hi1 * 256.0) / 65535.0)
+       * ${FACADE_ENCODE_MAX}.0;
+}
+
+// The old four-at-a-time accessor, rebuilt on top of the byte pairs so the
+// twenty-odd call sites below did not all have to change shape.
+vec4 facadeTexel(float bidx, float k) {
+  vec2 ab = facadePair(bidx, k * 2.0);
+  vec2 cd = facadePair(bidx, k * 2.0 + 1.0);
+  return vec4(ab.x, ab.y, cd.x, cd.y);
 }
 
 Facade readFacade(float bidx) {

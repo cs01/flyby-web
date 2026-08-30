@@ -34,6 +34,8 @@ import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import {
   FACADE_FLOATS,
   FACADE_GLSL,
+  FACADE_BYTE_TEXELS,
+  encodeFacadeValue,
   facadeFor,
   hash3,
   packFacade,
@@ -898,28 +900,36 @@ function buildMesh(s: Scratch, uniforms: BuildingUniforms): THREE.Mesh | null {
 const FACADE_TEX_WIDTH = 1024;
 
 function buildFacadeTexture(params: FacadeParams[]): THREE.DataTexture {
-  const texels = params.length * (FACADE_FLOATS / 4);
+  // RGBA8, two bytes per value, NOT a float texture.
+  //
+  // This was RGBA32F, then RGBA16F, and an Android device returned all zeros
+  // from both while sampling every ordinary texture in the scene correctly.
+  // Every building then read a zero storey height, divided by it, and rendered
+  // NaN-black. Sixteen-bit fixed point in a plain byte texture is the format a
+  // photograph uses: nothing refuses to sample it, it is half the bytes of the
+  // fp32 table, and at 32/65535 the quantum is finer than fp16 managed.
+  const values = params.length * FACADE_FLOATS;
+  const texels = params.length * FACADE_BYTE_TEXELS;
   const height = Math.max(1, Math.ceil(texels / FACADE_TEX_WIDTH));
-  const data = new Float32Array(FACADE_TEX_WIDTH * height * 4);
-  for (let i = 0; i < params.length; i++) packFacade(params[i], data, i);
+  const data = new Uint8Array(FACADE_TEX_WIDTH * height * 4);
 
-  // HALF float, not full, and the reason is a real device.
-  //
-  // An Android phone rendered every building magenta, which is the sentinel in
-  // FACADE_GLSL for "every texelFetch came back zero": the RGBA32F table was
-  // not readable there at all. Measured, every value this table stores lies in
-  // 0..20, so fp16 (about 1e-3 relative, and exact for the small integers that
-  // pack group and family together) loses nothing, halves the upload, and is
-  // far more widely supported on mobile GL than fp32 sampling.
-  //
-  // Chicago goes from 10.6 MB to 5.3 MB, on a device that has already shown it
-  // is short of GPU memory.
-  const half = new Uint16Array(data.length);
-  for (let i = 0; i < data.length; i++) half[i] = THREE.DataUtils.toHalfFloat(data[i]);
+  const scratch = new Float32Array(FACADE_FLOATS);
+  for (let i = 0; i < params.length; i++) {
+    packFacade(params[i], scratch, 0);
+    for (let v = 0; v < FACADE_FLOATS; v++) {
+      const [lo, hi] = encodeFacadeValue(scratch[v]);
+      // Two values per texel: the first fills (r,g), the second (b,a).
+      const byteIndex = (i * FACADE_FLOATS + v) * 2;
+      data[byteIndex] = lo;
+      data[byteIndex + 1] = hi;
+    }
+  }
+  void values;
 
-  const tex = new THREE.DataTexture(half, FACADE_TEX_WIDTH, height, THREE.RGBAFormat, THREE.HalfFloatType);
+  const tex = new THREE.DataTexture(data, FACADE_TEX_WIDTH, height, THREE.RGBAFormat, THREE.UnsignedByteType);
   // Nearest and no mips: this is a lookup table, not an image. Any filtering
-  // would blend one building's storey height into its neighbour's.
+  // would blend one building's storey height into its neighbour's, and with
+  // fixed point it would also blend a low byte into a high one.
   tex.minFilter = THREE.NearestFilter;
   tex.magFilter = THREE.NearestFilter;
   tex.generateMipmaps = false;
