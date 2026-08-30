@@ -249,7 +249,7 @@ const has = (name: string): boolean => process.argv.includes(`--${name}`);
 /** Log lines that mean the frame about to be captured is not worth capturing. */
 const FATAL = [/Shader Error/i, /not compiled/i, /program not valid/i, /Uncaught/i];
 
-async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: string): Promise<Shot> {
+async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: string): Promise<Shot | null> {
   cdp.problems.length = 0;
   await cdp.goto(url(base, p));
   // Two waits, not one. The first is the load (tiles, packs, shader compiles),
@@ -273,7 +273,24 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   // A live-fetched pose additionally waits on its own condition: streamed
   // tiles arrive over the network, so there is nothing to photograph until the
   // scheduler says the ground is populated.
-  if (p.waitFor) await cdp.waitFor(p.waitFor.expr, p.waitFor.timeoutMs, p.waitFor.why);
+  //
+  // That wait is allowed to FAIL without taking the run with it. Overpass is
+  // volunteer infrastructure and has been refusing this machine's connections
+  // for hours at a time; a pose that depends on a third party being up must not
+  // be able to stop the other nine from being captured. It is skipped loudly
+  // and counted, never skipped quietly, because a harness that silently drops a
+  // pose reports a clean run over a hole.
+  if (p.waitFor) {
+    try {
+      await cdp.waitFor(p.waitFor.expr, p.waitFor.timeoutMs, p.waitFor.why);
+    } catch {
+      console.log(
+        `SKIP ${p.name.padEnd(24)} ${p.waitFor.why} never happened; ` +
+          `the source it needs is unreachable from here`,
+      );
+      return null;
+    }
+  }
 
   await cdp.eval("window.flybyShot.resetTiming()");
   await cdp.waitFor("window.flybyShot.timed > 240", 60_000, `${p.name} timing sample`);
@@ -365,9 +382,16 @@ async function main(): Promise<void> {
   });
 
   const shots: Shot[] = [];
+  let skipped = 0;
   try {
     for (const p of poses) {
       const s = await capture(cdp, base, p, outDir, "");
+      // A skipped pose is already reported by capture. Counting it here keeps
+      // the summary honest about how many of the set actually landed.
+      if (!s) {
+        skipped++;
+        continue;
+      }
       shots.push(s);
       console.log(
         `${s.file.padEnd(44)} ${s.frameMs.mean.toFixed(2)} ms mean  ${s.frameMs.p99.toFixed(2)} p99  ` +
@@ -376,6 +400,8 @@ async function main(): Promise<void> {
       );
       if (repeat) {
         const again = await capture(cdp, base, p, outDir, "-repeat");
+        // A pose that skipped once can skip again; there is nothing to compare.
+        if (!again) continue;
         const a = Bun.file(s.file);
         const b = Bun.file(again.file);
         const identical = Buffer.from(await a.arrayBuffer()).equals(
@@ -412,7 +438,10 @@ async function main(): Promise<void> {
       2,
     ),
   );
-  console.log(`\n${shots.length} pose(s) -> ${outDir}`);
+  console.log(
+    `\n${shots.length} pose(s) -> ${outDir}` +
+      (skipped ? `, ${skipped} SKIPPED for an unreachable source` : ""),
+  );
 }
 
 await main();
