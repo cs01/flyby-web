@@ -515,9 +515,9 @@ void main() {
     // 1.4x the skyglow -- which at a grazing angle, where Fresnel is near one,
     // replaced the whole wall with something several times brighter than the
     // wall had ever been. A night city of pale grey towers was the result.
-    vec3 skyRefl = uAmbient * mix(0.55, 1.5, up)
+    vec3 skyRefl = uAmbient * mix(0.75, 1.9, up)
                  + uSunColor * uSunIntensity * uSunSurface * sunT * 0.04
-                 + uNightGlow * 0.5;
+                 + uNightGlow * 0.4;
     // Schlick, with the 4% normal-incidence reflectance of glass.
     float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
     float fres = 0.04 + 0.96 * f;

@@ -97,7 +97,7 @@ interface FamilySpec {
 
 const FAMILY: Record<FacadeFamily, FamilySpec> = {
   [FacadeFamily.Glass]: {
-    lo: [0.16, 0.20, 0.26], hi: [0.34, 0.38, 0.43],
+    lo: [0.19, 0.23, 0.29], hi: [0.38, 0.42, 0.47],
     storeyM: 3.9, columnM: 1.6, win: [0.05, 0.95, 0.08, 0.96],
     glass: 0.92, roughness: 0.06, relief: 0.10, parapetM: 0.9,
   },
@@ -143,8 +143,8 @@ type Weights = [number, number, number, number, number]; // glass, brick, stucco
 const GENERIC_BY_BAND: Weights[] = [
   [0.02, 0.34, 0.34, 0.18, 0.12],
   [0.08, 0.34, 0.24, 0.24, 0.10],
-  [0.34, 0.12, 0.06, 0.34, 0.14],
-  [0.68, 0.01, 0.01, 0.20, 0.10],
+  [0.30, 0.14, 0.08, 0.32, 0.16],
+  [0.52, 0.03, 0.03, 0.28, 0.14],
 ];
 
 /** Multipliers applied to the band weights for a kind that IS tagged. */
@@ -202,10 +202,20 @@ export interface HourFactors {
   other: number;
 }
 
-/** Group a family falls into for the hour curve. 0 home, 1 office, 2 other. */
-export function occupancyGroup(family: FacadeFamily, kind: number): number {
-  if (kind === 1) return 0;
-  if (kind === 3 || kind === 4 || kind === 5) return 2;
+/**
+ * Group a building falls into for the hour curve. 0 home, 1 office, 2 other.
+ *
+ * The tag decides it where there is one. Where there is not -- which is 86-90%
+ * of every pack -- height decides it, because anything over about ten storeys
+ * in these cities is offices whatever it is faced in. Keying this on the
+ * material instead put pre-war stone towers in with the shops and gave them a
+ * tenancy one window wide, which is the per-cell hash all over again.
+ */
+export function occupancyGroup(family: FacadeFamily, kind: number, heightM: number): number {
+  if (kind === 1) return 0;                              // Residential
+  if (kind === 2 || kind === 6) return 1;                // Commercial, Tower
+  if (kind === 3 || kind === 4 || kind === 5) return 2;  // Industrial, Retail, Civic
+  if (heightM >= 30) return 1;
   if (family === FacadeFamily.Glass || family === FacadeFamily.Concrete) return 1;
   if (family === FacadeFamily.Brick || family === FacadeFamily.Stucco) return 0;
   return 2;
@@ -323,7 +333,7 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
   // brick building does not become a curtain wall, it just has bigger windows.
   const glassFrac = clamp01(s.glass * (0.82 + 0.36 * h1(seed, 0x44)) * (1 + 0.25 * tall));
 
-  const group = occupancyGroup(family, kind);
+  const group = occupancyGroup(family, kind, heightM);
   const office = group === 1;
 
   return {
@@ -340,12 +350,18 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
     // An office empties floor by floor; a block of flats empties flat by flat.
     // So an office gets a high per-floor gate and wide tenancies, and housing
     // gets an almost-always-occupied floor and tenancies two windows wide.
-    pFloor: office ? lerp(0.42, 0.72, h1(seed, 0x51)) : lerp(0.72, 0.95, h1(seed, 0x51)),
-    pTenant: office ? lerp(0.45, 0.78, h1(seed, 0x52)) : lerp(0.42, 0.72, h1(seed, 0x52)),
-    pCell: office ? lerp(0.72, 0.92, h1(seed, 0x53)) : lerp(0.55, 0.80, h1(seed, 0x53)),
+    pFloor: office ? lerp(0.50, 0.80, h1(seed, 0x51)) : lerp(0.72, 0.95, h1(seed, 0x51)),
+    pTenant: office ? lerp(0.55, 0.90, h1(seed, 0x52)) : lerp(0.42, 0.72, h1(seed, 0x52)),
+    // Never near 1: an occupied floor still has empty meeting rooms in it, and
+    // a lit flat still has a dark bedroom. But not low either -- at 0.55 a
+    // tenancy came out as a dotted line rather than as a lit tenancy.
+    pCell: office ? lerp(0.72, 0.92, h1(seed, 0x53)) : lerp(0.72, 0.92, h1(seed, 0x53)),
     pCore: lerp(0.55, 0.9, h1(seed, 0x54)),
-    tenantW: office ? 3 + Math.floor(h1(seed, 0x55) * 6) : 1 + Math.floor(h1(seed, 0x55) * 2),
-    tenantH: office ? 1 + Math.floor(h1(seed, 0x56) * 3) : 1,
+    // A tenancy is a floor of an office or a flat in a block, and a flat is
+    // two or three windows wide, not one. One column wide would BE the old
+    // per-cell hash, which is the thing this whole model exists to replace.
+    tenantW: office ? 3 + Math.floor(h1(seed, 0x55) * 6) : 2 + Math.floor(h1(seed, 0x55) * 3),
+    tenantH: office ? 1 + Math.floor(h1(seed, 0x56) * 3) : 1 + Math.floor(h1(seed, 0x56) * 2),
     coreW: 1 + Math.floor(h1(seed, 0x57) * 2),
     corePeriod: CORE_PERIOD_MIN + Math.floor(h1(seed, 0x58) * (CORE_PERIOD_MAX - CORE_PERIOD_MIN + 1)),
     coreSlot: Math.floor(h1(seed, 0x59) * CORE_PERIOD_MAX),

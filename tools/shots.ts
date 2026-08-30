@@ -83,8 +83,9 @@ export const POSES: Pose[] = [
   {
     name: "sf-residential",
     city: "sf",
-    // The Richmond: an unbroken grid of two- and three-storey houses.
-    lat: 37.7790, lon: -122.4720, altM: 240, hdgDeg: 95, pitchDeg: -20,
+    // Pacific Heights and the Marina: block after block of three-storey
+    // Victorians, which is the case a facade model gets wrong by repeating.
+    lat: 37.7955, lon: -122.4340, altM: 175, hdgDeg: 285, pitchDeg: -14,
     t: D("2025-06-21T18:30:00Z"), // 11:30 PDT
     wx: CLEAR,
     what: "SF residential district by day",
