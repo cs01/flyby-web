@@ -15,6 +15,7 @@ import { loadHeightfield, bboxAround, type Heightfield } from "./data/dem";
 import { stitchImagery, type StitchedImage } from "./data/imagery";
 import { fetchWeather, fetchForecast, beamOpacity, type Weather } from "./data/weather";
 import { clearCache } from "./data/cache";
+import { showDiagnostics, watchForFailures } from "./app/diag";
 import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, cityAt, DEFAULT_CITY, type City } from "./cities";
@@ -162,6 +163,16 @@ async function main() {
   const canvas = document.getElementById("view") as HTMLCanvasElement;
   const ui = document.getElementById("ui")!;
   const loading = new LoadingScreen();
+
+  // A black screen on a phone is unreportable without these: `?diag=1` prints
+  // what the device actually supports, and the failure watch surfaces a lost
+  // context or a post-boot throw on screen instead of only in a console nobody
+  // on a phone can open.
+  const diagCanvas = document.getElementById("view") as HTMLCanvasElement;
+  watchForFailures(diagCanvas);
+  if (new URLSearchParams(location.search).has("diag")) {
+    showDiagnostics(document.createElement("canvas"));
+  }
 
   const city = chooseCity();
   if (!city) {
