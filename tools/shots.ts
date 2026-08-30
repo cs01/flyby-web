@@ -140,7 +140,7 @@ function url(base: string, p: Pose): string {
 interface Shot {
   pose: Pose;
   file: string;
-  frameMs: number;
+  frameMs: { mean: number; p99: number };
   triangles: number;
   lod: number;
   signature: number[];
@@ -167,7 +167,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
 
   await cdp.eval("window.flybyShot.resetTiming()");
   await cdp.waitFor("window.flybyShot.timed > 240", 60_000, `${p.name} timing sample`);
-  const frameMs = await cdp.eval<number>("window.flybyShot.frameMs()");
+  const frameMs = await cdp.eval<{ mean: number; p99: number }>("window.flybyShot.frameMs()");
   const triangles = await cdp.eval<number>("window.flybyShot.triangles");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
   const signature = await cdp.eval<number[]>("window.flybyShot.signature(48)");
@@ -233,7 +233,7 @@ async function main(): Promise<void> {
       const s = await capture(cdp, base, p, outDir, "");
       shots.push(s);
       console.log(
-        `${s.file.padEnd(44)} ${s.frameMs.toFixed(2)} ms  ` +
+        `${s.file.padEnd(44)} ${s.frameMs.mean.toFixed(2)} ms mean  ${s.frameMs.p99.toFixed(2)} p99  ` +
         `${(s.triangles / 1000).toFixed(0)}k tris  lod ${s.lod}`,
       );
       if (repeat) {

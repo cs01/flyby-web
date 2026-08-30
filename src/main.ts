@@ -1015,9 +1015,26 @@ async function main() {
       // Median, not mean: one 200 ms hitch from a texture upload or a GC would
       // dominate a mean over a few hundred frames and say nothing about the
       // cost of a frame.
+      // Mean and p99, never the median.
+      //
+      // The median is what this used to report, and it lied by a factor of five.
+      // Any sync point in the frame loop (the sky probe's GPU readback is one)
+      // blocks on the WHOLE queued pipeline: uncapped, this renderer runs about
+      // twenty frames ahead, so one frame in ~45 absorbs ~100 ms and the CPU
+      // then races through the rest. The median lands in the race and collapses,
+      // so adding the probe appeared to make the renderer FASTER (4.9 ms down
+      // to 0.5 ms). Real cost was +0.1 ms, from frames over wall time.
+      //
+      // A cost metric that improves when you add work is worse than no metric,
+      // so the mean is the headline and p99 is reported beside it to make a
+      // stall visible instead of averaging it away.
       frameMs: () => {
-        const s = Array.from(frameRing.slice(0, timedFrames)).sort((a, b) => a - b);
-        return s.length ? s[s.length >> 1] : 0;
+        const n = timedFrames;
+        if (n === 0) return { mean: 0, p99: 0 };
+        const a = Array.from(frameRing.slice(0, n));
+        const mean = a.reduce((x, y) => x + y, 0) / n;
+        const sorted = a.sort((x, y) => x - y);
+        return { mean, p99: sorted[Math.min(n - 1, Math.floor(n * 0.99))] };
       },
       get triangles() { return buildings ? buildings.stats.triangles : 0; },
       get lod() { return buildings ? buildings.stats.lod : 0; },
