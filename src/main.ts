@@ -33,6 +33,8 @@ import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { loadLandPack } from "./data/landcover-load";
+import { loadRoadPack } from "./data/roadpack-load";
+import { Roads } from "./render/roads";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { Composite } from "./render/composite";
 import { SunShadow } from "./render/sunshadow";
@@ -220,6 +222,7 @@ async function main() {
   // Alongside the buildings, not after them: both are single files off the same
   // origin, so overlapping the two fetches costs nothing and saves a round trip.
   const landPromise = loadLandPack(city.id);
+  const roadPromise = loadRoadPack(city.id);
   const pack = await loadCityPack(city.id);
   let buildings: Buildings | null = null;
   // The rooftops as a height field, so the aeroplane has a floor over a city
@@ -250,6 +253,24 @@ async function main() {
       `${(collision.stats.bytes / 1048576).toFixed(1)} MB, ` +
       `${(performance.now() - t0).toFixed(0)} ms`,
     );
+  }
+
+  // Vector roads. Same contract as the skyline: a city with no .roads pack
+  // still flies, its streets are just whatever the satellite drape shows.
+  const roadPack = await roadPromise;
+  let roads: Roads | null = null;
+  if (roadPack) {
+    roads = new Roads(roadPack, terrain.heightAt, sunShadow.uniforms);
+    scene.add(roads.group);
+    const rs = roads.stats;
+    console.log(
+      `[flyby] roads: ${rs.drawn} drawn of ${roadPack.roads.length} ` +
+      `(${rs.skippedFar} out of class range, ${rs.skippedTunnel} tunnels, ${rs.skippedShort} stubs), ` +
+      `${rs.bridges} bridges, ${rs.triangles} triangles in ${rs.meshes} meshes, ` +
+      `lod ${rs.lod}, ${rs.buildMs.toFixed(0)} ms`,
+    );
+  } else {
+    console.warn(`[flyby] no road pack for ${city.id}; run: bun tools/bake-roads.ts --city ${city.id}`);
   }
 
   // Where the city actually is, for night lighting. A place with no pack gets
@@ -704,6 +725,24 @@ async function main() {
       b.uExposure.value = light.exposure * exposureScale;
     }
 
+    if (roads) {
+      const r = roads.uniforms;
+      r.uCameraPos.value.copy(camera.position);
+      r.uSunDir.value.copy(light.sunDir);
+      r.uSunColor.value.copy(light.sunColor);
+      r.uSunIntensity.value = light.sunIntensity;
+      r.uAmbient.value.copy(light.ambient);
+      r.uWetness.value = light.wetness;
+      r.uSnow.value = light.snow;
+      r.uNight.value = light.night;
+      r.uNightGlow.value.copy(light.nightGlow);
+      r.uMoonDir.value.copy(light.moonDir);
+      r.uMoonLight.value.copy(light.moonLight);
+      r.uMieG.value = light.mieG;
+      r.uTurbidity.value = light.turbidity;
+      r.uCamAltitude.value = camAlt;
+    }
+
     const p = model.uniforms;
     p.uSunDir.value.copy(light.sunDir);
     p.uSunColor.value.copy(light.sunColor);
@@ -834,6 +873,7 @@ async function main() {
       composite.uniforms as Record<string, THREE.IUniform>,
       ...(terrain.uniforms as unknown as Record<string, THREE.IUniform>[]),
       ...(buildings ? [buildings.uniforms as Record<string, THREE.IUniform>] : []),
+      ...(roads ? [roads.uniforms as Record<string, THREE.IUniform>] : []),
     ];
     let hit = 0;
     for (const set of sets) if (name in set) { set[name].value = value; hit++; }
@@ -842,7 +882,7 @@ async function main() {
 
   Object.assign(window as unknown as Record<string, unknown>, {
     flyby: {
-      scene, camera, renderer, terrain, sky, city, tune, buildings, composite, ac, chase,
+      scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
       sunShadow, drone,
       get droneActive() { return droneActive; },
       get wx() { return wx; },
