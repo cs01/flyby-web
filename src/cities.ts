@@ -101,11 +101,21 @@ export const CITIES: City[] = [
   {
     // Centred NORTH of the summit rather than on it, with the approach pointed
     // south. Sitting on top of a 3776 m cone means starting inside cloud with
-    // the mountain directly below and invisible; from 7 km out it fills the
-    // windscreen, which is the shot. The radius reaches the summit, the 5th
-    // Station and the Hoei crater on the south-east flank.
+    // the mountain directly below and invisible; from a few km out it fills the
+    // windscreen, which is the shot.
+    //
+    // 4.0 km north, not 6.6 km, and the difference is visible on the mountain.
+    // The imagery rings step from zoom 15 to zoom 13 at exactly 6000 m, which
+    // is 3.8 m/px to 15 m/px with no blend across the seam. At 6.6 km the
+    // summit sat right on that line and the cone went sharp-then-fuzzy partway
+    // up, with the boundary drawn across it. Inside the ring the whole mountain
+    // is on one side of the seam.
+    //
+    // The general fix is to cross-fade the ring drapes rather than cut between
+    // them, which would help every city; this is the placement that avoids the
+    // worst case in the meantime.
     id: "fuji", name: "Mount Fuji", country: "Japan", continent: "Asia",
-    lat: 35.4200, lon: 138.7300, radius: 9000, approach: 195, startAlt: 1100,
+    lat: 35.3970, lon: 138.7290, radius: 9000, approach: 195, startAlt: 1200,
     landmarks: [
       { name: "Mount Fuji summit", lat: 35.3606, lon: 138.7274, height: 3776 },
       { name: "Hoei Crater", lat: 35.3350, lon: 138.7480, height: 2693 },
