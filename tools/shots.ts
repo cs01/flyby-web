@@ -182,6 +182,22 @@ export const POSES: Pose[] = [
     what: "Chicago Loop by day",
   },
   {
+    // Mount Fuji, from the north with the cone filling the frame.
+    //
+    // A terrain pose, deliberately: every other pose in this set is a city, so
+    // nothing here would catch a regression in the heightfield, the ring plan
+    // or the aerial perspective over open country. The cone is also the most
+    // unforgiving subject for the imagery ring seams, which is how the 6000 m
+    // step from zoom 15 to zoom 13 was found: it drew a sharpness boundary
+    // straight across the mountain until the city centre was moved in to 4 km.
+    name: "fuji-cone",
+    city: "fuji",
+    lat: 35.4340, lon: 138.7290, altM: 1500, hdgDeg: 183, pitchDeg: -7,
+    t: D("2025-10-12T21:30:00Z"), // 06:30 JST, low sun raking the flank
+    wx: CLEAR,
+    what: "Mount Fuji from the north",
+  },
+  {
     // Santa Rosa, California. Nobody has baked this and nobody is going to:
     // the point is that a place with no pack now has buildings, roads and
     // trees, fetched from OpenStreetMap while the aeroplane is in the air.
