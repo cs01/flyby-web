@@ -418,16 +418,21 @@ void main() {
     // Roofs are dirtier and flatter than facades, and they are what you see
     // most of from an aircraft, so they get their own noise rather than the
     // facade colour applied upward.
-    float g = hash21(floor(vWorld.xz * 0.35) + fp.seed * 97.0);
+    // Two octaves at scales with no common factor, the second one ROTATED.
+    // Both on the same axis-aligned grid at 2:1 contrast came out as a
+    // chessboard, which from directly above is the largest single surface in
+    // the frame and the most obviously fake thing in it.
+    vec2 rp = mat2(0.88, 0.47, -0.47, 0.88) * vWorld.xz;
+    float g = hash21(floor(vWorld.xz * 0.33) + fp.seed * 97.0);
     // Real roofs are tar, black membrane and gravel: about 0.06-0.12 linear.
     // These were 0.26-0.42, two to three times too reflective, which made the
     // roof the BRIGHTEST surface in a top-down shot when in every aerial
     // photograph it is the darkest.
-    albedo = mix(vec3(0.128, 0.128, 0.122), vec3(0.205, 0.199, 0.184), g);
+    albedo = mix(vec3(0.128, 0.128, 0.122), vec3(0.188, 0.183, 0.170), g);
     // Patchwork: membrane seams, ponding, a re-covered section. One more
     // octave, at a scale a roof actually varies over.
-    float wear = hash21(floor(vWorld.xz * 0.09) + fp.seed * 13.0);
-    albedo *= 0.80 + 0.30 * wear;
+    float wear = hash21(floor(rp * 0.085) + fp.seed * 13.0);
+    albedo *= 0.84 + 0.26 * wear;
   } else if (part < 2.5) {
     // --- Parapet --------------------------------------------------------
     // The low wall round the roof edge. Coped in stone or concrete whatever
