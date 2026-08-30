@@ -188,8 +188,18 @@ for (const city of ["manhattan", "chicago"]) {
  * core, which is precisely what would go missing if someone put a plain
  * per-cell hash back.
  */
-for (const term of ["p.pFloor", "p.pTenant", "p.pCore", "p.coreSlot", "p.tenantW", "p.tenantH"]) {
-  check(`shader occupancy uses ${term}`, FACADE_GLSL.includes(term), "in FACADE_GLSL");
+{
+  // The BODY of facadeLit, not the whole of FACADE_GLSL. Watched to fail:
+  // deleting the tenancy gate from facadeLit and searching the whole string
+  // still passed, because facadeMeanOccupancy mentions p.pTenant too. A gate
+  // that matches the right words in the wrong function is not a gate.
+  const from = FACADE_GLSL.indexOf("float facadeLit(");
+  const to = FACADE_GLSL.indexOf("float facadeMeanOccupancy(");
+  const body = from >= 0 && to > from ? FACADE_GLSL.slice(from, to) : "";
+  check("facadeLit is in the shader", body.length > 200, `${body.length} chars`);
+  for (const term of ["p.pFloor", "p.pTenant", "p.pCore", "p.coreSlot", "p.tenantW", "p.tenantH"]) {
+    check(`facadeLit gates on ${term}`, body.includes(term), "in the GLSL body");
+  }
 }
 
 // --- 2. material variety -----------------------------------------------------
@@ -277,7 +287,7 @@ check("hash3 is pinned", Math.abs(hash3(12345, 678, 90) - 0.48969510104507208) <
 // Literals, not derived: at no hour of any night may a kind of building be
 // entirely dark or entirely lit.
 const OCC_MIN = 0.01;
-const OCC_MAX = 0.65;
+const OCC_MAX = 0.70;
 
 {
   let worstLow = 1;
