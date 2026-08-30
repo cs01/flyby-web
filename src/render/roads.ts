@@ -33,6 +33,7 @@
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
+import { SH_GLSL, shHemispherical } from "./sh";
 import { addRibbon, emptyRibbon, ribbonTriangleCost, type RibbonScratch } from "../data/ribbon";
 import {
   roadWidthM,
@@ -204,9 +205,12 @@ out vec4 fragColor;
 #define ATMO_SUN_STEPS 2
 ${ATMOSPHERE_GLSL}
 ${SUN_SHADOW_GLSL}
+${SH_GLSL}
 
 uniform vec3  uCameraPos;
-uniform vec3  uAmbient;
+// The scene sky probe: what wet asphalt reflects.
+uniform samplerCube uEnv;
+uniform float uEnvMaxLod;
 uniform float uWetness;
 uniform float uSnow;
 uniform float uNight;
@@ -471,8 +475,29 @@ void main() {
   float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
   vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl * sunVis;
   vec3 beam = direct + uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
-  vec3 ambient = uAmbient * (0.55 + 0.45 * n.y);
+  // Sky irradiance from the scene probe, in place of the hemispherical constant
+  // this used to run. A road is close to horizontal, so the diffuse change here
+  // is small; what the probe buys on a road is the reflection below.
+  vec3 ambient = shIrradiance(n);
   vec3 lit = albedo * (beam + ambient);
+
+  // Wet asphalt is a MIRROR, and a rainy city is mostly that: a bright sky
+  // lying on a dark street. The sun glint below is one point of light, the
+  // reflection is the whole sky, and it is the reflection that carries it.
+  //
+  // Gated on wetness, so the per-fragment cube fetch is paid for only on the
+  // frames a road is actually wet. The mip comes from the SAME per-fragment
+  // roughness the wheel tracks already modulate, so the reflection sharpens
+  // down the two polished streaks and stays diffuse on the coarse tarmac
+  // between them, which is what a wet carriageway looks like from the air.
+  if (uWetness > 0.02) {
+    vec3 vdir = normalize(uCameraPos - vWorld);
+    vec3 refl = reflect(-vdir, n);
+    vec3 env = textureLod(uEnv, refl, clamp(roughness, 0.0, 1.0) * uEnvMaxLod).rgb;
+    // Schlick against the 2% normal reflectance of a water film.
+    float f = pow(1.0 - clamp(dot(vdir, n), 0.0, 1.0), 5.0);
+    lit = mix(lit, env, (0.02 + 0.98 * f) * uWetness);
+  }
 
   // Specular. Dry asphalt is not matte -- a low sun sheets off it -- and wet
   // asphalt is a mirror. The wheel tracks are smoother than the rest, so the
@@ -545,7 +570,11 @@ void main() {
 
 export interface RoadUniforms extends SunShadowUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
-  uAmbient: THREE.IUniform<THREE.Color>;
+  /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
+  uSH: THREE.IUniform<Float32Array>;
+  /** Prefiltered sky radiance for wet tarmac; see render/skyprobe.ts. */
+  uEnv: THREE.IUniform<THREE.CubeTexture | null>;
+  uEnvMaxLod: THREE.IUniform<number>;
   uWetness: THREE.IUniform<number>;
   uSnow: THREE.IUniform<number>;
   uNight: THREE.IUniform<number>;
@@ -572,7 +601,11 @@ function makeUniforms(shadow: SunShadowUniforms): RoadUniforms {
   return {
     ...shadow,
     uCameraPos: { value: new THREE.Vector3() },
-    uAmbient: { value: new THREE.Color(0.2, 0.24, 0.3) },
+    // The hemispherical ambient this shader ran before the probe existed, so a
+    // frame drawn before the first capture is the old picture, not a black one.
+    uSH: { value: shHemispherical([0.2, 0.24, 0.3], 0.55, 0.45) },
+    uEnv: { value: null },
+    uEnvMaxLod: { value: 6 },
     uWetness: { value: 0 },
     uSnow: { value: 0 },
     uNight: { value: 0 },
