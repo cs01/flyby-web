@@ -109,6 +109,7 @@ export class TouchControls {
   private left: Stick | null = null;
   private right: Stick | null = null;
   private cameraPresses = 0;
+  private carPresses = 0;
   private lookBackHeld = false;
 
   constructor(surface: HTMLElement, ui: HTMLElement) {
@@ -184,6 +185,14 @@ export class TouchControls {
     return n;
   }
 
+  /** Get-in-the-car taps since the last call. Clears them. A phone has no G
+   *  key, and a mode nobody on a touch device can reach does not exist. */
+  drainCarPresses(): number {
+    const n = this.carPresses;
+    this.carPresses = 0;
+    return n;
+  }
+
   get lookBack(): boolean {
     return this.lookBackHeld;
   }
@@ -217,6 +226,7 @@ export class TouchControls {
       this.boost = !this.boost;
       boost.classList.toggle("on", this.boost);
     });
+    add("CAR", () => this.carPresses++);
     add(
       "LOOK",
       () => (this.lookBackHeld = true),

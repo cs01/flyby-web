@@ -205,6 +205,9 @@ export class RoadIndex {
   private readonly bx: Float32Array;
   private readonly bz: Float32Array;
   private readonly pad: Float32Array;
+  /** Which road each segment came from, so a query can answer WHICH way it
+   *  found and not only how far away it was. */
+  private readonly owner: Int32Array;
   private readonly cellM: number;
   private readonly minX: number;
   private readonly minZ: number;
@@ -233,10 +236,12 @@ export class RoadIndex {
     this.bx = new Float32Array(count);
     this.bz = new Float32Array(count);
     this.pad = new Float32Array(count);
+    this.owner = new Int32Array(count);
 
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
     let s = 0;
-    for (const r of roads) {
+    for (let w = 0; w < roads.length; w++) {
+      const r = roads[w];
       const p = padOf(r);
       for (let v = 2; v < r.pts.length; v += 2) {
         const x0 = r.pts[v - 2], z0 = r.pts[v - 1];
@@ -244,6 +249,7 @@ export class RoadIndex {
         this.ax[s] = x0; this.az[s] = z0;
         this.bx[s] = x1; this.bz[s] = z1;
         this.pad[s] = p;
+        this.owner[s] = w;
         s++;
         const lo = Math.min(x0, x1) - p, hi = Math.max(x0, x1) + p;
         const lz = Math.min(z0, z1) - p, hz = Math.max(z0, z1) + p;
@@ -285,6 +291,16 @@ export class RoadIndex {
     this.items = new Int32Array(counts[cells]);
     const cursor = new Int32Array(cells);
     visit((c, i) => { this.items[this.start[c] + cursor[c]++] = i; });
+  }
+
+  /** Unclamped grid coordinates, so a ring scan can measure a real radius from
+   *  a query that lies outside the indexed area. */
+  private rawCol(x: number): number {
+    return Math.floor((x - this.minX) / this.cellM);
+  }
+
+  private rawRow(z: number): number {
+    return Math.floor((z - this.minZ) / this.cellM);
   }
 
   private col(x: number): number {
@@ -335,6 +351,93 @@ export class RoadIndex {
     }
     return best === Infinity ? Infinity : Math.sqrt(best);
   }
+
+  /**
+   * The nearest indexed centreline within `maxM`, as the road it belongs to and
+   * the point on it.
+   *
+   * `nearest` above cannot answer this. It looks in ONE cell, which is exact
+   * only out to the pad the index was built with, and it returns a distance
+   * with no identity attached. A vehicle asking "which road am I on and where
+   * along it" needs both, and needs an answer at a range (tens of metres) that
+   * no sane pad would register a segment across.
+   *
+   * So this walks the grid in growing square rings and stops as soon as the
+   * best distance found is already inside the radius the NEXT ring could reach.
+   * A segment is registered in every cell its bounding box touches, and its
+   * closest point is inside that box, so a segment `d` metres away is certain
+   * to be in a cell no more than `ceil(d / cellM) + 1` rings out.
+   */
+  nearestSegment(x: number, z: number, maxM: number): NearestSegment | null {
+    const qc = this.rawCol(x);
+    const qr = this.rawRow(z);
+    const maxRing = Math.ceil(maxM / this.cellM) + 1;
+    let best = maxM * maxM;
+    let bestSeg = -1;
+
+    const scan = (cx: number, cz: number): void => {
+      if (cx < 0 || cz < 0 || cx >= this.nx || cz >= this.nz) return;
+      const c = cz * this.nx + cx;
+      for (let e = this.start[c]; e < this.start[c + 1]; e++) {
+        const seg = this.items[e];
+        const d = this.distSq(seg, x, z);
+        // Ties broken by the lower segment index, so two carriageways exactly
+        // the same distance away always give the same answer.
+        if (d < best || (d === best && bestSeg >= 0 && seg < bestSeg)) {
+          best = d;
+          bestSeg = seg;
+        }
+      }
+    };
+
+    for (let ring = 0; ring <= maxRing; ring++) {
+      if (ring === 0) {
+        scan(qc, qr);
+      } else {
+        for (let dx = -ring; dx <= ring; dx++) {
+          scan(qc + dx, qr - ring);
+          scan(qc + dx, qr + ring);
+        }
+        for (let dz = -ring + 1; dz <= ring - 1; dz++) {
+          scan(qc - ring, qr + dz);
+          scan(qc + ring, qr + dz);
+        }
+      }
+      // Everything the next ring could hold is at least `ring * cellM` away.
+      if (bestSeg >= 0 && best <= (ring * this.cellM) ** 2) break;
+    }
+
+    if (bestSeg < 0) return null;
+    const ax = this.ax[bestSeg], az = this.az[bestSeg];
+    const dx = this.bx[bestSeg] - ax, dz = this.bz[bestSeg] - az;
+    const len2 = dx * dx + dz * dz;
+    let t = len2 > 0 ? ((x - ax) * dx + (z - az) * dz) / len2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    return {
+      road: this.owner[bestSeg],
+      segment: bestSeg,
+      distanceM: Math.sqrt(best),
+      x: ax + t * dx,
+      z: az + t * dz,
+      dirX: len2 > 0 ? dx / Math.sqrt(len2) : 1,
+      dirZ: len2 > 0 ? dz / Math.sqrt(len2) : 0,
+    };
+  }
+}
+
+/** What `RoadIndex.nearestSegment` found. */
+export interface NearestSegment {
+  /** Index into the road array the index was built from. */
+  road: number;
+  /** Index of the centreline segment within the whole index. */
+  segment: number;
+  distanceM: number;
+  /** The closest point on that centreline. */
+  x: number;
+  z: number;
+  /** Unit direction of the segment, in its stored order. */
+  dirX: number;
+  dirZ: number;
 }
 
 /** Indirection so `nearest` reads the same way as `blocked`; see RoadIndex. */

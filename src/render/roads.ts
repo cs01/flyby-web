@@ -39,6 +39,7 @@ import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { addRibbon, emptyRibbon, ribbonTriangleCost, type RibbonScratch } from "../data/ribbon";
 import {
   roadWidthM,
+  roadLiftM,
   ROAD_BRIDGE,
   ROAD_TUNNEL,
   type Road,
@@ -106,23 +107,6 @@ const CLASS_RANGE_M: number[] = [
 /** Ways shorter than this are digitising noise at any altitude worth flying. */
 const MIN_LENGTH_M = 6;
 
-/**
- * Lift off the ground, in metres.
- *
- * Small on purpose. The ribbon samples the true height field while the terrain
- * mesh linearly interpolates its own grid, so the two disagree by centimetres
- * inside a quad and by more on a steep San Francisco block; this covers that.
- * The z-fighting itself is handled by polygonOffset instead, because a lift big
- * enough to win a depth fight outright is a lift you can SEE from the side, and
- * a road floating a metre over a hillside is worse than one that flickers.
- */
-const LIFT_M = 0.35;
-
-/** A bridge deck reads as a deck rather than as a stripe across the water only
- *  if it is off the surface. Layer adds to it so a flyover clears the road it
- *  crosses. OSM carries no deck height, so this is a plausible constant. */
-const BRIDGE_LIFT_M = 3.5;
-const LAYER_LIFT_M = 2.5;
 
 function classRange(cls: RoadClass, k: number): number {
   return (CLASS_RANGE_M[cls] ?? 4000) / k;
@@ -700,9 +684,10 @@ export class Roads {
       if (tris === 0) { skippedShort++; continue; }
 
       if (isBridge) bridges++;
-      const lift = isBridge
-        ? LIFT_M + BRIDGE_LIFT_M + Math.max(0, r.layer) * LAYER_LIFT_M
-        : LIFT_M;
+      // The deck height is roadpack's, not this file's: a car drives on the
+      // surface this ribbon draws, and two copies of the number would put it
+      // under the bridge it is crossing.
+      const lift = roadLiftM(r.flags, r.layer);
 
       // A bridge deck is FLAT, and the ground under it is a riverbed. Draping
       // it like a street would sag it into the water at midspan, which is

@@ -134,6 +134,38 @@ export const FIXED_WIDTH_M: (number | null)[] = [
 /** A link ramp is one lane whatever its parent class says. */
 const LINK_LANES = 1;
 
+// --- surface height ---------------------------------------------------------
+
+/**
+ * Lift of the carriageway surface off the terrain, in metres.
+ *
+ * Small on purpose. The ribbon samples the true height field while the terrain
+ * mesh linearly interpolates its own grid, so the two disagree by centimetres
+ * inside a quad and by more on a steep San Francisco block; this covers that.
+ * The z-fighting itself is handled by polygonOffset in render/roads.ts, because
+ * a lift big enough to win a depth fight outright is a lift you can SEE from
+ * the side, and a road floating a metre over a hillside is worse than one that
+ * flickers.
+ *
+ * It lives beside the width for the same reason the width does: the renderer
+ * draws the deck and a ground vehicle drives on it, and a car sitting 3.5 m
+ * under a bridge it is supposed to be crossing is what two copies of this
+ * number produce.
+ */
+export const ROAD_LIFT_M = 0.35;
+
+/** A bridge deck reads as a deck rather than as a stripe across the water only
+ *  if it is off the surface. Layer adds to it so a flyover clears the road it
+ *  crosses. OSM carries no deck height, so this is a plausible constant. */
+export const BRIDGE_LIFT_M = 3.5;
+export const LAYER_LIFT_M = 2.5;
+
+/** Height of the carriageway above the terrain under it, in metres. */
+export function roadLiftM(flags: number, layer: number): number {
+  if ((flags & ROAD_BRIDGE) === 0) return ROAD_LIFT_M;
+  return ROAD_LIFT_M + BRIDGE_LIFT_M + Math.max(0, layer) * LAYER_LIFT_M;
+}
+
 /**
  * Carriageway width in metres. `lanes` of 0 means the way carried no tag.
  * The one place that answers "how wide is this road".

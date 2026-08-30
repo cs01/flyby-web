@@ -12,6 +12,7 @@
 
 import { TouchControls, hasTouch, expo, rateLimit } from "./touch";
 import type { DroneInput } from "./drone";
+import type { CarInput } from "./car";
 
 export interface Axes {
   /** Positive opens the throttle, negative closes it. */
@@ -77,6 +78,9 @@ export class Input {
   helpToggled = 0;
   /** V presses. Counted, not latched, so main drains it and cannot miss one. */
   droneToggled = 0;
+  /** G presses, the same way. G rather than C, which is already the camera
+   *  cycle, and next to the movement keys a hand is already on. */
+  carToggled = 0;
   paused = false;
 
   /**
@@ -109,6 +113,9 @@ export class Input {
 
   private droneCurrent: DroneInput = freshDrone();
   private droneTarget: DroneInput = freshDrone();
+  private carTarget: CarInput = {
+    throttle: 0, steer: 0, boost: 0, lookYawDeg: 0, lookPitchDeg: 0,
+  };
 
   constructor(target: HTMLElement, ui?: HTMLElement) {
     if (ui && hasTouch()) this.touch = new TouchControls(target, ui);
@@ -124,6 +131,7 @@ export class Input {
       if (e.code === "KeyP") this.paused = !this.paused;
       if (e.code === "KeyH") this.helpToggled++;
       if (e.code === "KeyV") this.droneToggled++;
+      if (e.code === "KeyG") this.carToggled++;
       // Escape already drops pointer lock in every browser; doing it here as
       // well is what stops us asking for it straight back on the next click.
       if (e.code === "Escape") this.setPointerLock(false);
@@ -318,6 +326,7 @@ export class Input {
       }
       if (touch.boost) t.boost = 1;
       this.cameraCycled += touch.drainCameraPresses();
+      this.carToggled += touch.drainCarPresses();
     }
 
     this.lookBack = this.keys.has("KeyB") || (touch?.lookBack ?? false);
@@ -417,5 +426,37 @@ export class Input {
     this.lookX = 0;
     this.lookY = 0;
     return a;
+  }
+
+  /**
+   * Raw car axes, and the mouse look that has arrived since the last call.
+   *
+   * DELIBERATELY NOT RAMPED, unlike the aeroplane's and the drone's. sim/car.ts
+   * puts the steering and the throttle through `rateLimit` itself, and ramping
+   * here as well would put two smoothers in series: the car would reach full
+   * lock in the sum of the two times and feel like it was being driven through
+   * treacle. One smoother, and it lives with the machine that has an opinion
+   * about how quickly a wheel turns.
+   */
+  carAxes(): CarInput {
+    const t = this.carTarget;
+    t.throttle = this.held("KeyW", "ArrowUp") - this.held("KeyS", "ArrowDown");
+    t.steer = this.held("KeyD", "ArrowRight") - this.held("KeyA", "ArrowLeft");
+    t.boost = this.held("ShiftLeft", "ShiftRight", "Space");
+
+    const touch = this.touch;
+    if (touch?.active) {
+      // The same two thumbs as everywhere else: the left one steers, the right
+      // one is the pedals.
+      t.steer = touch.axes.roll;
+      t.throttle = touch.axes.throttle;
+    }
+    if (touch?.boost) t.boost = 1;
+
+    t.lookYawDeg = this.lookX;
+    t.lookPitchDeg = -this.lookY;
+    this.lookX = 0;
+    this.lookY = 0;
+    return t;
   }
 }

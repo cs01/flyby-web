@@ -543,85 +543,177 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
   };
 }
 
+/** The square hole a moving detail ring punches in the ring under it. */
+export interface DetailHole {
+  /** Centre in world metres. */
+  x: number;
+  z: number;
+  /** Half-width in metres. */
+  extent: number;
+}
+
 /**
- * Build one ring. `inner` is the half-width of the hole punched in the middle
- * (0 for the innermost ring), so rings tile without overdrawing each other.
+ * One ring's vertex grid, kept so the hole can be RE-CUT without resampling
+ * the height field.
+ *
+ * This is what makes a detail ring that follows the camera affordable. Moving
+ * the detail square means the ring under it has to stop drawing a different set
+ * of quads, and that is a change to the INDEX buffer alone: the positions, the
+ * uvs and the normals are all still correct, because none of them depends on
+ * where the hole is. Rebuilding the vertices instead would be 50,000 height
+ * lookups per move on ring 1, which is a hitch you can feel; re-indexing is
+ * integer work over the same 50,000 quads and is not.
  */
-function buildRingGeometry(
+interface RingGrid {
+  ring: TerrainRing;
+  /** Half-width of the STATIC hole for the next ring in, 0 for the innermost. */
+  inner: number;
+  /** Ring centre in world metres. Zero for every ring except a moving detail one. */
+  cx: number;
+  cz: number;
+  positions: Float32Array;
+  uvs: Float32Array;
+  /** Computed over EVERY quad, holes ignored; see buildRingGrid. */
+  normals: Float32Array;
+  /** Index of each grid vertex, and of the skirt vertices that follow them. */
+  gridCount: number;
+  skirtRing: number[];
+}
+
+/**
+ * The vertex grid for one ring: every vertex, hole or no hole.
+ *
+ * Vertices inside the hole are KEPT and simply not referenced by any triangle.
+ * That costs a ring 1 about 1,600 unused vertices out of 50,000 and is what
+ * lets the hole move for the price of an index buffer.
+ */
+function buildRingGrid(
   ring: TerrainRing,
   inner: number,
+  cx: number,
+  cz: number,
   origin: Origin,
   height: (lat: number, lon: number) => number,
   drapeBbox: { west: number; east: number; south: number; north: number },
-): THREE.BufferGeometry {
+): RingGrid {
   const n = ring.segments;
   const step = (ring.extent * 2) / n;
-  const positions: number[] = [];
-  const uvs: number[] = [];
-  const indices: number[] = [];
+  const gridCount = (n + 1) * (n + 1);
 
-  // Vertex grid, with a hole where the finer ring will sit.
-  const idx = new Int32Array((n + 1) * (n + 1)).fill(-1);
-  let count = 0;
+  // Grid, then the skirt vertices, in one buffer: the skirt hangs from the
+  // outer edge and its positions never change either.
+  const edge: number[] = [];
+  for (let i = 0; i <= n; i++) edge.push(0 * (n + 1) + i);
+  for (let j = 1; j <= n; j++) edge.push(j * (n + 1) + n);
+  for (let i = n - 1; i >= 0; i--) edge.push(n * (n + 1) + i);
+  for (let j = n - 1; j >= 1; j--) edge.push(j * (n + 1) + 0);
+
+  const positions = new Float32Array((gridCount + edge.length) * 3);
+  const uvs = new Float32Array((gridCount + edge.length) * 2);
+
   for (let j = 0; j <= n; j++) {
     for (let i = 0; i <= n; i++) {
-      const x = -ring.extent + i * step;
-      const z = -ring.extent + j * step;
-      // Keep one row of vertices inside the hole edge so the quad that spans
-      // the boundary still has corners to reference.
-      if (inner > 0 && Math.abs(x) < inner - step && Math.abs(z) < inner - step) continue;
+      const x = cx - ring.extent + i * step;
+      const z = cz - ring.extent + j * step;
       const ll = origin.toLatLon(x, z);
-      const y = height(ll.lat, ll.lon);
-      positions.push(x, y, z);
-      uvs.push(
-        (ll.lon - drapeBbox.west) / (drapeBbox.east - drapeBbox.west),
-        (drapeBbox.north - ll.lat) / (drapeBbox.north - drapeBbox.south),
-      );
-      idx[j * (n + 1) + i] = count++;
-    }
-  }
-
-  for (let j = 0; j < n; j++) {
-    for (let i = 0; i < n; i++) {
-      const a = idx[j * (n + 1) + i];
-      const b = idx[j * (n + 1) + i + 1];
-      const c = idx[(j + 1) * (n + 1) + i];
-      const d = idx[(j + 1) * (n + 1) + i + 1];
-      if (a < 0 || b < 0 || c < 0 || d < 0) continue;
-      indices.push(a, c, b, b, c, d);
+      const v = j * (n + 1) + i;
+      positions[v * 3] = x;
+      positions[v * 3 + 1] = height(ll.lat, ll.lon);
+      positions[v * 3 + 2] = z;
+      uvs[v * 2] = (ll.lon - drapeBbox.west) / (drapeBbox.east - drapeBbox.west);
+      uvs[v * 2 + 1] = (drapeBbox.north - ll.lat) / (drapeBbox.north - drapeBbox.south);
     }
   }
 
   // Skirt: a curtain hanging from the outer edge, hiding the crack against the
   // next ring out and the gap at the world edge.
-  const skirtDrop = 400;
-  const edge: number[] = [];
-  for (let i = 0; i <= n; i++) edge.push(idx[0 * (n + 1) + i]);
-  for (let j = 1; j <= n; j++) edge.push(idx[j * (n + 1) + n]);
-  for (let i = n - 1; i >= 0; i--) edge.push(idx[n * (n + 1) + i]);
-  for (let j = n - 1; j >= 1; j--) edge.push(idx[j * (n + 1) + 0]);
-
-  const skirtStart = count;
-  for (const e of edge) {
-    if (e < 0) continue;
-    positions.push(positions[e * 3], positions[e * 3 + 1] - skirtDrop, positions[e * 3 + 2]);
-    uvs.push(uvs[e * 2], uvs[e * 2 + 1]);
-    count++;
-  }
-  const valid = edge.filter((e) => e >= 0);
-  for (let k = 0; k < valid.length - 1; k++) {
-    const top0 = valid[k];
-    const top1 = valid[k + 1];
-    const bot0 = skirtStart + k;
-    const bot1 = skirtStart + k + 1;
-    indices.push(top0, bot0, top1, top1, bot0, bot1);
+  const SKIRT_DROP = 400;
+  for (let k = 0; k < edge.length; k++) {
+    const e = edge[k];
+    const v = gridCount + k;
+    positions[v * 3] = positions[e * 3];
+    positions[v * 3 + 1] = positions[e * 3 + 1] - SKIRT_DROP;
+    positions[v * 3 + 2] = positions[e * 3 + 2];
+    uvs[v * 2] = uvs[e * 2];
+    uvs[v * 2 + 1] = uvs[e * 2 + 1];
   }
 
+  // Normals over the WHOLE grid, holes ignored.
+  //
+  // This is the other half of what makes a moving hole cheap, and it is the
+  // half that is easy to miss. `computeVertexNormals` leaves a vertex that no
+  // triangle referenced with a ZERO normal, and the moment the hole moves off
+  // that vertex it is suddenly drawn, lit by a normal pointing nowhere. Seen:
+  // a flat pale rectangle sitting exactly where the hole used to be, at the
+  // spawn point, as soon as the detail ring moved away from it. Computing them
+  // once over every quad costs nothing extra here and means re-indexing never
+  // has to touch them.
+  const bare: RingGrid = {
+    ring, inner: 0, cx, cz, positions, uvs,
+    normals: new Float32Array(0), gridCount, skirtRing: edge,
+  };
+  const full = new THREE.BufferGeometry();
+  full.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  full.setIndex(buildRingIndices(bare, null));
+  full.computeVertexNormals();
+  const normals = (full.getAttribute("normal") as THREE.BufferAttribute).array as Float32Array;
+  full.dispose();
+
+  return { ring, inner, cx, cz, positions, uvs, normals, gridCount, skirtRing: edge };
+}
+
+/**
+ * Indices for a grid, with the static hole and an optional moving detail hole
+ * cut out of it.
+ *
+ * A quad is dropped when ANY of its four corners is inside a hole, which is the
+ * same rule the vertex-dropping version used and therefore leaves the same
+ * boundary; the next ring in covers it, and the skirts cover the crack.
+ */
+function buildRingIndices(grid: RingGrid, detail: DetailHole | null): number[] {
+  const n = grid.ring.segments;
+  const step = (grid.ring.extent * 2) / n;
+  const indices: number[] = [];
+
+  const inHole = (v: number): boolean => {
+    const x = grid.positions[v * 3];
+    const z = grid.positions[v * 3 + 2];
+    if (grid.inner > 0) {
+      const lip = grid.inner - step;
+      if (Math.abs(x - grid.cx) < lip && Math.abs(z - grid.cz) < lip) return true;
+    }
+    if (detail) {
+      const lip = detail.extent - step;
+      if (Math.abs(x - detail.x) < lip && Math.abs(z - detail.z) < lip) return true;
+    }
+    return false;
+  };
+
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      const a = j * (n + 1) + i;
+      const b = j * (n + 1) + i + 1;
+      const c = (j + 1) * (n + 1) + i;
+      const d = (j + 1) * (n + 1) + i + 1;
+      if (inHole(a) || inHole(b) || inHole(c) || inHole(d)) continue;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const ring = grid.skirtRing;
+  for (let k = 0; k < ring.length - 1; k++) {
+    indices.push(ring[k], grid.gridCount + k, ring[k + 1]);
+    indices.push(ring[k + 1], grid.gridCount + k, grid.gridCount + k + 1);
+  }
+  return indices;
+}
+
+function geometryFor(grid: RingGrid, detail: DetailHole | null): THREE.BufferGeometry {
   const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geo.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
-  geo.setIndex(indices);
-  geo.computeVertexNormals();
+  geo.setAttribute("position", new THREE.BufferAttribute(grid.positions, 3));
+  geo.setAttribute("uv", new THREE.BufferAttribute(grid.uvs, 2));
+  geo.setAttribute("normal", new THREE.BufferAttribute(grid.normals, 3));
+  geo.setIndex(buildRingIndices(grid, detail));
   geo.computeBoundingSphere();
   return geo;
 }
@@ -633,6 +725,23 @@ export class Terrain {
   /** Height above sea level at a world point, from the finest field that has it. */
   heightAt: (x: number, z: number) => number;
 
+  private readonly origin: Origin;
+  private readonly sample: (lat: number, lon: number) => number;
+  private readonly grids: RingGrid[] = [];
+  private readonly meshes: THREE.Mesh[] = [];
+  private readonly textures: THREE.Texture[] = [];
+  /**
+   * Where the innermost, finest ring currently sits.
+   *
+   * Never null, and that is the simplification the whole moving-ring design
+   * rests on. Every other ring cuts THIS square out of itself rather than a
+   * static hole of its own, so the ring plan reads the same whether the detail
+   * ring is parked at the spawn point (where the square is exactly the hole it
+   * always was) or two kilometres down a street in a different ring's
+   * territory. There is no second code path to get wrong.
+   */
+  private detail: DetailHole;
+
   constructor(
     origin: Origin,
     fields: Heightfield[],
@@ -640,6 +749,7 @@ export class Terrain {
     shadow: SunShadowUniforms,
     rings: TerrainRing[] = CITY_RINGS,
   ) {
+    this.origin = origin;
     // Finest-first lookup, so a point inside the near field uses the 30 m data
     // and a point out on the horizon falls through to the coarse one.
     const sample = (lat: number, lon: number): number => {
@@ -647,28 +757,26 @@ export class Terrain {
       const last = fields[fields.length - 1];
       return last ? last.sample(lat, lon) : 0;
     };
+    this.sample = sample;
 
     this.heightAt = (x, z) => {
       const ll = origin.toLatLon(x, z);
       return sample(ll.lat, ll.lon);
     };
 
+    this.detail = { x: 0, z: 0, extent: rings[0].extent };
+
     for (let r = 0; r < rings.length; r++) {
       const ring = rings[r];
-      const inner = r === 0 ? 0 : rings[r - 1].extent;
+      // Ring 1's hole is the DETAIL square, which starts life in exactly the
+      // place its static hole used to be. Only rings 2 and out keep a static
+      // one, because nothing moves through those.
+      const inner = r >= 2 ? rings[r - 1].extent : 0;
       const drape = drapes[Math.min(r, drapes.length - 1)];
-      const geo = buildRingGeometry(ring, inner, origin, sample, drape.bbox);
+      const grid = buildRingGrid(ring, inner, 0, 0, origin, sample, drape.bbox);
+      const geo = geometryFor(grid, r === 0 ? null : this.detail);
 
-      const tex = new THREE.CanvasTexture(drape.canvas as unknown as HTMLCanvasElement);
-      // Decoded in the shader by srgbToLinear(); tagging it sRGB here as well
-    // would decode it twice.
-    tex.colorSpace = THREE.NoColorSpace;
-      tex.wrapS = THREE.ClampToEdgeWrapping;
-      tex.wrapT = THREE.ClampToEdgeWrapping;
-      tex.anisotropy = 16;
-      tex.generateMipmaps = true;
-      tex.minFilter = THREE.LinearMipmapLinearFilter;
-      tex.needsUpdate = true;
+      const tex = drapeTexture(drape);
 
       const u = makeTerrainUniforms(shadow);
       u.uDrape.value = tex;
@@ -690,6 +798,79 @@ export class Terrain {
       // ground that is already past the last cascade.
       if (ring.extent <= 6000) mesh.layers.enable(SHADOW_CASTER_LAYER);
       this.group.add(mesh);
+      this.grids.push(grid);
+      this.meshes.push(mesh);
+      this.textures.push(tex);
     }
   }
+
+  /** Where the detail ring is now, in world metres. */
+  get detailCentre(): DetailHole {
+    return this.detail;
+  }
+
+  /**
+   * Move the innermost ring to `(x, z)` and hang `drape` on it.
+   *
+   * ATOMIC by construction: the new geometry and the new texture are built
+   * complete and only then assigned, in one pass with nothing rendered in
+   * between, so the old drape stays correct right up to the swap and the ground
+   * never flashes. The caller does the slow part -- fetching and stitching the
+   * imagery -- off the frame, and hands the finished canvas here.
+   *
+   * Every other ring is re-INDEXED, never rebuilt: see RingGrid. Only the rings
+   * whose own area the square could have entered or left are touched.
+   */
+  recentreDetail(x: number, z: number, drape: StitchedImage): void {
+    const before = this.detail;
+    const after: DetailHole = { x, z, extent: this.grids[0].ring.extent };
+
+    const grid = buildRingGrid(
+      this.grids[0].ring, 0, x, z, this.origin, this.sample, drape.bbox,
+    );
+    const geo = geometryFor(grid, null);
+    const tex = drapeTexture(drape);
+
+    const oldGeo = this.meshes[0].geometry;
+    const oldTex = this.textures[0];
+    this.grids[0] = grid;
+    this.meshes[0].geometry = geo;
+    this.textures[0] = tex;
+    this.uniforms[0].uDrape.value = tex;
+    this.detail = after;
+    oldGeo.dispose();
+    oldTex.dispose();
+
+    for (let r = 1; r < this.grids.length; r++) {
+      if (!this.affected(r, before) && !this.affected(r, after)) continue;
+      this.meshes[r].geometry.setIndex(buildRingIndices(this.grids[r], after));
+      this.meshes[r].geometry.computeBoundingSphere();
+    }
+  }
+
+  /** Whether a detail square can change ring `r`'s indices at all. */
+  private affected(r: number, hole: DetailHole): boolean {
+    const g = this.grids[r];
+    const reach = g.ring.extent + hole.extent;
+    if (Math.abs(hole.x) >= reach || Math.abs(hole.z) >= reach) return false;
+    // Wholly inside the ring's own static hole: nothing of this ring is drawn
+    // there in the first place.
+    const swallowed = g.inner - hole.extent;
+    return !(swallowed > 0 && Math.abs(hole.x) < swallowed && Math.abs(hole.z) < swallowed);
+  }
+}
+
+/** A stitched canvas as a drape texture, with this renderer's sampling. */
+function drapeTexture(drape: StitchedImage): THREE.Texture {
+  const tex = new THREE.CanvasTexture(drape.canvas as unknown as HTMLCanvasElement);
+  // Decoded in the shader by srgbToLinear(); tagging it sRGB here as well
+  // would decode it twice.
+  tex.colorSpace = THREE.NoColorSpace;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = 16;
+  tex.generateMipmaps = true;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.needsUpdate = true;
+  return tex;
 }
