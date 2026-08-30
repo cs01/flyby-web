@@ -21,6 +21,7 @@
 // light frustum reaches far enough back along the sun direction to contain it.
 
 import * as THREE from "three";
+import type { Budget } from "./budget";
 
 /**
  * Meshes that cast sun shadows live on this layer as well as layer 0.
@@ -247,9 +248,15 @@ export class SunShadow {
   private cascades: Cascade[] = [];
   private depthMaterial: THREE.RawShaderMaterial;
   private size: number;
+  private readonly budget: Budget;
 
-  constructor(size = 2048) {
+  constructor(budget: Budget) {
+    this.budget = budget;
+    const size = budget.shadowCascadeSize;
     this.size = size;
+    // Three slots whatever the tier renders: the shader samples three cascade
+    // maps unconditionally, so three textures have to be bound even when only
+    // two are fitted. render/budget.ts counts three when it estimates this.
     for (let i = 0; i < 3; i++) {
       this.cascades.push({
         target: makeTarget(size),
@@ -295,12 +302,18 @@ export class SunShadow {
       return;
     }
 
+    // The device tier already chose a size and a count at load. The adaptive
+    // controller may only take MORE away, never give any back: a device that
+    // could not hold 2048 maps in the first place does not become able to when
+    // its frames get quick.
     const lowTier = quality < 0.8;
-    this.setSize(lowTier ? 1024 : 2048);
+    this.setSize(lowTier ? Math.min(this.budget.shadowCascadeSize, 1024) : this.budget.shadowCascadeSize);
     // The outermost cascade is the one that draws the whole city three times
     // over, and it is also the one carrying the least visible detail, so it is
     // what goes first when there is no frame time for it.
-    const count = lowTier ? 2 : 3;
+    const count = lowTier
+      ? Math.min(this.budget.shadowCascadeCount, 2)
+      : this.budget.shadowCascadeCount;
 
     for (let i = 0; i < count; i++) this.fit(this.cascades[i], camera, sunDir, i);
 

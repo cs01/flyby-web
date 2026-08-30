@@ -31,6 +31,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { SHADOW_CASTER_LAYER } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
+import type { Budget } from "./budget";
 
 /** Wing semi-span in metres. The real 182 is 10.97 m tip to tip. */
 export const SEMI_SPAN = 5.46;
@@ -500,8 +501,9 @@ export class AircraftModel {
   /** Resolves once the airframe is in the scene. */
   readonly ready: Promise<void>;
 
-  private env = new EnvProbe(128);
-  private shadow = new SelfShadow(1024);
+  private env: EnvProbe;
+  private shadow: SelfShadow;
+  private readonly budget: Budget;
   private materials: THREE.RawShaderMaterial[] = [];
 
   private propFast?: THREE.Object3D;
@@ -519,7 +521,10 @@ export class AircraftModel {
   private spin = 0;
   private clock = 0;
 
-  constructor(url = "aircraft/c182.glb") {
+  constructor(budget: Budget, url = "aircraft/c182.glb") {
+    this.budget = budget;
+    this.env = new EnvProbe(budget.aircraftEnvSize);
+    this.shadow = new SelfShadow(budget.aircraftShadowSize);
     this.uniforms = {
       uSunDir: { value: new THREE.Vector3(0, 1, 0) },
       uSunColor: { value: new THREE.Color(1, 1, 1) },
@@ -699,9 +704,13 @@ export class AircraftModel {
     quality: number,
     onFace: (c: THREE.PerspectiveCamera) => void,
   ): void {
+    // As with the sun cascades, the adaptive controller may only take more
+    // away than the device tier already did, never give any back.
     const lowTier = quality < 0.8;
-    this.env.setSize(lowTier ? 64 : 128);
-    this.shadow.setSize(lowTier ? 512 : 1024);
+    this.env.setSize(lowTier ? Math.min(this.budget.aircraftEnvSize, 64) : this.budget.aircraftEnvSize);
+    this.shadow.setSize(
+      lowTier ? Math.min(this.budget.aircraftShadowSize, 512) : this.budget.aircraftShadowSize,
+    );
     this.uniforms.uEnvMaxLod.value = this.env.maxLod;
     this.uniforms.uShadowTexel.value = this.shadow.texelSize;
 

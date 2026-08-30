@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "bun run check && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json && bun test/solar.check.ts && bun test/touch.check.ts && bun test/flight.check.ts && bun test/drone.check.ts && bun test/roof.check.ts && bun test/facade.check.ts && bun test/sh.check.ts && bun test/gtao.check.ts && bun test/collision.check.ts && bun test/landmask.check.ts && bun test/ribbon.check.ts && bun tools/verify-packs.ts && bun tools/verify-land.ts && bun tools/verify-roads.ts && bun tools/verify-aircraft.ts",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json && bun test/solar.check.ts && bun test/touch.check.ts && bun test/flight.check.ts && bun test/drone.check.ts && bun test/roof.check.ts && bun test/facade.check.ts && bun test/sh.check.ts && bun test/gtao.check.ts && bun test/budget.check.ts && bun test/collision.check.ts && bun test/landmask.check.ts && bun test/ribbon.check.ts && bun tools/verify-packs.ts && bun tools/verify-land.ts && bun tools/verify-roads.ts && bun tools/verify-aircraft.ts",
     "bake": "bun tools/bake-city.ts",
     "land": "bun tools/bake-land.ts",
     "roads": "bun tools/bake-roads.ts",
@@ -25,7 +25,8 @@
     "collision": "bun test/collision.check.ts",
     "facade": "bun test/facade.check.ts",
     "sh": "bun test/sh.check.ts",
-    "gtao": "bun test/gtao.check.ts"
+    "gtao": "bun test/gtao.check.ts",
+    "budget": "bun test/budget.check.ts"
   },
   "dependencies": {
     "three": "^0.180.0"

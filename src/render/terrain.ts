@@ -24,89 +24,9 @@ import { Origin } from "../geo";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
-
-export interface TerrainRing {
-  /** Half-width in metres. */
-  extent: number;
-  /** Vertices per side. */
-  segments: number;
-  /** Imagery target zoom; higher is sharper. */
-  imageryZoom: number;
-}
-
-/**
- * Ring plan for a city scene. The inner ring is the one the aircraft flies
- * through and gets DEM-native 30 m spacing; the outer ring exists so there are
- * mountains on the horizon and is allowed to be crude.
- */
-export const CITY_RINGS: TerrainRing[] = [
-  // A detail bubble for the ground close enough to look AT rather than fly
-  // over. Zoom 16 is ~1.8 m per pixel, so from a few hundred feet the drape is
-  // visibly made of texels and a road reads as a row of squares. Esri serves
-  // imagery down to zoom 20 (verified live), and zoom 18 is ~0.47 m/px, which
-  // is four times finer in each direction.
-  //
-  // The reason this ring is 400 m and not 2.2 km is texture memory, not tiles.
-  // Drape cost grows as (extent x zoom)^2, and the growth is brutal: measured,
-  // this ring stitches 64 tiles into 2048 px and ~17 MB, while zoom 18 over the
-  // 2.2 km ring below would be ~1760 tiles, an 11264 px canvas and ~460 MB.
-  //
-  // It is therefore a bubble around the START point, not around the aircraft,
-  // and you leave it in seconds at cruise. That is the right trade only
-  // because the pixellation it fixes is a low-and-slow problem. Recentering
-  // this ring as the camera moves is what ground vehicles will need.
-  { extent: 400, segments: 128, imageryZoom: 18 },
-  // The ring the aircraft actually flies through. At zoom 15 a street is
-  // ~3.6 m per pixel, which is a smear; zoom 16 halves that and road markings,
-  // car parks and pitch lines resolve. It is only 2.2 km across, so the extra
-  // sharpness costs about a hundred tiles rather than thousands.
-  { extent: 2200, segments: 224, imageryZoom: 16 },
-  { extent: 6000, segments: 320, imageryZoom: 15 },
-  { extent: 20000, segments: 256, imageryZoom: 13 },
-  { extent: 70000, segments: 192, imageryZoom: 10 },
-];
-
-/**
- * The same plan, scaled down for a device that cannot hold the full one.
- *
- * Drape memory is decided at LOAD, before a single frame has been timed, so the
- * adaptive quality controller cannot help here: it reacts to slow frames, and a
- * phone that cannot fit these textures does not render slowly, it renders
- * CORRUPTED (garbled blocks, black geometry) or loses the context outright.
- *
- * Measured for the full plan at Chicago: 564 tiles and 148 MB of drape, ~197 MB
- * once mipmaps are counted, before shadow cascades, the facade lookup and the
- * landcover masks are added. That is a desktop budget.
- *
- * One zoom level down is a quarter of the pixels, so dropping the outer four
- * rings by a level takes the total to ~50 MB. The 400 m detail ring KEEPS its
- * zoom: it is the ground you are closest to, it is only 16.8 MB, and it is the
- * whole reason low-altitude flight stopped looking like a row of texels.
- */
-export const MOBILE_CITY_RINGS: TerrainRing[] = [
-  { extent: 400, segments: 96, imageryZoom: 18 },
-  { extent: 2200, segments: 160, imageryZoom: 15 },
-  { extent: 6000, segments: 224, imageryZoom: 14 },
-  { extent: 20000, segments: 192, imageryZoom: 12 },
-  { extent: 70000, segments: 160, imageryZoom: 9 },
-];
-
-/**
- * Which plan this device gets. Deliberately conservative: a desktop wrongly
- * given the mobile plan sees a softer horizon, while a phone wrongly given the
- * desktop plan sees a broken picture, and those two mistakes do not cost the
- * same.
- */
-export function cityRingsForDevice(): TerrainRing[] {
-  if (typeof navigator === "undefined") return CITY_RINGS;
-  const coarse =
-    typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
-  // `deviceMemory` is Chromium-only and reports whole gigabytes, capped at 8.
-  // Absent means "unknown", which must not be read as "plenty".
-  const mem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
-  const smallMemory = typeof mem === "number" && mem <= 4;
-  return coarse || smallMemory ? MOBILE_CITY_RINGS : CITY_RINGS;
-}
+// The ring plan and the choice between plans live in render/budget.ts, with
+// every other number the device tier decides.
+import { CITY_RINGS, type TerrainRing } from "./budget";
 
 const VERT = /* glsl */ `
 precision highp float;
