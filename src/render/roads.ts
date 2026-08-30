@@ -580,7 +580,7 @@ export interface RoadUniforms extends SunShadowUniforms, AoUniforms {
  * `shadow` is spread in by REFERENCE, so the cascade matrices and maps the
  * SunShadow pass writes each frame are the same objects this material reads.
  */
-function makeUniforms(shadow: SunShadowUniforms): RoadUniforms {
+export function makeRoadUniforms(shadow: SunShadowUniforms): RoadUniforms {
   return {
     ...shadow,
     ...aoUniforms(),
@@ -644,7 +644,7 @@ export class Roads {
     budget: Budget,
   ) {
     const t0 = performance.now();
-    this.uniforms = makeUniforms(shadow);
+    this.uniforms = makeRoadUniforms(shadow);
 
     const dists = new Float64Array(pack.roads.length);
     for (let i = 0; i < pack.roads.length; i++) {

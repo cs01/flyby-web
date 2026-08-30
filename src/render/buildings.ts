@@ -273,7 +273,14 @@ void main() {
     // A curtain wall's mullions are 1.6 m apart and a brick terrace's windows
     // are 3.3 m apart; sharing one grid between them is most of why a street
     // of these used to read as wallpaper.
-    vec2 grid = vec2(vUv.x / fp.columnM, vUv.y / fp.storeyM);
+    //
+    // The upper grid starts at the HEAD of the ground storey, not at the
+    // pavement. A ground floor is half again as tall as the flat above it (see
+    // groundStoreyM in facade.ts), so a grid measured from the ground puts
+    // every storey line on a building a metre out from where the floor slab
+    // actually is, and the error accumulates all the way up.
+    float groundH = min(fp.groundStoreyM, max(1.2, bldH * 0.92));
+    vec2 grid = vec2(vUv.x / fp.columnM, (vUv.y - groundH) / fp.storeyM);
     float floorIdx = floor(grid.y);
     float colIdx = floor(grid.x);
     vec2 cell = fract(grid);
@@ -300,8 +307,26 @@ void main() {
     // It is also per-pixel rather than per-vertex-distance, so a wall seen
     // edge-on -- where a pixel really does span many windows -- converges even
     // though it is close.
-    float detail = 1.0 - clamp(max(w.x, w.y) * 1.6, 0.0, 1.0);
-    float winMean = (fp.win.y - fp.win.x) * (fp.win.w - fp.win.z);
+    // Filtered PER AXIS, not by the worse of the two.
+    //
+    // This was one number off max(w.x, w.y), and that is what made a wall seen
+    // from a car a sheet of flat colour: from the pavement the along-the-wall
+    // footprint is enormous (a pixel spans several window columns) while the
+    // vertical one is a few centimetres, so taking the worse of them threw away
+    // the storey lines, the cornice and the whole ground floor along with the
+    // column rhythm that genuinely could not be resolved. A separable filter
+    // dissolves each axis when THAT axis runs out of pixels, so a grazing wall
+    // keeps its horizontals and loses its verticals, which is what a photograph
+    // taken along a street shows.
+    //
+    // detail itself is unchanged -- min of the two IS 1 - max(w) - so
+    // everything that still reads it behaves exactly as before.
+    float detailX = 1.0 - clamp(w.x * 1.6, 0.0, 1.0);
+    float detailY = 1.0 - clamp(w.y * 1.6, 0.0, 1.0);
+    float detail = min(detailX, detailY);
+    float winMeanX = fp.win.y - fp.win.x;
+    float winMeanY = fp.win.w - fp.win.z;
+    float winMean = winMeanX * winMeanY;
 
     // Window rectangle inside the cell, every edge softened by the pixel
     // footprint so it antialiases instead of stair-stepping.
@@ -309,25 +334,103 @@ void main() {
     // has to STOP at the roof line -- otherwise the coping gets a row of
     // windows in it and the parapet reads as one more storey.
     float capped = step(vUv.y, bldH);
-    float winPattern =
-        smoothstep(fp.win.x - w.x, fp.win.x + w.x, cell.x)
-      * smoothstep(fp.win.y + w.x, fp.win.y - w.x, cell.x)
-      * smoothstep(fp.win.z - w.y, fp.win.z + w.y, cell.y)
-      * smoothstep(fp.win.w + w.y, fp.win.w - w.y, cell.y);
-    winPattern *= capped;
-    float win = mix(winMean * capped, winPattern, detail);
+    float winX = smoothstep(fp.win.x - w.x, fp.win.x + w.x, cell.x)
+               * smoothstep(fp.win.y + w.x, fp.win.y - w.x, cell.x);
+    float winY = smoothstep(fp.win.z - w.y, fp.win.z + w.y, cell.y)
+               * smoothstep(fp.win.w + w.y, fp.win.w - w.y, cell.y);
+    float winPattern = winX * winY * capped;
+    // Each axis converges to its own mean as it runs out of pixels, so a wall
+    // seen along its length keeps a row of ribbon windows instead of going
+    // blank. Far away both terms converge and this equals the old winMean.
+    float win = mix(winMeanX, winX, detailX) * mix(winMeanY, winY, detailY) * capped;
 
-    // Ground floor is taller and shopfront-like, not a repeated window.
-    if (vUv.y < fp.storeyM * 1.15) win *= 0.35;
+    win *= step(groundH, vUv.y);   // the ground storey draws its own thing
 
     glassMask = win * fp.glassFrac;
 
     vec3 glass = mix(vec3(0.075, 0.095, 0.125), vec3(0.15, 0.19, 0.24), hash11(fp.seed + 3.3));
     albedo = mix(albedo, glass, glassMask);
 
+    // --- The ground storey ------------------------------------------------
+    //
+    // This used to be a win *= 0.35 inside the first storey, which is a
+    // dimming hack: it leaves the same 1.8 m punched hole floating two metres
+    // above the pavement, only darker, and from a car that is the single most
+    // obviously wrong thing on a street. A ground floor is not a dimmer version
+    // of the floor above it. It is a plinth, a tall sheet of glass in a bay two
+    // or three metres wide, a fascia over the top of it carrying the signage,
+    // and a door every few bays. The shopfront parameter says how much of that a
+    // given building gets: a retail unit gets all of it and a terraced house gets
+    // a plinth, a door and a window.
+    float ground = 1.0 - step(groundH, vUv.y);
+    if (ground > 0.5) {
+      float plinthM = mix(0.75, 0.34, fp.shopfront) * (0.7 + 0.6 * hash11(fp.seed * 17.0 + 1.0));
+      float fasciaM = mix(0.35, 0.85, fp.shopfront);
+      float headY = max(plinthM + 0.6, groundH - fasciaM);
+
+      // Shop bays are wider than the window columns above them, and they do not
+      // line up with them either: the structure above is on a column grid and
+      // the tenancies below are on a lease plan.
+      float bayM = mix(fp.columnM, 2.4 + 2.2 * hash11(fp.seed * 5.0 + 9.0), fp.shopfront);
+      float bay = (vUv.x + 0.37 * bayM) / bayM;
+      float bayIdx = floor(bay);
+      float bx = fract(bay);
+      float bw = max(fwidth(bay), 1e-4);
+
+      // The pier between two bays, in metres, so it stays a pier rather than a
+      // fraction that widens with the bay.
+      float pier = mix(0.55, 0.20, fp.shopfront) / bayM;
+      float gx = smoothstep(pier - bw, pier + bw, bx)
+               * smoothstep(1.0 - pier + bw, 1.0 - pier - bw, bx);
+
+      float aaY = max(fwidth(vUv.y), 1e-4);
+      float gyTop = smoothstep(headY + aaY, headY - aaY, vUv.y);
+      float gyWin = smoothstep(plinthM - aaY, plinthM + aaY, vUv.y) * gyTop;
+
+      // A door every few bays, glazed to the pavement rather than to a cill.
+      float doorEvery = 3.0 + floor(hash11(fp.seed * 9.0 + 4.0) * 4.0);
+      float isDoor = step(abs(mod(bayIdx, doorEvery) - 1.0), 0.5);
+      float gyDoor = smoothstep(0.04 - aaY, 0.04 + aaY, vUv.y) * gyTop;
+      float shop = 0.0;
+
+      // Same analytic filtering as the upper grid: at two kilometres a
+      // shopfront is far under a pixel and point-sampling it sparkles.
+      float shopY = mix(gyWin, gyDoor, isDoor);
+      shop = mix(clamp(1.0 - 2.0 * pier, 0.0, 1.0), gx, detailX) * shopY;
+
+      // Shop glass is darker than the sky-reflecting curtain wall above: you
+      // are looking into a room, not at a mirror, and the room is unlit by day.
+      vec3 shopGlass = mix(vec3(0.055, 0.058, 0.062), vec3(0.10, 0.11, 0.13),
+                           hash11(fp.seed * 3.7 + 21.0));
+      // The plinth: a dark stone or tiled base that takes the kicks. Real, and
+      // it is also what stops the glass from meeting the pavement in a line.
+      vec3 plinthCol = fp.colour * mix(0.55, 0.40, hash11(fp.seed * 11.0 + 6.0));
+      // The fascia over the shop: painted board, a different colour per unit,
+      // which is most of what makes a parade of shops read as separate shops.
+      vec3 fasciaCol = mix(fp.colour * 0.8,
+                           vec3(hash11(bayIdx * 3.1 + fp.seed * 41.0),
+                                hash11(bayIdx * 7.7 + fp.seed * 13.0),
+                                hash11(bayIdx * 5.3 + fp.seed * 29.0)) * 0.22 + 0.05,
+                           fp.shopfront * 0.8 * detailX);
+
+      albedo = mix(albedo, plinthCol, (1.0 - smoothstep(plinthM - aaY, plinthM + aaY, vUv.y)) * (1.0 - isDoor * gx));
+      albedo = mix(albedo, fasciaCol, smoothstep(headY - aaY, headY + aaY, vUv.y));
+      albedo = mix(albedo, shopGlass, shop);
+      glassMask = shop * mix(0.30, 0.92, fp.shopfront);
+
+      // A shopfront is set back behind its piers, so the reveal is deep and the
+      // line of shadow under the fascia is the strongest thing on the band.
+      albedo *= 1.0 - 0.30 * shop * smoothstep(headY, headY - 0.35, vUv.y) * detailY;
+
+      // A cornice line at the head of the ground storey: the one horizontal
+      // that says where the shopfront stops and the building starts.
+      albedo *= 1.0 - 0.35 * fp.relief * detailY
+                    * smoothstep(0.0, 0.12, groundH - vUv.y) * smoothstep(0.40, 0.12, groundH - vUv.y);
+    }
+
     // Horizontal banding between storeys: a thin darker line reads as a floor
     // slab and gives the facade its scale at distance.
-    albedo *= 1.0 - 0.18 * detail * smoothstep(0.10 + w.y, 0.0, cell.y);
+    albedo *= 1.0 - 0.18 * detailY * smoothstep(0.10 + w.y, 0.0, cell.y);
 
     // --- Relief ---------------------------------------------------------
     // Every facade used to be geometrically flat and lit as flat, which is a
@@ -359,7 +462,7 @@ void main() {
     // or brick building this is a real moulding; on a curtain wall the relief
     // parameter is near zero and it barely shows, which is also correct.
     float belowTop = bldH - vUv.y;
-    albedo *= 1.0 - 0.45 * fp.relief * detail
+    albedo *= 1.0 - 0.45 * fp.relief * detailY
                   * smoothstep(0.0, 1.4, belowTop) * smoothstep(2.6, 1.4, belowTop);
 
     // Ambient occlusion down the wall -- on the SKY term, not the albedo.
@@ -415,6 +518,15 @@ void main() {
       // sits at roughly the wall, so a building is dark with lit windows in
       // it, and the peak is still 12x the wall up close where it should be.
       emissive += warm * lit * uNight * 0.09;
+
+      // Shopfronts. A lit shop window is far brighter than a flat above it and
+      // it is at eye height, so it carries the night street the way the lit
+      // office windows carry the night skyline. Roughly half of them are lit,
+      // per building, because a parade at midnight is not all open.
+      if (ground > 0.5) {
+        float open_ = step(0.45, hash11(fp.seed * 23.0 + 3.0));
+        emissive += vec3(1.0, 0.88, 0.70) * glassMask * uNight * open_ * 0.26;
+      }
     }
 
     if (capped < 0.5) {

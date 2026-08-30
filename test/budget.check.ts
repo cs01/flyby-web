@@ -160,6 +160,7 @@ const MB = 1024 * 1024;
     ["self-shadow", phone.aircraftShadowSize, desktop.aircraftShadowSize],
     ["building tris", phone.buildingTriangleBudget, desktop.buildingTriangleBudget],
     ["road tris", phone.roadTriangleBudget, desktop.roadTriangleBudget],
+    ["pavement tris", phone.pavementTriangleBudget, desktop.pavementTriangleBudget],
   ];
   const notSmaller = axes.filter(([, p, d]) => !(p < d)).map(([name]) => name);
   check(
@@ -182,7 +183,7 @@ const MB = 1024 * 1024;
   const selfCompare = axes.filter(([, p]) => !(p < p)).map(([name]) => name);
   check(
     "probe: the axis sweep rejects a plan compared with itself",
-    axes.length === 7 && selfCompare.length === axes.length,
+    axes.length === 8 && selfCompare.length === axes.length,
     `${axes.length} axes, ${selfCompare.length} rejected when compared with themselves`,
   );
 }

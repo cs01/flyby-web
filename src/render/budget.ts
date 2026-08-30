@@ -159,6 +159,7 @@ export interface Budget {
   aoEnabled: boolean;
   buildingTriangleBudget: number;
   roadTriangleBudget: number;
+  pavementTriangleBudget: number;
   memory: MemoryEstimate;
 }
 
@@ -273,6 +274,14 @@ const BUILDING_BYTES_PER_TRIANGLE = 1.7 * 48 + 3 * 4;
  * triangles, so one vertex per triangle, at position + uv + info = 36 bytes.
  */
 const ROAD_BYTES_PER_TRIANGLE = 36 + 3 * 4;
+/**
+ * Pavement geometry, per triangle.
+ *
+ * Two strips per side sharing their cross-sections: four vertices per station
+ * and four triangles per interval, so one vertex per triangle at position + uv
+ * + info = 36 bytes, and six indices per four triangles.
+ */
+const PAVEMENT_BYTES_PER_TRIANGLE = 36 + 1.5 * 4;
 
 /**
  * What the classifier believes about system memory.
@@ -354,6 +363,11 @@ const FULL_PLAN: Plan = {
   // city was loaded, and the budget is now a property of the DEVICE.
   buildingTriangleBudget: 1_500_000,
   roadTriangleBudget: 700_000,
+  // Pavements are a NEAR-FIELD feature: the fragment shader throws every one of
+  // them away past 330 m, so this budget buys ground the car can drive over
+  // before the detail drape restitches, not skyline. A quarter of the road
+  // budget covers about two kilometres of San Francisco at full density.
+  pavementTriangleBudget: 260_000,
 };
 
 const REDUCED_PLAN: Plan = {
@@ -377,6 +391,7 @@ const REDUCED_PLAN: Plan = {
   // geometry estimate below from being the largest line on a phone.
   buildingTriangleBudget: 750_000,
   roadTriangleBudget: 350_000,
+  pavementTriangleBudget: 110_000,
 };
 
 const PLANS: Record<QualityTier, Plan> = { full: FULL_PLAN, reduced: REDUCED_PLAN };
@@ -426,6 +441,10 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
     {
       what: `road geometry ${(plan.roadTriangleBudget / 1000).toFixed(0)}k tris`,
       bytes: plan.roadTriangleBudget * ROAD_BYTES_PER_TRIANGLE,
+    },
+    {
+      what: `pavement geometry ${(plan.pavementTriangleBudget / 1000).toFixed(0)}k tris`,
+      bytes: plan.pavementTriangleBudget * PAVEMENT_BYTES_PER_TRIANGLE,
     },
   ];
 

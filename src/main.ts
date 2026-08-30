@@ -42,6 +42,7 @@ import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanma
 import { loadLandPack } from "./data/landcover-load";
 import { loadRoadPack } from "./data/roadpack-load";
 import { Roads } from "./render/roads";
+import { Pavement } from "./render/pavement";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { Foliage, TREE_LOD_TRIANGLES } from "./render/trees";
 import { buildLandMaskRGBA } from "./data/landmask";
@@ -287,9 +288,15 @@ async function main() {
   // A failed shader is invisible on a phone: three.js logs and carries on, and
   // the mesh either vanishes or draws garbage. Surface it in the same red box
   // the context-loss watch uses.
-  renderer.debug.onShaderError = (_gl, _prog, vs, fs) => {
+  renderer.debug.onShaderError = (gl, _prog, vs, fs) => {
     const shout = (window as unknown as { __flybyShout?: (s: string) => void }).__flybyShout;
     shout?.(`SHADER FAILED: ${String((vs as { name?: string }).name ?? "")} / ${String((fs as { name?: string }).name ?? "")}`);
+    // Installing this handler REPLACES three.js's own report, which is the only
+    // thing that ever names the offending line. Without the two logs below, a
+    // one-word GLSL mistake shows up as nothing but a stream of
+    // "useProgram: program not valid" from every subsequent draw.
+    console.error("[flyby] vertex shader log:", gl.getShaderInfoLog(vs as WebGLShader));
+    console.error("[flyby] fragment shader log:", gl.getShaderInfoLog(fs as WebGLShader));
   };
   const composite = new Composite(renderer);
   const target = createSceneTarget(renderer, budget);
@@ -486,6 +493,31 @@ async function main() {
   );
   const treeRoads = new CompositeRoadIndex();
   if (roadPack) treeRoads.add(new RoadIndex(roadPack.roads, treeRoadClearanceM));
+
+  let pavement: Pavement | null = null;
+
+  // Pavements. Built here rather than beside the road ribbons because they need
+  // the footprint mask above to know where the building line is, and that mask
+  // needs the .city pack. A city with roads and no buildings still gets kerbs,
+  // just at the class widths with a verge behind them.
+  if (roadPack) {
+    pavement = new Pavement(
+      roadPack,
+      terrain.heightAt,
+      pack ? treeFootprints : null,
+      sunShadow.uniforms,
+      budget,
+    );
+    scene.add(pavement.group);
+    roadUniformSets.push(pavement.uniforms);
+    // No eager build here. The frame loop calls update() before the first
+    // render, so the ring is up on frame one, and building it at the ORIGIN
+    // first would throw away every tile of it the moment the camera turned out
+    // to be somewhere else -- which it is on every pinned pose.
+    console.log(
+      `[flyby] pavements: ${pavement.stats.indexedTiles} tiles of kerbable carriageway indexed`,
+    );
+  }
 
   // Trees, from the tree channel of the same pack the terrain shades from.
   //
@@ -1189,6 +1221,10 @@ async function main() {
     // anything is actually sent.
     live?.update(camera.position.x, camera.position.z);
 
+    // Keep the kerbs under the camera. Cheap every frame: it only rebuilds when
+    // the camera has crossed a 400 m tile boundary.
+    pavement?.update(camera.position.x, camera.position.z);
+
     if (foliage) {
       // Rebuilt only when the camera has moved far enough for a tree's level of
       // detail to be stale; see render/trees.ts.
@@ -1416,6 +1452,9 @@ async function main() {
         const sorted = a.sort((x, y) => x - y);
         return { mean, p99: sorted[Math.min(n - 1, Math.floor(n * 0.99))] };
       },
+      /** Pavement triangles actually built, so the harness can say whether the
+       *  kerbs are in the frame rather than assuming they are. */
+      get pavementTriangles() { return pavement ? pavement.stats.triangles : 0; },
       get triangles() {
         return (
           (buildings ? buildings.stats.triangles : 0) +

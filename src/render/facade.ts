@@ -259,6 +259,26 @@ export interface FacadeParams {
   glassFrac: number;
   relief: number;
   parapetM: number;
+  /**
+   * Floor-to-floor of the GROUND storey, metres.
+   *
+   * Separate from `storeyM` because a ground floor is never the same height as
+   * the flat above it: a shop needs head height over its display and its
+   * signage, an office needs a lobby, and even a terraced house sits its front
+   * door up a step. Rendering the ground floor as one more repeat of the upper
+   * grid is what made every street read as a stack of identical layers with
+   * the bottom one dimmed.
+   */
+  groundStoreyM: number;
+  /**
+   * How retail the ground floor is, 0..1.
+   *
+   * 1 is a full glazed shopfront in wide bays with a fascia over it; 0 is a
+   * residential base with the same punched windows as the storeys above and a
+   * door. It drives the bay width, the glazing, the fascia and how tall the
+   * ground storey is, so one number decides the whole band.
+   */
+  shopfront: number;
 
   // Night occupancy. See `isLit` for how these compose.
   /** A whole floor is dark or in use. */
@@ -300,7 +320,7 @@ export interface FacadeParams {
  * a zero storey height and rendered NaN-black. A plain 8-bit texture is the
  * format a photograph uses and nothing anywhere refuses to sample it.
  */
-export const FACADE_TEXELS = 6;
+export const FACADE_TEXELS = 7;
 export const FACADE_FLOATS = FACADE_TEXELS * 4;
 /** RGBA8 texels per building: two bytes per value. */
 export const FACADE_BYTE_TEXELS = FACADE_FLOATS / 2;
@@ -376,6 +396,25 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
   const group = occupancyGroup(family, kind, heightM);
   const office = group === 1;
 
+  // How shop-like the ground floor is. Kind carries most of it and height
+  // carries the rest: a retail unit is a shopfront, a warehouse is a roller
+  // shutter, and the base of any tall building in a city centre is let to
+  // somebody who wants a window on the street whatever the tag says.
+  const shopBias = SHOPFRONT_BY_KIND[kind] ?? SHOPFRONT_BY_KIND[0];
+  const shopfront = clamp01(
+    shopBias * (0.55 + 0.9 * h1(seed, 0x61)) + 0.35 * Math.min(1, Math.max(0, (heightM - 10) / 40)),
+  );
+  // A ground storey runs from a little over the upper storeys (a house) to
+  // half again as tall (a shop or a lobby), and is then bounded by literals so
+  // no seed can produce a two-metre shop or a seven-metre terraced house.
+  const groundStoreyM = Math.min(
+    GROUND_STOREY_MAX_M,
+    Math.max(
+      GROUND_STOREY_MIN_M,
+      storeyM * lerp(1.04, 1.55, shopfront) * (1 + 0.10 * (h1(seed, 0x62) - 0.5)),
+    ),
+  );
+
   return {
     family,
     colour,
@@ -386,6 +425,8 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
     glassFrac,
     relief: s.relief * (0.8 + 0.4 * h1(seed, 0x46)),
     parapetM: s.parapetM * (0.7 + 0.6 * h1(seed, 0x47)),
+    groundStoreyM,
+    shopfront,
 
     // An office empties floor by floor; a block of flats empties flat by flat.
     // So an office gets a high per-floor gate and wide tenancies, and housing
@@ -420,6 +461,31 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
  */
 export const CORE_PERIOD_MIN = 7;
 export const CORE_PERIOD_MAX = 14;
+
+/**
+ * Bounds on the ground storey, metres.
+ *
+ * From LITERALS and not from `storeyM`, so a family with an unusual storey
+ * height cannot produce a ground floor a person could not walk into or one
+ * that swallows a whole small building. test/pavement.check.ts asserts both
+ * the constants and every sampled building against its own literals.
+ */
+export const GROUND_STOREY_MIN_M = 2.9;
+export const GROUND_STOREY_MAX_M = 6.0;
+
+/**
+ * How shop-like each OSM kind's ground floor is, before the per-building hash.
+ * Indexed exactly as KIND_BIAS above.
+ */
+const SHOPFRONT_BY_KIND: Record<number, number> = {
+  0: 0.40, // Generic
+  1: 0.12, // Residential   a front door and a bay window, not a shop
+  2: 0.72, // Commercial
+  3: 0.06, // Industrial    a shutter and a personnel door
+  4: 0.95, // Retail
+  5: 0.35, // Civic         a portico, not a display window
+  6: 0.65, // Tower         a glazed lobby, whatever is let above it
+};
 
 function clamp01(v: number): number {
   return v < 0 ? 0 : v > 1 ? 1 : v;
@@ -537,6 +603,8 @@ struct Facade {
   float relief;
   float family;
   float parapetM;
+  float groundStoreyM;
+  float shopfront;
 };
 
 // One RGBA8 texel is two 16-bit values: (r,g) is the first, (b,a) the second.
@@ -569,6 +637,7 @@ Facade readFacade(float bidx) {
   vec4 d = facadeTexel(bidx, 3.0);
   vec4 e = facadeTexel(bidx, 4.0);
   vec4 f = facadeTexel(bidx, 5.0);
+  vec4 g = facadeTexel(bidx, 6.0);
   Facade p;
   p.colour = a.rgb;   p.roughness = a.w;
   p.storeyM = b.x;    p.columnM = b.y;  p.glassFrac = b.z;  p.seed = b.w;
@@ -577,6 +646,7 @@ Facade readFacade(float bidx) {
   p.tenantW = e.x;    p.tenantH = e.y;  p.coreW = e.z;      p.corePeriod = e.w;
   p.coreSlot = f.x;   p.group = floor(f.y / 8.0);  p.family = f.y - p.group * 8.0;
   p.relief = f.z;     p.parapetM = f.w;
+  p.groundStoreyM = g.x;  p.shopfront = g.y;
 
   // A DEAD TABLE MUST DEGRADE, NOT BREAK.
   //
@@ -615,6 +685,7 @@ Facade readFacade(float bidx) {
     p.win = vec4(0.18, 0.82, 0.16, 0.86);
     p.relief = 0.5; p.parapetM = 0.9;
     p.group = 1.0; p.family = fb2 > 0.82 ? 0.0 : 1.0;
+    p.groundStoreyM = 4.0; p.shopfront = 0.45;
   }
 
   // Belt and braces: clamp every divisor at the point of use anyway, so a
@@ -625,6 +696,7 @@ Facade readFacade(float bidx) {
   p.corePeriod = max(p.corePeriod, 1.0);
   p.tenantW = max(p.tenantW, 1.0);
   p.tenantH = max(p.tenantH, 1.0);
+  p.groundStoreyM = max(p.groundStoreyM, 0.5);
   return p;
 }
 
