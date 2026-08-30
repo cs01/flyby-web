@@ -182,6 +182,33 @@ export const POSES: Pose[] = [
     what: "Chicago Loop by day",
   },
   {
+    // Sydney, over the harbour with the bridge and the Opera House ahead.
+    //
+    // The only pose where water is most of the frame, which is deliberate: the
+    // harbour is where a flat grey sea is least forgivable, and it is the
+    // regression check for anything that touches the water term.
+    name: "sydney-harbour",
+    city: "sydney",
+    lat: -33.8640, lon: 151.2100, altM: 420, hdgDeg: 28, pitchDeg: -10,
+    t: D("2025-11-15T23:10:00Z"), // 10:10 AEDT
+    wx: CLEAR,
+    what: "Sydney over the harbour",
+  },
+  {
+    // Hong Kong, over Victoria Harbour looking at the Central towers.
+    //
+    // The densest vertical city in the set and the one with the most glass, so
+    // it is the pose that will show a facade-material or reflection change
+    // first. Steep terrain right behind the towers, which nothing else here
+    // has: a skyline against a mountain rather than against sky.
+    name: "hongkong-central",
+    city: "hongkong",
+    lat: 22.2960, lon: 114.1660, altM: 500, hdgDeg: 205, pitchDeg: -12,
+    t: D("2025-11-15T08:30:00Z"), // 16:30 HKT, low sun on the towers
+    wx: CLEAR,
+    what: "Hong Kong over Victoria Harbour",
+  },
+  {
     // Paris, over the Seine looking east toward the Ile de la Cite.
     //
     // The best-mapped city in the set and the one with the most to lose from a
