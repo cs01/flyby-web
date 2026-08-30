@@ -64,6 +64,48 @@ export const CITY_RINGS: TerrainRing[] = [
   { extent: 70000, segments: 192, imageryZoom: 10 },
 ];
 
+/**
+ * The same plan, scaled down for a device that cannot hold the full one.
+ *
+ * Drape memory is decided at LOAD, before a single frame has been timed, so the
+ * adaptive quality controller cannot help here: it reacts to slow frames, and a
+ * phone that cannot fit these textures does not render slowly, it renders
+ * CORRUPTED (garbled blocks, black geometry) or loses the context outright.
+ *
+ * Measured for the full plan at Chicago: 564 tiles and 148 MB of drape, ~197 MB
+ * once mipmaps are counted, before shadow cascades, the facade lookup and the
+ * landcover masks are added. That is a desktop budget.
+ *
+ * One zoom level down is a quarter of the pixels, so dropping the outer four
+ * rings by a level takes the total to ~50 MB. The 400 m detail ring KEEPS its
+ * zoom: it is the ground you are closest to, it is only 16.8 MB, and it is the
+ * whole reason low-altitude flight stopped looking like a row of texels.
+ */
+export const MOBILE_CITY_RINGS: TerrainRing[] = [
+  { extent: 400, segments: 96, imageryZoom: 18 },
+  { extent: 2200, segments: 160, imageryZoom: 15 },
+  { extent: 6000, segments: 224, imageryZoom: 14 },
+  { extent: 20000, segments: 192, imageryZoom: 12 },
+  { extent: 70000, segments: 160, imageryZoom: 9 },
+];
+
+/**
+ * Which plan this device gets. Deliberately conservative: a desktop wrongly
+ * given the mobile plan sees a softer horizon, while a phone wrongly given the
+ * desktop plan sees a broken picture, and those two mistakes do not cost the
+ * same.
+ */
+export function cityRingsForDevice(): TerrainRing[] {
+  if (typeof navigator === "undefined") return CITY_RINGS;
+  const coarse =
+    typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches;
+  // `deviceMemory` is Chromium-only and reports whole gigabytes, capped at 8.
+  // Absent means "unknown", which must not be read as "plenty".
+  const mem = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+  const smallMemory = typeof mem === "number" && mem <= 4;
+  return coarse || smallMemory ? MOBILE_CITY_RINGS : CITY_RINGS;
+}
+
 const VERT = /* glsl */ `
 precision highp float;
 in vec3 position;

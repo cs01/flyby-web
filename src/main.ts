@@ -9,7 +9,7 @@ import * as THREE from "three";
 import { createRenderer, createSceneTarget } from "./render/renderer";
 import { AdaptiveQuality } from "./render/quality";
 import { Sky } from "./render/sky";
-import { Terrain, CITY_RINGS } from "./render/terrain";
+import { Terrain, cityRingsForDevice } from "./render/terrain";
 import { computeLighting } from "./render/lighting";
 import { loadHeightfield, bboxAround, type Heightfield } from "./data/dem";
 import { stitchImagery, type StitchedImage } from "./data/imagery";
@@ -211,10 +211,11 @@ async function main() {
   loading.set(0.44, "loading imagery");
   let imgDone = 0;
   const drapes: StitchedImage[] = [];
-  for (let r = 0; r < CITY_RINGS.length; r++) {
-    const ring = CITY_RINGS[r];
+  const rings = cityRingsForDevice();
+  for (let r = 0; r < rings.length; r++) {
+    const ring = rings[r];
     drapes.push(await stitchImagery(bboxAround(city.lat, city.lon, ring.extent * 1.05), ring.imageryZoom));
-    loading.set(0.44 + 0.4 * (++imgDone / CITY_RINGS.length), "loading imagery");
+    loading.set(0.44 + 0.4 * (++imgDone / rings.length), "loading imagery");
   }
 
   loading.set(0.88, "building world");
