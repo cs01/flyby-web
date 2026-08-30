@@ -31,6 +31,7 @@ import { Timebar, LocalClock } from "./app/timebar";
 import { Beacon } from "./render/beacon";
 import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
+import { hourFactors } from "./render/facade";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { loadLandPack } from "./data/landcover-load";
 import { loadRoadPack } from "./data/roadpack-load";
@@ -791,6 +792,14 @@ async function main() {
       b.uTurbidity.value = light.turbidity;
       b.uCamAltitude.value = camAlt;
       b.uExposure.value = light.exposure * exposureScale;
+      // Local SOLAR hour, from UTC and the longitude, rather than the civil
+      // hour: it needs no timezone database, it is what the sun is actually
+      // doing, and the lights coming on want to track the evening rather than
+      // a political line on a map.
+      const localHour =
+        (now.getUTCHours() + now.getUTCMinutes() / 60 + city.lon / 15 + 24) % 24;
+      const hf = hourFactors(localHour);
+      b.uHourFactor.value.set(hf.residential, hf.office, hf.other);
     }
 
     if (roads) {
@@ -891,6 +900,9 @@ async function main() {
     composite.update(camera, wx, light, elapsed);
     composite.uniforms.uSunSurfaceCloud.value = 0.105;
     composite.presentUniforms.uExposure.value = light.exposure * exposureScale;
+    composite.presentUniforms.uNight.value = light.night;
+    composite.brightUniforms.uExposure.value = light.exposure * exposureScale;
+    composite.brightUniforms.uNight.value = light.night;
     composite.render(renderer, target.texture, target.depthTexture);
 
     if (timedFrames < frameRing.length) frameRing[timedFrames++] = dt * 1000;

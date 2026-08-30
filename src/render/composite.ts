@@ -337,6 +337,71 @@ void main() {
 }
 `;
 
+/**
+ * Bloom, in three quarter-resolution passes: a bright pass, then one blur
+ * across and one down.
+ *
+ * What it is for is the night city. A lit window is a small, very bright
+ * source behind glass, and every photograph of one has a halo round it --
+ * partly the lens, mostly the atmosphere between it and you. Without that halo
+ * a night skyline reads as a diagram of where the windows are; with it, it
+ * reads as a photograph. It is the cheapest single thing that separates the
+ * two.
+ *
+ * The threshold and the strength both move with `uNight` rather than being
+ * fixed. In daylight the brightest thing in frame is the sky, which covers half
+ * the picture, and a threshold low enough to catch a lit window would bloom the
+ * whole of it into mush. So by day the threshold sits above anything but a
+ * specular glint and the strength is a tenth of what it is at night.
+ */
+const BLOOM_TERMS_GLSL = /* glsl */ `
+uniform float uNight;
+float bloomThreshold() { return mix(1.15, 0.085, uNight); }
+float bloomStrength()  { return mix(0.10, 0.55, uNight); }
+`;
+
+const BRIGHT_FRAG = /* glsl */ `
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uScene;
+uniform float uExposure;
+${BLOOM_TERMS_GLSL}
+
+void main() {
+  // Thresholded in EXPOSED linear, not in raw radiance. Exposure moves by
+  // nearly three stops between noon and midnight, so a threshold in raw
+  // radiance would mean something different at every hour of the day.
+  vec3 c = texture(uScene, vUv).rgb * uExposure;
+  float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  float t = bloomThreshold();
+  // Soft knee: a hard cut makes the bloom pop on as a surface crosses the
+  // threshold, which on a facade of windows is a flicker.
+  float w = smoothstep(t, t * 2.0, l);
+  fragColor = vec4(c * w, 1.0);
+}
+`;
+
+const BLUR_FRAG = /* glsl */ `
+precision highp float;
+in vec2 vUv;
+out vec4 fragColor;
+uniform sampler2D uSource;
+uniform vec2 uDirection;   // (1,0) then (0,1), in texels
+
+void main() {
+  // Nine-tap Gaussian as five bilinear fetches: the offsets sit between texels
+  // so the hardware filter does half the summing.
+  vec2 texel = uDirection / vec2(textureSize(uSource, 0));
+  vec3 c = texture(uSource, vUv).rgb * 0.2270270270;
+  c += (texture(uSource, vUv + texel * 1.3846153846).rgb
+      + texture(uSource, vUv - texel * 1.3846153846).rgb) * 0.3162162162;
+  c += (texture(uSource, vUv + texel * 3.2307692308).rgb
+      + texture(uSource, vUv - texel * 3.2307692308).rgb) * 0.0702702703;
+  fragColor = vec4(c, 1.0);
+}
+`;
+
 const PRESENT_FRAG = /* glsl */ `
 precision highp float;
 in vec2 vUv;
@@ -346,6 +411,8 @@ ${TONEMAP_GLSL}
 
 uniform sampler2D uScene;
 uniform sampler2D uCloud;
+uniform sampler2D uBloom;
+${BLOOM_TERMS_GLSL}
 
 void main() {
   vec3 scene = texture(uScene, vUv).rgb;
@@ -362,7 +429,16 @@ void main() {
     + texture(uCloud, vUv + vec2( 0.5, -0.5) * texel)
     + texture(uCloud, vUv + vec2(-0.5,  0.5) * texel)
     + texture(uCloud, vUv + vec2( 0.5,  0.5) * texel));
-  fragColor = vec4(present(scene * cloud.a + cloud.rgb), 1.0);
+  // Bloom is added AFTER the clouds and BEFORE the tone curve, and both halves
+  // of that matter: a halo that ignored the cloud in front of it would glow
+  // through an overcast, and one added after the curve would be a flat wash on
+  // top of the picture rather than light.
+  //
+  // Divided by the exposure because the bright pass multiplied by it: present()
+  // is about to apply it again, and applying it twice would make the halo grow
+  // three stops between noon and midnight all by itself.
+  vec3 bloom = texture(uBloom, vUv).rgb * (bloomStrength() / max(uExposure, 1e-4));
+  fragColor = vec4(present(scene * cloud.a + cloud.rgb + bloom * cloud.a), 1.0);
 }
 `;
 
@@ -419,8 +495,24 @@ export class Composite {
   readonly presentUniforms: {
     uScene: THREE.IUniform<THREE.Texture | null>;
     uCloud: THREE.IUniform<THREE.Texture | null>;
+    uBloom: THREE.IUniform<THREE.Texture | null>;
     uExposure: THREE.IUniform<number>;
+    uNight: THREE.IUniform<number>;
   };
+  readonly brightUniforms: {
+    uScene: THREE.IUniform<THREE.Texture | null>;
+    uExposure: THREE.IUniform<number>;
+    uNight: THREE.IUniform<number>;
+  };
+
+  private readonly brightScene = new THREE.Scene();
+  private readonly blurScene = new THREE.Scene();
+  private readonly blurUniforms: {
+    uSource: THREE.IUniform<THREE.Texture | null>;
+    uDirection: THREE.IUniform<THREE.Vector2>;
+  };
+  private bloomA: THREE.WebGLRenderTarget;
+  private bloomB: THREE.WebGLRenderTarget;
 
   private cloudTarget: THREE.WebGLRenderTarget;
   private readonly shapeNoise: THREE.Data3DTexture;
@@ -478,7 +570,18 @@ export class Composite {
     this.presentUniforms = {
       uScene: { value: null },
       uCloud: { value: null },
+      uBloom: { value: null },
       uExposure: { value: 1 },
+      uNight: { value: 0 },
+    };
+    this.brightUniforms = {
+      uScene: { value: null },
+      uExposure: { value: 1 },
+      uNight: { value: 0 },
+    };
+    this.blurUniforms = {
+      uSource: { value: null },
+      uDirection: { value: new THREE.Vector2(1, 0) },
     };
     const presentMat = new THREE.RawShaderMaterial({
       vertexShader: VERT,
@@ -492,7 +595,41 @@ export class Composite {
     presentMesh.frustumCulled = false;
     this.presentScene.add(presentMesh);
 
+    const addPass = (scene: THREE.Scene, frag: string, uniforms: Record<string, THREE.IUniform>) => {
+      const mesh = new THREE.Mesh(
+        fullscreenGeometry(),
+        new THREE.RawShaderMaterial({
+          vertexShader: VERT,
+          fragmentShader: frag,
+          uniforms,
+          glslVersion: THREE.GLSL3,
+          depthTest: false,
+          depthWrite: false,
+        }),
+      );
+      mesh.frustumCulled = false;
+      scene.add(mesh);
+    };
+    addPass(this.brightScene, BRIGHT_FRAG, this.brightUniforms as unknown as Record<string, THREE.IUniform>);
+    addPass(this.blurScene, BLUR_FRAG, this.blurUniforms as unknown as Record<string, THREE.IUniform>);
+
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const bloomOpts = {
+      type: THREE.HalfFloatType,
+      format: THREE.RGBAFormat,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      depthBuffer: false,
+      stencilBuffer: false,
+    };
+    // Quarter resolution in each axis: a bloom is a low-frequency halo by
+    // definition, and running it at full resolution would be paying sixteen
+    // times over for detail the blur is about to destroy.
+    const bw = Math.max(1, Math.floor(size.x / 4));
+    const bh = Math.max(1, Math.floor(size.y / 4));
+    this.bloomA = new THREE.WebGLRenderTarget(bw, bh, bloomOpts);
+    this.bloomB = new THREE.WebGLRenderTarget(bw, bh, bloomOpts);
+
     this.cloudTarget = new THREE.WebGLRenderTarget(
       Math.max(1, Math.floor(size.x / 2)),
       Math.max(1, Math.floor(size.y / 2)),
@@ -510,6 +647,10 @@ export class Composite {
   resize(renderer: THREE.WebGLRenderer): void {
     const size = renderer.getDrawingBufferSize(new THREE.Vector2());
     this.cloudTarget.setSize(Math.max(1, Math.floor(size.x / 2)), Math.max(1, Math.floor(size.y / 2)));
+    const bw = Math.max(1, Math.floor(size.x / 4));
+    const bh = Math.max(1, Math.floor(size.y / 4));
+    this.bloomA.setSize(bw, bh);
+    this.bloomB.setSize(bw, bh);
   }
 
   /** Cloud pass into the half-res target, then present to the screen. */
@@ -518,8 +659,24 @@ export class Composite {
     renderer.setRenderTarget(this.cloudTarget);
     renderer.render(this.scene, this.camera);
 
+    // Bright pass, then one blur across and one down.
+    this.brightUniforms.uScene.value = sceneColour;
+    renderer.setRenderTarget(this.bloomA);
+    renderer.render(this.brightScene, this.camera);
+
+    this.blurUniforms.uSource.value = this.bloomA.texture;
+    this.blurUniforms.uDirection.value.set(1, 0);
+    renderer.setRenderTarget(this.bloomB);
+    renderer.render(this.blurScene, this.camera);
+
+    this.blurUniforms.uSource.value = this.bloomB.texture;
+    this.blurUniforms.uDirection.value.set(0, 1);
+    renderer.setRenderTarget(this.bloomA);
+    renderer.render(this.blurScene, this.camera);
+
     this.presentUniforms.uScene.value = sceneColour;
     this.presentUniforms.uCloud.value = this.cloudTarget.texture;
+    this.presentUniforms.uBloom.value = this.bloomA.texture;
     renderer.setRenderTarget(null);
     renderer.render(this.presentScene, this.camera);
   }

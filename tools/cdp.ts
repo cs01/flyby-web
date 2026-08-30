@@ -29,6 +29,18 @@ export interface CdpOptions {
 }
 
 export class Cdp {
+  /**
+   * Everything the page logged at warning or worse, plus every console.error.
+   *
+   * This exists because of a specific failure: a fragment shader with one
+   * reserved word in it fails to link, three.js logs the error and carries on,
+   * and the page renders a city with NO BUILDINGS in it -- which the harness
+   * screenshotted happily and would have compared against the previous set as
+   * though it meant something. A screenshot tool that cannot tell "this looks
+   * different" from "this is broken" is worse than no tool.
+   */
+  readonly problems: string[] = [];
+
   private ws!: WebSocket;
   private proc!: ReturnType<typeof Bun.spawn>;
   private sessionId!: string;
@@ -75,7 +87,22 @@ export class Cdp {
       c.ws.onerror = () => rej(new Error("could not attach to Chrome"));
     });
     c.ws.onmessage = (e: MessageEvent) => {
-      const m = JSON.parse(String(e.data)) as { id?: number; result?: unknown; error?: unknown };
+      const m = JSON.parse(String(e.data)) as {
+        id?: number; result?: unknown; error?: unknown;
+        method?: string; params?: Record<string, unknown>;
+      };
+      if (m.method === "Log.entryAdded") {
+        const entry = (m.params as { entry: { level: string; text: string } }).entry;
+        if (entry.level === "error" || entry.level === "warning") {
+          c.problems.push(`${entry.level}: ${entry.text}`);
+        }
+      }
+      if (m.method === "Runtime.consoleAPICalled") {
+        const p = m.params as { type: string; args: { value?: string; description?: string }[] };
+        if (p.type === "error" || p.type === "warning") {
+          c.problems.push(p.args.map((a) => a.value ?? a.description ?? "").join(" "));
+        }
+      }
       if (m.id !== undefined) {
         const done = c.pending.get(m.id);
         if (done) {
@@ -93,6 +120,8 @@ export class Cdp {
       flatten: true,
     })) as { sessionId: string };
     c.sessionId = attached.sessionId;
+    await c.send("Runtime.enable");
+    await c.send("Log.enable");
     return c;
   }
 

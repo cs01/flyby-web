@@ -76,7 +76,7 @@ export const POSES: Pose[] = [
     city: "chicago",
     // Over the river north of the Loop, looking south into it.
     lat: 41.8935, lon: -87.6290, altM: 420, hdgDeg: 178, pitchDeg: -9,
-    t: D("2025-06-21T05:30:00Z"), // 00:30 CDT: full night, no twilight left
+    t: D("2025-06-21T03:30:00Z"), // 22:30 CDT: night, and the city still awake
     wx: CLEAR,
     what: "Chicago Loop at night",
   },
@@ -97,6 +97,16 @@ export const POSES: Pose[] = [
     t: D("2025-06-21T21:40:00Z"), // 17:40 EDT: raking light across the roofs
     wx: CLEAR,
     what: "Manhattan rooftop-level pass",
+  },
+  {
+    name: "chicago-loop-late",
+    city: "chicago",
+    // The same viewpoint at half past midnight: the hour the old per-cell hash
+    // looked worst, and the one the owner was looking at.
+    lat: 41.8935, lon: -87.6290, altM: 420, hdgDeg: 178, pitchDeg: -9,
+    t: D("2025-06-21T05:30:00Z"), // 00:30 CDT
+    wx: CLEAR,
+    what: "Chicago Loop, half past midnight",
   },
   {
     name: "chicago-loop-day",
@@ -141,7 +151,11 @@ function arg(name: string, fallback: string | null = null): string | null {
 }
 const has = (name: string): boolean => process.argv.includes(`--${name}`);
 
+/** Log lines that mean the frame about to be captured is not worth capturing. */
+const FATAL = [/Shader Error/i, /not compiled/i, /program not valid/i, /Uncaught/i];
+
 async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: string): Promise<Shot> {
+  cdp.problems.length = 0;
   await cdp.goto(url(base, p));
   // Two waits, not one. The first is the load (tiles, packs, shader compiles),
   // which can be a minute cold and a second warm. The second lets the frame
@@ -156,6 +170,11 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const triangles = await cdp.eval<number>("window.flybyShot.triangles");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
   const signature = await cdp.eval<number[]>("window.flybyShot.signature(48)");
+
+  const bad = cdp.problems.filter((m) => FATAL.some((r) => r.test(m)));
+  if (bad.length) {
+    throw new Error(`${p.name}: the page is broken, refusing to screenshot it\n  ${bad[0]}`);
+  }
 
   const dataUrl = await cdp.eval<string>("window.flybyShot.capture()");
   const png = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
