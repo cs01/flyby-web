@@ -525,7 +525,7 @@ void main() {
     // the city read as a diagram of its own road network rather than as a place
     // with lamps in it. A street lamp lights the STREET.
     if (cls < 10.5 && !isTrack) {
-      const float SPACING = 36.0;
+      const float SPACING = 52.0;
       float su = u / SPACING;
       float idx = floor(su);
       // On the kerb, alternating sides, with the lantern arm reaching a little
@@ -536,21 +536,24 @@ void main() {
       float d2 = du * du + dv * dv;
       // ~5 m pool: tight enough that consecutive lamps do not run together, so
       // there is dark road between them the way there is on a real street.
-      float bright = step(0.10, hash11(idx * 1.7 + 5.0)) * (0.6 + 0.8 * hash11(idx * 3.3));
+      // Not every lamp post has a working lamp, and a fully populated run reads
+      // as a light strip rather than as street lighting. Roughly half lit, with
+      // a wide brightness spread, gives the ragged rhythm a real road has.
+      float bright = step(0.46, hash11(idx * 1.7 + 5.0)) * (0.45 + 0.9 * hash11(idx * 3.3));
       float pool = exp(-d2 * 0.018) * bright;
       // Far away the pools are sub-pixel and must converge to their mean, or
       // the whole city crawls with aliasing as the camera moves.
       float lampDetail = smoothstep(1.6, 0.35, px);
-      float meanPool = 0.9 * 3.14159265 / (0.018 * SPACING * width);
+      float meanPool = 0.54 * 3.14159265 / (0.018 * SPACING * width);
       pool = mix(min(meanPool, 0.22), pool, lampDetail);
       vec3 lampCol = mix(vec3(0.85, 0.90, 1.0), vec3(1.0, 0.72, 0.36),
                          smoothstep(0.05, 0.6, hash11(idx * 9.1 + 2.0)));
       lampCol = mix(vec3(1.0, 0.80, 0.55), lampCol, lampDetail);
       // Wet tarmac throws the lamp back at you: this is the single strongest
       // cue that a night city has been rained on.
-      lit += lampCol * pool * uNight * (1.0 + 2.2 * uWetness) * 0.30;
+      lit += lampCol * pool * uNight * (1.0 + 2.2 * uWetness) * 0.19;
       // Retroreflective paint under the lamps.
-      lit += vec3(1.0, 0.95, 0.85) * paint * pool * uNight * 0.5;
+      lit += vec3(1.0, 0.95, 0.85) * paint * pool * uNight * 0.32;
     }
     lit += albedo * uNightGlow * 0.9;
   }
