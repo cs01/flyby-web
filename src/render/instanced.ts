@@ -98,17 +98,33 @@ export class InstancedField {
  * about.
  */
 export const INSTANCE_GLSL = /* glsl */ `
-vec3 instanceToWorld(vec3 local, vec3 origin, float yaw, vec3 scale) {
+/**
+ * The yawCS parameter is (cos yaw, sin yaw), already evaluated.
+ *
+ * The overloads below take the angle instead and are the ones to reach for
+ * first. Take this one when a vertex shader needs the instance's rotation more
+ * than once -- to place the vertex, to rotate its normal, to point something
+ * else in the instance's own direction -- because a transcendental pair per
+ * vertex per use is a real cost on a field of tens of thousands of instances
+ * and no compiler will hoist it out of a per-vertex expression for you.
+ */
+vec3 instanceToWorld(vec3 local, vec3 origin, vec2 yawCS, vec3 scale) {
   vec3 s = local * scale;
-  float c = cos(yaw), n = sin(yaw);
-  return origin + vec3(c * s.x + n * s.z, s.y, -n * s.x + c * s.z);
+  return origin + vec3(yawCS.x * s.x + yawCS.y * s.z, s.y, -yawCS.y * s.x + yawCS.x * s.z);
 }
 
 /** The same rotation applied to a direction, for normals. Yaw is orthonormal,
  *  so this is the inverse transpose as well and needs no correction. */
+vec3 instanceRotate(vec3 v, vec2 yawCS) {
+  return vec3(yawCS.x * v.x + yawCS.y * v.z, v.y, -yawCS.y * v.x + yawCS.x * v.z);
+}
+
+vec3 instanceToWorld(vec3 local, vec3 origin, float yaw, vec3 scale) {
+  return instanceToWorld(local, origin, vec2(cos(yaw), sin(yaw)), scale);
+}
+
 vec3 instanceRotate(vec3 v, float yaw) {
-  float c = cos(yaw), n = sin(yaw);
-  return vec3(c * v.x + n * v.z, v.y, -n * v.x + c * v.z);
+  return instanceRotate(v, vec2(cos(yaw), sin(yaw)));
 }
 
 /**

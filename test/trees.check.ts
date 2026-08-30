@@ -54,6 +54,14 @@ import {
   type TreeInstance,
   type TreeMask,
 } from "../src/data/trees";
+import {
+  buildTreeMesh,
+  windStrength,
+  TREE_FORMS,
+  TREE_LODS,
+  TREE_SHAPE_GLSL,
+  type TreeMesh,
+} from "../src/render/treemesh";
 import { Origin } from "../src/geo";
 
 const DIR = "public/cities";
@@ -86,6 +94,42 @@ const MAX_PER_CELL = 1;
  *  one through. It is three orders of magnitude under what deleting the
  *  exclusion produces. */
 const MAX_INSIDE_FOOTPRINT = 0.001;
+
+// Crown geometry. None of these is read by src/render/treemesh.ts either.
+
+/** Coefficient of variation of the radii around the crown's widest ring. A
+ *  circle is 0; the six-sided prism this work replaced was 0 at every ring. */
+const MIN_CROWN_RADIAL_CV = 0.06;
+/** Corners of that outline that turn inward. A convex blob has none, and a
+ *  convex blob is what a real crown is not. */
+const MIN_CROWN_REFLEX = 3;
+/** The topmost crown ring, as a fraction of the widest one. Radial variance and
+ *  reflex corners both say the OUTLINE is ragged and neither of them notices a
+ *  crown that is a cylinder, so this is the one that says it is a tree. */
+const MAX_CROWN_TOP_TAPER = 0.60;
+/** View directions the silhouette is measured from. Half a turn is the whole
+ *  answer: the far side of a tree is the same outline mirrored. */
+const SILHOUETTE_AZIMUTHS = 12;
+/**
+ * How far a level's silhouette area may sit from the near level's.
+ *
+ * Two numbers because the two switches are seen at very different sizes. The
+ * near switch is at 260 m, where a 12 m crown is about 50 px across and a
+ * viewer can see a step; the far one is at 800 m, where the same crown is 16 px
+ * and 15% of AREA is under a pixel of width.
+ */
+const MAX_NEAR_LOD_SILHOUETTE_DEV = 0.08;
+const MAX_FAR_LOD_SILHOUETTE_DEV = 0.15;
+/** Every level caps at the same apex, so this is nearly an equality. */
+const MAX_LOD_HEIGHT_DEV = 0.001;
+/** Triangles one tree may cost at each level, nearest first. */
+const LOD_TRIANGLE_BUDGET = [600, 300, 140];
+/** And a floor under the coarsest, so "cheaper" cannot become "a stick". */
+const MIN_FAR_LOD_TRIANGLES = 40;
+/** How far a vertex may travel in the wind, as a fraction of the crown radius. */
+const MAX_WIND_CROWN_FRACTION = 0.20;
+/** And how far it must travel, so a still canopy is a failure. */
+const MIN_WIND_SWAY = 0.35;
 
 let failures = 0;
 
@@ -499,6 +543,204 @@ console.log("\n--- 55% tree cover against 11% ---");
   );
 }
 
+
+// --- 6. the crown is a tree shape, and stays one as it recedes -------------
+//
+// Everything above is about WHERE a tree goes. This is about what one is, and
+// it is here rather than in a screenshot because "the outline is ragged", "the
+// far tree is the same tree" and "the wind cannot tear a crown off its trunk"
+// are all arithmetic on src/render/treemesh.ts, which is pure for exactly that
+// reason. A screenshot cannot tell a 4% level-of-detail size step from a 25%
+// one, and it certainly cannot tell you the wind is unbounded until the frame
+// it is.
+
+console.log("\n--- crown geometry, levels of detail and wind ---");
+
+{
+  for (let f = 0; f < TREE_FORMS.length; f++) {
+    const name = TREE_FORMS[f].name;
+    const near = buildTreeMesh(f, 0);
+
+    // The widest crown ring, as a closed polar outline. This is the silhouette
+    // a viewer sees against the sky, and the two things wrong with the crown
+    // this work replaced were that it had SIX sides and that every ring of it
+    // was a perfect circle.
+    const ring = widestCrownRing(near);
+    const cv = radialCv(ring);
+    check(
+      `${name}: the crown outline is not a circle`,
+      cv > MIN_CROWN_RADIAL_CV,
+      `radial cv ${cv.toFixed(3)} > ${MIN_CROWN_RADIAL_CV} over ${ring.length} vertices`,
+    );
+    const reflex = reflexCorners(ring);
+    check(
+      `${name}: the crown outline is not convex`,
+      reflex >= MIN_CROWN_REFLEX,
+      `${reflex} reflex corners >= ${MIN_CROWN_REFLEX} (a convex outline has 0)`,
+    );
+
+    // PROBE. The same two measurements on a perfect circle of the same mean
+    // radius and the same vertex count: a ring that has lost its lobes, which
+    // is what deleting the lobe table or the shape function would produce. If
+    // the measurements above cannot tell that apart, they are asserting
+    // nothing about the outline.
+    const round = circleRing(ring);
+    probe(
+      `${name}: a circular crown is rejected`,
+      radialCv(round) > MIN_CROWN_RADIAL_CV && reflexCorners(round) >= MIN_CROWN_REFLEX,
+      `circle: cv ${radialCv(round).toFixed(3)}, ${reflexCorners(round)} reflex corners`,
+    );
+
+    // Both measurements above are about the OUTLINE at one height, and a
+    // ragged-edged cylinder would pass them both. This is the one that says
+    // the crown closes over at the top.
+    const top = topCrownRing(near);
+    const taper = meanRadius(top) / meanRadius(ring);
+    check(
+      `${name}: the crown tapers toward its apex`,
+      taper < MAX_CROWN_TOP_TAPER,
+      `top ring is ${(taper * 100).toFixed(0)}% of the widest, limit ${(MAX_CROWN_TOP_TAPER * 100).toFixed(0)}%`,
+    );
+    // PROBE. The same crown with every ring pushed out to the widest radius.
+    const drum = cylinderCrown(near);
+    probe(
+      `${name}: a crown that never tapers is rejected`,
+      meanRadius(topCrownRing(drum)) / meanRadius(widestCrownRing(drum)) < MAX_CROWN_TOP_TAPER,
+      `cylinder: top ring is ` +
+        `${((meanRadius(topCrownRing(drum)) / meanRadius(widestCrownRing(drum))) * 100).toFixed(0)}% of the widest`,
+    );
+
+    // The levels have to agree about how big the tree is. They are sampled from
+    // one shape function and volume-matched to it, so this is measuring
+    // silhouette AREA by view azimuth, which that normalisation does not set.
+    const base = silhouetteAreas(near);
+    for (let l = 1; l < TREE_LODS.length; l++) {
+      const mesh = buildTreeMesh(f, l);
+      const dev = maxDeviation(silhouetteAreas(mesh), base);
+      const limit = l === 1 ? MAX_NEAR_LOD_SILHOUETTE_DEV : MAX_FAR_LOD_SILHOUETTE_DEV;
+      check(
+        `${name}: level ${l} is the same size as level 0`,
+        dev < limit,
+        `worst silhouette area deviation ${(dev * 100).toFixed(1)}% < ${(limit * 100).toFixed(0)}% ` +
+          `over ${base.length} azimuths`,
+      );
+      check(
+        `${name}: level ${l} is the same height as level 0`,
+        Math.abs(meshHeight(mesh) - meshHeight(near)) < MAX_LOD_HEIGHT_DEV,
+        `${meshHeight(mesh).toFixed(4)} vs ${meshHeight(near).toFixed(4)}`,
+      );
+    }
+
+    // PROBE. A level that is a quarter bigger than it should be -- what
+    // dropping the inscribed-polygon compensation, or scaling the wrong axis,
+    // would look like. Both bounds must reject it.
+    const swollen = scaleCrown(buildTreeMesh(f, TREE_LODS.length - 1), 1.25);
+    probe(
+      `${name}: a level 25% too big is rejected`,
+      maxDeviation(silhouetteAreas(swollen), base) < MAX_FAR_LOD_SILHOUETTE_DEV,
+      `deviation ${(maxDeviation(silhouetteAreas(swollen), base) * 100).toFixed(1)}%`,
+    );
+  }
+
+  // Triangles per level. A budget, not a measurement: the near crown is
+  // deliberately extravagant because geometry is this renderer's spare
+  // resource, and the far one is what twenty thousand instances of a leafy
+  // suburb actually costs four times a frame.
+  const tris = TREE_LODS.map((_, l) =>
+    TREE_FORMS.map((_f, f) => buildTreeMesh(f, l).triangles),
+  );
+  const worst = tris.map((row) => Math.max(...row));
+  check(
+    "every level is inside its triangle budget",
+    worst.every((t, l) => t <= LOD_TRIANGLE_BUDGET[l]),
+    `${worst.join("/")} against ${LOD_TRIANGLE_BUDGET.join("/")}`,
+  );
+  check(
+    "the levels get cheaper, and the coarsest is still a tree",
+    worst.every((t, l) => l === 0 || t < worst[l - 1]) && worst[worst.length - 1] >= MIN_FAR_LOD_TRIANGLES,
+    `${worst.join(" > ")}, coarsest >= ${MIN_FAR_LOD_TRIANGLES}`,
+  );
+  // PROBE. The same budget check fed a level that busts it.
+  const busted = worst.slice();
+  busted[busted.length - 1] = LOD_TRIANGLE_BUDGET[busted.length - 1] + 1;
+  probe(
+    "a level over its budget is rejected",
+    busted.every((t, l) => t <= LOD_TRIANGLE_BUDGET[l]),
+    `${busted.join("/")} against ${LOD_TRIANGLE_BUDGET.join("/")}`,
+  );
+  // PROBE. A ladder that does not get cheaper, which is what happens when the
+  // level distances and the mesh resolutions are wired up the wrong way round.
+  const flat = worst.map(() => worst[0]);
+  probe(
+    "a ladder that never gets cheaper is rejected",
+    flat.every((t, l) => l === 0 || t < flat[l - 1]),
+    `${flat.join(" / ")}`,
+  );
+
+  // --- wind ---------------------------------------------------------------
+  //
+  // The subject here is the SHIPPED shader source. glslScalarModule below
+  // transliterates TREE_SHAPE_GLSL into JavaScript and runs it, so this is not
+  // a second copy of the sway that could drift away from the one on the GPU.
+  const glsl = glslScalarModule(TREE_SHAPE_GLSL);
+  const sway = swaySweep(glsl.windSway);
+  check(
+    "wind: the sway is bounded",
+    sway.max <= 1,
+    `|sway| peaks at ${sway.max.toFixed(6)} over ${sway.samples} samples`,
+  );
+  check(
+    "wind: no vertex travels far",
+    glsl.WIND_MAX_LOCAL * sway.max < MAX_WIND_CROWN_FRACTION && windStrength(1e9) <= 1,
+    `${(glsl.WIND_MAX_LOCAL * sway.max).toFixed(4)} crown radii < ${MAX_WIND_CROWN_FRACTION} ` +
+      `(WIND_MAX_LOCAL ${glsl.WIND_MAX_LOCAL}, strength <= ${windStrength(1e9)})`,
+  );
+  check(
+    "wind: the trunk base does not move",
+    sway.atBase === 0,
+    `worst |sway| at y = 0 is ${sway.atBase}`,
+  );
+  check(
+    "wind: the crown does move",
+    sway.max > MIN_WIND_SWAY && sway.atTop > MIN_WIND_SWAY,
+    `peak ${sway.max.toFixed(3)}, peak at the apex ${sway.atTop.toFixed(3)} > ${MIN_WIND_SWAY}`,
+  );
+  check(
+    "wind: strength is a fraction, whatever the weather says",
+    [0, -3, 4, 12, 90, Number.NaN].every((v) => {
+      const s = windStrength(v);
+      return Number.isFinite(s) && s >= 0 && s <= 1;
+    }),
+    `calm ${windStrength(0)}, pinned 4 m/s ${windStrength(4).toFixed(3)}, gale ${windStrength(90)}, NaN ${windStrength(Number.NaN)}`,
+  );
+
+  // PROBES. Three sway functions that are each wrong in exactly one way. The
+  // assertions above have to reject all three, or they are describing a shape
+  // they never looked at.
+  const unweighted = (_y: number, seed: number, t: number, g: number): number =>
+    glsl.windSway(1, seed, t, g);
+  probe(
+    "wind: a sway that ignores the height is caught",
+    swaySweep(unweighted).atBase === 0,
+    `|sway| at y = 0 becomes ${swaySweep(unweighted).atBase.toFixed(3)}`,
+  );
+  const unbounded = (y: number, seed: number, t: number, g: number): number =>
+    glsl.windSway(y, seed, t, g) * 2.5;
+  const big = swaySweep(unbounded);
+  probe(
+    "wind: an unbounded sway is caught",
+    big.max <= 1 && glsl.WIND_MAX_LOCAL * big.max < MAX_WIND_CROWN_FRACTION,
+    `|sway| peaks at ${big.max.toFixed(3)}, ${(glsl.WIND_MAX_LOCAL * big.max).toFixed(3)} crown radii`,
+  );
+  const frozen = (): number => 0;
+  const still = swaySweep(frozen);
+  probe(
+    "wind: a canopy that never moves is caught",
+    still.max > MIN_WIND_SWAY && still.atTop > MIN_WIND_SWAY,
+    `peak ${still.max.toFixed(3)}`,
+  );
+}
+
 // --- helpers ----------------------------------------------------------------
 
 /**
@@ -621,5 +863,239 @@ function identical(a: TreeInstance[], b: TreeInstance[]): boolean {
   return true;
 }
 
-console.log(failures === 0 ? "\nall tree placement checks ok" : `\n${failures} tree check(s) FAILED`);
+
+// --- crown geometry helpers -------------------------------------------------
+
+/** Every crown vertex of a mesh as (radius, angle), grouped by ring height. */
+function crownRings(mesh: TreeMesh): Map<number, { r: number; a: number }[]> {
+  const rings = new Map<number, { r: number; a: number }[]>();
+  for (let v = 0; v < mesh.position.length / 3; v++) {
+    if (mesh.aTree[v * 4] <= 0.5) continue;
+    const x = mesh.position[v * 3], y = mesh.position[v * 3 + 1], z = mesh.position[v * 3 + 2];
+    const r = Math.hypot(x, z);
+    // The skirt centre and the apex sit on the axis and have no angle.
+    if (r < 1e-9) continue;
+    const key = Math.round(y * 1e6);
+    const row = rings.get(key) ?? [];
+    row.push({ r, a: Math.atan2(z, x) });
+    rings.set(key, row);
+  }
+  return rings;
+}
+
+/** The ring with the largest mean radius: the crown's own waistline. */
+function widestCrownRing(mesh: TreeMesh): { r: number; a: number }[] {
+  let best: { r: number; a: number }[] = [];
+  let bestMean = -1;
+  for (const row of crownRings(mesh).values()) {
+    const mean = row.reduce((s, p) => s + p.r, 0) / row.length;
+    if (mean > bestMean) { bestMean = mean; best = row; }
+  }
+  return best.slice().sort((p, q) => p.a - q.a);
+}
+
+/** The highest crown ring, the one just under the apex. */
+function topCrownRing(mesh: TreeMesh): { r: number; a: number }[] {
+  let best: { r: number; a: number }[] = [];
+  let bestY = -Infinity;
+  for (const [key, row] of crownRings(mesh)) {
+    if (key > bestY) { bestY = key; best = row; }
+  }
+  return best;
+}
+
+function meanRadius(ring: { r: number; a: number }[]): number {
+  return ring.reduce((s, p) => s + p.r, 0) / ring.length;
+}
+
+/** The same crown with every ring pushed out to the widest: the taper probe's
+ *  straw man, run through the same ring-finding code as the real thing. */
+function cylinderCrown(mesh: TreeMesh): TreeMesh {
+  const target = meanRadius(widestCrownRing(mesh));
+  const position = mesh.position.slice();
+  for (let v = 0; v < position.length / 3; v++) {
+    if (mesh.aTree[v * 4] <= 0.5) continue;
+    const r = Math.hypot(position[v * 3], position[v * 3 + 2]);
+    if (r < 1e-9) continue;
+    position[v * 3] *= target / r;
+    position[v * 3 + 2] *= target / r;
+  }
+  return { ...mesh, position };
+}
+
+/** Coefficient of variation of the radii around a ring. Zero for a circle. */
+function radialCv(ring: { r: number; a: number }[]): number {
+  const mean = ring.reduce((s, p) => s + p.r, 0) / ring.length;
+  const varr = ring.reduce((s, p) => s + (p.r - mean) ** 2, 0) / ring.length;
+  return Math.sqrt(varr) / mean;
+}
+
+/**
+ * Corners where the outline turns the WRONG way: the notches.
+ *
+ * A convex outline has none, whatever its radii do, so this is the thing that
+ * separates "wobbly circle" from "ragged tree" and it is the measurement the
+ * old six-sided prism would have failed.
+ */
+function reflexCorners(ring: { r: number; a: number }[]): number {
+  const n = ring.length;
+  const pt = (i: number): [number, number] => {
+    const p = ring[((i % n) + n) % n];
+    return [Math.cos(p.a) * p.r, Math.sin(p.a) * p.r];
+  };
+  let turn = 0;
+  const signs: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = pt(i - 1), b = pt(i), c = pt(i + 1);
+    const cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]);
+    signs.push(cross);
+    turn += cross;
+  }
+  const outward = Math.sign(turn) || 1;
+  return signs.filter((s) => Math.sign(s) === -outward).length;
+}
+
+/** The same ring made perfectly round: the vacuity probe's straw man. */
+function circleRing(ring: { r: number; a: number }[]): { r: number; a: number }[] {
+  const mean = ring.reduce((s, p) => s + p.r, 0) / ring.length;
+  return ring.map((p) => ({ r: mean, a: p.a }));
+}
+
+/** Height of the tallest vertex. All levels cap at the same apex. */
+function meshHeight(mesh: TreeMesh): number {
+  let h = 0;
+  for (let v = 1; v < mesh.position.length; v += 3) h = Math.max(h, mesh.position[v]);
+  return h;
+}
+
+/** Convex hull area of a set of 2D points, by monotone chain. */
+function hullArea(pts: [number, number][]): number {
+  const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]): number =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lo: [number, number][] = [];
+  const up: [number, number][] = [];
+  for (const q of p) {
+    while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop();
+    lo.push(q);
+  }
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i];
+    while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop();
+    up.push(q);
+  }
+  const h = lo.slice(0, -1).concat(up.slice(0, -1));
+  let a = 0;
+  for (let i = 0; i < h.length; i++) {
+    const j = (i + 1) % h.length;
+    a += h[i][0] * h[j][1] - h[j][0] * h[i][1];
+  }
+  return Math.abs(a) / 2;
+}
+
+/** How big the crown looks from a ring of view azimuths, in unit-tree metres squared. */
+function silhouetteAreas(mesh: TreeMesh): number[] {
+  const out: number[] = [];
+  // Half a turn: a silhouette seen from behind is the same silhouette mirrored.
+  for (let k = 0; k < SILHOUETTE_AZIMUTHS; k++) {
+    const th = (k / SILHOUETTE_AZIMUTHS) * Math.PI;
+    const c = Math.cos(th), s = Math.sin(th);
+    const pts: [number, number][] = [];
+    for (let v = 0; v < mesh.position.length / 3; v++) {
+      if (mesh.aTree[v * 4] <= 0.5) continue;
+      pts.push([c * mesh.position[v * 3] + s * mesh.position[v * 3 + 2], mesh.position[v * 3 + 1]]);
+    }
+    out.push(hullArea(pts));
+  }
+  return out;
+}
+
+/** Worst relative difference between two same-length series. */
+function maxDeviation(a: number[], b: number[]): number {
+  let worst = 0;
+  for (let i = 0; i < a.length; i++) worst = Math.max(worst, Math.abs(a[i] / b[i] - 1));
+  return worst;
+}
+
+/** A copy of a mesh with its crown widened: the level-of-detail probe's straw man. */
+function scaleCrown(mesh: TreeMesh, k: number): TreeMesh {
+  const position = mesh.position.slice();
+  for (let v = 0; v < position.length / 3; v++) {
+    if (mesh.aTree[v * 4] <= 0.5) continue;
+    position[v * 3] *= k;
+    position[v * 3 + 2] *= k;
+  }
+  return { ...mesh, position };
+}
+
+/**
+ * Run the SHIPPED shader source instead of a copy of it.
+ *
+ * The wind lives in GLSL, and the only honest way to gate GLSL from Bun is to
+ * execute the same text the GPU is given. Everything in TREE_SHAPE_GLSL is
+ * scalar for this reason, so the translation is mechanical: comments out,
+ * `const float` and `float` declarations to `const` and `let`, function
+ * signatures stripped of their types, and a prelude supplying the builtins by
+ * the names GLSL uses. A second TypeScript copy of the sway would pass this
+ * check forever while the shader drifted away underneath it.
+ */
+function glslScalarModule(src: string): {
+  windSway: (y: number, seed: number, t: number, gustPhase: number) => number;
+  crownLobe: (ang: number, t: number, seed: number) => number;
+  WIND_MAX_LOCAL: number;
+} {
+  const body = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "")
+    .replace(/\bconst\s+float\b/g, "const")
+    .replace(
+      /\bfloat\s+(\w+)\s*\(([^)]*)\)\s*\{/g,
+      (_m, name: string, params: string) =>
+        `function ${name}(${params
+          .split(",")
+          .map((s) => s.replace(/\bfloat\b/g, "").trim())
+          .filter(Boolean)
+          .join(", ")}) {`,
+    )
+    .replace(/\bfloat\b/g, "let");
+  const prelude =
+    "const sin=Math.sin, cos=Math.cos, abs=Math.abs, floor=Math.floor, pow=Math.pow," +
+    "clamp=(x,a,b)=>Math.min(Math.max(x,a),b), mix=(a,b,t)=>a+(b-a)*t, fract=(x)=>x-Math.floor(x);";
+  return new Function(
+    `${prelude}\n${body}\nreturn { windSway, crownLobe, WIND_MAX_LOCAL };`,
+  )() as ReturnType<typeof glslScalarModule>;
+}
+
+/** Sway over a dense sweep of height, tree, time and gust phase. */
+function swaySweep(
+  f: (y: number, seed: number, t: number, gustPhase: number) => number,
+): { max: number; atBase: number; atTop: number; samples: number } {
+  let max = 0;
+  let atBase = 0;
+  let atTop = 0;
+  let samples = 0;
+  for (let si = 0; si < 23; si++) {
+    const seed = si / 23;
+    for (let ti = 0; ti < 97; ti++) {
+      // Well past any flight: a sway that only stayed bounded for the first
+      // minute would be a canopy that tore itself apart on a long approach.
+      const t = (ti / 97) * 3600;
+      for (let gi = 0; gi < 7; gi++) {
+        const gust = (gi / 7) * Math.PI * 2;
+        for (let yi = 0; yi <= 10; yi++) {
+          const y = yi / 10;
+          const v = Math.abs(f(y, seed, t, gust));
+          if (!Number.isFinite(v)) return { max: Infinity, atBase: Infinity, atTop: Infinity, samples };
+          max = Math.max(max, v);
+          if (yi === 0) atBase = Math.max(atBase, v);
+          if (yi === 10) atTop = Math.max(atTop, v);
+          samples++;
+        }
+      }
+    }
+  }
+  return { max, atBase, atTop, samples };
+}
+
+console.log(failures === 0 ? "\nall tree checks ok" : `\n${failures} tree check(s) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

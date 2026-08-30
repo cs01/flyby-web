@@ -122,6 +122,21 @@ export const POSES: Pose[] = [
     what: "Emerald Hills wooded ridge, evening",
   },
   {
+    name: "emeraldhills-treetops",
+    city: "emeraldhills",
+    // Fifty-five metres over the wooded ridge, looking south-west at ground
+    // that rises to Cañada College. Every other pose here is 300 m or higher,
+    // where a whole tree is a dozen pixels and a canopy is a texture; this is
+    // the only frame in the set where an individual crown is big enough to
+    // judge its silhouette, its shading and its colour separately. Ground is
+    // 209 m AMSL at this point (measured through terrain.heightAt), so the
+    // altitude below is deliberately AGL-derived even though the field is AMSL.
+    lat: 37.4630, lon: -122.2760, altM: 264, hdgDeg: 215, pitchDeg: -6,
+    t: D("2025-06-22T01:30:00Z"), // 18:30 PDT, the same raking light as the ridge pose
+    wx: CLEAR,
+    what: "Emerald Hills treetops, 55 m above the canopy",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is
@@ -157,6 +172,9 @@ interface Shot {
   file: string;
   frameMs: { mean: number; p99: number };
   triangles: number;
+  trees: number;
+  treeLods: number[];
+  treeTriangles: number;
   lod: number;
   signature: number[];
 }
@@ -184,6 +202,9 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   await cdp.waitFor("window.flybyShot.timed > 240", 60_000, `${p.name} timing sample`);
   const frameMs = await cdp.eval<{ mean: number; p99: number }>("window.flybyShot.frameMs()");
   const triangles = await cdp.eval<number>("window.flybyShot.triangles");
+  const trees = await cdp.eval<number>("window.flybyShot.trees ?? 0");
+  const treeLods = await cdp.eval<number[]>("window.flybyShot.treeLods ?? []");
+  const treeTriangles = await cdp.eval<number>("window.flybyShot.treeTriangles ?? 0");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
   const signature = await cdp.eval<number[]>("window.flybyShot.signature(48)");
 
@@ -197,7 +218,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const file = `${outDir}/${p.name}${tag}.png`;
   writeFileSync(file, png);
 
-  return { pose: p, file, frameMs, triangles, lod, signature };
+  return { pose: p, file, frameMs, triangles, trees, treeLods, treeTriangles, lod, signature };
 }
 
 /** Mean absolute channel difference between two frame fingerprints, 0..255. */
@@ -272,7 +293,8 @@ async function main(): Promise<void> {
       shots.push(s);
       console.log(
         `${s.file.padEnd(44)} ${s.frameMs.mean.toFixed(2)} ms mean  ${s.frameMs.p99.toFixed(2)} p99  ` +
-        `${(s.triangles / 1000).toFixed(0)}k tris  lod ${s.lod}`,
+        `${(s.triangles / 1000).toFixed(0)}k tris  lod ${s.lod}  ` +
+        `trees ${s.trees} (${s.treeLods.join("/")}) ${(s.treeTriangles / 1000).toFixed(0)}k tris`,
       );
       if (repeat) {
         const again = await capture(cdp, base, p, outDir, "-repeat");
@@ -302,6 +324,9 @@ async function main(): Promise<void> {
         file: s.file,
         frameMs: s.frameMs,
         triangles: s.triangles,
+        trees: s.trees,
+        treeLods: s.treeLods,
+        treeTriangles: s.treeTriangles,
         lod: s.lod,
       })),
       null,
