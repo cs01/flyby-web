@@ -94,7 +94,7 @@ const MB = 1024 * 1024;
   );
   check(
     "desktop triangle budgets",
-    desktop.buildingTriangleBudget === 1_500_000 && desktop.roadTriangleBudget === 700_000,
+    desktop.buildingTriangleBudget === 4_000_000 && desktop.roadTriangleBudget === 700_000,
     `${desktop.buildingTriangleBudget} buildings, ${desktop.roadTriangleBudget} roads`,
   );
   check(

@@ -182,6 +182,22 @@ export const POSES: Pose[] = [
     what: "Chicago Loop by day",
   },
   {
+    // Paris, over the Seine looking east toward the Ile de la Cite.
+    //
+    // The best-mapped city in the set and the one with the most to lose from a
+    // bad facade rule: 181,205 footprints averaging 11.8 vertices each, 46% of
+    // them with ten or more corners, and 73.7% carrying a real height (almost
+    // all from building:levels, which for uniform-storey Haussmann blocks is
+    // close to exact). If a change makes courtyard blocks read wrong, it shows
+    // here first.
+    name: "paris-seine",
+    city: "paris",
+    lat: 48.8520, lon: 2.3320, altM: 330, hdgDeg: 72, pitchDeg: -11,
+    t: D("2025-09-21T16:20:00Z"), // 18:20 CEST, low sun down the river
+    wx: CLEAR,
+    what: "Paris over the Seine",
+  },
+  {
     // Mount Fuji, from the north with the cone filling the frame.
     //
     // A terrain pose, deliberately: every other pose in this set is a city, so

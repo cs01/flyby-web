@@ -361,7 +361,24 @@ const FULL_PLAN: Plan = {
   // LOD curve is either wasteful or unaffordable. Solving the curve against a
   // budget makes frame cost a property of the renderer rather than of whichever
   // city was loaded, and the budget is now a property of the DEVICE.
-  buildingTriangleBudget: 1_500_000,
+  // Four million, not one and a half, and Paris is why.
+  //
+  // The LOD solver raises its cutoff until the whole city fits the budget, so
+  // the budget decides how much of a city you can see. Paris has 181,205
+  // footprints averaging 11.8 vertices (46% have ten corners or more, because
+  // Haussmann blocks are courtyards rather than boxes) against Manhattan's 7.3,
+  // so at 1.5M it escalated to k=3 and culled everything short: the city
+  // rendered as bare drape with a dozen towers standing in it.
+  //
+  // The old figure predated the measurement that geometry is the cheap half of
+  // this renderer. At 4M, Paris draws 3.3M triangles at k=1.4 and Manhattan
+  // improves from k=1.4 to k=1. Measured cost: Manhattan 7.9 to 9.7 ms, Paris
+  // 5.6 to 10.2 ms, and Paris was drawing almost nothing at 5.6.
+  //
+  // Most of that is not vertex work, it is the fragments those buildings then
+  // shade, which is the scarce resource. So this is not free and should not be
+  // raised again without the same before/after measurement.
+  buildingTriangleBudget: 4_000_000,
   roadTriangleBudget: 700_000,
   // Pavements are a NEAR-FIELD feature: the fragment shader throws every one of
   // them away past 330 m, so this budget buys ground the car can drive over
