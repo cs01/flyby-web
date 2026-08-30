@@ -235,6 +235,7 @@ interface Shot {
   treeLods: number[];
   treeTriangles: number;
   lod: number;
+  pavementTriangles: number;
   /** Times the detail ring restitched before the frame was taken. */
   drapeMoves: number;
   signature: number[];
@@ -300,6 +301,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const treeLods = await cdp.eval<number[]>("window.flybyShot.treeLods ?? []");
   const treeTriangles = await cdp.eval<number>("window.flybyShot.treeTriangles ?? 0");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
+  const pavementTriangles = await cdp.eval<number>("window.flybyShot.pavementTriangles ?? 0");
   const drapeMoves = await cdp.eval<number>("window.flybyShot.drapeMoves ?? 0");
   const signature = await cdp.eval<number[]>("window.flybyShot.signature(48)");
 
@@ -313,7 +315,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const file = `${outDir}/${p.name}${tag}.png`;
   writeFileSync(file, png);
 
-  return { pose: p, file, frameMs, triangles, trees, treeLods, treeTriangles, lod, drapeMoves, signature };
+  return { pose: p, file, frameMs, triangles, trees, treeLods, treeTriangles, lod, pavementTriangles, drapeMoves, signature };
 }
 
 /** Mean absolute channel difference between two frame fingerprints, 0..255. */
@@ -396,6 +398,7 @@ async function main(): Promise<void> {
       console.log(
         `${s.file.padEnd(44)} ${s.frameMs.mean.toFixed(2)} ms mean  ${s.frameMs.p99.toFixed(2)} p99  ` +
         `${(s.triangles / 1000).toFixed(0)}k tris  lod ${s.lod}  drape ${s.drapeMoves}  ` +
+        `pave ${(s.pavementTriangles / 1000).toFixed(0)}k  ` +
         `trees ${s.trees} (${s.treeLods.join("/")}) ${(s.treeTriangles / 1000).toFixed(0)}k tris`,
       );
       if (repeat) {
@@ -432,6 +435,7 @@ async function main(): Promise<void> {
         treeLods: s.treeLods,
         treeTriangles: s.treeTriangles,
         lod: s.lod,
+        pavementTriangles: s.pavementTriangles,
         drapeMoves: s.drapeMoves,
       })),
       null,

@@ -131,13 +131,21 @@ that are not extrusions, and motion.
     Individually mapped OSM nodes where they exist (Paris 3,564 per 1.7x2.5 km
     box, Manhattan 833, a suburb 2), procedural fallback seeded by WorldCover
     coverage elsewhere.
-12. **Street level, only if walk mode is real.** Near-field ground (pavements,
-    kerbs, lots, entrances: today everything between the kerb and the wall is
-    blurred orthophoto carrying photographed shadows that contradict the
-    scene's own sun, and ground floors are a `win *= 0.35` dimming hack),
-    interior mapping behind the glass, and parked cars along kerbs (CC0
-    archetypes with per-instance colour; real makes are trademarked, do not
-    ship rips). All three pay within 50 m and nowhere else.
+12. **Street level, only if walk mode is real.** Pavements and ground floors
+    are DONE: `render/pavement.ts` draws a kerbed, raised, concrete footway
+    from the carriageway edge to the building line (`data/pavement.ts` is the
+    pure geometry, gated by `test/pavement.check.ts`), and `facade.ts` now
+    carries a per-building ground storey height and a shopfront parameter that
+    `buildings.ts` paints as a plinth, glazing, a fascia and a door rhythm, in
+    place of the old `win *= 0.35` dimming. What is left here: the junction
+    corners, where the pavement is deliberately opened for the crossing and the
+    drape underneath shows through as a photographed corner (a corner-radius
+    fill would close it); interior mapping behind the glass; and parked cars
+    along kerbs (CC0 archetypes with per-instance colour; real makes are
+    trademarked, do not ship rips). All of it pays within 50 m and nowhere
+    else, which is why the pavement is a ring round the CAMERA rather than a
+    radius round the city centre and why its fragment shader throws every
+    fragment away past 330 m.
 
 ## Quality is a profile, not a phone veto
 
@@ -224,6 +232,13 @@ write a fourth unless you actively hunt for it.
 3. A frame-time p99 that recorded `Math.min(0.05, dt)`, the simulation's
    stability clamp, so it reported exactly 50.00 forever and could never see a
    stall. This one was added specifically to catch a stall the median had hidden.
+4. A pavement "grows no spike" assertion that measured the distance from a
+   vertex to the ORIGIN rather than to its own centreline point. Raising the
+   mitre limit to 1e9 grew an eighty-metre spike sideways off a way that
+   already reached 140 m, and the assertion stayed green. Caught by the
+   mutation sweep, not by reading it. The lesson generalises: an assertion on a
+   DERIVED quantity is only as good as the frame it derives in, and the right
+   frame for a spike is the thing the spike grows out of.
 
 Rules that follow: take bounds from **literals**, never from the constant under
 test; assert the constant is itself within the literal bound; slice the exact
