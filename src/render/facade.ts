@@ -526,26 +526,43 @@ Facade readFacade(float bidx) {
   p.coreSlot = f.x;   p.group = floor(f.y / 8.0);  p.family = f.y - p.group * 8.0;
   p.relief = f.z;     p.parapetM = f.w;
 
-  // A DEAD TABLE MUST BE LOUD, NOT BLACK.
+  // A DEAD TABLE MUST DEGRADE, NOT BREAK.
   //
-  // If the parameter texture never made it to the GPU (an upload refused under
-  // memory pressure leaves it incomplete for the whole session, with nothing
-  // thrown on the JS side), every texelFetch returns (0,0,0,1). Then storeyM
-  // and columnM are 0, vUv / 0 is Inf, fract(Inf) is NaN, and the NaN
-  // propagates through the window mask into albedo. A NaN fragment renders
-  // black on essentially all hardware, so an entire city goes black with no
-  // error anywhere and no way to tell that from a lighting bug.
+  // If the parameter texture never reached the GPU, every texelFetch returns
+  // (0,0,0,1). Then storeyM and columnM are 0, vUv / 0 is Inf, fract(Inf) is
+  // NaN, and NaN renders black: an entire city black with nothing thrown on the
+  // JS side and no way to tell it from a lighting bug.
+  //
+  // This first shipped as a magenta sentinel, which did its job perfectly. One
+  // phone screenshot identified the failure in seconds after two days of
+  // guessing at black buildings. But it was a diagnostic, and the diagnosis has
+  // been made: at least one Android device cannot read this table as fp32 OR as
+  // fp16, so a magenta city is now just a worse black city.
+  //
+  // So the fallback is a PLAUSIBLE facade instead. It is deliberately NOT a
+  // transcription of facadeFor: duplicating that rule in GLSL is exactly the
+  // drift this file's design avoids. It is a coarse per-building variation that
+  // reads as a city rather than as an error, and it is honest that it is a
+  // fallback (uFacadeFallback goes to 1 so the app can say so).
   //
   // corePeriod is >= CORE_PERIOD_MIN (7) by construction for any real record,
-  // so a zero there is impossible unless the read itself failed. Flagging it
-  // magenta turns a silent black city into an obvious "the facade table is
-  // dead", which is the difference between a week of guessing and one glance
-  // at a phone screenshot.
+  // so a value under 1 cannot come from a healthy read.
   if (p.corePeriod < 1.0) {
-    p.colour = vec3(1.0, 0.0, 0.8);
-    p.storeyM = 3.2; p.columnM = 2.6; p.glassFrac = 0.0; p.roughness = 0.9;
-    p.tenantW = 4.0; p.tenantH = 2.0; p.coreW = 2.0; p.corePeriod = 9.0;
+    float fb = fract(sin(bidx * 12.9898) * 43758.5453);
+    float fb2 = fract(sin(bidx * 78.233) * 24634.6345);
+    // Five bands of plausible masonry and concrete, warm to cool.
+    p.colour = mix(vec3(0.42, 0.36, 0.31), vec3(0.62, 0.63, 0.64), fb);
+    p.colour = mix(p.colour, vec3(0.30, 0.34, 0.38), step(0.82, fb2));
+    p.storeyM = 3.1 + 0.5 * fb2;
+    p.columnM = 2.4 + 0.6 * fb;
+    p.glassFrac = fb2 > 0.82 ? 0.55 : 0.12;
+    p.roughness = 0.72;
+    p.tenantW = 4.0; p.tenantH = 2.0;
+    p.coreW = 2.0; p.corePeriod = 9.0; p.coreSlot = 3.0;
+    p.pFloor = 0.75; p.pTenant = 0.6; p.pCell = 0.5; p.pCore = 0.7;
     p.win = vec4(0.18, 0.82, 0.16, 0.86);
+    p.relief = 0.5; p.parapetM = 0.9;
+    p.group = 1.0; p.family = fb2 > 0.82 ? 0.0 : 1.0;
   }
 
   // Belt and braces: clamp every divisor at the point of use anyway, so a

@@ -387,6 +387,17 @@ export const CITIES: City[] = [
     ],
   },
   {
+    id: "santarosa", name: "Santa Rosa", country: "USA", continent: "North America",
+    lat: 38.4405, lon: -122.7141, radius: 6000, approach: 70, startAlt: 500,
+    landmarks: [
+      { name: "Railroad Square", lat: 38.4392, lon: -122.7175, height: 15 },
+      { name: "Luther Burbank Home", lat: 38.4390, lon: -122.7130, height: 12 },
+      { name: "Charles M. Schulz Museum", lat: 38.4665, lon: -122.7300, height: 12 },
+      { name: "Howarth Park", lat: 38.4530, lon: -122.6720, height: 10 },
+      { name: "Spring Lake", lat: 38.4520, lon: -122.6520, height: 8 },
+    ],
+  },
+  {
     id: "seattle", name: "Seattle", country: "USA", continent: "North America",
     lat: 47.6205, lon: -122.3493, radius: 7000, approach: 160, startAlt: 750,
     landmarks: [
