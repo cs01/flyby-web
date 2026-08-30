@@ -46,6 +46,45 @@ PS3-PS4. The PS5-PS6 tier is built on four things the earlier plan did not
 list: correct sun:sky contrast WITH bounce, temporal stability, silhouettes
 that are not extrusions, and motion.
 
+## Shipped since this list was written
+
+Struck through rather than deleted, because the reasoning behind each is still
+the reasoning a future change has to respect.
+
+- **Item 1, exposure: DONE.** Daylight was ~1.3 stops hot. `DAY_EXPOSURE = 0.54`
+  puts an 18% grey horizontal at sRGB 119 (was 163-181; middle grey is 118).
+  `test/lighting.check.ts` gates it, including that an 80% white roof does not
+  clip and a 5% dark one is not crushed, so the fix cannot be "make it darker".
+  The scene sun:sky ratio turned out to be 15:1, ABOVE the 4-9 a clear day has:
+  the frames were flat BECAUSE they were hot, sitting so far up the ACES
+  shoulder that the curve crushed the contrast they had. That is why no bounce
+  term was needed to ship it safely, and why item 3 is still open.
+- **Item 11, trees: DONE.** Placed from the WorldCover tree channel, density is
+  the measured coverage with no curve between. Species silhouettes, wind, LOD.
+- **Item 12, street level: partly DONE.** Kerbs at 135 mm, concrete pavements
+  that run to the building line where one is within 8 m, ground-floor shopfront
+  treatment replacing the `win *= 0.35` dimming. Car mode is on **G**.
+- **Live OSM fetch: DONE.** Any coordinate on Earth now gets buildings, roads
+  and vegetation streamed from Overpass. See the section below.
+- **Roofs: smooth grain.** Was a hard-edged random value per 3 m cell, which
+  from directly above is a lattice of flat squares.
+
+## A defect this list did not predict, and how it was found
+
+`buildingTriangleBudget` was 1.5M, and the LOD solver raises its height cutoff
+until a city fits. Paris has 181,205 footprints averaging 11.8 vertices (46%
+have ten corners or more, because Haussmann blocks are courtyards) against
+Manhattan's 7.3, so Paris escalated to k=3 and culled everything short: the city
+rendered as **bare drape with a dozen towers standing in it**, and had done
+since trees landed. Manhattan was quietly culling too, at k=1.4.
+
+Nobody noticed because there was no Paris pose. Adding one found it in a single
+render, exactly as adding a Fuji pose found the imagery ring seam.
+
+**So: when a change targets a city, add a pose for it.** The set is now 14 and
+covers dense grid, courtyard blocks, suburb, mountain, harbour, vertical against
+terrain, street level, night and live-streamed.
+
 ## Order of work
 
 1. **The "white ground over SF" is exposure, not a data bug.** Measured on
