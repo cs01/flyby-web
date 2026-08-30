@@ -39,6 +39,7 @@ import { Roads } from "./render/roads";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { Composite } from "./render/composite";
 import { SunShadow } from "./render/sunshadow";
+import { SkyProbe } from "./render/skyprobe";
 import { Skyline } from "./sim/skyline";
 import { reverseGeocode, placeLabel } from "./data/place";
 import { Labels } from "./app/labels";
@@ -252,6 +253,9 @@ async function main() {
   // cascade uniforms are spread by reference into the terrain and building
   // materials at the moment those materials are created.
   const sunShadow = new SunShadow();
+  // One environment probe for the whole scene: sky irradiance for every diffuse
+  // surface and a prefiltered cube for the glass and the wet tarmac.
+  const skyProbe = new SkyProbe();
   if (new URLSearchParams(location.search).get("shadows") === "0") sunShadow.enabled = false;
 
   const terrain = new Terrain(origin, fields, drapes, sunShadow.uniforms);
@@ -770,6 +774,9 @@ async function main() {
     sky.syncCamera(camera);
 
     for (const u of terrain.uniforms) {
+      // By reference: one array, refreshed in place by the probe, so no ring
+      // can be shading against a stale sky.
+      u.uSH.value = skyProbe.sh;
       u.uCameraPos.value.copy(camera.position);
       u.uSunDir.value.copy(light.sunDir);
       u.uSunColor.value.copy(light.sunColor);
@@ -791,10 +798,12 @@ async function main() {
     if (buildings) {
       const b = buildings.uniforms;
       b.uCameraPos.value.copy(camera.position);
+      b.uSH.value = skyProbe.sh;
+      b.uEnv.value = skyProbe.texture;
+      b.uEnvMaxLod.value = skyProbe.maxLod;
       b.uSunDir.value.copy(light.sunDir);
       b.uSunColor.value.copy(light.sunColor);
       b.uSunIntensity.value = light.sunIntensity;
-      b.uAmbient.value.copy(light.ambient);
       b.uNight.value = light.night;
       b.uNightGlow.value.copy(light.nightGlow);
       b.uMoonDir.value.copy(light.moonDir);
@@ -817,10 +826,12 @@ async function main() {
     if (roads) {
       const r = roads.uniforms;
       r.uCameraPos.value.copy(camera.position);
+      r.uSH.value = skyProbe.sh;
+      r.uEnv.value = skyProbe.texture;
+      r.uEnvMaxLod.value = skyProbe.maxLod;
       r.uSunDir.value.copy(light.sunDir);
       r.uSunColor.value.copy(light.sunColor);
       r.uSunIntensity.value = light.sunIntensity;
-      r.uAmbient.value.copy(light.ambient);
       r.uWetness.value = light.wetness;
       r.uSnow.value = light.snow;
       r.uNight.value = light.night;
@@ -850,6 +861,10 @@ async function main() {
     // rather than by the camera it is handed -- so its matrices have to be put
     // back before the main pass. The shadow cascades exclude the sky by layer;
     // the probe cannot, which is what the onFace callback is for.
+    // The sky probe, before anything that reads it. It re-renders on its own
+    // cadence rather than every frame; see render/skyprobe.ts.
+    skyProbe.setSize(quality.scale < 0.8 ? 32 : 64);
+    skyProbe.update(renderer, light, camAlt);
     sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale);
     model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
     sky.syncCamera(camera);
@@ -1008,7 +1023,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone,
+      sunShadow, drone, skyProbe,
       get droneActive() { return droneActive; },
       get wx() { return wx; },
       get time() { return now; },

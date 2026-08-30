@@ -22,6 +22,7 @@ import type { Heightfield } from "../data/dem";
 import type { StitchedImage } from "../data/imagery";
 import { Origin } from "../geo";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
+import { SH_GLSL, shHemispherical } from "./sh";
 
 export interface TerrainRing {
   /** Half-width in metres. */
@@ -102,6 +103,7 @@ out vec4 fragColor;
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 ${SUN_SHADOW_GLSL}
+${SH_GLSL}
 
 uniform sampler2D uDrape;
 uniform vec3  uCameraPos;
@@ -170,10 +172,12 @@ void main() {
   vec3 moonBeam = uMoonLight * uSunSurface * mndl;
   vec3 beam = direct + moonBeam;
 
-  // Sky ambient, weighted by how much sky the surface can see. A valley floor
-  // is darker than a ridge for the same sun angle, which is most of what makes
-  // terrain read as three-dimensional at low sun.
-  vec3 ambient = uAmbient * (0.55 + 0.45 * n.y);
+  // Sky irradiance, from the scene probe. This is the whole reason a valley
+  // floor is darker than a ridge and, more than that, the reason a slope facing
+  // the sunset is warm while the one behind it is blue: the nine coefficients
+  // carry the sky's actual distribution, which the hemispherical constant this
+  // replaces could not express at all -- it had no azimuth in it.
+  vec3 ambient = shIrradiance(n);
 
   vec3 lit = albedo * (beam + ambient);
 
@@ -382,6 +386,8 @@ void main() {
 
 export interface TerrainUniforms extends SunShadowUniforms {
   uDrape: THREE.IUniform<THREE.Texture | null>;
+  /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
+  uSH: THREE.IUniform<Float32Array>;
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uAmbient: THREE.IUniform<THREE.Color>;
   uWetness: THREE.IUniform<number>;
@@ -417,6 +423,9 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
   return {
     ...shadow,
     uDrape: { value: null },
+    // Held at the hemispherical ambient the shader used before the probe
+    // existed, so frame one shades correctly whatever happens to the probe.
+    uSH: { value: shHemispherical([0.28, 0.36, 0.5], 0.55, 0.45) },
     uCameraPos: { value: new THREE.Vector3() },
     uAmbient: { value: new THREE.Color(0.28, 0.36, 0.5) },
     uWetness: { value: 0 },

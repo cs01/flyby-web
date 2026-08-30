@@ -28,6 +28,7 @@ import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { triangulate, signedArea } from "./earcut";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
+import { SH_GLSL, shHemispherical } from "./sh";
 import {
   FACADE_FLOATS,
   FACADE_GLSL,
@@ -201,10 +202,13 @@ out vec4 fragColor;
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 ${SUN_SHADOW_GLSL}
+${SH_GLSL}
 ${FACADE_GLSL}
 
 uniform vec3  uCameraPos;
-uniform vec3  uAmbient;
+// The scene sky probe: prefiltered radiance for the glass, roughness to mip.
+uniform samplerCube uEnv;
+uniform float uEnvMaxLod;
 uniform float uNight;
 uniform vec3  uNightGlow;
 uniform vec3  uMoonDir;
@@ -474,17 +478,14 @@ void main() {
   // what puts the facades back under the lights.
   vec3 beam = direct + uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
 
-  // Sky visibility. A vertical wall sees roughly half the dome and a roof sees
-  // all of it. Under an overcast, where the direct term is almost gone, this is
-  // the ONLY thing separating one face from another -- flat ambient across
-  // orientations is what makes a city look like untextured boxes.
-  float skyView = 0.48 + 0.52 * n.y;
-  // North/south faces differ even under cloud, because the sky is brighter
-  // toward the sun. A small term, but it restores the sense of which way a
-  // building faces.
-  skyView *= 1.0 + 0.14 * dot(n, normalize(vec3(uSunDir.x, 0.0, uSunDir.z)));
-  // Skyglow reaches walls better than roofs: it comes from the street below.
-  vec3 ambient = uAmbient * skyView * skyOcc + uNightGlow * (1.0 - 0.35 * n.y);
+  // Sky irradiance, from the scene probe. This used to be a hemispherical
+  // constant in n.y with a hand-rolled fudge to make faces toward the sun a
+  // little brighter; the probe measures that instead, and gets the sunset case
+  // right for the same cost, because an SH evaluation IS nine multiply-adds.
+  //
+  // skyOcc stays: it is the street canyon, which is geometry the probe cannot
+  // see. Skyglow reaches walls better than roofs, it comes from the street.
+  vec3 ambient = shIrradiance(n) * skyOcc + uNightGlow * (1.0 - 0.35 * n.y);
 
   vec3 lit = albedo * (beam + ambient) + emissive;
 
@@ -498,25 +499,26 @@ void main() {
   // is what separates a glass building from a grey one. Terrain does the same
   // thing for water and for the same reason.
   //
-  // There is no environment probe to afford here -- one per building is out of
-  // the question -- so the reflected radiance is the analytic sky: the ambient
-  // term, brighter toward the zenith, plus a little of the sun's own disc
-  // through the same transmittance the direct beam uses. It is not the real
-  // skyline reflected back, but it swings the right way by the right amount at
-  // the right angle, and that is what the eye is reading.
+  // The reflected radiance is the scene sky probe, sampled at the facade
+  // family's own roughness: see render/skyprobe.ts. One probe serves every
+  // building because the sky is at infinity, which is what makes this
+  // affordable where a probe per building never could be. It is the sky and the
+  // ground rather than the real skyline reflected back, so a tower does not
+  // show its neighbours; what it does show is the right colour swinging the
+  // right way at the right angle, which is what the eye is reading.
   //
   // Modulated by glassMask, so the spandrel panel between the floors stays
   // matte. A tower that is shiny all over reads as plastic.
   if (glassMask > 0.004) {
     vec3 refl = reflect(-v, n);
-    float up = clamp(refl.y * 0.5 + 0.5, 0.0, 1.0);
-    // The multipliers are small on purpose. uAmbient is an irradiance-scale
-    // term, not a radiance, and the first version of this used 2.6x of it plus
-    // 1.4x the skyglow -- which at a grazing angle, where Fresnel is near one,
-    // replaced the whole wall with something several times brighter than the
-    // wall had ever been. A night city of pale grey towers was the result.
-    vec3 skyRefl = uAmbient * mix(0.75, 1.9, up)
-                 + uSunColor * uSunIntensity * uSunSurface * sunT * 0.04
+    // The cube holds RADIANCE in the same linear HDR space this shader writes,
+    // so it goes straight into the Fresnel mix with no scale factor. That is
+    // the point of capturing it through the same atmosphere the sky dome runs:
+    // the reflection and the sky behind the tower are the same numbers.
+    //
+    // Skyglow is added on top because the probe has no city in it, and after
+    // dark a glass tower reflects the city rather than the sky.
+    vec3 skyRefl = textureLod(uEnv, refl, clamp(fp.roughness, 0.0, 1.0) * uEnvMaxLod).rgb
                  + uNightGlow * 0.4;
     // Schlick, with the 4% normal-incidence reflectance of glass.
     float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
@@ -546,7 +548,11 @@ void main() {
 
 export interface BuildingUniforms extends SunShadowUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
-  uAmbient: THREE.IUniform<THREE.Color>;
+  /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
+  uSH: THREE.IUniform<Float32Array>;
+  /** Prefiltered sky radiance for the glass; see render/skyprobe.ts. */
+  uEnv: THREE.IUniform<THREE.CubeTexture | null>;
+  uEnvMaxLod: THREE.IUniform<number>;
   uNight: THREE.IUniform<number>;
   uNightGlow: THREE.IUniform<THREE.Color>;
   uMoonDir: THREE.IUniform<THREE.Vector3>;
@@ -576,7 +582,11 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
   return {
     ...shadow,
     uCameraPos: { value: new THREE.Vector3() },
-    uAmbient: { value: new THREE.Color(0.2, 0.24, 0.3) },
+    // The hemispherical ambient the shader ran before the probe existed, so a
+    // frame drawn before the first capture is the old picture, not a black one.
+    uSH: { value: shHemispherical([0.2, 0.24, 0.3], 0.55, 0.45) },
+    uEnv: { value: null },
+    uEnvMaxLod: { value: 6 },
     uNight: { value: 0 },
     uNightGlow: { value: new THREE.Color(0, 0, 0) },
     uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
