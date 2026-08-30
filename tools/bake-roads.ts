@@ -37,6 +37,7 @@ import {
 // widening the type surface of the app itself.
 declare const process: {
   argv: string[];
+  env: Record<string, string | undefined>;
   exit(code?: number): never;
   stdout: { write(s: string): void };
 };
@@ -57,7 +58,25 @@ const ROOT = decodeURIComponent(new URL("../", import.meta.url).pathname);
 
 // --- tunables -------------------------------------------------------------
 
-const CACHE_DIR = `${ROOT}tools/.cache`;
+/**
+ * Shared, permanent, and OUTSIDE the checkout.
+ *
+ * This used to be `<repo>/tools/.cache`, which is per-worktree. Removing a
+ * worktree after merging its branch therefore deleted every Overpass response
+ * it had ever fetched, and the next bake re-fetched all of it. Doing that a few
+ * times in an afternoon is how this project got itself rate-limited off the
+ * public Overpass instances, which are donated infrastructure.
+ *
+ * An Overpass answer for a fixed bbox and a fixed query is effectively
+ * immutable: OSM changes, but not in ways that matter to a skyline, and a
+ * re-bake wanting fresher data has `--force`. So there is no TTL here on
+ * purpose. Fetched once, kept forever, shared by every worktree.
+ *
+ * FLYBY_CACHE overrides it, for a machine that wants the cache somewhere else.
+ */
+const CACHE_ROOT =
+  (process.env["FLYBY_CACHE"] ?? `${process.env["HOME"] ?? "."}/.cache/flyby-web-bake`);
+const CACHE_DIR = `${CACHE_ROOT}`;
 const CELL_TARGET_M = 2000; // one whole-city query gets shed by public instances
 const QUANT = 0.25; // metres per vertex-offset unit, must match roadpack.ts
 const MAX_VERTS = 65535; // the u16 vertex count in the record
