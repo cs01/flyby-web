@@ -76,6 +76,8 @@ function clamp1(v: number): number {
 export class TouchControls {
   /** True while at least one flight zone is being touched. */
   active = false;
+  private homeLeft?: HTMLElement;
+  private homeRight?: HTMLElement;
   readonly axes: TouchAxes = { roll: 0, lift: 0, throttle: 0, yaw: 0 };
   /** Latched by the boost button; read every frame. */
   boost = false;
@@ -92,6 +94,19 @@ export class TouchControls {
     ui.append(this.root);
 
     this.root.append(this.buttons());
+
+    // Persistent HOME rings, one per zone.
+    //
+    // The sticks themselves stay dynamic, for all the reasons above: they still
+    // materialise wherever the thumb lands. What was missing was any way to
+    // DISCOVER that. A control with no affordance is not minimal, it is
+    // invisible, and on a phone that is the difference between flying and
+    // fighting the screen. These are drawn faint, they are not the input (the
+    // whole zone is), and they fade out while that zone's stick is live so two
+    // rings are never on screen at once.
+    this.homeLeft = this.home("left");
+    this.homeRight = this.home("right");
+    this.root.append(this.homeLeft, this.homeRight);
 
     surface.addEventListener("pointerdown", (e) => {
       if (e.pointerType !== "touch") return;
@@ -187,6 +202,16 @@ export class TouchControls {
     return col;
   }
 
+  /** The faint always-there ring that says "put your thumb about here". */
+  private home(side: "left" | "right"): HTMLElement {
+    const el = document.createElement("div");
+    el.className = `touch-home ${side}`;
+    const knob = document.createElement("div");
+    knob.className = "touch-home-knob";
+    el.append(knob);
+    return el;
+  }
+
   private spawn(pointerId: number, x: number, y: number, side: "left" | "right"): Stick {
     const ring = document.createElement("div");
     ring.className = `touch-ring ${side}`;
@@ -199,11 +224,14 @@ export class TouchControls {
     // The ring fades in on the next frame; appending it already visible makes
     // it look like it was there before the finger was.
     requestAnimationFrame(() => ring.classList.add("in"));
+    (side === "left" ? this.homeLeft : this.homeRight)?.classList.add("busy");
     const radius = side === "left" ? STICK_RADIUS : THROTTLE_RADIUS;
     return { pointerId, originX: x, originY: y, x: 0, y: 0, radius, ring, knob };
   }
 
   private despawn(s: Stick): void {
+    const home = s.radius === STICK_RADIUS ? this.homeLeft : this.homeRight;
+    home?.classList.remove("busy");
     s.ring.classList.remove("in");
     setTimeout(() => s.ring.remove(), 200);
   }

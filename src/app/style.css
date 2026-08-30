@@ -1064,3 +1064,59 @@ html, body {
     right: calc(8px + env(safe-area-inset-right));
   }
 }
+
+/* The always-visible home rings.
+ *
+ * The sticks are dynamic and always were; these only say WHERE. Coarse pointer
+ * only, because on a mouse they are a permanent hole in the picture for no
+ * benefit, which is the objection the dynamic design was answering.
+ *
+ * They sit clear of the instrument panel, which owns the bottom centre, and
+ * inside the safe-area inset so a notch or a home bar never clips them.
+ */
+.touch-home { display: none; }
+
+@media (pointer: coarse) {
+  .touch-home {
+    display: block;
+    position: absolute;
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    width: 128px;
+    height: 128px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255, 255, 255, 0.22);
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.02) 70%);
+    opacity: 0.65;
+    transition: opacity 0.18s ease;
+    pointer-events: none;
+  }
+  .touch-home.left { left: calc(22px + env(safe-area-inset-left, 0px)); }
+  .touch-home.right {
+    right: calc(22px + env(safe-area-inset-right, 0px));
+    width: 104px;
+    height: 104px;
+  }
+  /* While that zone's stick is live there is a real ring under the thumb, and
+     two rings at once reads as a bug rather than as a hint. */
+  .touch-home.busy { opacity: 0; }
+}
+
+.touch-home::before, .touch-home::after {
+  content: "";
+  position: absolute;
+  background: rgba(255, 255, 255, 0.16);
+}
+.touch-home::before { left: 18%; right: 18%; top: 50%; height: 1px; }
+.touch-home::after { top: 18%; bottom: 18%; left: 50%; width: 1px; }
+
+.touch-home-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.34);
+  background: rgba(255, 255, 255, 0.10);
+}
