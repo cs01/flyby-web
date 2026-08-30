@@ -40,7 +40,7 @@ import { loadLandPack } from "./data/landcover-load";
 import { loadRoadPack } from "./data/roadpack-load";
 import { Roads } from "./render/roads";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
-import { Foliage } from "./render/trees";
+import { Foliage, TREE_LOD_TRIANGLES } from "./render/trees";
 import { buildLandMaskRGBA } from "./data/landmask";
 import { FootprintMask, RoadIndex, treeRoadClearanceM } from "./data/trees";
 import { Composite } from "./render/composite";
@@ -469,7 +469,8 @@ async function main() {
     scene.add(foliage.group);
     const fs = foliage.stats;
     console.log(
-      `[flyby] trees: ${fs.count} instances in ${fs.tiles} tiles, ` +
+      `[flyby] trees: ${fs.count} instances in ${fs.tiles} tiles ` +
+      `(lod ${fs.lodCounts.join("/")} of ${TREE_LOD_TRIANGLES.join("/")} tris), ` +
       `${(fs.triangles / 1000).toFixed(0)}k triangles, ` +
       `${roadIndex ? `${roadIndex.segments} road segments indexed` : "no road pack"}, ` +
       `${footprints ? "footprints excluded" : "no building pack"}, ` +
@@ -980,9 +981,14 @@ async function main() {
     }
 
     if (foliage) {
-      // Rebuilt only when the camera crosses a 256 m tile; see render/trees.ts.
+      // Rebuilt only when the camera has moved far enough for a tree's level of
+      // detail to be stale; see render/trees.ts.
       foliage.update(camera.position.x, camera.position.z);
+      foliage.setWind(wx.windSpeed, wx.windDir);
       const f = foliage.uniforms;
+      // The animation clock, which `?shot` holds at zero: a canopy that swayed
+      // on wall-clock phase would make two runs of the same URL differ.
+      f.uTime.value = elapsed;
       f.uCameraPos.value.copy(camera.position);
       f.uSH.value = skyProbe.sh;
       f.uSunDir.value.copy(light.sunDir);
@@ -1201,6 +1207,10 @@ async function main() {
         return (buildings ? buildings.stats.triangles : 0) + (foliage ? foliage.stats.triangles : 0);
       },
       get trees() { return foliage ? foliage.stats.count : 0; },
+      /** Instances at each level of detail, and their triangles. The frame
+       *  budget for the canopy is decided here, so the harness can see it. */
+      get treeLods() { return foliage ? foliage.stats.lodCounts : []; },
+      get treeTriangles() { return foliage ? foliage.stats.triangles : 0; },
       get lod() { return buildings ? buildings.stats.lod : 0; },
     },
     flyby: {

@@ -117,12 +117,19 @@ export interface TreeSpecies {
  * Four archetypes, not a botanical survey. What has to vary for a stand to stop
  * reading as one asset repeated is silhouette height, crown width and colour,
  * and four of each interpolated by the per-instance jitter covers that.
+ *
+ * The crown ratios are narrower than a first pass at them, and it is a picture
+ * decision rather than a placement one: at 0.46 a broadleaf's crown was wider
+ * than the tree was tall once the coverage widening below was applied, and from
+ * 55 m up a stand of them read as green mounds on the ground with no stem. None
+ * of the assertions in test/trees.check.ts reads this number -- it changes what
+ * a tree looks like, not where one goes.
  */
 export const TREE_SPECIES: readonly TreeSpecies[] = [
-  { name: "broadleaf", minHeightM: 9, maxHeightM: 19, crownRatio: 0.46, conifer: 0.0, tint: 0.30 },
-  { name: "street", minHeightM: 6, maxHeightM: 12, crownRatio: 0.40, conifer: 0.1, tint: 0.62 },
-  { name: "conifer", minHeightM: 12, maxHeightM: 28, crownRatio: 0.26, conifer: 1.0, tint: 0.08 },
-  { name: "scrub", minHeightM: 3, maxHeightM: 7, crownRatio: 0.55, conifer: 0.0, tint: 0.85 },
+  { name: "broadleaf", minHeightM: 9, maxHeightM: 19, crownRatio: 0.38, conifer: 0.0, tint: 0.30 },
+  { name: "street", minHeightM: 6, maxHeightM: 12, crownRatio: 0.34, conifer: 0.1, tint: 0.62 },
+  { name: "conifer", minHeightM: 12, maxHeightM: 28, crownRatio: 0.24, conifer: 1.0, tint: 0.08 },
+  { name: "scrub", minHeightM: 3, maxHeightM: 7, crownRatio: 0.50, conifer: 0.0, tint: 0.85 },
 ];
 
 export interface TreeInstance {
