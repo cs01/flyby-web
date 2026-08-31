@@ -124,6 +124,58 @@ const FAMILY: Record<FacadeFamily, FamilySpec> = {
 };
 
 /**
+ * What a DETACHED HOUSE does differently from the block of flats it shares a
+ * facade family with.
+ *
+ * The specs above were measured on multi-storey buildings and were being
+ * applied unchanged to a two-storey house: Stucco is a 3.0 x 3.0 m cell with a
+ * 0.50 x 0.58 window in it, which is a 29% window-to-wall ratio on every cell
+ * of a uniform lattice. A US detached single-family house is 12-18% WWR, and
+ * it gets there two ways at once: a smaller opening, and two to four of them
+ * per elevation with blank wall between, not a grid.
+ *
+ * Only the geometry moves. The family still picks the colour and the material,
+ * because a house is genuinely brick or render or board, and which one is the
+ * same regional question it is for a walk-up.
+ */
+const HOUSE = {
+  /** US residential floor-to-floor is 2.7-3.0 m; the families are 3.0-4.2. */
+  storeyM: 2.85,
+  /** Windows on a house sit further apart than on a terrace. */
+  columnM: 4.3,
+  /**
+   * 0.32 x 0.47 of a 4.3 x 2.85 m cell is a 1.38 x 1.34 m opening: 15.0% WWR,
+   * the middle of the 12-18% band. test/facade.check.ts measures the mean and
+   * the range of this rectangle over every house in every pack.
+   */
+  win: [0.34, 0.66, 0.30, 0.77] as [number, number, number, number],
+  /** Board or render over frame: a shallow reveal, not a 200 mm masonry arch. */
+  relief: 0.30,
+  /** Jitter half-widths, tightened so no seed can leave the 12-18% band. */
+  storeyJitter: 0.10,
+  columnJitter: 0.13,
+  winJitter: 0.035,
+};
+
+/**
+ * Fraction of cells on a house that carry an opening at all.
+ *
+ * The other 45% are blank wall. This lives here rather than in the shader
+ * because the shader has to converge to it in the far field (see the
+ * irregular-opening term in buildings.ts), so the two must be the same number
+ * and it may only be written down once.
+ */
+export const HOUSE_OPEN_FRAC = 0.55;
+
+/**
+ * Tallest thing that still counts as a house, metres.
+ *
+ * 11 m so a 2.5-storey house under a pitched roof still qualifies while a
+ * four-storey apartment block does not.
+ */
+export const HOUSE_MAX_M = 11;
+
+/**
  * Family weights by OSM kind, in four height bands.
  *
  * Height carries most of the decision and that is not a shortcut: in the baked
@@ -279,6 +331,16 @@ export interface FacadeParams {
    * ground storey is, so one number decides the whole band.
    */
   shopfront: number;
+  /**
+   * 1 if this is a detached house, 0 otherwise. See HOUSE above.
+   *
+   * A flag and not a family, because a house's MATERIAL is still brick or
+   * render or board and the families already say that. What it changes is the
+   * geometry (storey, column pitch, window rectangle, reveal) and two rules:
+   * a house has no service core to light at night, and its openings are
+   * irregular rather than a lattice.
+   */
+  house: number;
 
   // Night occupancy. See `isLit` for how these compose.
   /** A whole floor is dark or in use. */
@@ -353,6 +415,11 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
   const family = pickFamily(kind, heightM, seed);
   const s = FAMILY[family];
 
+  // Is this a house? osmbuildings.ts now recovers Residential from footprint
+  // geometry and neighbour density, so most of a suburb arrives tagged, and a
+  // suburb is the case the family specs were never measured on.
+  const house = kind === 1 && heightM <= HOUSE_MAX_M ? 1 : 0;
+
   // Colour: a point on the family's range, then a small per-building shift so
   // two brick buildings side by side are not the same brick.
   const t = h1(seed, 0x21);
@@ -369,19 +436,26 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
   // Storey and column pitch vary by a few per cent per building. Real blocks
   // do, and a grid that is identical across a street is the single most
   // obvious tell that a city is procedural.
-  const storeyM = s.storeyM * (1 + 0.10 * (h1(seed, 0x41) - 0.5));
-  const columnM = s.columnM * (1 + 0.18 * (h1(seed, 0x42) - 0.5));
+  const storeyM = (house ? HOUSE.storeyM : s.storeyM)
+    * (1 + (house ? HOUSE.storeyJitter : 0.10) * (h1(seed, 0x41) - 0.5));
+  const columnM = (house ? HOUSE.columnM : s.columnM)
+    * (1 + (house ? HOUSE.columnJitter : 0.18) * (h1(seed, 0x42) - 0.5));
 
   // Window proportion moves too, and toward MORE glass on a taller building of
   // the same family: a 40-storey concrete tower has ribbon windows, a 4-storey
   // one has punched holes.
   const tall = Math.min(1, Math.max(0, (heightM - 20) / 80));
-  const wj = 0.06 * (h1(seed, 0x43) - 0.5);
+  // The house jitter is narrower because the WWR band it has to stay inside is
+  // narrow: the two axes shrink TOGETHER on this one hash, so at the family's
+  // +/-0.03 the rectangle would swing from 11.1% to 19.6% and leave 12-18% at
+  // both ends. At +/-0.0175 it runs 12.7% to 17.6%.
+  const wj = (house ? HOUSE.winJitter : 0.06) * (h1(seed, 0x43) - 0.5);
+  const wb = house ? HOUSE.win : s.win;
   const win: [number, number, number, number] = [
-    clamp01(lerp(s.win[0], s.win[0] * 0.45, tall) + wj),
-    clamp01(lerp(s.win[1], 1 - (1 - s.win[1]) * 0.45, tall) - wj),
-    clamp01(s.win[2] + wj),
-    clamp01(s.win[3] - wj * 0.5),
+    clamp01(lerp(wb[0], wb[0] * 0.45, tall) + wj),
+    clamp01(lerp(wb[1], 1 - (1 - wb[1]) * 0.45, tall) - wj),
+    clamp01(wb[2] + wj),
+    clamp01(wb[3] - wj * 0.5),
   ];
 
   // Glass is a property of the family first and of the height second. A tall
@@ -423,10 +497,11 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
     columnM,
     win,
     glassFrac,
-    relief: s.relief * (0.8 + 0.4 * h1(seed, 0x46)),
+    relief: (house ? HOUSE.relief : s.relief) * (0.8 + 0.4 * h1(seed, 0x46)),
     parapetM: s.parapetM * (0.7 + 0.6 * h1(seed, 0x47)),
     groundStoreyM,
     shopfront,
+    house,
 
     // An office empties floor by floor; a block of flats empties flat by flat.
     // So an office gets a high per-floor gate and wide tenancies, and housing
@@ -520,9 +595,14 @@ export function isLit(
   hourFactor: number,
   heightFade = 1,
 ): boolean {
-  const coreIdx = Math.floor(col / p.coreW);
-  if (mod(coreIdx, p.corePeriod) === p.coreSlot) {
-    return hash3(p.seed * 4096, 0x7c07e, coreIdx) < p.pCore;
+  // A house has no lift core and no stair shaft, so it gets no stripe. On two
+  // storeys the core rule is correlation with nothing behind it, and it is the
+  // thing that draws the ground-to-roof vertical runs an office block has.
+  if (!p.house) {
+    const coreIdx = Math.floor(col / p.coreW);
+    if (mod(coreIdx, p.corePeriod) === p.coreSlot) {
+      return hash3(p.seed * 4096, 0x7c07e, coreIdx) < p.pCore;
+    }
   }
   if (hash3(p.seed * 4096, 0x5100, floorIdx) > p.pFloor * heightFade) return false;
   const tb = Math.floor(col / p.tenantW);
@@ -545,7 +625,10 @@ function mod(a: number, n: number): number {
  * sane range at every hour of the night.
  */
 export function meanOccupancy(p: FacadeParams, hourFactor: number, heightFade = 1): number {
-  const coreFrac = 1 / p.corePeriod;
+  // No core on a house, and the mean has to drop the term in exactly the case
+  // isLit drops the stripe or the far field stops matching what the near field
+  // actually draws. The two are meant to agree by construction.
+  const coreFrac = p.house ? 0 : 1 / p.corePeriod;
   const body = p.pFloor * heightFade * Math.min(1, p.pTenant * hourFactor) * p.pCell;
   return coreFrac * p.pCore + (1 - coreFrac) * body;
 }
@@ -564,6 +647,16 @@ export function packFacade(p: FacadeParams, out: Float32Array, i: number): void 
   // both, and a seventh texel for four bits would be one more fetch per pixel.
   out[o++] = p.coreSlot;  out[o++] = p.group * 8 + p.family;
   out[o++] = p.relief;    out[o++] = p.parapetM;
+  // The ground-storey pair arrived with the seventh texel and was never
+  // written: readFacade has always read them, so every building got a zero
+  // shopfront and a groundStoreyM clamped to 0.5 m, which put the upper window
+  // grid half a metre off the pavement and left the shop band a dark stripe.
+  out[o++] = p.groundStoreyM; out[o++] = p.shopfront;
+  // `house` rides in a spare component of a texel readFacade already fetches,
+  // so it costs no bytes and no extra fetch across 187k buildings. The last
+  // component is written anyway: the gate fills the buffer with NaN first, so
+  // a slot nobody writes now fails rather than reading as a silent zero.
+  out[o++] = p.house;     out[o++] = 0;
 }
 
 // --- the GLSL half ----------------------------------------------------------
@@ -605,6 +698,7 @@ struct Facade {
   float parapetM;
   float groundStoreyM;
   float shopfront;
+  float house;
 };
 
 // One RGBA8 texel is two 16-bit values: (r,g) is the first, (b,a) the second.
@@ -646,7 +740,7 @@ Facade readFacade(float bidx) {
   p.tenantW = e.x;    p.tenantH = e.y;  p.coreW = e.z;      p.corePeriod = e.w;
   p.coreSlot = f.x;   p.group = floor(f.y / 8.0);  p.family = f.y - p.group * 8.0;
   p.relief = f.z;     p.parapetM = f.w;
-  p.groundStoreyM = g.x;  p.shopfront = g.y;
+  p.groundStoreyM = g.x;  p.shopfront = g.y;  p.house = g.z;
 
   // A DEAD TABLE MUST DEGRADE, NOT BREAK.
   //
@@ -685,7 +779,7 @@ Facade readFacade(float bidx) {
     p.win = vec4(0.18, 0.82, 0.16, 0.86);
     p.relief = 0.5; p.parapetM = 0.9;
     p.group = 1.0; p.family = fb2 > 0.82 ? 0.0 : 1.0;
-    p.groundStoreyM = 4.0; p.shopfront = 0.45;
+    p.groundStoreyM = 4.0; p.shopfront = 0.45; p.house = 0.0;
   }
 
   // Belt and braces: clamp every divisor at the point of use anyway, so a
@@ -713,9 +807,13 @@ float fHash(float a, float b, float c) {
 // The transcription of isLit(). Four gates, same order, same constants.
 // Core stripe, then floor, then tenancy, then the individual window.
 float facadeLit(Facade p, float col, float floorIdx, float heightFade) {
-  float coreIdx = floor(col / p.coreW);
-  if (abs(mod(coreIdx, p.corePeriod) - p.coreSlot) < 0.5) {
-    return step(fHash(p.seed, 7.13, coreIdx), p.pCore);
+  // No core on a house: it has no lift and no stair shaft, and two storeys of
+  // stripe is correlation with nothing behind it. Mirrors isLit().
+  if (p.house < 0.5) {
+    float coreIdx = floor(col / p.coreW);
+    if (abs(mod(coreIdx, p.corePeriod) - p.coreSlot) < 0.5) {
+      return step(fHash(p.seed, 7.13, coreIdx), p.pCore);
+    }
   }
   if (fHash(p.seed, 51.7, floorIdx) > p.pFloor * heightFade) return 0.0;
   float tb = floor(col / p.tenantW);
@@ -727,7 +825,7 @@ float facadeLit(Facade p, float col, float floorIdx, float heightFade) {
 
 // The closed form of the same thing, for the far field. See meanOccupancy().
 float facadeMeanOccupancy(Facade p, float heightFade) {
-  float coreFrac = 1.0 / p.corePeriod;
+  float coreFrac = p.house > 0.5 ? 0.0 : 1.0 / p.corePeriod;
   float hourF = facadeHourFactor(p.group);
   float body = p.pFloor * heightFade * min(1.0, p.pTenant * hourF) * p.pCell;
   return coreFrac * p.pCore + (1.0 - coreFrac) * body;

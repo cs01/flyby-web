@@ -41,6 +41,7 @@ import {
   hash3,
   hourFactorFor,
   hourFactors,
+  HOUSE_OPEN_FRAC,
   isLit,
   meanOccupancy,
   packFacade,
@@ -202,9 +203,17 @@ for (const city of ["manhattan", "chicago"]) {
   const to = FACADE_GLSL.indexOf("float facadeMeanOccupancy(");
   const body = from >= 0 && to > from ? FACADE_GLSL.slice(from, to) : "";
   check("facadeLit is in the shader", body.length > 200, `${body.length} chars`);
-  for (const term of ["p.pFloor", "p.pTenant", "p.pCore", "p.coreSlot", "p.tenantW", "p.tenantH"]) {
+  for (const term of ["p.pFloor", "p.pTenant", "p.pCore", "p.coreSlot", "p.tenantW", "p.tenantH", "p.house"]) {
     check(`facadeLit gates on ${term}`, body.includes(term), "in the GLSL body");
   }
+
+  // The closed form has to drop the core term in the SAME case isLit drops the
+  // stripe, or the far field stops matching what the near field draws. Checked
+  // in the shader's copy too, because that copy is the one that renders.
+  const mFrom = FACADE_GLSL.indexOf("float facadeMeanOccupancy(");
+  const mBody = mFrom >= 0 ? FACADE_GLSL.slice(mFrom) : "";
+  check("the shader's mean drops the core on a house", mBody.includes("p.house"),
+    `${mBody.length} chars of facadeMeanOccupancy`);
 }
 
 // --- 2. material variety -----------------------------------------------------
@@ -271,8 +280,11 @@ check("hash3 is pinned", Math.abs(hash3(12345, 678, 90) - 0.48969510104507208) <
   const b = facadeFor(BuildingKind.Tower, 180, 4242);
   check("facadeFor is a pure function", JSON.stringify(a) === JSON.stringify(b), "same seed, same params");
 
-  const bufA = new Float32Array(FACADE_FLOATS);
-  const bufB = new Float32Array(FACADE_FLOATS);
+  // NaN, not zero. A slot nobody writes reads back as a perfectly plausible
+  // zero, which is how groundStoreyM and shopfront sat unwritten from the
+  // commit that added their texel while this very check reported "no holes".
+  const bufA = new Float32Array(FACADE_FLOATS).fill(Number.NaN);
+  const bufB = new Float32Array(FACADE_FLOATS).fill(Number.NaN);
   packFacade(a, bufA, 0);
   packFacade(b, bufB, 0);
   check("packFacade is stable", bufA.every((v, i) => v === bufB[i]), `${FACADE_FLOATS} floats`);
@@ -527,6 +539,118 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
     wrongStrideErr > 0.01,
     `off-by-one stride gives ${wrongStrideErr.toExponential(2)} error, so the check above can fail`,
   );
+}
+
+// --- 6. a house is not a small block of flats --------------------------------
+//
+// The family specs were measured on multi-storey buildings and were being
+// applied to a two-storey house unchanged: a 3.0 m cell with a 0.50 x 0.58
+// window in it is a 29% window-to-wall ratio, and every cell had one. A US
+// detached single-family house is 12-18% WWR with two to four openings per
+// elevation. These are the numbers that claim, measured over every house in
+// every pack rather than eyeballed off a screenshot.
+
+const WWR_MIN = 0.12;
+const WWR_MAX = 0.18;
+
+{
+  let n = 0;
+  let sum = 0;
+  let lo = 1;
+  let hi = 0;
+  let storey = { min: 99, max: 0 };
+  let column = { min: 99, max: 0 };
+  let tallest = 0;
+  let notResidential = 0;
+  const byCity: string[] = [];
+
+  for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
+    const p = await pack(file.replace(".city", ""));
+    let cityN = 0;
+    for (let i = 0; i < p.buildings.length; i++) {
+      const b = p.buildings[i];
+      const heightM = b.topM - b.baseM;
+      const f = facadeFor(b.kind, heightM, i);
+      if (!f.house) continue;
+      if (b.kind !== BuildingKind.Residential) notResidential++;
+      tallest = Math.max(tallest, heightM);
+      const wwr = (f.win[1] - f.win[0]) * (f.win[3] - f.win[2]);
+      n++; cityN++; sum += wwr;
+      lo = Math.min(lo, wwr); hi = Math.max(hi, wwr);
+      storey = { min: Math.min(storey.min, f.storeyM), max: Math.max(storey.max, f.storeyM) };
+      column = { min: Math.min(column.min, f.columnM), max: Math.max(column.max, f.columnM) };
+    }
+    byCity.push(`${file.replace(".city", "")} ${cityN}`);
+  }
+
+  // Not vacuous: if the flag stopped firing every measurement below would pass
+  // over an empty set.
+  check("the packs contain houses", n > 1000, `${n} house-flagged: ${byCity.join(" ")}`);
+  check("a house is only a low residential", notResidential === 0 && tallest <= 11,
+    `${notResidential} non-residential, tallest ${tallest.toFixed(1)} m`);
+  const mean = n > 0 ? sum / n : 0;
+  check("house window-to-wall ratio is a house's",
+    mean >= WWR_MIN && mean <= WWR_MAX && lo >= WWR_MIN && hi <= WWR_MAX,
+    `mean ${(100 * mean).toFixed(1)}%, range ${(100 * lo).toFixed(1)}-${(100 * hi).toFixed(1)}% ` +
+    `(want ${100 * WWR_MIN}-${100 * WWR_MAX}%)`);
+  // The delivered glazing is lower again, because only HOUSE_OPEN_FRAC of the
+  // cells carry an opening at all. Printed, not gated: the rectangle is the
+  // thing this module decides, and the keep fraction is gated where it lives.
+  console.log(`     ${"delivered glazing after the keep".padEnd(38)} ` +
+    `${(100 * mean * HOUSE_OPEN_FRAC).toFixed(1)}% at a ${HOUSE_OPEN_FRAC} keep`);
+  // US residential floor-to-floor is 2.7-3.0 m, not the 3.0-3.1 m of a flat
+  // over a shop, and a house's windows sit 4.0-4.6 m apart, not 3.0-3.3.
+  check("house storeys are residential", storey.min >= 2.7 && storey.max <= 3.0,
+    `${storey.min.toFixed(2)}..${storey.max.toFixed(2)} m`);
+  check("house windows sit far apart", column.min >= 4.0 && column.max <= 4.6,
+    `${column.min.toFixed(2)}..${column.max.toFixed(2)} m`);
+}
+
+/**
+ * The closed form must track the rule it summarises, ON A HOUSE.
+ *
+ * meanOccupancy exists so the far field can fade to something stable, and it
+ * is only worth anything if it equals what isLit actually produces. A house
+ * has no service core, so the core term has to come out of BOTH or the far
+ * field of a suburb sits above the near field of the same suburb by the whole
+ * core fraction -- which is what the probe below measures.
+ */
+{
+  const houses: FacadeParams[] = [];
+  for (let seed = 0; seed < 600; seed++) houses.push(facadeFor(BuildingKind.Residential, 6 + (seed % 5), seed * 31 + 7));
+  check("the sample is houses", houses.every((p) => p.house === 1), `${houses.length} house facades`);
+
+  let worst = 0;
+  let where = "";
+  for (const hour of [20, 23, 2]) {
+    let lit = 0;
+    let cells = 0;
+    let closed = 0;
+    for (const p of houses) {
+      const hf = hourFactorFor(hourFactors(hour), p.group);
+      for (let c = 0; c < COLS; c++) {
+        for (let f = 0; f < FLOORS; f++) { if (isLit(p, c, f, hf)) lit++; cells++; }
+      }
+      closed += meanOccupancy(p, hf);
+    }
+    const d = Math.abs(lit / cells - closed / houses.length);
+    if (d > worst) { worst = d; where = `@${hour}:00 sampled ${(100 * lit / cells).toFixed(1)}% vs closed ${(100 * closed / houses.length).toFixed(1)}%`; }
+  }
+  // 2% of the wall. The stripe a house does not have would put roughly 1/10 of
+  // its columns at pCore instead of at the body rate, which is four times this.
+  check("a house's closed-form mean tracks its rule", worst < 0.02,
+    `worst ${(100 * worst).toFixed(2)}% ${where}`);
+
+  // VACUITY PROBE: put the core term back into the closed form alone and the
+  // check above has to be able to see it.
+  let probe = 0;
+  for (const p of houses) {
+    const hf = hourFactorFor(hourFactors(23), p.group);
+    probe += Math.abs(meanOccupancy(p, hf) - (meanOccupancy(p, hf) * (1 - 1 / p.corePeriod) + p.pCore / p.corePeriod));
+  }
+  probe /= houses.length;
+  check("probe: a stale core term is detectable", probe > 0.02,
+    `re-adding the core moves the mean by ${(100 * probe).toFixed(2)}%`);
 }
 
 console.log(failures === 0 ? "\nall facade checks ok" : `\n${failures} facade check(s) FAILED`);

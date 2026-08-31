@@ -34,6 +34,7 @@ import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import {
   FACADE_FLOATS,
   FACADE_GLSL,
+  HOUSE_OPEN_FRAC,
   FACADE_BYTE_TEXELS,
   encodeFacadeValue,
   facadeFor,
@@ -441,6 +442,29 @@ void main() {
     // blank. Far away both terms converge and this equals the old winMean.
     float win = mix(winMeanX, winX, detailX) * mix(winMeanY, winY, detailY) * capped;
 
+    // IRREGULAR OPENINGS.
+    //
+    // A house elevation is two to four windows with blank wall between them.
+    // Half of what makes the uniform grid read as an office block is not the
+    // size of the openings, it is that EVERY cell has one: a lattice is a
+    // curtain wall's structure, not a house's. So on a house each cell keeps
+    // its window only if a hash of (column, floor) passes, and 45% do not.
+    //
+    // It has to filter the way the rectangle above does. The keep is a hard
+    // step, and a hard step under a pixel is exactly the sparkle the analytic
+    // filtering exists to prevent, so it mixes to its own mean -- which is the
+    // keep fraction itself, and comes from facade.ts so the CPU and the shader
+    // cannot hold two different ones.
+    float openMean = 1.0;
+    float openPick = 1.0;
+    if (fp.house > 0.5) {
+      openMean = ${HOUSE_OPEN_FRAC};
+      openPick = step(hash21(vec2(colIdx * 1.37 + fp.seed * 53.0,
+                                  floorIdx * 0.79 + 11.0)), openMean);
+    }
+    win *= mix(openMean, openPick, detail);
+    winPattern *= openPick;
+
     win *= step(groundH, vUv.y);   // the ground storey draws its own thing
 
     glassMask = win * fp.glassFrac;
@@ -476,7 +500,17 @@ void main() {
 
       // The pier between two bays, in metres, so it stays a pier rather than a
       // fraction that widens with the bay.
-      float pier = mix(0.55, 0.20, fp.shopfront) / bayM;
+      //
+      // On a house the pier takes whatever the bay has left over once the
+      // opening is the same width as the windows on the storeys above. A house
+      // ground floor is a window and a front door in a wall; a bay of glass
+      // between slim piers is a shopfront, and drawing one on every bay of a
+      // two-storey house is how a suburb comes out looking like a parade.
+      float pierM = mix(0.55, 0.20, fp.shopfront);
+      if (fp.house > 0.5) {
+        pierM = max(pierM, 0.5 * (bayM - (fp.win.y - fp.win.x) * fp.columnM));
+      }
+      float pier = pierM / bayM;
       float gx = smoothstep(pier - bw, pier + bw, bx)
                * smoothstep(1.0 - pier + bw, 1.0 - pier - bw, bx);
 
@@ -495,6 +529,46 @@ void main() {
       float shopY = mix(gyWin, gyDoor, isDoor);
       shop = mix(clamp(1.0 - 2.0 * pier, 0.0, 1.0), gx, detailX) * shopY;
 
+      // THE GARAGE DOOR.
+      //
+      // In a US suburb this is the strongest single "this is a house" cue at
+      // street level, and it is the one the ground band had no way to draw: a
+      // flush ribbed panel a little over two metres tall sitting straight on
+      // the driveway, with no plinth under it and no glass in it.
+      float garage = 0.0;
+      if (fp.house > 0.5) {
+        // Width in METRES rather than as a fraction of the bay: a single door
+        // is 2.5 m and a double is 5.0 m whatever bay it happens to land in,
+        // and a door that scaled with the bay would stop reading as a door.
+        float garW = 2.5 + 2.5 * hash11(fp.seed * 6.1 + 2.0);
+        float garH = 2.05 + 0.30 * hash11(fp.seed * 8.3 + 7.0);
+        // Roughly one per house: a 10 x 8 m house has a perimeter of about
+        // eight bays at this bay width, so a period of six to nine puts one
+        // door on it and only sometimes a second.
+        float garEvery = 6.0 + floor(hash11(fp.seed * 12.7 + 5.0) * 4.0);
+        float garSlot = floor(hash11(fp.seed * 15.3 + 8.0) * garEvery);
+        float inBay = step(abs(mod(bayIdx, garEvery) - garSlot), 0.5);
+        float aaX = max(fwidth(vUv.x), 1e-4);
+        float doorX = smoothstep(garW * 0.5 + aaX, garW * 0.5 - aaX,
+                                 abs(bx - 0.5) * bayM);
+        float doorY = smoothstep(garH + aaY, garH - aaY, vUv.y);
+        // Converges to the door's share of the whole band, so a bay under a
+        // pixel dissolves into the wall instead of flickering in and out.
+        float garMean = clamp(garW / bayM, 0.0, 1.0) / garEvery;
+        garage = mix(garMean, inBay * doorX, detailX) * doorY;
+      }
+      shop *= 1.0 - garage;   // no glazing in a garage door
+
+      // The same keep as the storeys above, for the same reason: an opening in
+      // every bay is a lattice, and a house does not have one at street level
+      // either. Filtered to the keep fraction so the band converges instead of
+      // flickering bay by bay as it goes under a pixel.
+      if (fp.house > 0.5) {
+        float bayKeep = step(hash21(vec2(bayIdx * 1.91 + fp.seed * 29.0, 3.0)),
+                             ${HOUSE_OPEN_FRAC});
+        shop *= mix(${HOUSE_OPEN_FRAC}, max(bayKeep, isDoor), detailX);
+      }
+
       // Shop glass is darker than the sky-reflecting curtain wall above: you
       // are looking into a room, not at a mirror, and the room is unlit by day.
       vec3 shopGlass = mix(vec3(0.055, 0.058, 0.062), vec3(0.10, 0.11, 0.13),
@@ -510,9 +584,25 @@ void main() {
                                 hash11(bayIdx * 5.3 + fp.seed * 29.0)) * 0.22 + 0.05,
                            fp.shopfront * 0.8 * detailX);
 
-      albedo = mix(albedo, plinthCol, (1.0 - smoothstep(plinthM - aaY, plinthM + aaY, vUv.y)) * (1.0 - isDoor * gx));
+      // The plinth stops at the garage: a door sits on the driveway, and a
+      // kerb across the bottom of it would read as a step into a wall.
+      albedo = mix(albedo, plinthCol,
+                   (1.0 - smoothstep(plinthM - aaY, plinthM + aaY, vUv.y))
+                   * (1.0 - isDoor * gx) * (1.0 - garage));
       albedo = mix(albedo, fasciaCol, smoothstep(headY - aaY, headY + aaY, vUv.y));
       albedo = mix(albedo, shopGlass, shop);
+
+      // Painted trim, close to the wall but not the wall: a door the exact
+      // colour of the siding reads as a hole in it rather than as a door.
+      // Horizontal ribs every 0.25 m, faded with the pixel footprint like
+      // every other line on this facade.
+      vec3 garageCol = mix(fp.colour, vec3(0.72, 0.71, 0.69), 0.35)
+                     * mix(0.86, 1.06, hash11(fp.seed * 19.0 + 3.0));
+      float ribP = vUv.y / 0.25;
+      float ribW = max(fwidth(ribP), 1e-4);
+      float rib = 1.0 - smoothstep(0.0, max(0.12, ribW), fract(ribP));
+      albedo = mix(albedo, garageCol * (1.0 - 0.22 * rib * (1.0 - clamp(ribW * 1.6, 0.0, 1.0))), garage);
+
       glassMask = shop * mix(0.30, 0.92, fp.shopfront);
 
       // A shopfront is set back behind its piers, so the reveal is deep and the
@@ -568,7 +658,13 @@ void main() {
     // Frequency comes from the family so a curtain wall gets none of it.
     // fp.relief is already the per-family measure of how modelled a facade is:
     // near zero on glass, high on brick and stone.
-    float courseHz = mix(2.0, 13.3, fp.relief);      // 13.3/m is a 75 mm course
+    // A house is not laid in brick, it is clad in lap siding: one board edge
+    // every 0.16 m (a 150 mm board with a 25 mm lap) running horizontally with
+    // nothing crossing it, so the perpends go too. Brick and Stucco are the
+    // families a house lands in; on Concrete or Stone the joint pattern is
+    // already right for a rendered or panelled house.
+    float lap = fp.house * step(0.5, fp.family) * step(fp.family, 2.5);
+    float courseHz = mix(mix(2.0, 13.3, fp.relief), 6.25, lap);  // 13.3/m is a 75 mm course
     float coursePhase = vUv.y * courseHz;
     float course = abs(fract(coursePhase) - 0.5) * 2.0;
     // Perpends every 215 mm, offset half a brick on alternate courses, which is
@@ -582,13 +678,17 @@ void main() {
     // fade to flat rather than alias into a moire.
     float mortarFade = detailY * detailX * fp.relief;
     float mortar = (1.0 - smoothstep(0.55, 0.95, course))
-                 + (1.0 - smoothstep(0.70, 0.97, perp)) * 0.6;
+                 + (1.0 - smoothstep(0.70, 0.97, perp)) * 0.6 * (1.0 - lap);
     mortar *= mortarFade;
 
     // 3 mm of recess, expressed as a slope along the wall's own tangent frame.
     n = normalize(n + (vec3(0.0, 1.0, 0.0) * (fract(coursePhase) - 0.5)
                        * mortarFade * 0.22));
-    albedo *= 1.0 - 0.10 * mortar;
+    // A lap edge stands 20 mm proud and casts a real line where a mortar joint
+    // is 10 mm deep and mostly a colour change. The house's relief is 0.3
+    // against brick's 0.75 and mortarFade is scaled by it, so the coefficient
+    // has to make some of that back or the siding comes out flat.
+    albedo *= 1.0 - mix(0.10, 0.30, lap) * mortar;
 
     // A cornice: the last metre below the parapet is a projecting band, so it
     // is brighter on top and casts a line of shadow under itself. On a stone
@@ -635,7 +735,7 @@ void main() {
       float occ = facadeMeanOccupancy(fp, heightFade);
       // Same treatment as the window pattern: resolve individual lit windows
       // up close, converge to the average glow of a lit building far away.
-      float lit = mix(occ * winMean, litPattern, detail);
+      float lit = mix(occ * winMean * openMean, litPattern, detail);
       // A third of the windows cool. Offices are fluorescent and LED, homes
       // are warm, and a city that is entirely sodium-orange at night is a city
       // from before about 1995. Homes lean warm and offices lean cool, which
