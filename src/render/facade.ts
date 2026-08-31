@@ -131,8 +131,8 @@ const FAMILY: Record<FacadeFamily, FamilySpec> = {
  * applied unchanged to a two-storey house: Stucco is a 3.0 x 3.0 m cell with a
  * 0.50 x 0.58 window in it, which is a 29% window-to-wall ratio on every cell
  * of a uniform lattice. A US detached single-family house is 12-18% WWR, and
- * it gets there two ways at once: a smaller opening, and two to four of them
- * per elevation with blank wall between, not a grid.
+ * what gets it there is SPARSITY rather than a smaller pane: two to four
+ * openings per elevation with blank wall between them, not a grid.
  *
  * Only the geometry moves. The family still picks the colour and the material,
  * because a house is genuinely brick or render or board, and which one is the
@@ -144,11 +144,21 @@ const HOUSE = {
   /** Windows on a house sit further apart than on a terrace. */
   columnM: 4.3,
   /**
-   * 0.32 x 0.47 of a 4.3 x 2.85 m cell is a 1.38 x 1.34 m opening: 15.0% WWR,
-   * the middle of the 12-18% band. test/facade.check.ts measures the mean and
-   * the range of this rectangle over every house in every pack.
+   * The rectangle is NOT the window-to-wall ratio. Only HOUSE_OPEN_FRAC of the
+   * cells carry an opening at all, so the glass actually on the wall is the
+   * rectangle times the keep, and that product is the 12-18% a real elevation
+   * measures. Sized as 15% here, the wall delivered 8.3%, which is a warehouse.
+   *
+   * 0.54 x 0.50 of a 4.3 x 2.85 m cell is a 2.32 x 1.43 m opening, cill at
+   * 0.86 m and head at 2.28 m. Big for one casement, and correctly so: at this
+   * column pitch and this keep an opening lands every 7.8 m of elevation, so
+   * the one that lands is the paired or triple unit under a single head that a
+   * living room actually has, not a bathroom light.
+   *
+   * 0.27 x 0.55 = 14.9% delivered. test/facade.check.ts gates the delivered
+   * figure over every house in every pack and prints this rectangle beside it.
    */
-  win: [0.34, 0.66, 0.30, 0.77] as [number, number, number, number],
+  win: [0.23, 0.77, 0.30, 0.80] as [number, number, number, number],
   /** Board or render over frame: a shallow reveal, not a 200 mm masonry arch. */
   relief: 0.30,
   /** Jitter half-widths, tightened so no seed can leave the 12-18% band. */
@@ -447,8 +457,8 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
   const tall = Math.min(1, Math.max(0, (heightM - 20) / 80));
   // The house jitter is narrower because the WWR band it has to stay inside is
   // narrow: the two axes shrink TOGETHER on this one hash, so at the family's
-  // +/-0.03 the rectangle would swing from 11.1% to 19.6% and leave 12-18% at
-  // both ends. At +/-0.0175 it runs 12.7% to 17.6%.
+  // +/-0.03 the DELIVERED glazing would run 12.0% to 18.0%, sitting on both
+  // edges of the band at once. At +/-0.0175 it runs 13.2% to 16.6%.
   const wj = (house ? HOUSE.winJitter : 0.06) * (h1(seed, 0x43) - 0.5);
   const wb = house ? HOUSE.win : s.win;
   const win: [number, number, number, number] = [

@@ -549,6 +549,13 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
 // detached single-family house is 12-18% WWR with two to four openings per
 // elevation. These are the numbers that claim, measured over every house in
 // every pack rather than eyeballed off a screenshot.
+//
+// The number gated is the glass ACTUALLY ON THE WALL: the window rectangle
+// times HOUSE_OPEN_FRAC, because the other 45% of the cells are blank wall.
+// This gate used to assert the rectangle, which is an intermediate that stopped
+// corresponding to anything physical the moment the keep existed -- it read
+// 15.1% and passed while the wall was delivering 8.3%, which is a warehouse.
+// The rectangle is still printed, as the context that explains the figure.
 
 const WWR_MIN = 0.12;
 const WWR_MAX = 0.18;
@@ -556,6 +563,9 @@ const WWR_MAX = 0.18;
 {
   let n = 0;
   let sum = 0;
+  let rectSum = 0;
+  let rectLo = 1;
+  let rectHi = 0;
   let lo = 1;
   let hi = 0;
   let storey = { min: 99, max: 0 };
@@ -574,8 +584,10 @@ const WWR_MAX = 0.18;
       if (!f.house) continue;
       if (b.kind !== BuildingKind.Residential) notResidential++;
       tallest = Math.max(tallest, heightM);
-      const wwr = (f.win[1] - f.win[0]) * (f.win[3] - f.win[2]);
-      n++; cityN++; sum += wwr;
+      const rect = (f.win[1] - f.win[0]) * (f.win[3] - f.win[2]);
+      const wwr = rect * HOUSE_OPEN_FRAC;
+      n++; cityN++; sum += wwr; rectSum += rect;
+      rectLo = Math.min(rectLo, rect); rectHi = Math.max(rectHi, rect);
       lo = Math.min(lo, wwr); hi = Math.max(hi, wwr);
       storey = { min: Math.min(storey.min, f.storeyM), max: Math.max(storey.max, f.storeyM) };
       column = { min: Math.min(column.min, f.columnM), max: Math.max(column.max, f.columnM) };
@@ -589,15 +601,13 @@ const WWR_MAX = 0.18;
   check("a house is only a low residential", notResidential === 0 && tallest <= 11,
     `${notResidential} non-residential, tallest ${tallest.toFixed(1)} m`);
   const mean = n > 0 ? sum / n : 0;
-  check("house window-to-wall ratio is a house's",
+  const rectMean = n > 0 ? rectSum / n : 0;
+  check("house glazing delivered to the wall is a house's",
     mean >= WWR_MIN && mean <= WWR_MAX && lo >= WWR_MIN && hi <= WWR_MAX,
     `mean ${(100 * mean).toFixed(1)}%, range ${(100 * lo).toFixed(1)}-${(100 * hi).toFixed(1)}% ` +
-    `(want ${100 * WWR_MIN}-${100 * WWR_MAX}%)`);
-  // The delivered glazing is lower again, because only HOUSE_OPEN_FRAC of the
-  // cells carry an opening at all. Printed, not gated: the rectangle is the
-  // thing this module decides, and the keep fraction is gated where it lives.
-  console.log(`     ${"delivered glazing after the keep".padEnd(38)} ` +
-    `${(100 * mean * HOUSE_OPEN_FRAC).toFixed(1)}% at a ${HOUSE_OPEN_FRAC} keep`);
+    `(want ${100 * WWR_MIN}-${100 * WWR_MAX}%), from a ` +
+    `${(100 * rectMean).toFixed(1)}% rectangle (${(100 * rectLo).toFixed(1)}-` +
+    `${(100 * rectHi).toFixed(1)}%) at a ${HOUSE_OPEN_FRAC} keep`);
   // US residential floor-to-floor is 2.7-3.0 m, not the 3.0-3.1 m of a flat
   // over a shop, and a house's windows sit 4.0-4.6 m apart, not 3.0-3.3.
   check("house storeys are residential", storey.min >= 2.7 && storey.max <= 3.0,

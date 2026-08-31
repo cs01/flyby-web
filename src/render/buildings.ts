@@ -320,6 +320,12 @@ void main() {
   // Fresnel reflection and the sun glint, and nothing else.
   float glassMask = 0.0;
 
+  // The room behind a ground-storey window, as an effective albedo. It is a
+  // quantity of its own rather than part of albedo because it takes the AMBIENT
+  // light and not the beam: see the ground-storey branch, which is the only
+  // thing that sets it.
+  vec3 seeIn = vec3(0.0);
+
   // How much of the sky dome this fragment can see, beyond its own orientation.
   // 1.0 on a roof; less and less as you go down into a street canyon.
   float skyOcc = 1.0;
@@ -613,6 +619,47 @@ void main() {
       // that says where the shopfront stops and the building starts.
       albedo *= 1.0 - 0.35 * fp.relief * detailY
                     * smoothstep(0.0, 0.12, groundH - vUv.y) * smoothstep(0.40, 0.12, groundH - vUv.y);
+
+      // WHAT IS BEHIND THE GLASS.
+      //
+      // shopGlass is a 0.055-0.13 albedo and, seen straight on, Schlick puts
+      // only 4% of the sky probe on top of it, so until now there was nothing
+      // behind a shop window at all. Van Ness came out as near-black rectangles
+      // between pale piers, which reads as a row of loading bays rather than as
+      // a shopping street. A real shopfront IS dark seen straight on, but it is
+      // dark because you are looking INTO a room that has a floor, a ceiling
+      // and stock in it.
+      //
+      // So the bay gets an effective albedo of its own, and it is added to the
+      // AMBIENT term only, never to the beam. That is both the physics and what
+      // keeps it in its place: the daylight in a shop arrived through this same
+      // window and leaves through it again after a couple of bounces, so it
+      // tracks the sky and the lit wall opposite, and it cannot rival a wall
+      // the sun is directly on.
+      //
+      // Brighter at the head than at the cill because a shop is lit from its
+      // ceiling. The gradient is most of the effect: a flat panel of any
+      // brightness still reads as a panel rather than as depth.
+      float headroom = max(headY - plinthM, 0.5);
+      float up = clamp((vUv.y - plinthM) / headroom, 0.0, 1.0);
+      // 0.12 at the cill to 0.42 at the head, warm because a shop is tungsten
+      // and timber and cardboard and the sky feeding it is not.
+      //
+      // Measured on the sf-street pose, against a sunlit pier at 138/255: the
+      // bay head reads 23 with no interior at all (a black rectangle), 66 at
+      // these constants, and 83 at 0.20/0.70. 83 is too much. The pier is
+      // taking the full beam there and the bay is not, so the same numbers on a
+      // SHADED elevation put the bay level with the wall beside it, which is a
+      // light box rather than a shop.
+      //
+      // Filtered for free: it is a product of the shop mask, which already
+      // converges to its own bay-mean through detailX, and a smooth ramp in
+      // vUv.y that has no detail to lose. No step in it, so no sparkle.
+      //
+      // Faded out with uNight so it does not double-count the shop's own
+      // lighting, which arrives below as an emissive term after dark.
+      seeIn = vec3(1.00, 0.90, 0.76) * mix(0.12, 0.42, up * up)
+            * glassMask * (1.0 - uNight);
     }
 
     // Horizontal banding between storeys: a thin darker line reads as a floor
@@ -910,7 +957,14 @@ void main() {
 
   vec3 ambientTotal = ambient + bounce;
 
-  vec3 lit = albedo * (beam + ambientTotal) + emissive;
+  // seeIn takes the ambient in full and only a tenth of the beam. A vertical
+  // shop window does not put the sun on its own back wall: what the sun does is
+  // reach a strip of floor just inside the cill and bounce a little of that back
+  // out, which is why a sunlit parade still shows its interiors instead of
+  // going flat black. At the full beam the bay would outrun the pier beside it
+  // and the base of every sunlit elevation would read as a row of light boxes.
+  vec3 lit = albedo * (beam + ambientTotal) + seeIn * (ambientTotal + beam * 0.10)
+           + emissive;
 
   vec3 v = normalize(uCameraPos - vWorld);
 
