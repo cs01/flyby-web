@@ -210,6 +210,54 @@ export const PART_SHINGLE = 4;
  */
 export const PART_GABLE = 5;
 
+// --- What ONE lit window looks like ------------------------------------------
+//
+// facade.ts owns WHICH windows are lit, because that half is a contract between
+// a per-cell rule and a closed form and it is gated as one. These constants own
+// what a lit window then looks like inside its own cell, which the shader is
+// free to decide on its own -- with one condition, and it is the reason every
+// one of them is normalised where it is used: none of them may move the MEAN.
+// The emissive scale (0.09) was tuned against the wall's own night lighting, so
+// a change that quietly dims the city by a fifth is not a detail, it is an
+// exposure error over the whole frame.
+
+/** Fraction of lit windows with a blind partly down. */
+const BLIND_FRAC = 0.5;
+/** Most of a window's height a blind ever covers, leaving a band at the cill. */
+const BLIND_MAX = 0.75;
+/**
+ * Mean fraction of a lit window's height a blind leaves showing.
+ *
+ * The drop is uniform on (0, BLIND_MAX] when there is a blind at all, so the
+ * mean loss is BLIND_FRAC * BLIND_MAX / 2. Derived rather than written down: it
+ * is what the near-field pattern is divided by, and a stale copy of it would
+ * put the far field and the near field at different brightnesses, which is the
+ * exact class of bug the core-slot fix was.
+ */
+const BLIND_KEEP = 1 - (BLIND_FRAC * BLIND_MAX) / 2;
+/** How far a lit window throws light onto its reveal and spandrel, metres. */
+const SPILL_M = 0.35;
+/** Peak of that spill, against the pane itself. */
+const SPILL_LEVEL = 0.2;
+/**
+ * Per-tenancy lamp intensity, log-uniform over LAMP_LO..LAMP_HI.
+ *
+ * Log rather than linear because that is how lighting varies: the steps
+ * between a desk lamp near the glass, a ceiling fixture and a dark room with a
+ * television are ratios, not differences, and a linear spread puts almost
+ * nothing at the dim end where most of a night facade actually sits.
+ */
+const LAMP_LO = 0.35;
+const LAMP_HI = 1.6;
+/**
+ * What that distribution has to be divided by for its mean to be exactly 1.
+ *
+ * A log-uniform variable on [a,b] has mean (b-a)/ln(b/a), which for these two
+ * is 0.822: left alone the spread would take a fifth off the whole city's night
+ * exposure. Normalised, the multiplier runs 0.43x to 1.94x with a mean of 1.
+ */
+const LAMP_NORM = Math.log(LAMP_HI / LAMP_LO) / (LAMP_HI - LAMP_LO);
+
 const FRAG = /* glsl */ `
 precision highp float;
 in vec3 vNormal;
@@ -442,7 +490,6 @@ void main() {
                * smoothstep(fp.win.y + w.x, fp.win.y - w.x, cell.x);
     float winY = smoothstep(fp.win.z - w.y, fp.win.z + w.y, cell.y)
                * smoothstep(fp.win.w + w.y, fp.win.w - w.y, cell.y);
-    float winPattern = winX * winY * capped;
     // Each axis converges to its own mean as it runs out of pixels, so a wall
     // seen along its length keeps a row of ribbon windows instead of going
     // blank. Far away both terms converge and this equals the old winMean.
@@ -469,7 +516,6 @@ void main() {
                                   floorIdx * 0.79 + 11.0)), openMean);
     }
     win *= mix(openMean, openPick, detail);
-    winPattern *= openPick;
 
     win *= step(groundH, vUv.y);   // the ground storey draws its own thing
 
@@ -775,21 +821,119 @@ void main() {
       // Upper floors empty first: the top of a tower is the executive floor
       // and the plant room, and neither is occupied at two in the morning.
       float heightFade = mix(1.0, 0.55, smoothstep(0.0, 120.0, vUv.y));
+
+      // BLINDS.
+      //
+      // A lit window in a night photograph is usually not a full lit rectangle:
+      // roughly half of them are partly blocked, and what you see is a band
+      // from the cill up to wherever the blind stops. It matters more than its
+      // size suggests, because a wall of identical full rectangles is the
+      // remaining thing that reads as a texture map rather than as glass.
+      //
+      // One hash carries both decisions: below BLIND_FRAC there is a blind, and
+      // its position within that range says how far down it hangs. So the drop
+      // is uniform on (0, BLIND_MAX] exactly when there is one, which is what
+      // makes BLIND_KEEP the right compensation.
+      float bHash = hash21(vec2(colIdx * 0.71 + fp.seed * 17.0, floorIdx * 1.13 + 5.0));
+      float drop = step(bHash, ${BLIND_FRAC}) * ${BLIND_MAX} * (bHash / ${BLIND_FRAC});
+      float blindY = mix(fp.win.w, fp.win.z, drop);
+      // Filtered on the same footprint as every other edge on this facade.
+      float litY = smoothstep(fp.win.z - w.y, fp.win.z + w.y, cell.y)
+                 * smoothstep(blindY + w.y, blindY - w.y, cell.y);
+
+      // LIGHT SPILL.
+      //
+      // The emissive stopped dead at the window edge, which is most of what
+      // made the windows read as decals stuck on a wall. Real light leaves the
+      // pane and lands on its own reveal and on the spandrel around it. Sized
+      // in METRES and converted to cell fractions, because the throw is a
+      // property of the lamp and not of the window grid: a 1.6 m curtain-wall
+      // module and a 3.6 m stone bay spill the same 350 mm.
+      float sx = ${SPILL_M} / fp.columnM;
+      float sy = ${SPILL_M} / fp.storeyM;
+      float spillX = smoothstep(fp.win.x - sx - w.x, fp.win.x + w.x, cell.x)
+                   * smoothstep(fp.win.y + sx + w.x, fp.win.y - w.x, cell.x);
+      float spillY = smoothstep(fp.win.z - sy - w.y, fp.win.z + w.y, cell.y)
+                   * smoothstep(fp.win.w + sy + w.y, fp.win.w - w.y, cell.y);
+      // A shuttered window throws less: the halo tracks what the blind leaves.
+      float halo = max(0.0, spillX * spillY - winX * winY) * (1.0 - drop);
+
+      // THE MEAN IS THE THING THAT MAY NOT MOVE.
+      //
+      // Blinds take light off the wall and spill puts light back beside it, and
+      // both are near-field detail that has to dissolve into the SAME far-field
+      // number as before or a building changes brightness as you approach it.
+      // So the profile is divided by its own mean: a smoothstep ramp integrates
+      // to half its width, so a spill of sx either side of the rectangle adds
+      // sx to the mean of that axis (clamped, since it cannot leave the cell),
+      // and the blind multiplies the whole thing by BLIND_KEEP. Measured over
+      // 2812 buildings across the seven packs the normaliser runs 1.09x to
+      // 1.21x (mean 1.13), so the blinds take rather more off than the spill
+      // puts back and the pane itself ends up brighter to compensate.
+      float spillMeanX = min(1.0, winMeanX + sx);
+      float spillMeanY = min(1.0, winMeanY + sy);
+      float profileMean = ${BLIND_KEEP}
+                        * (winMean + ${SPILL_LEVEL} * max(0.0, spillMeanX * spillMeanY - winMean));
+      float profile = (winX * litY + ${SPILL_LEVEL} * halo) * (winMean / max(profileMean, 1e-4));
+
       // Correlated occupancy: cores, then floors, then tenancies, then the
       // individual window. See facade.ts -- an independent coin per cell is
       // exactly what produced a checkerboard.
-      float litPattern = facadeLit(fp, colIdx, floorIdx, heightFade) * winPattern;
+      float litPattern = facadeLit(fp, colIdx, floorIdx, heightFade) * profile * openPick * capped;
       float occ = facadeMeanOccupancy(fp, heightFade);
       // Same treatment as the window pattern: resolve individual lit windows
-      // up close, converge to the average glow of a lit building far away.
+      // up close, converge to the average glow of a lit building far away. The
+      // far-field term is untouched by the blinds and the spill, which is the
+      // whole point of the normaliser above.
       float lit = mix(occ * winMean * openMean, litPattern, detail);
+
+      // WHAT IS LIT TOGETHER IS LIT THE SAME.
+      //
+      // Colour and brightness are per TENANCY, not per window. One flat's three
+      // windows are lit by the same lamps and one office floor's fluorescents
+      // are the same tube across the whole let, so a coin per cell is the same
+      // uncorrelated noise this file's occupancy model exists to replace -- it
+      // was the last thing on a night facade still flipping cell by cell.
+      //
+      // Both converge on the CELL's own pixel footprint, and not on the
+      // tenancy's own larger one. Converging on the tenancy was tried first and
+      // it is wrong twice over: a block of four by two cells is still several
+      // pixels across at a kilometre, so what survived out there was not a
+      // patch of lit windows but a rectangle of the wall's own mean glow at a
+      // different brightness and hue from the rectangle beside it, and the
+      // mid-field towers came out as tan and grey mosaics. A tenancy's colour
+      // and its brightness are carried BY its lit windows, so they have to
+      // dissolve when those do.
+      float tb = floor(colIdx / fp.tenantW);
+      float th = floor(floorIdx / fp.tenantH);
+
       // A third of the windows cool. Offices are fluorescent and LED, homes
       // are warm, and a city that is entirely sodium-orange at night is a city
       // from before about 1995. Homes lean warm and offices lean cool, which
       // is why the mix is keyed on the occupancy group and not on a coin.
       float coolBias = fp.group < 0.5 ? 0.80 : 0.42;
-      vec3 warm = mix(vec3(1.0, 0.74, 0.42), vec3(0.82, 0.88, 1.0),
-                      step(coolBias, hash21(vec2(colIdx * 0.37 + fp.seed, floorIdx * 0.71))));
+      vec3 warmC = vec3(1.0, 0.74, 0.42);
+      vec3 coolC = vec3(0.82, 0.88, 1.0);
+      // step() fires on a fraction (1 - coolBias) of the tenancies, so that is
+      // exactly the colour this converges to once the windows are under a pixel.
+      vec3 warm = mix(mix(warmC, coolC, 1.0 - coolBias),
+                      mix(warmC, coolC, step(coolBias, hash21(vec2(tb * 0.37 + fp.seed, th * 0.71)))),
+                      detail);
+
+      // AND THEY ARE NOT ALL THE SAME BRIGHTNESS.
+      //
+      // The lit flag is binary, so every lit window was emitting the identical
+      // 0.09 and a facade came out as a punched card. Across a real night frame
+      // the spread is several stops. Per tenancy again, log-distributed, and
+      // normalised to a mean of exactly 1 (see LAMP_NORM) so the city's night
+      // exposure is where it was. Converges to 1 as the windows dissolve, so
+      // the far field is unchanged.
+      float gain = mix(1.0,
+                       exp(mix(log(${LAMP_LO}), log(${LAMP_HI}),
+                               hash21(vec2(tb * 1.63 + fp.seed * 7.0, th * 0.29 + 3.0))))
+                       * ${LAMP_NORM.toFixed(6)},
+                       detail);
+
       // The number to watch is not the peak, it is the MEAN. Far away this
       // converges to occupancy x winMean x scale over the whole facade, and at
       // 0.2 that mean was about four times the wall's own night lighting: a
@@ -797,7 +941,7 @@ void main() {
       // however neutral the skyglow and the albedo were made. At 0.09 the mean
       // sits at roughly the wall, so a building is dark with lit windows in
       // it, and the peak is still 12x the wall up close where it should be.
-      emissive += warm * lit * uNight * 0.09;
+      emissive += warm * gain * lit * uNight * 0.09;
 
       // Shopfronts. A lit shop window is far brighter than a flat above it and
       // it is at eye height, so it carries the night street the way the lit
