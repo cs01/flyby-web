@@ -549,12 +549,27 @@ async function main() {
   // 11 the four-channel false-colour.
   const terrainDebug = Number(new URLSearchParams(location.search).get("terrainDebug") ?? 0);
 
+  // A GATE FLAG IS NOT A FEATURE FLAG, and the difference is enforced here
+  // rather than by everyone remembering it.
+  //
+  // Each of the three below turns one shipped fix OFF, and exists for exactly
+  // one reason: tools/verify-water.ts and tools/verify-glass.ts have to run the
+  // OLD behaviour in the SAME binary, or their assertions pass whatever the
+  // shader does. They are not options, there is no UI for them, and the fixed
+  // version is what everyone gets.
+  //
+  // `import.meta.env.DEV` is what keeps them from becoming options by accident:
+  // tools/shots.ts spawns `vite` dev, so the gates can still reach them, and a
+  // production build strips the branch and the flag with it.
+  const gateFlag = (name: string): boolean =>
+    import.meta.env.DEV && new URLSearchParams(location.search).get(name) === "1";
+
   // `?flatwater=1` restores the water this repo had before the wave normal: one
   // shared terrain normal over the whole surface and a constant ambient
   // reflection. It is the vacuity probe for tools/verify-water.ts, which has to
   // be able to run the OLD behaviour in the SAME binary and see its assertions
   // go red -- an assertion that passes both ways is measuring nothing.
-  const flatWater = new URLSearchParams(location.search).get("flatwater") === "1";
+  const flatWater = gateFlag("flatwater");
 
   // `?flatglass=1` restores the facade this repo had before the window reveal:
   // glazing exactly in the plane of the wall, with no parallax and no shadow
@@ -562,14 +577,14 @@ async function main() {
   // tools/verify-glass.ts, which has to run the OLD behaviour in the SAME
   // binary and see its assertions go red -- an assertion that passes either way
   // is measuring nothing.
-  const flatGlass = new URLSearchParams(location.search).get("flatglass") === "1";
+  const flatGlass = gateFlag("flatglass");
 
   // `?buildingDebug=1` makes the building shader output its own facade mask, so
   // tools/verify-glass.ts does not have to guess which pixels are wall from
   // their colour. The terrain and the sky still draw normally, exactly as they
   // do under `?terrainDebug`, so the mask occludes what the beauty frame
   // occludes and the two agree pixel for pixel.
-  const buildingDebug = new URLSearchParams(location.search).get("buildingDebug") === "1";
+  const buildingDebug = gateFlag("buildingDebug");
 
   for (const u of terrain.uniforms) {
     u.uUrban.value = urban.texture;
