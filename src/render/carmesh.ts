@@ -34,6 +34,9 @@ export const PART_WHEEL = 4;
  *  doors. Its own id rather than a dark body panel, because the shader draws a
  *  rim on a wheel and must not draw one on the tub behind it. */
 export const PART_UNDER = 5;
+/** The number plate. Four triangles, and one of the strongest cues there is
+ *  that a shape is a road vehicle rather than a box on wheels. */
+export const PART_PLATE = 6;
 
 export interface CarArchetype {
   name: string;
@@ -174,6 +177,20 @@ function cross(ax: number, ay: number, az: number, bx: number, by: number, bz: n
   return [x / l, y / l, z / l];
 }
 
+/**
+ * Overwrite the surface coordinates of the vertices pushed since `fromVertex`.
+ *
+ * `push` derives u from x, which is exactly wrong for a panel standing across
+ * the car: a number plate has one x, so every corner of it would share a
+ * coordinate and the shader would have nothing to lay characters along.
+ */
+function setUV(b: Builder, fromVertex: number, uv: number[]): void {
+  for (let v = fromVertex, i = 0; v < b.pos.length / 3; v++, i++) {
+    b.part[v * 4 + 1] = uv[i * 2];
+    b.part[v * 4 + 2] = uv[i * 2 + 1];
+  }
+}
+
 /** A quad whose normal is computed from its own corners rather than given. */
 function facet(b: Builder, c: number[], part: number, s: Surface): void {
   const n = cross(
@@ -197,6 +214,69 @@ const F_NOSE = 4;
 const F_TAIL = 8;
 const F_FLANKS = 16;
 const F_ALL = F_TOP | F_BOTTOM | F_NOSE | F_TAIL | F_FLANKS;
+
+/**
+ * Bend a run of vertices' normals as though the panel were CURVED.
+ *
+ * THE SINGLE BIGGEST THING IN THIS FILE, and it costs no triangles at all.
+ *
+ * A car body is a set of smooth surfaces and this one is six flat quads. With
+ * a flat normal, an entire flank reflects the sky at exactly ONE angle, so the
+ * whole panel comes out a single flat value and no amount of material work
+ * moves it: that is most of what makes a low-poly car read as a toy. A real
+ * flank shows a gradient with the horizon running through it, because the
+ * normal sweeps as the panel curves away.
+ *
+ * So the normals are bent to those of an elliptical body section about the
+ * car's long axis, blended `k` of the way from the flat face normal. The
+ * geometry is untouched -- only the shading normal -- and the blend is kept
+ * well under the point where a normal would fall behind its own face, which
+ * test/carmesh.check.ts asserts by comparing every shading normal against its
+ * triangle's winding.
+ *
+ * Faces pointing along the car (a windscreen, a bonnet's leading edge, a
+ * number plate) are bent about the VERTICAL axis instead, which rounds the
+ * front and back in plan.
+ */
+function roundPanel(
+  b: Builder,
+  fromVertex: number,
+  cx: number, cy: number, cz: number,
+  rx: number, ry: number, rz: number,
+  k: number,
+): void {
+  for (let v = fromVertex; v < b.pos.length / 3; v++) {
+    const nx = b.nrm[v * 3];
+    const ny = b.nrm[v * 3 + 1];
+    const nz = b.nrm[v * 3 + 2];
+    const px = b.pos[v * 3];
+    const py = b.pos[v * 3 + 1];
+    const pz = b.pos[v * 3 + 2];
+    let tx: number;
+    let ty: number;
+    let tz: number;
+    if (Math.abs(nx) < 0.5) {
+      // A flank, a roof or a floor: the section is an ellipse in y-z.
+      tx = nx;
+      ty = (py - cy) / ry;
+      tz = (pz - cz) / rz;
+    } else {
+      // An end: the section is an ellipse in x-z, so the panel wraps around
+      // the corner rather than meeting the flank at a hard edge.
+      tx = (px - cx) / rx;
+      ty = ny;
+      tz = (pz - cz) / rz;
+    }
+    const tl = Math.hypot(tx, ty, tz) || 1;
+    let mx = nx + k * (tx / tl - nx);
+    let my = ny + k * (ty / tl - ny);
+    let mz = nz + k * (tz / tl - nz);
+    const ml = Math.hypot(mx, my, mz) || 1;
+    b.nrm[v * 3] = mx / ml;
+    b.nrm[v * 3 + 1] = my / ml;
+    b.nrm[v * 3 + 2] = mz / ml;
+  }
+}
 
 /**
  * A box whose top face may be shorter and narrower than its bottom one.
@@ -353,8 +433,21 @@ export function buildCarMesh(archetype: number): CarMesh {
   // tumblehome so there is a shoulder line to catch the light.
   const skinX0 = tail + 0.12;
   const skinX1 = nose - 0.12;
+  // The body section every panel below is bent to. `ry` is deliberately much
+  // larger than the panel is tall and `rz` a little larger than the car is
+  // wide: a car's flank is a very shallow curve, and a section as round as the
+  // box would put a hard highlight down the middle of every door.
+  const secCy = (sill + a.waistM) * 0.5;
+  const secRy = (a.waistM - sill) * 1.35;
+  const secRz = hw * 1.15;
+  const secRx = L * 0.55;
+  const round = (from: number, k: number): void =>
+    roundPanel(b, from, 0, secCy, 0, secRx, secRy, secRz, k);
+
+  let mark = b.pos.length / 3;
   box(b, skinX0, skinX1, hw, skinX0 + 0.04, skinX1 - 0.04, hw * 0.985,
     archTop, a.waistM, PART_BODY, bodyS, F_ALL & ~F_BOTTOM);
+  round(mark, 0.55);
 
   // The three panels below it, with the arches missing from between them. Their
   // nose and tail faces ARE the walls of each arch, so they are kept; their
@@ -367,7 +460,11 @@ export function buildCarMesh(archetype: number): CarMesh {
   ];
   for (const [x0, x1] of panels) {
     if (x1 - x0 < 0.02) continue;
+    mark = b.pos.length / 3;
     box(b, x0, x1, hw, x0, x1, hw, sill, archTop, PART_BODY, bodyS, panelFaces);
+    // Less than the skin above it. The sill is nearly flat on a real car, and
+    // the arch walls this also touches must stay pointing into the arch.
+    round(mark, 0.30);
   }
 
   // The inner tub: what you see THROUGH an arch, and the sill under the doors.
@@ -394,8 +491,15 @@ export function buildCarMesh(archetype: number): CarMesh {
     v0: a.waistM - 0.02, vSpan: Math.max(a.roofM - a.waistM + 0.02, 1e-3),
     axle: axleFrac,
   };
+  mark = b.pos.length / 3;
   box(b, c0, c1, cw, c0 + cl * a.rakeRear, c1 - cl * a.rakeFront, cw * 0.90,
     a.waistM - 0.02, a.roofM, PART_GLASS, cabinS, F_ALL & ~F_BOTTOM);
+  // A crowned roof and a wrapped windscreen, about the cabin's own section
+  // rather than the body's: the cabin is a different and much rounder shape,
+  // and a windscreen that reflects one flat value is the second thing after a
+  // flat flank that gives a model away.
+  roundPanel(b, mark, 0, (a.waistM + a.roofM) * 0.5, 0,
+    cl * 0.60, (a.roofM - a.waistM) * 1.25, cw * 1.05, 0.45);
 
   // The load bed: a shallow open box behind the cabin. It is what stops a
   // pickup reading as a hatchback with a long bonnet.
@@ -410,6 +514,22 @@ export function buildCarMesh(archetype: number): CarMesh {
     for (const zs of [-1, 1]) {
       wheel(b, ax, zs * (hw - 0.115), a.wheelR, 0.105, 8, axleFrac);
     }
+  }
+
+  // The number plate, four triangles, standing 12 mm off each end. It is out
+  // of all proportion to its size: a bright rectangle low on a dark end is one
+  // of the few marks the eye reads as "road vehicle" with no other context,
+  // and it is what a car in a mirror is recognised by.
+  const plateHalfW = Math.min(0.26, hw * 0.30);
+  const plateY0 = a.waistM * 0.24;
+  const plateY1 = plateY0 + 0.115;
+  for (const [px, dir] of [[skinX1 + 0.012, 1], [skinX0 - 0.012, -1]] as [number, number][]) {
+    const c = dir > 0
+      ? [px, plateY0, -plateHalfW, px, plateY1, -plateHalfW, px, plateY1, plateHalfW, px, plateY0, plateHalfW]
+      : [px, plateY0, plateHalfW, px, plateY1, plateHalfW, px, plateY1, -plateHalfW, px, plateY0, -plateHalfW];
+    const pm = b.pos.length / 3;
+    quad(b, c, [dir, 0, 0], PART_PLATE, anyS);
+    setUV(b, pm, [0, 0, 0, 1, 1, 1, 1, 0]);
   }
 
   // Lamps. Two at each end, at the height a real lamp cluster sits.

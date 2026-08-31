@@ -283,7 +283,8 @@ void main() {
   float isHead  = step(1.5, part) * step(part, 2.5);
   float isTail  = step(2.5, part) * step(part, 3.5);
   float isWheel = step(3.5, part) * step(part, 4.5);
-  float isUnder = step(4.5, part);
+  float isUnder = step(4.5, part) * step(part, 5.5);
+  float isPlate = step(5.5, part);
   // A flank, as against a roof, a nose or a tail. Everything below that is
   // drawn rather than modelled -- the arches, the shut lines, the posts --
   // belongs on a flank and nowhere else.
@@ -352,6 +353,22 @@ void main() {
     albedo = mix(albedo, vec3(0.38, 0.39, 0.41), lip * detail);     // bead lip
     albedo = mix(albedo, vec3(0.040, 0.040, 0.043), hub * detail);  // hub
     gloss = 0.40 * (lip + face) * detail;
+  } else if (isPlate > 0.5) {
+    // A number plate, on its own uv: 0..1 across the plate rather than along
+    // the car. Four triangles that punch far above their weight -- a bright
+    // rectangle low on a dark end is one of the very few marks the eye reads
+    // as "road vehicle" with nothing else to go on.
+    float border = min(min(u, 1.0 - u), min(v, 1.0 - v));
+    albedo = mix(vec3(0.045, 0.045, 0.050), vec3(0.60, 0.585, 0.505),
+                 smoothstep(0.05, 0.11, border));
+    // Seven characters, and deliberately not text: the eye reads the CADENCE
+    // of a plate long before it reads a glyph, and a glyph at this size is
+    // three pixels of noise. Fades out with everything else drawn.
+    float cell = fract(u * 7.0);
+    float glyph = step(0.22, cell) * step(cell, 0.78)
+                * step(0.30, v) * step(v, 0.72);
+    albedo = mix(albedo, vec3(0.030, 0.030, 0.035), glyph * detail);
+    gloss = 0.30;
   } else if (isUnder > 0.5) {
     // The tub behind the arches. Flat and dark, and deliberately NOT the wheel
     // material: it must never grow a rim.
