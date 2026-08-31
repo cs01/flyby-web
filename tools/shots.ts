@@ -213,6 +213,41 @@ export const POSES: Pose[] = [
     what: "a parked saloon on Van Ness from six metres",
   },
   {
+    // SF FROM ALTITUDE, WHICH IS WHERE THE GROUND COLOUR GOES WRONG.
+    //
+    // Every other San Francisco pose is at 48 m or below, and the landcover
+    // tint is a wash over the whole landmass: at street level you are inside
+    // one class of it and cannot see that the city is the wrong colour. From
+    // 1,100 m the peninsula is in one frame, and a cast over all of it is
+    // obvious and measurable. Reported from the app as "a strange green look".
+    name: "sf-peninsula",
+    city: "sf",
+    lat: 37.7620, lon: -122.4400, altM: 1100, hdgDeg: 20, pitchDeg: -22,
+    t: D("2025-06-21T18:30:00Z"), // 11:30 PDT, the same clock as the others
+    wx: CLEAR,
+    what: "the San Francisco peninsula from 1,100 m",
+  },
+  {
+    // STRAIGHT DOWN OVER A KNOWN TILE. A calibration pose, not a picture.
+    //
+    // "Is the ground the right colour" cannot be answered from an oblique
+    // frame: what you sample is a mix of neighbourhoods at a mix of distances,
+    // and comparing that against a source tile is comparing two different
+    // places. Looking down from 900 m puts one patch of ground in the middle
+    // of the frame, and the Esri tile covering it can be fetched and measured
+    // directly, so the drape has an oracle instead of an opinion.
+    //
+    // 37.762,-122.440 is the Sunset: dense low residential with no water, no
+    // park and no downtown towers in it, which is what makes it a usable
+    // reference rather than a picture of one bright thing.
+    name: "sf-nadir",
+    city: "sf",
+    lat: 37.7620, lon: -122.4400, altM: 900, hdgDeg: 0, pitchDeg: -89,
+    t: D("2025-06-21T18:30:00Z"), // 11:30 PDT, the same clock as the others
+    wx: CLEAR,
+    what: "straight down over the Sunset, for drape colour",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is

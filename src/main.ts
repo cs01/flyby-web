@@ -378,7 +378,14 @@ async function main() {
   // The rooftops as a height field, so the aeroplane has a floor over a city
   // rather than only over the ground under it.
   const skyline = new Skyline(pack, terrain.heightAt);
-  if (pack) {
+  // `?nobuildings` leaves the ground bare. It exists for the terrainDebug
+  // views: those replace the TERRAIN's output only, so with a city standing on
+  // it any measurement of a debug view is a mix of the isolated term and
+  // ordinary shaded facades -- which is how a transmittance of 1.0 came out
+  // reading 0.59 and sent an afternoon after an atmosphere bug that was not
+  // there.
+  const buildingsOff = new URLSearchParams(location.search).has("nobuildings");
+  if (pack && !buildingsOff) {
     buildings = new Buildings(pack, terrain.heightAt, sunShadow.uniforms, budget);
     scene.add(buildings.group);
     console.log(
