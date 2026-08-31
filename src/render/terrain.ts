@@ -96,6 +96,17 @@ uniform float uHasLand;
 uniform sampler2D uRoadMask;
 uniform float uRoadMaskExtent;
 uniform float uHasRoadMask;
+// Scene clock, seconds. Held at zero in shot mode, which is what keeps a
+// screenshot of moving water reproducible.
+uniform float uTime;
+// Wind at 10 m, metres/second, as (east, south) -- the same convention and the
+// same observation render/composite.ts drifts the clouds with. The waves take
+// both their steepness and their drift from it.
+uniform vec2 uWind;
+// 1 restores the pre-wave water: terrain normal, constant ambient reflection,
+// no glint. It exists so tools/verify-water.ts can run the OLD behaviour in the
+// SAME binary and prove its assertions can fail.
+uniform float uFlatWater;
 
 float hash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -110,6 +121,36 @@ float vnoise2(vec2 p) {
   f = f * f * (3.0 - 2.0 * f);
   return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
              mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+/**
+ * GGX specular on water, returned as the factor a light's surface irradiance is
+ * multiplied by. Fresnel is INSIDE it (F0 = 0.02, water), so the caller must not
+ * apply the sheet Fresnel to it again.
+ *
+ * Why a microfacet lobe and not the Blinn power this replaces: a glitter path
+ * is a strip of surface whose facets happen to be tilted toward the sun, and
+ * its WIDTH is set by how steep the chop is. GGX takes that steepness as its
+ * roughness and gets both the width and the long tail right; a fixed exponent
+ * has one width forever, so it draws the same small hard dot on a millpond and
+ * in a gale.
+ */
+float waterGGX(vec3 nrm, vec3 v, vec3 l, float alpha) {
+  float nl = dot(nrm, l);
+  if (nl <= 0.0) return 0.0;
+  vec3 h = normalize(v + l);
+  float nh = max(dot(nrm, h), 0.0);
+  float nv = max(dot(nrm, v), 1e-3);
+  float a2 = alpha * alpha;
+  float d = nh * nh * (a2 - 1.0) + 1.0;
+  float D = a2 / (PI * d * d + 1e-8);
+  float k = alpha * 0.5;
+  float G = (nv / (nv * (1.0 - k) + k)) * (nl / (nl * (1.0 - k) + k));
+  float F = 0.02 + 0.98 * pow(1.0 - max(dot(v, h), 0.0), 5.0);
+  // Clamped, because D goes to a2 / (PI * a2 * a2) as alpha shrinks: a near
+  // mirror puts thousands of units of radiance into one pixel and the bloom
+  // pass spreads that firefly across a quarter of the frame.
+  return min(D * G * F / (4.0 * nv), 40.0);
 }
 
 void main() {
@@ -396,8 +437,99 @@ void main() {
   float byAppearance = smoothstep(0.26, 0.07, lumA) * smoothstep(7.0, 1.0, vWorld.y);
   float heur = clamp(max(byElevation, byAppearance), 0.0, 1.0);
   float water = mix(heur, lcWater, uHasLand);
-  float gloss = max(uWetness, water);
   vec3 v = normalize(uCameraPos - vWorld);
+
+  // --- THE SURFACE OF THE WATER -------------------------------------------
+  //
+  // The Fresnel term below needs a normal that is not the terrain's. Over water
+  // the heightfield is a plateau, so every pixel of a river shares ONE normal
+  // and therefore one Fresnel factor: standing on the kerb beside the Chicago
+  // river that factor is ~1 across the whole surface, and the river renders as
+  // a single blown-out slab of paper. Water reads as water because its normal
+  // varies from facet to facet, and nothing else in this shader supplies that.
+  //
+  // Two octaves of the value noise this file already carries, scrolling
+  // downwind. A gradient noise would be a little smoother; it would also be a
+  // second noise function in a shader that already has one the grass trusts.
+  vec3 wn = n;
+  float waveAlpha = 0.0;
+  if (water > 0.01 && uFlatWater < 0.5) {
+    // How hard it is blowing, as a multiplier on both the steepness and the
+    // drift. uWind is the observed 10 m wind, so 4 m/s is an ordinary day; the
+    // clamp stops a dead calm being a perfect mirror (there is always a swell
+    // too long to resolve here) and a gale being corrugated iron.
+    float wind = clamp(length(uWind) / 6.0, 0.30, 1.70);
+
+    // THE PIXEL FOOTPRINT IN METRES, and this is the whole anti-aliasing story.
+    //
+    // The drape is ~10 m a texel and water fills the lower half of a grazing
+    // frame, so a 2 m wave is sub-pixel a few hundred metres out. A sub-pixel
+    // bump is not detail: it is a fresh random number per pixel that changes
+    // every time the camera moves, which is a sheet of sparkling static.
+    // fwidth answers "how much world does this pixel cover" directly, and it
+    // answers it for GRAZING angles too -- which distance alone cannot, because
+    // a shallow view stretches the footprint along the view ray long before the
+    // range gets large. That is exactly the frame this defect was reported in.
+    float px = max(fwidth(vWorld.x), fwidth(vWorld.z)) + 1e-4;
+
+    // Wavelengths in metres and the peak slope each carries at an ordinary
+    // wind. Chop on a river and in a harbour is metre-scale; anything longer is
+    // swell the drape's own shading already stands in for.
+    const float LAM_A = 2.6;
+    const float LAM_B = 0.95;
+    const float SLOPE_A = 0.30;
+    const float SLOPE_B = 0.22;
+
+    // An octave lives while its wavelength is comfortably over the footprint,
+    // and is faded out rather than switched off: a hard cutoff draws a ring on
+    // the water at whatever range it fires.
+    float keepA = smoothstep(LAM_A * 0.85, LAM_A * 0.30, px);
+    float keepB = smoothstep(LAM_B * 0.85, LAM_B * 0.30, px);
+
+    vec2 drift = uWind * uTime * 0.35;
+    vec2 pa = (vWorld.xz - drift) / LAM_A;
+    vec2 pb = (vWorld.xz - drift * 1.6 + vec2(31.7, 11.3)) / LAM_B;
+
+    // Central differences a fifth of a wavelength apart. The step is in NOISE
+    // CELLS rather than metres, so both octaves are differenced over the same
+    // fraction of their own period and neither is measured off its own scale.
+    const float E = 0.2;
+    vec2 ga = vec2(vnoise2(pa + vec2(E, 0.0)) - vnoise2(pa - vec2(E, 0.0)),
+                   vnoise2(pa + vec2(0.0, E)) - vnoise2(pa - vec2(0.0, E)));
+    vec2 gb = vec2(vnoise2(pb + vec2(E, 0.0)) - vnoise2(pb - vec2(E, 0.0)),
+                   vnoise2(pb + vec2(0.0, E)) - vnoise2(pb - vec2(0.0, E)));
+    vec2 slope = ga * (SLOPE_A * wind * keepA) + gb * (SLOPE_B * wind * keepB);
+
+    // Water is LEVEL. The terrain normal under it is whatever the heightfield's
+    // noise made of a flat plateau, so the waves are hung off vertical and only
+    // blend back to the ground's own normal where the water mask fades out at a
+    // shoreline.
+    vec3 flatN = normalize(mix(n, vec3(0.0, 1.0, 0.0), water));
+    wn = normalize(flatN + vec3(-slope.x, 0.0, -slope.y));
+
+    // WHERE THE FADED-OUT DETAIL GOES, and it does not go in the bin.
+    //
+    // Dropping an octave because it is sub-pixel turns distant water into
+    // polished glass: a mirror-flat surface has one tiny highlight and is dark
+    // everywhere else, so the far half of the frame would go dead exactly where
+    // real water is at its brightest. The slope VARIANCE the octave was
+    // carrying is added to the GGX roughness instead. That is the same energy
+    // spread over a wider lobe: one soft bright band instead of ten thousand
+    // aliasing points, which is what the eye sees at that range anyway.
+    //
+    // 0.06 is the variance of a central difference of this value noise, whose
+    // rms is about a quarter of its peak. 0.0016 is the floor: alpha 0.04, the
+    // long swell nothing here resolves.
+    float lost = 0.06 * wind * wind
+               * (SLOPE_A * SLOPE_A * (1.0 - keepA * keepA)
+                + SLOPE_B * SLOPE_B * (1.0 - keepB * keepB));
+    waveAlpha = clamp(sqrt(0.0016 + 2.0 * lost), 0.04, 0.42);
+  }
+
+  // Wet ground gets the Blinn lobe below; open water gets its own GGX on the
+  // wave normal and must not be lit twice. Under the flat-water probe the old
+  // shared lobe comes back, because that is the behaviour being measured.
+  float gloss = max(uWetness, water * uFlatWater);
   if (gloss > 0.01) {
     float shine = mix(48.0, 320.0, water);
     vec3 hv = normalize(v + uSunDir);
@@ -426,13 +558,52 @@ void main() {
   // becomes a mirror of the sky. That angular swing is what makes water read as
   // water, and no amount of tinting a diffuse albedo reproduces it.
   if (water > 0.01) {
-    float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
+    float f = pow(1.0 - clamp(dot(v, wn), 0.0, 1.0), 5.0);
     float fres = 0.02 + 0.98 * f;
     vec3 deep = vec3(0.004, 0.016, 0.030) * (beam + ambient);
-    vec3 skyRefl = uAmbient * 1.7
-                 + uSunColor * uSunIntensity * uSunSurface * sunT * 0.10
-                 + uMoonLight * uSunSurface * 0.10;
-    lit = mix(lit, mix(deep, skyRefl, fres), water);
+
+    vec3 skyRefl;
+    vec3 glint = vec3(0.0);
+    if (uFlatWater > 0.5) {
+      skyRefl = uAmbient * 1.7
+              + uSunColor * uSunIntensity * uSunSurface * sunT * 0.10
+              + uMoonLight * uSunSurface * 0.10;
+    } else {
+      // THE SKY ALONG THE REFLECTED RAY, from the same integral the dome and
+      // the aerial perspective already use. A constant ambient cannot express
+      // what a mirror actually shows: the horizon-to-zenith gradient, the warm
+      // half of the sky at sunset, the bright band low down that is most of why
+      // a river is legible at all.
+      //
+      // It is a SECOND atmosphere march and it is the most expensive thing in
+      // this shader, so it runs on water pixels only, at the 7 steps the aerial
+      // perspective already settled on. Measured through tools/shots.ts against
+      // the same frame with the water flat: chicago-river-kerb 12.83 -> 13.31
+      // ms mean at 39.5% water, sydney-harbour 8.25 -> 9.54 ms at 33.3% water,
+      // the wave block included. The harbour is the worst case in the pose set
+      // and it costs 1.3 ms.
+      vec3 r = reflect(-v, wn);
+      // A steep facet can tip the reflected ray under the horizon, where the
+      // march hits the ground and returns near-black. That is a hole in the
+      // water, not a reflection: what real water shows there is the back of the
+      // next wave, which is lit by the sky just above the horizon.
+      r = normalize(vec3(r.x, max(r.y, 0.004), r.z));
+      vec3 refTrans;
+      skyRefl = atmosphere(atmoOrigin(max(0.0, vWorld.y)), r, 1.0e7, refTrans);
+      // The integral is driven by the sun and goes to zero after dark, so
+      // without these two terms water becomes the one black hole in a moonlit
+      // frame -- which is the failure the moonglade above exists to prevent.
+      skyRefl += uMoonLight * uSunSurface * 0.10 + uAmbient * uNight * 0.35;
+
+      // Sun glint. This is the term that says "water" when the sun is low: a
+      // glitter path is thousands of facets each catching the disc, and the
+      // roughness the wave slope hands the lobe is what sets how far up the
+      // river it runs. Fresnel is inside waterGGX, so it is not applied here.
+      glint = uSunColor * uSunIntensity * uSunSurface * sunT * sunVis
+                * waterGGX(wn, v, uSunDir, waveAlpha)
+            + uMoonLight * uSunSurface * waterGGX(wn, v, uMoonDir, waveAlpha);
+    }
+    lit = mix(lit, mix(deep, skyRefl, fres) + glint, water);
   }
 
   // City lights at night, keyed to how built-up the drape looks. Grey, bright
@@ -585,6 +756,12 @@ export interface TerrainUniforms extends SunShadowUniforms, AoUniforms {
   uLandNearExtent: THREE.IUniform<number>;
   uLandFarExtent: THREE.IUniform<number>;
   uHasLand: THREE.IUniform<number>;
+  /** Scene clock in seconds; drives the wave drift. Zero in shot mode. */
+  uTime: THREE.IUniform<number>;
+  /** Observed 10 m wind in m/s as (east, south); sets wave steepness and drift. */
+  uWind: THREE.IUniform<THREE.Vector2>;
+  /** 1 restores the pre-wave flat water, for the vacuity probe in tools/verify-water.ts. */
+  uFlatWater: THREE.IUniform<number>;
   uRoadMask: THREE.IUniform<THREE.Texture | null>;
   uRoadMaskExtent: THREE.IUniform<number>;
   uHasRoadMask: THREE.IUniform<number>;
@@ -627,6 +804,9 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uLandNearExtent: { value: 1 },
     uLandFarExtent: { value: 1 },
     uHasLand: { value: 0 },
+    uTime: { value: 0 },
+    uWind: { value: new THREE.Vector2() },
+    uFlatWater: { value: 0 },
     uRoadMask: { value: null },
     uRoadMaskExtent: { value: 1 },
     uHasRoadMask: { value: 0 },

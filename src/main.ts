@@ -549,6 +549,13 @@ async function main() {
   // 11 the four-channel false-colour.
   const terrainDebug = Number(new URLSearchParams(location.search).get("terrainDebug") ?? 0);
 
+  // `?flatwater=1` restores the water this repo had before the wave normal: one
+  // shared terrain normal over the whole surface and a constant ambient
+  // reflection. It is the vacuity probe for tools/verify-water.ts, which has to
+  // be able to run the OLD behaviour in the SAME binary and see its assertions
+  // go red -- an assertion that passes both ways is measuring nothing.
+  const flatWater = new URLSearchParams(location.search).get("flatwater") === "1";
+
   for (const u of terrain.uniforms) {
     u.uUrban.value = urban.texture;
     u.uUrbanExtent.value = urban.extent;
@@ -561,6 +568,7 @@ async function main() {
     u.uRoadMaskExtent.value = roadMask.extent;
     u.uHasRoadMask.value = roadMask.has ? 1 : 0;
     if (Number.isFinite(terrainDebug)) u.uDebug.value = terrainDebug;
+    u.uFlatWater.value = flatWater ? 1 : 0;
   }
 
   // What the canopy must not stand on. Both start from whatever packs loaded
@@ -1396,6 +1404,13 @@ async function main() {
       u.uTurbidity.value = light.turbidity;
       u.uCamAltitude.value = camAlt;
       u.uExposure.value = light.exposure * exposureScale;
+      // The waves. `elapsed` is frozen in shot mode, so a screenshot of moving
+      // water is still byte-reproducible; the wind is the same observation the
+      // clouds drift on, converted from the meteorological "comes FROM"
+      // bearing to an (east, south) velocity exactly as composite.ts does.
+      u.uTime.value = elapsed;
+      const windTo = (wx.windDir + 180) * (Math.PI / 180);
+      u.uWind.value.set(Math.sin(windTo) * wx.windSpeed, -Math.cos(windTo) * wx.windSpeed);
     }
     sky.uniforms.uExposure.value = light.exposure * exposureScale;
 

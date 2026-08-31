@@ -37,7 +37,8 @@
     "trafficmodel": "bun test/trafficmodel.check.ts",
     "roadmask": "bun test/roadmask.check.ts",
     "streetsign": "bun test/streetsign.check.ts",
-    "bridge": "bun test/bridge.check.ts"
+    "bridge": "bun test/bridge.check.ts",
+    "water": "bun tools/verify-water.ts"
   },
   "dependencies": {
     "three": "^0.180.0"

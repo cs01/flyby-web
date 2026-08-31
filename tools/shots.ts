@@ -309,6 +309,34 @@ export const POSES: Pose[] = [
     what: "Chicago Loop by day",
   },
   {
+    // THE CHICAGO RIVER FROM THE KERB, LOOKING ALONG IT.
+    //
+    // Reported from the app: at street level beside the main branch the river
+    // was a single flat blown-out slab, the same value from one bank to the
+    // other. Every other water pose in this set is AERIAL, and from 420 m the
+    // view vector barely changes across the surface, so a water model with one
+    // normal for the whole river photographs almost correctly. It is only from
+    // a kerb, looking ALONG the water at a grazing angle, that the flat normal
+    // shows: the Fresnel factor pins near 1 over the entire visible surface and
+    // there is nothing left to vary.
+    //
+    // The parapet at the Michigan Avenue bridge, looking west up the main
+    // branch past Wabash and State toward Wolf Point. The river surface is Lake
+    // Michigan's, 176 m AMSL, and the field below is AMSL, so this is the
+    // fourteen metres from the water to the upper deck: a person on the bridge,
+    // not a camera in the air. Pitch is shallow on purpose, because it is the
+    // GRAZING part of the surface this pose exists to photograph -- and it is
+    // enough to put the river across 39.5% of the frame, measured by
+    // tools/verify-water.ts through the terrainDebug=7 water mask.
+    name: "chicago-river-kerb",
+    city: "chicago",
+    lat: 41.8888, lon: -87.6248, altM: 190, hdgDeg: 261, pitchDeg: -7,
+    t: D("2025-06-21T23:00:00Z"), // 18:00 CDT: low sun down the river, which is
+                                  // when a glitter path exists to be got wrong
+    wx: CLEAR,
+    what: "the Chicago river from the kerb, two metres up",
+  },
+  {
     // Sydney, over the harbour with the bridge and the Opera House ahead.
     //
     // The only pose where water is most of the frame, which is deliberate: the
