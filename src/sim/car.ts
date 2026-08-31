@@ -33,6 +33,7 @@ import * as THREE from "three";
 import { rateLimit } from "./touch";
 import { RoadIndex } from "../data/trees";
 import { laneOffsetM, type RoadEdge, type RoadGraph, type HalfEdge } from "../data/roadgraph";
+import { deckYAt, type Deck } from "../data/bridgedeck";
 import { roadWidthM, roadLiftM, ROAD_BRIDGE } from "../data/roadpack";
 
 const DEG = Math.PI / 180;
@@ -190,6 +191,11 @@ export class Car {
 
   /** Null until `enterFrom` finds a road. */
   private where: Where | null = null;
+  /**
+   * Solved bridge decks, indexed by pack way. Null until the terrain exists to
+   * solve them against, which is after the graph is built.
+   */
+  private decks: readonly (Deck | null)[] | null = null;
   /** Lateral offset from the LANE centre, positive right of travel. */
   private q = 0;
   private steerAxis = 0;
@@ -220,6 +226,17 @@ export class Car {
     };
   }
 
+  /**
+   * Hand the car the solved decks.
+   *
+   * Separate from the constructor because the solve needs the terrain and the
+   * graph does not: the graph is built the moment the pack lands, and the
+   * heightfield is not ready until later.
+   */
+  setBridgeDecks(decks: readonly (Deck | null)[]): void {
+    this.decks = decks;
+  }
+
   /** False when this city has no driveable road at all. */
   get hasRoads(): boolean {
     return this.graph.edges.length > 0;
@@ -228,6 +245,18 @@ export class Car {
   /** The edge being driven, or null before the car has entered a road. */
   get edge(): RoadEdge | null {
     return this.where ? this.graph.edges[this.where.half.edge] : null;
+  }
+
+  /**
+   * Where the car sits on the graph: which half-edge, and how far along it.
+   *
+   * Exposed for anything that has to reason about the road AHEAD rather than
+   * the road under the wheels -- naming the next junction, most of all. The
+   * half-edge and not just the edge, because which way round the car is facing
+   * is the whole question when the answer is "what am I coming to".
+   */
+  get track(): { half: HalfEdge; s: number } | null {
+    return this.where ? { half: this.where.half, s: this.where.s } : null;
   }
 
   /** Carriageway width of the road under the car, in metres. */
@@ -442,11 +471,18 @@ export class Car {
   /**
    * Height of the carriageway at a point on this edge.
    *
-   * Draped on the terrain, plus roadpack's own lift, so the car sits on the
-   * ribbon render/roads.ts draws rather than in it or over it. A bridge deck is
-   * interpolated between its ends by arc length for the same reason the ribbon
-   * is: the ground under a bridge is a riverbed, and draping the deck on it
-   * would sag the car into the water at midspan.
+   * An ordinary road is draped on the terrain plus roadpack's own lift, so the
+   * car sits on the ribbon render/roads.ts draws rather than in it or over it.
+   *
+   * A BRIDGE IS NOT DRAPED ON ANYTHING, and it is not worked out here. Its deck
+   * comes from data/bridgedeck.ts, solved once over the whole connected bridge
+   * chain, and is evaluated at the arc length of this point ALONG ITS PARENT
+   * WAY -- which is the same expression, at the same place, that the ribbon
+   * evaluates. That identity is the point: this used to interpolate between the
+   * ground at the two ends of the EDGE while the ribbon interpolated between
+   * the ends of the WAY, and the graph cuts a way at every junction, so the
+   * surface you could see and the surface you drove on were different surfaces.
+   * The Golden Gate is 46 ways and 25 edges, and it showed.
    */
   private surfaceY(
     e: RoadEdge,
@@ -454,15 +490,17 @@ export class Car {
     z: number,
     heightAt: (px: number, pz: number) => number,
   ): number {
-    const lift = roadLiftM(e.flags, e.layer);
-    if ((e.flags & ROAD_BRIDGE) === 0) return heightAt(x, z) + lift;
-    const y0 = heightAt(e.pts[0], e.pts[1]);
-    const y1 = heightAt(e.pts[e.pts.length - 2], e.pts[e.pts.length - 1]);
+    if ((e.flags & ROAD_BRIDGE) === 0) return heightAt(x, z) + roadLiftM(e.flags, e.layer);
+    const d = this.decks ? this.decks[e.wayIndex] : null;
+    if (!d) {
+      // No solved deck (a pack loaded before the terrain, or a way the solver
+      // skipped). Fall back to the ground so the car is on something real
+      // rather than at zero.
+      return heightAt(x, z) + roadLiftM(e.flags, e.layer);
+    }
     const w = this.where!;
-    const t = e.lengthM > 0
-      ? clamp((w.half.forward ? w.s : e.lengthM - w.s) / e.lengthM, 0, 1)
-      : 0;
-    return y0 + (y1 - y0) * t + lift;
+    const sEdge = w.half.forward ? w.s : e.lengthM - w.s;
+    return deckYAt(d, e.startS + clamp(sEdge, 0, e.lengthM));
   }
 
   /** Arc length from an edge's first vertex to a point on one of its segments. */

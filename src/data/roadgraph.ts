@@ -136,6 +136,19 @@ export interface RoadEdge extends Road {
   oneway: boolean;
   /** Index of the way in the pack this edge was cut from. */
   wayIndex: number;
+  /**
+   * Arc length from the parent WAY's first vertex to this edge's first, and the
+   * parent way's total length.
+   *
+   * Only a bridge needs these, and it needs them badly. A deck's height is
+   * defined along the way -- see data/bridgedeck.ts -- while an edge is a piece
+   * the cut happened to produce, so without knowing where the piece sits in its
+   * way there is no way to evaluate the deck at the same place the ribbon does.
+   * Carrying them here is what makes the drawn deck and the driven deck one
+   * surface instead of two.
+   */
+  startS: number;
+  wayLengthM: number;
 }
 
 /** An edge with a direction of travel. `forward` means a -> b. */
@@ -328,6 +341,14 @@ export function buildRoadGraph(roads: readonly Road[]): RoadGraph {
     const n = ids.length;
     let cuts = 0;
     let start = 0;
+    // Arc length along the WHOLE way, accumulated as the cut walks it, so each
+    // piece knows where in its parent it begins.
+    const along = new Float64Array(n);
+    for (let k = 1; k < n; k++) {
+      along[k] = along[k - 1]
+        + Math.hypot(r.pts[k * 2] - r.pts[(k - 1) * 2], r.pts[k * 2 + 1] - r.pts[(k - 1) * 2 + 1]);
+    }
+    const wayLengthM = Math.max(1e-3, along[n - 1]);
     for (let v = 1; v < n; v++) {
       const isNode = nodeOf[ids[v]] >= 0;
       if (!isNode && v < n - 1) continue;
@@ -356,7 +377,10 @@ export function buildRoadGraph(roads: readonly Road[]): RoadGraph {
         if (oneway) onewayEdges++;
         lengthM += len;
         edges.push({
+          startS: along[start],
+          wayLengthM,
           cls: r.cls,
+          name: r.name,
           lanes: r.lanes,
           flags: r.flags,
           layer: r.layer,

@@ -458,6 +458,13 @@ export function roadsFromOsm(
     if (truthy(tags["tunnel"])) flags |= ROAD_TUNNEL;
     if (c.link) flags |= ROAD_LINK;
 
+    // The signed name, and nothing derived. `ref` is the route number and
+    // `name:en` is a translation; both are useful and neither is what is on the
+    // street sign, which is the only thing a driver is looking for. A way split
+    // by the packer carries the name onto every piece, which is why this is read
+    // once here and not per piece.
+    const name = (tags["name"] ?? "").trim();
+
     const lanes = parseLanes(tags["lanes"]);
     const layer = parseLayer(tags["layer"]);
     const surface = SURFACE_BY_TAG[(tags["surface"] ?? "").toLowerCase()] ?? SurfaceKind.Unknown;
@@ -501,7 +508,7 @@ export function roadsFromOsm(
         continue;
       }
 
-      ways.push({ cls: c.cls, lanes, flags, layer, surface, cx, cz, dx, dz });
+      ways.push({ cls: c.cls, name, lanes, flags, layer, surface, cx, cz, dx, dz });
     }
   }
 

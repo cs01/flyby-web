@@ -272,22 +272,54 @@ export function sampleProfile(p: Profile, s: number): number {
  * curve gives a bonnet that crowns gently and a greenhouse that tumbles home,
  * which is what those two things actually do.
  *
- * Row 3 is the BELTLINE and is emitted twice, once tagged metal and once
- * tagged glass. A duplicated row costs no triangles and is what makes the
- * transition a line rather than a gradient.
+ * TWO NORMALISATIONS, AND A ROW SAYS WHICH IT IS IN. `above` false measures v
+ * from the sill to the beltline; `above` true measures it from the beltline to
+ * the top of the station. One shape cannot be indexed by both, which is why the
+ * row carries the flag rather than the code deriving it from a row number.
+ *
+ * WHERE THE PART CHANGES, THE ROW IS EMITTED TWICE, once tagged metal and once
+ * tagged glass, at the same v and the same w. That costs no triangles -- the
+ * quad between the pair has no area and `degenerate` drops it -- and it is what
+ * makes the transition a line rather than a gradient.
+ *
+ * It is also the only way to keep the two flanks the same car. A part id is
+ * interpolated FLAT, so a quad spanning the change takes whichever part its
+ * provoking vertex carries; the flanks are wound in opposite directions, so the
+ * provoking vertex of the second triangle is the upper row on one side and the
+ * lower row on the other. The beltline quad came out glass on the right of
+ * every car and half metal on the left. With a duplicated row no quad spans the
+ * change at all and the question does not arise.
+ *
+ * THE ROOF IS A ROW RANGE, NOT A NORMAL. The greenhouse tumbles home hard
+ * (0.965 -> 0.895 -> 0.790 -> 0.660 -> 0.430), so its SMOOTHED vertex normals
+ * point mostly upward: a shader asking "is n.y large, then this is roof, paint
+ * it" painted 93-97% of the glass area on all four archetypes, which is a fleet
+ * of cars with no windows. The roof rail and everything inboard of it are
+ * tagged metal HERE, where the section is known, and the shader keeps only a
+ * narrow backstop for fragments that really are horizontal.
  */
-const SECTION: readonly { v: number; w: number }[] = [
-  { v: 0.00, w: 0.90 }, // sill, tucked under
-  { v: 0.34, w: 1.00 }, // widest point
-  { v: 0.74, w: 0.995 },
-  { v: 1.00, w: 0.965 }, // the beltline
-  { v: 0.42, w: 0.895 }, // above the belt: tumblehome
-  { v: 0.78, w: 0.790 },
-  { v: 0.94, w: 0.660 }, // the roof rail, turning over
-  { v: 1.00, w: 0.430 }, // roof edge
-  { v: 1.00, w: 0.000 }, // the CROWN, on the centreline
+export interface SectionRow {
+  v: number;
+  w: number;
+  /** Which normalisation v is in: false below the beltline, true above it. */
+  above: boolean;
+  /** Tagged PART_GLASS on a station that is glazed at all. */
+  glass: boolean;
+}
+
+const SECTION: readonly SectionRow[] = [
+  { v: 0.00, w: 0.90, above: false, glass: false }, // sill, tucked under
+  { v: 0.34, w: 1.00, above: false, glass: false }, // widest point
+  { v: 0.74, w: 0.995, above: false, glass: false },
+  { v: 1.00, w: 0.965, above: false, glass: false }, // the beltline, metal side
+  { v: 0.00, w: 0.965, above: true, glass: true },   // the beltline, glass side
+  { v: 0.42, w: 0.895, above: true, glass: true },   // tumblehome
+  { v: 0.78, w: 0.790, above: true, glass: true },
+  { v: 0.94, w: 0.660, above: true, glass: true },   // roof rail, glass side
+  { v: 0.94, w: 0.660, above: true, glass: false },  // roof rail, metal side
+  { v: 1.00, w: 0.430, above: true, glass: false },  // roof edge
+  { v: 1.00, w: 0.000, above: true, glass: false },  // the CROWN, on the centreline
 ];
-const BELT_ROW = 3;
 /** The crown row sits on z = 0 and is SHARED by both sides. A separate flat
  *  strip across the top instead of a real row is what put a sawtooth of blown
  *  highlights down the roof: one wide quad spanning the whole car is not
@@ -295,11 +327,16 @@ const BELT_ROW = 3;
  *  lobe finds that difference immediately. */
 
 
-/** How many section rows a level of detail keeps. */
+/**
+ * Which section rows a level of detail keeps.
+ *
+ * The two DUPLICATED rows are never dropped. They carry no triangles, and
+ * without them a coarse level puts the part change back inside a quad, which is
+ * the asymmetry above.
+ */
 function sectionRows(lod: number): number[] {
-  if (lod === LOD_NEAR) return [0, 1, 2, 3, 4, 5, 6, 7, 8];
-  if (lod === LOD_FAR) return [0, 1, 3, 4, 6, 7, 8];
-  return [0, 1, 3, 4, 6, 7, 8];
+  if (lod === LOD_NEAR) return [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  return [0, 1, 3, 4, 5, 7, 8, 9, 10];
 }
 
 /**
@@ -311,7 +348,65 @@ function sectionRows(lod: number): number[] {
  * "saloon". Merged within a tolerance so three coincident points do not
  * produce two zero-length spans.
  */
-function stationsFor(a: CarArchetype, lod: number): number[] {
+/**
+ * A station, and whether the ROOF PANEL is over it.
+ *
+ * WHY A CAR NEEDS THIS AND A ROW INDEX WILL NOT DO IT. The section's top rows
+ * (the roof rail turning over, the roof edge, the crown) are the part of the
+ * ring nearest the centreline. Over the middle of the cabin that is the roof
+ * and it is painted metal. Over the windscreen and over the backlight the SAME
+ * rows are the middle of the screen, and painting them metal leaves a car with
+ * side windows, a body-coloured panel where its windscreen should be, and
+ * another where its rear window should be -- glass round the edges of both,
+ * which is what makes it look like a mistake rather than a style.
+ *
+ * So the roof is found from the PROFILE: the run of stations inside the glazed
+ * range whose topLine is within ROOF_BAND of the highest point of that range.
+ * On the saloon that is 0.56..0.72, leaving 0.72..0.79 as windscreen and
+ * 0.33..0.47 as backlight, which is where they actually are.
+ *
+ * THE BOUNDARY STATION IS EMITTED TWICE, for the reason the SECTION rows are:
+ * a part id is interpolated flat, so a quad spanning the change takes whichever
+ * part its provoking vertex carries, and the two flanks wind opposite ways.
+ * Duplicating the station puts the change on a zero-length span where no quad
+ * can straddle it.
+ */
+interface Station {
+  s: number;
+  roof: boolean;
+}
+
+/** How far below the cabin's highest point still counts as roof, in metres. */
+const ROOF_BAND_M = 0.05;
+
+/** The station range the roof panel covers, or null when the cabin has none. */
+function roofSpan(a: CarArchetype): { from: number; to: number } | null {
+  const STEP = 0.002;
+  let peak = -Infinity;
+  for (let s = a.glassFrom; s <= a.glassTo + 1e-9; s += STEP) {
+    peak = Math.max(peak, sampleProfile(a.topLine, s));
+  }
+  let from = Infinity;
+  let to = -Infinity;
+  for (let s = a.glassFrom; s <= a.glassTo + 1e-9; s += STEP) {
+    if (sampleProfile(a.topLine, s) >= peak - ROOF_BAND_M) {
+      from = Math.min(from, s);
+      to = Math.max(to, s);
+    }
+  }
+  return from <= to ? { from, to } : null;
+}
+
+/**
+ * Stations to loft through.
+ *
+ * The union of every profile's own stations, because those are exactly where
+ * the shape has features: a station set chosen on a regular grid would round
+ * off the boot lip and the cowl, which are the two creases that most say
+ * "saloon". Merged within a tolerance so three coincident points do not
+ * produce two zero-length spans.
+ */
+function stationsFor(a: CarArchetype, lod: number): Station[] {
   // The glazing's own ends are stations whatever else is dropped: the shader
   // finds the A post at u = 1 and the C post at u = 0, and it can only do that
   // if a vertex actually lands on each.
@@ -329,11 +424,32 @@ function stationsFor(a: CarArchetype, lod: number): number[] {
   }
   if (out[0] > 0) out.unshift(0);
   if (out[out.length - 1] < 1) out.push(1);
-  for (const s of [a.glassFrom, a.glassTo]) {
+  const roof = roofSpan(a);
+  const forced = [a.glassFrom, a.glassTo];
+  if (roof) forced.push(roof.from, roof.to);
+  for (const s of forced) {
     if (!out.some((o) => Math.abs(o - s) < 1e-6)) out.push(s);
   }
   out.sort((x, y) => x - y);
-  return out;
+
+  const isRoof = (s: number): boolean =>
+    roof !== null && s >= roof.from - 1e-9 && s <= roof.to + 1e-9;
+
+  const stations: Station[] = [];
+  for (const s of out) {
+    // The screen side of the boundary first, then the roof side, so the pair
+    // reads front to back in the same order as everything else.
+    if (roof && Math.abs(s - roof.from) < 1e-9 && roof.from > a.glassFrom) {
+      stations.push({ s, roof: false });
+      stations.push({ s, roof: true });
+    } else if (roof && Math.abs(s - roof.to) < 1e-9 && roof.to < a.glassTo) {
+      stations.push({ s, roof: true });
+      stations.push({ s, roof: false });
+    } else {
+      stations.push({ s, roof: isRoof(s) });
+    }
+  }
+  return stations;
 }
 
 /** Where the surface is, for one station and one section row. */
@@ -346,7 +462,7 @@ interface Vertex {
   v: number;
 }
 
-function buildGrid(a: CarArchetype, lod: number): { grid: Vertex[][]; stations: number[] } {
+function buildGrid(a: CarArchetype, lod: number): { grid: Vertex[][]; stations: Station[] } {
   const stations = stationsFor(a, lod);
   const rows = sectionRows(lod);
   const hw = a.widthM * 0.5;
@@ -354,7 +470,8 @@ function buildGrid(a: CarArchetype, lod: number): { grid: Vertex[][]; stations: 
   const glazedLen = Math.max(a.glassTo - a.glassFrom, 1e-3);
   const grid: Vertex[][] = [];
 
-  for (const s of stations) {
+  for (const st of stations) {
+    const s = st.s;
     const bottom = sampleProfile(a.bottomLine, s);
     const top = Math.max(sampleProfile(a.topLine, s), bottom + 0.02);
     const halfW = hw * sampleProfile(a.planLine, s);
@@ -366,10 +483,15 @@ function buildGrid(a: CarArchetype, lod: number): { grid: Vertex[][]; stations: 
     const col: Vertex[] = [];
     for (const r of rows) {
       const sec = SECTION[r];
-      const above = r > BELT_ROW;
-      const v = above ? vb + sec.v * (1 - vb) : sec.v * vb;
+      const v = sec.above ? vb + sec.v * (1 - vb) : sec.v * vb;
       const y = bottom + (top - bottom) * v;
-      const part = above && glazed ? PART_GLASS : PART_BODY;
+      // Above the beltline and glazed is glass, and the ROOF CAP rows are the
+      // exception -- but only where there is a roof over them. Over the
+      // windscreen and the backlight those same rows are the middle of the
+      // screen, and that is exactly the glass the car was missing.
+      const part = glazed && sec.above && (sec.glass || !st.roof)
+        ? PART_GLASS
+        : PART_BODY;
       col.push({
         x: (s - 0.5) * a.lengthM,
         y,
@@ -458,6 +580,13 @@ export function buildCarMesh(archetype: number, lod: number = LOD_NEAR): CarMesh
   for (let side = 0; side < 2; side++) {
     const ids = id[side];
     for (let c = 0; c + 1 < cols; c++) {
+      // A DUPLICATED STATION. The roof/screen boundary is emitted twice at the
+      // same s so that no quad straddles the part change; the span between the
+      // pair has no length, so every quad across it is zero-area with no
+      // winding to speak of. Emitting them put 238 triangles into the
+      // winding check as "inward", which is the check doing its job on
+      // triangles that have no outward.
+      if (grid[c][0].x === grid[c + 1][0].x) continue;
       for (let r = 0; r + 1 < rows; r++) {
         // A collapsed row pair is a zero-area quad: at a station whose roof is
         // below the beltline -- a bonnet, a boot deck, a load bed -- there is
@@ -480,6 +609,8 @@ export function buildCarMesh(archetype: number, lod: number = LOD_NEAR): CarMesh
   // is above it.
   if (lod === LOD_NEAR) {
     for (let c = 0; c + 1 < cols; c++) {
+      // Same zero-length station span the flanks skip above.
+      if (grid[c][0].x === grid[c + 1][0].x) continue;
       quad(id[1][c][0], id[1][c + 1][0], id[0][c + 1][0], id[0][c][0]);
     }
   }
@@ -574,17 +705,35 @@ export function buildCarMesh(archetype: number, lod: number = LOD_NEAR): CarMesh
   // Everything below is detail rather than silhouette, and a shadow caster is
   // only ever a silhouette.
   if (lod !== LOD_SHADOW) {
-  // The inner tub: what is seen THROUGH an arch. Two panels, because the other
-  // four faces of it are inside the car.
+  // The inner tub: what is seen THROUGH an arch, and ONLY through an arch.
+  //
+  // FOUR PANELS, ONE PER ARCH, and that is the fix rather than a refinement.
+  // This was a single panel per side running nose to tail, from 0.2 wheel radii
+  // off the road to belt height. The body's sill is a good deal higher than
+  // that -- 0.245 m against 0.067 m on the saloon -- and its plan draws in at
+  // both ends to very nearly the tub's own z, so the tub hung below the whole
+  // flank as a black skirt and came out through the nose and the tail. Read as
+  // a bumper you could see through, which is exactly what a black panel where
+  // the bumper is looks like.
+  //
+  // Bounded by the AXLE and the wheel rather than by the profile's arch
+  // stations, because the two agree to a few centimetres on every archetype
+  // (the saloon's front arch runs 0.98..1.91 m and the axle gives 0.98..1.91)
+  // and the axle is a published number while the arch stations are a shape.
   const tubZ = a.trackM * 0.5 - a.tyreW * 0.5 - 0.02;
   const tubTop = a.beltM * 0.92;
   const tubBottom = a.wheelR * 0.20;
-  for (const sgn of [1, -1]) {
-    const z = sgn * tubZ;
-    const c = sgn > 0
-      ? [nose - 0.10, tubBottom, z, nose - 0.10, tubTop, z, tail + 0.10, tubTop, z, tail + 0.10, tubBottom, z]
-      : [tail + 0.10, tubBottom, z, tail + 0.10, tubTop, z, nose - 0.10, tubTop, z, nose - 0.10, tubBottom, z];
-    flatQuad(c, [0, 0, sgn], PART_UNDER, [0, 0, 0, 1, 1, 1, 1, 0]);
+  const tubHalfLen = a.wheelR + 0.13;
+  for (const ax of [nose - a.frontOverhangM, nose - a.frontOverhangM - a.wheelbaseM]) {
+    const x0 = ax - tubHalfLen;
+    const x1 = ax + tubHalfLen;
+    for (const sgn of [1, -1]) {
+      const z = sgn * tubZ;
+      const c = sgn > 0
+        ? [x1, tubBottom, z, x1, tubTop, z, x0, tubTop, z, x0, tubBottom, z]
+        : [x0, tubBottom, z, x0, tubTop, z, x1, tubTop, z, x1, tubBottom, z];
+      flatQuad(c, [0, 0, sgn], PART_UNDER, [0, 0, 0, 1, 1, 1, 1, 0]);
+    }
   }
 
   }

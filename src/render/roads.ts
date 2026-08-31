@@ -33,6 +33,7 @@
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import type { Budget } from "./budget";
+import { deckYAt, type Deck } from "../data/bridgedeck";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
@@ -239,13 +240,30 @@ void main() {
   // Everything below is expensive, and the whole city's ribbons are resident so
   // that the near field can be complete. Past uFadeFar this shader must cost
   // one comparison, not a noise field and an atmosphere integral.
-  float fade = 1.0 - smoothstep(uFadeNear, uFadeFar, vViewDist);
+  //
+  // A BRIDGE FADES ON ITS OWN, MUCH LONGER SCALE, and that is not a tweak.
+  // The fade is invisible on a street because the satellite drape underneath
+  // still shows a road where the ribbon stopped being drawn: what fades is the
+  // detail, not the road. A bridge deck has nothing behind it but open water,
+  // so the same fade deletes the bridge. At 400 to 800 m the Golden Gate --
+  // 2.7 km of it -- was two towers standing in an empty strait from anywhere
+  // far enough away to see the whole span, which is everywhere you would look
+  // at it from.
+  //
+  // Bridges are 401 of San Francisco's 33,568 drawn ways, so carrying them to
+  // 12 km costs almost nothing, and the ones that do reach that far are the
+  // ones worth flying to.
+  const float BRIDGE_FADE_NEAR = 9000.0;
+  const float BRIDGE_FADE_FAR = 12000.0;
+  float bridge = vInfo.w;
+  float fade = bridge > 0.5
+    ? 1.0 - smoothstep(BRIDGE_FADE_NEAR, BRIDGE_FADE_FAR, vViewDist)
+    : 1.0 - smoothstep(uFadeNear, uFadeFar, vViewDist);
   if (fade < 0.004) discard;
 
   float cls    = vInfo.x;
   float surf   = vInfo.y;
   float width  = max(vInfo.z, 1.0);
-  float bridge = vInfo.w;
 
   float u = vUv.x;
   float v = vUv.y;
@@ -680,6 +698,12 @@ export class Roads {
     groundAt: (x: number, z: number) => number,
     shadow: SunShadowUniforms,
     budget: Budget,
+    /**
+     * Solved bridge decks, indexed by pack way. Passed IN rather than solved
+     * here because sim/car.ts drives on the same surface and the two must be
+     * the same object; see data/bridgedeck.ts.
+     */
+    decks: readonly (Deck | null)[],
   ) {
     const t0 = performance.now();
     this.uniforms = makeRoadUniforms(shadow);
@@ -727,26 +751,22 @@ export class Roads {
       // under the bridge it is crossing.
       const lift = roadLiftM(r.flags, r.layer);
 
-      // A bridge deck is FLAT, and the ground under it is a riverbed. Draping
-      // it like a street would sag it into the water at midspan, which is
-      // exactly what a bridge is built not to do, so the deck is interpolated
-      // between the ground at its two ends by arc length instead.
+      // A BRIDGE IS NOT DRAPED. Its deck was solved over the whole connected
+      // bridge chain, abutment to abutment, and all that happens here is that
+      // it is read off at this vertex's arc length along the way -- the same
+      // expression sim/car.ts evaluates, which is what keeps the drawn deck and
+      // the driven deck one surface. `deck` being null is a bridge the solver
+      // did not reach, and it falls back to the ground.
       const nv = b.ribbon.xz.length / 2 - v0;
-      let y0 = 0;
-      let y1 = 0;
-      let total = 1;
-      if (isBridge) {
-        y0 = groundAt(r.pts[0], r.pts[1]);
-        y1 = groundAt(r.pts[r.pts.length - 2], r.pts[r.pts.length - 1]);
-        total = Math.max(1e-3, b.ribbon.uv[(v0 + nv - 1) * 2]);
-      }
+      const deck = isBridge ? (decks[i] ?? null) : null;
       for (let k = 0; k < nv; k++) {
         const x = b.ribbon.xz[(v0 + k) * 2];
         const z = b.ribbon.xz[(v0 + k) * 2 + 1];
-        const g = isBridge
-          ? y0 + (y1 - y0) * (b.ribbon.uv[(v0 + k) * 2] / total)
-          : groundAt(x, z);
-        b.y.push(g + lift);
+        // uv.x is the ribbon's arc length in METRES along the way (see the
+        // `arc` accumulator in data/ribbon.ts), which is exactly the parameter
+        // sim/car.ts reaches the same point by.
+        if (deck) b.y.push(deckYAt(deck, b.ribbon.uv[(v0 + k) * 2]));
+        else b.y.push(groundAt(x, z) + lift);
         b.info.push(r.cls, r.surface, width, isBridge ? 1 : 0);
       }
       drawn++;

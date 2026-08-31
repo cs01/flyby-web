@@ -264,6 +264,41 @@ export const POSES: Pose[] = [
     what: "Central Park from a path, two metres up",
   },
   {
+    // MANHATTAN UNDER A DECK, PITCHED DOWN, WHICH IS WHERE THE SKY BREAKS.
+    //
+    // Every other pose either has a clear sky or looks level, and the cloud
+    // march is only wrong at a GRAZING elevation: its step size grows with
+    // distance, so a ray a few degrees above the horizon runs out of its step
+    // budget a few hundred metres into a deck that is a kilometre thick, and
+    // the transmittance it never spent shows through as bare lit horizon under
+    // an overcast. Nose down at 700 m puts the horizon in the top fifth of the
+    // frame, so every visible pixel of sky is inside six degrees of it -- which
+    // is the whole of the failure and none of the rest of the sky.
+    //
+    // 48% at 1494 m is the reported weather from the report this came from, not
+    // a number chosen to break it.
+    name: "manhattan-overcast-horizon",
+    city: "manhattan",
+    lat: 40.7580, lon: -73.9855, altM: 709, hdgDeg: 190, pitchDeg: -7,
+    t: D("2025-06-21T17:20:00Z"), // 13:20 EDT
+    wx: "low:0.48:1494:2466,mid:0:3800:5000,high:0:8500:9400,precip:0",
+    what: "Manhattan nose-down under a low deck, for the horizon band",
+  },
+  {
+    // THE GOLDEN GATE DECK, from the Marin side at deck height.
+    //
+    // The one pose where a bridge fills the frame. Every other San Francisco
+    // pose is in the city, where a bridge is a stripe in the distance and an
+    // abutment step of six metres is invisible; here the deck runs away from
+    // the camera for two kilometres and both its ends are in shot.
+    name: "sf-golden-gate",
+    city: "sf",
+    lat: 37.8210, lon: -122.4930, altM: 210, hdgDeg: 95, pitchDeg: -6,
+    t: D("2025-06-21T18:00:00Z"), // 11:00 PDT
+    wx: CLEAR,
+    what: "the Golden Gate broadside, deck and towers in one frame",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is

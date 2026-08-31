@@ -173,8 +173,20 @@ for (const f of files) {
   // once by a constant per-record amount, which is what a wrong ORACLE looks
   // like, as opposed to a real corruption, which would hit one file and by an
   // arbitrary amount.
+  //
+  // From version 2 there is a NAME SECTION after the records: a u32 table size,
+  // one u16 id per way, then each distinct name as a u16 byte length and its
+  // UTF-8. Reconstructed here from the parsed names rather than read out of the
+  // file, so a writer that dropped a name or a reader that skipped one shows up
+  // as a byte count that no longer closes.
+  const version = new DataView(buf).getUint32(4, true);
   let expected = 32;
   for (const r of pack.roads) expected += 16 + (r.pts.length / 2) * 4;
+  if (version >= 2) {
+    const distinct = new Set(pack.roads.map((r) => r.name).filter((n) => n !== ""));
+    expected += 4 + 2 * pack.roads.length;
+    for (const n of distinct) expected += 2 + new TextEncoder().encode(n).length;
+  }
   if (expected !== buf.byteLength) {
     problems.push(`size mismatch: records account for ${expected} of ${buf.byteLength} bytes`);
   }

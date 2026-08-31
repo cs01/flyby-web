@@ -152,6 +152,37 @@ float slabDensity(vec3 p, float cover, float base, float top, float scale) {
   return d;
 }
 
+/**
+ * Where the ray crosses a shell at height h, as (near, far). (-1, -1) misses.
+ *
+ * A SHELL AND NOT A PLANE, and that is the whole of the horizon fix. The
+ * density field below is a flat slab between two altitudes, which is right
+ * overhead and wrong at the horizon: a plane above the camera is only ever
+ * reached by a ray going UP, so a deck drawn against a flat slab stops dead at
+ * eye level. Every ray below that gets no cloud, and what shows through is the
+ * bright clear-sky haze -- a hard cream stripe lying along the horizon under a
+ * total overcast, with the deck starting abruptly above it.
+ *
+ * On a round planet that band is exactly where the deck is thickest. The
+ * horizon at 709 m is 0.85 degrees BELOW level, and every ray between there and
+ * level climbs away from the surface and meets a deck 1500 m up somewhere
+ * between 130 and 500 km out. The band that had no cloud in it at all is the
+ * band that should be solid.
+ *
+ * R_GROUND comes from the atmosphere chunk, so the clouds sit on the same
+ * planet the sky is integrated over rather than on one of their own.
+ */
+vec2 shellHits(vec3 rd, float h) {
+  float r = R_GROUND + h;
+  float ro = R_GROUND + uCameraPos.y;
+  float b = ro * rd.y;
+  float c = ro * ro - r * r;
+  float disc = b * b - c;
+  if (disc < 0.0) return vec2(-1.0);
+  float sq = sqrt(disc);
+  return vec2(-b - sq, -b + sq);
+}
+
 float cloudDensity(vec3 p) {
   float d = slabDensity(p, uLow.x, uLow.y, uLow.z, 0.00055) * (1.0 + uPrecip * 0.6);
   d += slabDensity(p, uMid.x, uMid.y, uMid.z, 0.00030) * 0.75;
@@ -187,25 +218,59 @@ void main() {
     if (lowCover > 0.06) { slabLo = min(slabLo, uLow.y); slabHi = max(slabHi, uLow.z); }
     if (midCover > 0.06) { slabLo = min(slabLo, uMid.y); slabHi = max(slabHi, uMid.z); }
 
-    // Clip the march to the span of sky that can hold cloud at all.
-    float t0 = 0.0;
-    // The world is a flat plane, so an overcast seen from underneath runs to
-    // the horizon, and where the march STOPS used to be a hard bright line
-    // across the sky: bare horizon sky showing through where the cloud simply
-    // ended. Pushing the limit out to 400 km only moved the line closer to the
-    // horizon without removing it, and every kilometre of it still has to be
-    // marched. 120 km is instead the distance at which a cloud sample and the
-    // sky behind it can be made the same colour, which is the only thing that
-    // makes the end of a march invisible rather than merely distant.
-    float t1 = min(sceneDist, 120000.0);
-    if (abs(rd.y) > 1e-4) {
-      float ta = (slabLo - uCameraPos.y) / rd.y;
-      float tb = (slabHi - uCameraPos.y) / rd.y;
-      t0 = max(t0, min(ta, tb));
-      t1 = min(t1, max(ta, tb));
-    } else if (uCameraPos.y < slabLo || uCameraPos.y > slabHi) {
-      t1 = t0;  // horizontal ray outside the slab: nothing to march
+    // WHERE THE DECK IS, and separately, HOW FAR OF IT IS WORTH MARCHING.
+    //
+    // Keeping those apart is the point. The world is a flat plane, so a deck
+    // seen from underneath runs to the horizon and the crossing of a grazing
+    // ray is hundreds of kilometres long; marching that is neither affordable
+    // nor useful. But CLIPPING the crossing, which is what this did, throws the
+    // deck away rather than approximating it: a ray whose entry is past the
+    // limit failed the t1 > t0 test and drew no cloud at all.
+    //
+    // That is a hard-edged bug and not a soft one. The deck base is 785 m over
+    // the camera in the case this was found in, so the entry passes 120 km at
+    // an elevation of 0.37 degrees, and the geometric horizon at that altitude
+    // is 0.85 degrees BELOW level: a 1.2 degree band of sky along the whole
+    // horizon, about 17 pixels of a 720-line frame, in which a 48% overcast
+    // simply was not drawn and the bright clear-sky haze behind it came
+    // through. It reads as a hard cream stripe lying on the horizon, with the
+    // barely-sampled edge of the march above it as speckle.
+    //
+    // sEnter/sExit are the real crossing. t0/t1 are what gets marched. The
+    // remainder between them is closed analytically below.
+    //
+    // The crossing is the part of the ray inside the OUTER shell and outside
+    // the inner one. Written as that difference rather than as two cases,
+    // because the camera can be under the deck, in it, or over it, and the
+    // arithmetic is the same either way. Where a downward ray leaves the deck
+    // and re-enters it further on, only the first span is taken: the second is
+    // on the far side of the planet.
+    vec2 hitLo = shellHits(rd, slabLo);
+    vec2 hitHi = shellHits(rd, slabHi);
+    float sEnter = 0.0;
+    float sExit = 0.0;
+    if (hitHi.y > 0.0) {
+      float aHi = max(0.0, hitHi.x);
+      float bHi = hitHi.y;
+      if (hitLo.y > 0.0) {
+        float aLo = max(0.0, hitLo.x);
+        // Starting inside the inner shell: the deck begins where it is left.
+        if (aLo <= aHi) { sEnter = max(aHi, hitLo.y); sExit = bHi; }
+        else            { sEnter = aHi; sExit = min(bHi, aLo); }
+      } else {
+        sEnter = aHi;
+        sExit = bHi;
+      }
     }
+    sExit = min(sExit, sceneDist);
+    sEnter = min(sEnter, sExit);
+
+    float t0 = sEnter;
+    float t1 = min(sExit, 120000.0);
+    // How far along the ray the march actually got. Without a march it never
+    // left the entry, which is what makes the closure below cover the whole
+    // crossing for a grazing ray rather than none of it.
+    float marchedTo = t0;
 
     if (t1 > t0) {
       // 64 steps now that a density sample is one filtered texture fetch
@@ -344,7 +409,56 @@ void main() {
         through *= stepT;
         t += dt;
       }
+      marchedTo = t;
 
+    }
+
+    // --- THE HORIZON, WHICH IS NOT MARCHED --------------------------------
+    //
+    // Everything the march did not reach: past its 120 km limit, past its step
+    // budget, or the whole crossing when the entry was already past the limit
+    // and the loop never ran. Under a deck that runs to the horizon this is
+    // most of the sky near it, and leaving it empty is what drew the stripe.
+    //
+    // CLOSED WITH THE DECK'S OWN AVERAGE, not with a measurement, and that is
+    // the honest form of the answer rather than a cheap one. Along a path of
+    // tens of kilometres the noise field averages to its expectation and cannot
+    // do anything else: the threshold remap returns about cover/2 over a shape
+    // that is roughly uniform, and the base/top profile integrates to about
+    // 0.72 of the slab, so the deck's mean density is near 0.36 * cover
+    // whatever the weather field happens to be doing at any one point. Using an
+    // expectation also means neighbouring pixels get the same answer, which is
+    // what takes the speckle out of the band rather than merely darkening it.
+    //
+    // RAMPED IN BY HOW MUCH PATH IS LEFT, because the claim only holds over a
+    // long one. A ray forty degrees up leaves a couple of hundred metres of
+    // crossing unmarched, and over that distance a broken deck is its own
+    // structure and not its average -- veiling it would put a flat haze across
+    // a sky with holes in it. Twenty kilometres is several times the size of
+    // anything in the noise, so by there the average is all that is left.
+    float restStart = max(marchedTo, sEnter);
+    float rest = sExit - restStart;
+    if (through.g > 0.02 && rest > 0.0) {
+      const float SIGMA_VIEW_REST = 0.012;
+      // Expected density of each deck, weighted the same way cloudDensity
+      // weights them.
+      float meanDens = 0.0;
+      if (lowCover > 0.06) meanDens += lowCover * 0.36 * (1.0 + uPrecip * 0.6);
+      if (midCover > 0.06) meanDens += midCover * 0.36 * 0.75;
+
+      float cosSunH = dot(rd, uSunDir);
+      float phH = mix(miePhase(cosSunH, 0.80), miePhase(cosSunH, -0.30), 0.35);
+      // Seen edge-on through kilometres of deck, a sample is deep in it: the
+      // 0.45 stands for the sun transmittance the light march would find there,
+      // and the powder term is 1 because nothing that far in is an edge.
+      vec3 lumH = uSunColor * uSunIntensity * uSunSurfaceCloud * (phH * 4.0 + 0.5) * 0.45
+                + uAmbient * 0.9;
+
+      float w = smoothstep(2000.0, 20000.0, rest);
+      float od = meanDens * SIGMA_VIEW_REST * rest * w;
+      vec3 restT = exp(-vec3(od));
+      scattered += through * lumH * (1.0 - restT.g);
+      through *= restT;
     }
   }
 
