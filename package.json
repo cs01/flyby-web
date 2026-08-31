@@ -39,7 +39,8 @@
     "streetsign": "bun test/streetsign.check.ts",
     "bridge": "bun test/bridge.check.ts",
     "water": "bun tools/verify-water.ts",
-    "glass": "bun tools/verify-glass.ts"
+    "glass": "bun tools/verify-glass.ts",
+    "bounce": "bun tools/verify-street.ts"
   },
   "dependencies": {
     "three": "^0.180.0"

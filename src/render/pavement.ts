@@ -55,6 +55,7 @@ import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import type { Budget } from "./budget";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
+import { GROUND_BOUNCE_GLSL } from "./groundbounce";
 import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeRoadUniforms, type RoadUniforms } from "./roads";
@@ -139,6 +140,7 @@ out vec4 fragColor;
 #define ATMO_SUN_STEPS 2
 ${ATMOSPHERE_GLSL}
 ${SUN_SHADOW_GLSL}
+${GROUND_BOUNCE_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
 
@@ -351,7 +353,12 @@ void main() {
   vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl * sunVis;
   vec3 beam = direct + uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
   vec3 ambient = occludedSkyIrradiance(n);
-  vec3 lit = albedo * (beam + ambient);
+  // The same canyon bounce the carriageway beside this kerb runs, off the same
+  // helper: a footway between two towers loses the sky exactly as the road
+  // does, and the two must not read as different materials for it.
+  vec3 bounce = canyonBounce(uSunColor * uSunIntensity * uSunSurface * sunT, ambient,
+                             sunVis, uSunDir, builtness(vWorld));
+  vec3 lit = albedo * (beam + ambient + bounce);
 
   // Wet concrete reflects the sky, weakly. Gated on wetness so the cube fetch
   // is paid for only on the frames it is actually raining.
@@ -384,6 +391,12 @@ void main() {
     lit += lampCol * pool * uNight * (1.0 + 2.2 * uWetness) * 0.17;
     lit += albedo * uNightGlow * 0.9;
   }
+
+  // The ground/sun mask, before the atmosphere: see groundDebugColor in
+  // render/groundbounce.ts. Opaque, so a faded far-field fragment cannot dilute
+  // the marker into something the mask thresholds would half-accept.
+  vec3 dbg;
+  if (groundDebugColor(sunVis, GROUND_FOOTWAY, dbg)) { fragColor = vec4(dbg, 1.0); return; }
 
   vec3 ro = atmoOrigin(uCamAltitude);
   vec3 rd = normalize(vWorld - uCameraPos);

@@ -600,9 +600,19 @@ async function main() {
   // two are separate because they are separate claims about the same wall.
   const flatRefl = gateFlag("flatrefl");
 
-  // `?flatbounce=1` removes the canyon bounce from the road surface; the
-  // vacuity probe for the street assertions.
-  const flatBounce = gateFlag("flatbounce")
+  // `?flatbounce=1` restores the street floor this repo had before the canyon
+  // bounce: a carriageway, a footway and a terrain drape that all went black
+  // under lit towers at noon. It is the vacuity probe for
+  // tools/verify-street.ts, which has to run the OLD behaviour in the SAME
+  // binary and see its assertions go red.
+  const flatBounce = gateFlag("flatbounce");
+
+  // `?groundDebug=1` makes all three ground shaders emit their own street-floor
+  // mask -- red where the ground is shadowed, blue where the sun reaches it --
+  // so tools/verify-street.ts does not have to guess either from colour. Same
+  // rule as `?buildingDebug`: the rest of the scene still draws normally, so
+  // mask and beauty frame occlude alike and agree pixel for pixel.
+  const groundDebug = gateNum("groundDebug");
 
   for (const u of terrain.uniforms) {
     u.uUrban.value = urban.texture;
@@ -1448,6 +1458,12 @@ async function main() {
       u.uNightGlow.value.copy(light.nightGlow);
       u.uMoonDir.value.copy(light.moonDir);
       u.uMoonLight.value.copy(light.moonLight);
+      // Every frame, not once at start-up: a terrain ring built later gets its
+      // own uniform set, and it must not be the one ring with no bounce in it.
+      u.uUrban.value = urban.texture;
+      u.uUrbanExtent.value = urban.extent;
+      u.uFlatBounce.value = flatBounce ? 1 : 0;
+      u.uGroundDebug.value = groundDebug;
       u.uMieG.value = light.mieG;
       u.uTurbidity.value = light.turbidity;
       u.uCamAltitude.value = camAlt;
@@ -1506,6 +1522,12 @@ async function main() {
       r.uSunIntensity.value = light.sunIntensity;
       r.uWetness.value = light.wetness;
       r.uFlatBounce.value = flatBounce ? 1 : 0;
+      r.uGroundDebug.value = groundDebug;
+      // Same reason as the buildings above: the pavement pushes its own uniform
+      // set into this array long after start-up, and streamed road tiles share
+      // this one, so the mask is written every frame rather than once.
+      r.uUrban.value = urban.texture;
+      r.uUrbanExtent.value = urban.extent;
       r.uSnow.value = light.snow;
       r.uNight.value = light.night;
       r.uNightGlow.value.copy(light.nightGlow);

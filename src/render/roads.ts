@@ -35,6 +35,7 @@ import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import type { Budget } from "./budget";
 import { deckYAt, type Deck } from "../data/bridgedeck";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
+import { GROUND_BOUNCE_GLSL, groundBounceUniforms, type GroundBounceUniforms } from "./groundbounce";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { addRibbon, emptyRibbon, ribbonTriangleCost, type RibbonScratch } from "../data/ribbon";
@@ -185,6 +186,7 @@ out vec4 fragColor;
 #define ATMO_SUN_STEPS 2
 ${ATMOSPHERE_GLSL}
 ${SUN_SHADOW_GLSL}
+${GROUND_BOUNCE_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
 ${LAMP_GLSL}
@@ -194,10 +196,6 @@ uniform vec3  uCameraPos;
 uniform samplerCube uEnv;
 uniform float uEnvMaxLod;
 uniform float uWetness;
-// ?flatbounce=1 removes the canyon bounce below, so tools/verify-street.ts can
-// run the old black-canyon behaviour in the SAME binary. Dev builds only; see
-// the gate-flag note in main.ts.
-uniform float uFlatBounce;
 uniform float uSnow;
 uniform float uNight;
 uniform vec3  uNightGlow;
@@ -509,38 +507,13 @@ void main() {
   SkyOcclusion skyOccl = sampleSkyOcclusion(n);
   vec3 ambient = min(shIrradiance(skyOccl.bentNormal) * skyOccl.visibility, shIrradiance(n));
 
-  // BOUNCE OFF THE WALLS, which is what actually lights a street canyon.
-  //
-  // A carriageway between two towers loses nearly the whole sky dome, so the
-  // ambient above collapses and the beam is blocked, and the road went black at
-  // noon while the facades over it stood in full sun. That is not what a city
-  // street looks like: the wall opposite is lit, it is roughly mid-grey, and it
-  // throws a large fraction of that down onto the road. In a canyon the bounce
-  // is most of the light on the ground.
-  //
-  // THE WEIGHT IS THE SHADOW, and the first version of this got it wrong in a
-  // way worth recording. It used 1 - sampleSkyOcclusion().visibility, by analogy
-  // with the facade bounce in render/buildings.ts. That AO is SCREEN SPACE and
-  // metre-scale: it knows about a kerb and the underside of a parked car, and it
-  // does not know a 150 m tower is standing over the street. Measured on
-  // manhattan-7th it moved the carriageway by 0.00 of 255 even at a coefficient
-  // of 6.0. The facade's own term is not that AO either -- it is analytic from
-  // height up the wall, which a road does not have.
-  //
-  // What a road does have is the shadow map. If the sun is up and this pixel is
-  // shadowed, something opaque stands between it and the sun, and in a city that
-  // something is a building whose sunlit side faces back down into the street.
-  // So the bounce is exactly what the direct beam lost: sunVis carries it, at no
-  // extra sampling cost, and it is zero on a road in full sun -- which needs no
-  // help -- and greatest in the canyon floor that does.
-  //
-  // The coefficient is below the facade's 0.35 on purpose. That one is a single
-  // bounce off one wall straight at the receiver. This is a wall bouncing DOWN
-  // onto a horizontal surface, so it arrives glancing and carries a cosine the
-  // facade case does not pay.
-  float bounceOcc = (1.0 - sunVis) * max(0.0, uSunDir.y);
-  vec3 bounce = uSunColor * uSunIntensity * uSunSurface * sunT
-              * (6.0 * bounceOcc) * (1.0 - uFlatBounce);
+  // BOUNCE OFF THE WALLS, which is what actually lights a street canyon. The
+  // term, both its weights and why it is not the screen-space AO, are in
+  // render/groundbounce.ts; the carriageway, the footway beside it and the
+  // terrain drape under both share that one helper so they cannot disagree
+  // about how bright a shadowed street is.
+  vec3 bounce = canyonBounce(uSunColor * uSunIntensity * uSunSurface * sunT, ambient,
+                             sunVis, uSunDir, builtness(vWorld));
 
   vec3 lit = albedo * (beam + ambient + bounce);
 
@@ -637,6 +610,12 @@ void main() {
     lit += albedo * uNightGlow * 0.9;
   }
 
+  // The ground/sun mask, before the atmosphere: see groundDebugColor in
+  // render/groundbounce.ts. Opaque, so a faded far-field fragment cannot dilute
+  // the marker into something the mask thresholds would half-accept.
+  vec3 dbg;
+  if (groundDebugColor(sunVis, GROUND_CARRIAGEWAY, dbg)) { fragColor = vec4(dbg, 1.0); return; }
+
   vec3 ro = atmoOrigin(uCamAltitude);
   vec3 rd = normalize(vWorld - uCameraPos);
   vec3 trans;
@@ -646,7 +625,7 @@ void main() {
 }
 `;
 
-export interface RoadUniforms extends SunShadowUniforms, AoUniforms {
+export interface RoadUniforms extends SunShadowUniforms, AoUniforms, GroundBounceUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -654,8 +633,6 @@ export interface RoadUniforms extends SunShadowUniforms, AoUniforms {
   uEnv: THREE.IUniform<THREE.CubeTexture | null>;
   uEnvMaxLod: THREE.IUniform<number>;
   uWetness: THREE.IUniform<number>;
-  /** 1 removes the canyon bounce off the lit walls; `?flatbounce=1`. */
-  uFlatBounce: THREE.IUniform<number>;
   uSnow: THREE.IUniform<number>;
   uNight: THREE.IUniform<number>;
   uNightGlow: THREE.IUniform<THREE.Color>;
@@ -681,6 +658,7 @@ export function makeRoadUniforms(shadow: SunShadowUniforms): RoadUniforms {
   return {
     ...shadow,
     ...aoUniforms(),
+    ...groundBounceUniforms(),
     uCameraPos: { value: new THREE.Vector3() },
     // The hemispherical ambient this shader ran before the probe existed, so a
     // frame drawn before the first capture is the old picture, not a black one.
@@ -688,7 +666,6 @@ export function makeRoadUniforms(shadow: SunShadowUniforms): RoadUniforms {
     uEnv: { value: null },
     uEnvMaxLod: { value: 6 },
     uWetness: { value: 0 },
-    uFlatBounce: { value: 0 },
     uSnow: { value: 0 },
     uNight: { value: 0 },
     uNightGlow: { value: new THREE.Color(0, 0, 0) },

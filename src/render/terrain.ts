@@ -22,6 +22,7 @@ import type { Heightfield } from "../data/dem";
 import type { StitchedImage } from "../data/imagery";
 import { Origin } from "../geo";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
+import { GROUND_BOUNCE_GLSL, groundBounceUniforms, type GroundBounceUniforms } from "./groundbounce";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 // The ring plan and the choice between plans live in render/budget.ts, with
@@ -66,6 +67,7 @@ out vec4 fragColor;
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 ${SUN_SHADOW_GLSL}
+${GROUND_BOUNCE_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
 
@@ -82,8 +84,6 @@ uniform vec3 uMoonDir;
 // Moon colour * intensity, in the same units as uSunColor * uSunIntensity, so
 // it converts to surface irradiance through the same uSunSurface.
 uniform vec3 uMoonLight;
-uniform sampler2D uUrban;
-uniform float uUrbanExtent;
 // Baked ESA WorldCover coverage: R water, G built, B tree, A herbaceous.
 // Two levels, for the same reason the terrain has rings: 10 m over the city,
 // ~137 m out to the horizon.
@@ -398,7 +398,20 @@ void main() {
   // smears that swim with the camera.
   vec3 ambient = occludedSkyIrradiance(n);
 
-  vec3 lit = albedo * (beam + ambient);
+  // BOUNCE OFF THE WALLS. Most of the black canyon floor a user reported is
+  // this shader, not the carriageway: the drape covers everything either side
+  // of the tarmac and the kerbs, and it lost the sky to the same towers. The
+  // term and its two weights live in render/groundbounce.ts, shared with
+  // render/roads.ts and render/pavement.ts.
+  //
+  // The built-ness weight is the union the night lighting below already uses:
+  // footprints where a .city pack has them, WorldCover's built class
+  // everywhere else. That is what confines this to streets -- a ridge line and
+  // a forest cast a shadow too, and neither is a sunlit wall.
+  vec3 bounce = canyonBounce(uSunColor * uSunIntensity * uSunSurface * sunT, ambient, sunVis,
+                             uSunDir, max(builtness(vWorld), lcBuilt * uHasLand));
+
+  vec3 lit = albedo * (beam + ambient + bounce);
 
   // Specular sheen on wet ground, and always on water (which the drape shows
   // as dark blue; using luminance as a water proxy is crude but it is right
@@ -614,9 +627,7 @@ void main() {
     // drape cannot answer "is this built up": it is bright and desaturated over
     // beach, bare hill and runway alike, so every threshold either lit the whole
     // map or none of it.
-    vec2 mUv = vWorld.xz / (2.0 * uUrbanExtent) + 0.5;
-    float urban = texture(uUrban, mUv).r;
-    urban *= step(0.0, mUv.x) * step(mUv.x, 1.0) * step(0.0, mUv.y) * step(mUv.y, 1.0);
+    float urban = builtness(vWorld);
 
     // Union with the landcover's built class. Only a handful of cities have a
     // .city pack, and the rest were getting emptyUrbanMask() and rendering
@@ -733,11 +744,17 @@ void main() {
     else col = vec3(roadCov);
   }
 
+  // The ground/sun mask; see groundDebugColor in render/groundbounce.ts. Water
+  // is excluded by hand: a shadowed river is not a street floor, and the street
+  // assertions must not average one in.
+  vec3 dbg;
+  if (water < 0.5 && groundDebugColor(sunVis, GROUND_DRAPE, dbg)) col = dbg;
+
   fragColor = vec4(col, 1.0);
 }
 `;
 
-export interface TerrainUniforms extends SunShadowUniforms, AoUniforms {
+export interface TerrainUniforms extends SunShadowUniforms, AoUniforms, GroundBounceUniforms {
   uDrape: THREE.IUniform<THREE.Texture | null>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -749,8 +766,6 @@ export interface TerrainUniforms extends SunShadowUniforms, AoUniforms {
   uNightGlow: THREE.IUniform<THREE.Color>;
   uMoonDir: THREE.IUniform<THREE.Vector3>;
   uMoonLight: THREE.IUniform<THREE.Color>;
-  uUrban: THREE.IUniform<THREE.Texture | null>;
-  uUrbanExtent: THREE.IUniform<number>;
   uLandNear: THREE.IUniform<THREE.Texture | null>;
   uLandFar: THREE.IUniform<THREE.Texture | null>;
   uLandNearExtent: THREE.IUniform<number>;
@@ -785,6 +800,7 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
   return {
     ...shadow,
     ...aoUniforms(),
+    ...groundBounceUniforms(),
     uDrape: { value: null },
     // Held at the hemispherical ambient the shader used before the probe
     // existed, so frame one shades correctly whatever happens to the probe.
@@ -797,8 +813,6 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uNightGlow: { value: new THREE.Color(0, 0, 0) },
     uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
     uMoonLight: { value: new THREE.Color(0, 0, 0) },
-    uUrban: { value: null },
-    uUrbanExtent: { value: 1 },
     uLandNear: { value: null },
     uLandFar: { value: null },
     uLandNearExtent: { value: 1 },
