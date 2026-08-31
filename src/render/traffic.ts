@@ -38,7 +38,7 @@ import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { InstancedField, INSTANCE_GLSL } from "./instanced";
-import { buildCarMesh, CAR_ARCHETYPES, CAR_TRIANGLES } from "./carmesh";
+import { buildCarMesh, CAR_ARCHETYPES, CAR_TRIANGLES, LOD_FAR, LOD_SHADOW } from "./carmesh";
 import { CAR_BUCKET_HEADROOM, type Budget } from "./budget";
 import {
   addParked,
@@ -61,7 +61,7 @@ import { RoadClass, ROAD_TUNNEL, type Road, type RoadPack } from "../data/roadpa
  * is a bright one. `chicago-loop-night` is flown from 420 m and looks a
  * kilometre down the grid.
  */
-const TRAFFIC_RING_M = 1500;
+const TRAFFIC_RING_M = 950;
 const MOBILE_TRAFFIC_RING_M = 700;
 /** Where the parked cars stop. A parked car pays inside the distance a person
  *  could walk, and nowhere else. */
@@ -141,6 +141,10 @@ uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec3 uCameraPos;
 uniform vec2 uFade;
+/** The distance band this MESH draws in. Two levels of detail share one set of
+ *  instances and differ only in which band they answer for; see
+ *  InstancedField.derive. */
+uniform vec2 uLodBand;
 uniform float uTime;
 
 ${INSTANCE_GLSL}
@@ -186,6 +190,7 @@ Placed placeVertex() {
   }
 
   float dist = distance(vec3(p.x, y, p.y), uCameraPos);
+  if (dist < uLodBand.x || dist >= uLodBand.y) return o;
   float ringFade = 1.0 - smoothstep(uFade.x, uFade.y, dist);
   // Shrunk in at the start of the run and out at the end, so a car arrives and
   // leaves rather than appearing. Constant 1 for a parked car, whose s is
@@ -208,7 +213,12 @@ const VERT = /* glsl */ `
 ${VERT_COMMON}
 out vec3 vNormal;
 out vec3 vWorld;
-out vec4 vPart;
+// FLAT, not interpolated. The body and the greenhouse meet on a grid line of
+// the loft, so a triangle is wholly one or the other -- but only if the id
+// stops being averaged across it. Interpolated, the belt row came out as a
+// smear of fractional ids that every step() test below reads as neither.
+flat out float vPartId;
+out vec3 vPartUv;
 out vec2 vLook;
 out float vViewDist;
 
@@ -217,7 +227,8 @@ void main() {
   if (pl.culled) { gl_Position = INSTANCE_CULLED; return; }
   vNormal = instanceRotate(normal, pl.yawCS);
   vWorld = pl.world;
-  vPart = aPart;
+  vPartId = aPart.x;
+  vPartUv = aPart.yzw;
   vLook = iLook;
   vViewDist = distance(pl.world, uCameraPos);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pl.world, 1.0);
@@ -241,7 +252,8 @@ const FRAG = /* glsl */ `
 precision highp float;
 in vec3 vNormal;
 in vec3 vWorld;
-in vec4 vPart;
+flat in float vPartId;
+in vec3 vPartUv;
 in vec2 vLook;
 in float vViewDist;
 out vec4 fragColor;
@@ -271,10 +283,10 @@ uniform float uMoving;
 
 void main() {
   vec3 n = normalize(vNormal);
-  float part = vPart.x;
-  float u = vPart.y;      // 0 at the tail of this part, 1 at its nose
-  float v = vPart.z;      // up the part; wheel diameters on a body panel
-  float axle = vPart.w;   // where the axles sit, as a fraction of the length
+  float part = vPartId;
+  float u = vPartUv.x;    // 0 at the tail of this part, 1 at its nose
+  float v = vPartUv.y;    // up the part; wheel diameters on a body panel
+  float belt = vPartUv.z; // the beltline, in the same wheel diameters as v
   vec3 body = bodyColour(vLook.x);
 
   // Which part this is. Four ranges on one id rather than four materials,
@@ -316,7 +328,12 @@ void main() {
     float post = max(smoothstep(0.16, 0.06, u), smoothstep(0.84, 0.94, u));
     post = max(post, (1.0 - smoothstep(0.0, 0.045, abs(u - 0.52)))
                      * step(0.30, u) * step(u, 0.74));
-    float roof = smoothstep(0.55, 0.80, n.y);
+    // The roof is painted, and the test has to be generous: on a LOFTED body
+    // the roof rail turns over gradually, so a knife-edge test leaves a band of
+    // near-horizontal fragments tagged glass -- at grazing incidence, where
+    // Fresnel is nearly 1 -- and that band blows out white with the section
+    // rows printed across it as teeth.
+    float roof = smoothstep(0.30, 0.62, n.y);
     // Aft of where the glazing ends, u goes negative and the panel is metal on
     // EVERY face, not just the flanks: the back of a van is a door, not a
     // window. A car's cabin is glazed to its own back edge and never reaches
@@ -383,17 +400,12 @@ void main() {
   } else {
     // A painted panel, and everything drawn on it.
     //
-    // THE ARCH IS REAL GEOMETRY NOW, so what is left to draw is the shadow
-    // just inside its lip: a real arch is a rolled edge with the tyre a few
-    // centimetres in behind it, and that band of shade is what gives the
-    // opening depth from an angle where you cannot see into it. The axles are
-    // symmetric about the middle, so one distance covers both, and v is in
-    // WHEEL DIAMETERS -- the wheel centre is at 0.5 on every archetype and the
-    // lip is one set of constants rather than four.
-    float d = min(abs(u - axle), abs(u - (1.0 - axle)));
-    vec2 q = vec2(d / 0.098, (v - 0.50) / 0.62);
-    float lip = flank * smoothstep(1.22, 1.03, length(q)) * detail;
-    albedo *= mix(1.0, 0.58, lip);
+    // The arch is cut into the loft itself now -- bottomLine simply rises at
+    // each axle -- so nothing is painted here. What IS painted is the shoulder
+    // crease along the beltline, which on a real car is a hard edge in sheet
+    // metal and here is a line the loft is too coarse to carry.
+    float crease = flank * (1.0 - smoothstep(0.0, 0.055, abs(v - belt))) * detail;
+    albedo *= mix(1.0, 0.74, crease);
 
     // Panel shut lines: the door edges, and the gap at each end of the doors.
     // Two texels wide wherever they are resolved at all, and gone the moment
@@ -406,7 +418,7 @@ void main() {
     // A rubbing strip along the flank at bumper height, and the dirt every car
     // carries up from the sill. Both darken the bottom of the panel, which is
     // what stops a white car reading as a sheet of paper.
-    albedo *= mix(0.66, 1.0, smoothstep(0.42, 1.05, v));
+    albedo *= mix(0.66, 1.0, smoothstep(0.10 * belt, 0.80 * belt, v));
     gloss = 0.62;
   }
   float ndl = max(0.0, dot(n, uSunDir));
@@ -424,8 +436,13 @@ void main() {
   if (gloss > 0.01) {
     vec3 vdir = normalize(uCameraPos - vWorld);
     vec3 hv = normalize(vdir + uSunDir);
-    lit += uSunColor * uSunIntensity * uSunSurface * sunT * sunVis
-         * pow(max(0.0, dot(n, hv)), 90.0) * gloss * 2.2;
+    // A glint, not a flare. An exponent of 90 over a lofted windscreen puts the
+    // whole lobe inside one or two triangles, so the TRIANGULATION shows
+    // through it as a sawtooth of blown white along the glass -- the highlight
+    // is narrower than the surface that carries it. Widening the lobe and
+    // capping what it can add keeps the glint and loses the staircase.
+    float spec = pow(max(0.0, dot(n, hv)), 48.0) * gloss * 1.25;
+    lit += uSunColor * uSunIntensity * uSunSurface * sunT * sunVis * min(spec, 3.0);
     // The sky in the paint. A car with no environment term is a matt car, and
     // matt cars are what a hundred cheap driving games look like.
     //
@@ -453,7 +470,11 @@ void main() {
     // under a 4% head-on Fresnel has nowhere to get any light from.
     float fGlass = 0.04 + 0.96 * pow(1.0 - cosv, 5.0);
     float fPaint = 0.075 + 0.60 * pow(1.0 - cosv, 3.0);
-    lit += shIrradiance(refl) * 0.31831 * mix(fPaint, fGlass, glazed) * gloss;
+    // Capped. A mirror at grazing incidence really does return the whole sky,
+    // and on a windscreen a few hundred pixels across that is a white hole
+    // rather than a reflection.
+    vec3 mirror = shIrradiance(refl) * 0.31831 * mix(fPaint, fGlass, glazed) * gloss;
+    lit += min(mirror, vec3(0.9));
   }
 
   lit += albedo * uNightGlow * uNight * 0.6;
@@ -485,6 +506,7 @@ export interface TrafficUniforms extends SunShadowUniforms, AoUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uSH: THREE.IUniform<Float32Array>;
   uFade: THREE.IUniform<THREE.Vector2>;
+  uLodBand: THREE.IUniform<THREE.Vector2>;
   uTime: THREE.IUniform<number>;
   uMoving: THREE.IUniform<number>;
   uSunDir: THREE.IUniform<THREE.Vector3>;
@@ -508,6 +530,7 @@ function makeTrafficUniforms(shadow: SunShadowUniforms, moving: boolean, ringM: 
     uCameraPos: { value: new THREE.Vector3() },
     uSH: { value: shHemispherical([0.28, 0.36, 0.5], 0.55, 0.45) },
     uFade: { value: new THREE.Vector2(ringM * FADE_FRACTION, ringM) },
+    uLodBand: { value: new THREE.Vector2(0, 1e9) },
     uTime: { value: 0 },
     uMoving: { value: moving ? 1 : 0 },
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
@@ -588,6 +611,20 @@ abstract class CarField {
     this.ringM = ringM;
     this.uniforms = makeTrafficUniforms(shadow, moving, ringM);
 
+    // ONE MESH, AND THE RING IS WHAT PAYS FOR IT.
+    //
+    // A distance LOD was tried here and backed out, and the reason is worth
+    // keeping: two meshes over one instance buffer, each culling the other's
+    // band in the vertex shader, does NOT save the vertex work. The shader
+    // still runs for every instance of both meshes and only then discards, so
+    // the fine body cost its full vertex rate over all five thousand cars and
+    // the frame went from 11.7 ms to 26.3. A real near level needs its own
+    // small instance buffer, which is a rebuild pass this class does not have
+    // yet.
+    //
+    // So there is one body, and the budget for it was bought by shortening the
+    // traffic ring instead: a car at 1.5 km is a sub-pixel dot, and spending
+    // its triangles on the ones you can actually see is the better trade.
     const beauty = new THREE.RawShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -621,25 +658,36 @@ abstract class CarField {
       Math.ceil((capacity * CAR_BUCKET_HEADROOM) / CAR_ARCHETYPES.length),
     );
     for (let a = 0; a < CAR_ARCHETYPES.length; a++) {
-      const mesh = buildCarMesh(a);
-      const base = new THREE.BufferGeometry();
-      base.setAttribute("position", new THREE.BufferAttribute(mesh.position, 3));
-      base.setAttribute("normal", new THREE.BufferAttribute(mesh.normal, 3));
-      base.setAttribute("aPart", new THREE.BufferAttribute(mesh.aPart, 4));
-      base.setIndex(new THREE.BufferAttribute(mesh.index, 1));
+      const toGeometry = (m: ReturnType<typeof buildCarMesh>): THREE.BufferGeometry => {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute("position", new THREE.BufferAttribute(m.position, 3));
+        g.setAttribute("normal", new THREE.BufferAttribute(m.normal, 3));
+        g.setAttribute("aPart", new THREE.BufferAttribute(m.aPart, 4));
+        g.setIndex(new THREE.BufferAttribute(m.index, 1));
+        return g;
+      };
+      const far = buildCarMesh(a, LOD_FAR);
 
-      const field = new InstancedField(base, per, [
+      const field = new InstancedField(toGeometry(far), per, [
         { name: "iRoute", itemSize: 4 },
         { name: "iDrive", itemSize: 4 },
         { name: "iLook", itemSize: 2 },
       ]);
-      this.buckets.push({ archetype: a, field, triangles: mesh.triangles, count: 0 });
+      this.buckets.push({ archetype: a, field, triangles: far.triangles, count: 0 });
 
       const drawn = new THREE.Mesh(field.geometry, beauty);
       drawn.frustumCulled = false;
       this.group.add(drawn);
 
-      const caster = new THREE.Mesh(field.geometry, depthMat);
+      // THE CASTER GETS ITS OWN, MUCH COARSER BODY, sharing the same instances.
+      //
+      // This is where the frame time actually is. A car is drawn five times:
+      // once for the picture, three times into the sun's cascades and once into
+      // the ambient-occlusion depth prepass. Four fifths of every triangle on
+      // it is therefore spent on a silhouette that has no beltline, no arch lip
+      // and no rim, and drawing the lofted body into all five cost 23.6 ms a
+      // frame against 11.7 before it.
+      const caster = new THREE.Mesh(field.derive(toGeometry(buildCarMesh(a, LOD_SHADOW))), depthMat);
       caster.frustumCulled = false;
       caster.layers.enable(SHADOW_CASTER_LAYER);
       this.depthScene.add(caster);

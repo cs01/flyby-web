@@ -174,15 +174,84 @@ function nonUnitNormals(m: Mesh): number {
   probe("ground contact", Math.abs(worst + 0.05) < 0.005, "a car lifted 5 cm");
   blind("ground contact", Math.abs(worst) < 0.005, `${worst.toFixed(4)} m`);
 
-  // And nothing pokes through the roof line the archetype declares, which is
-  // what the traffic budget and the shadow cascades size themselves against.
-  let over = 0;
+  // THE MESH IS THE PUBLISHED CAR, to the millimetre it is quoted at.
+  //
+  // This is the assertion the whole rewrite exists for. The previous bodies
+  // were invented -- numbers chosen to look about right -- and a car modelled
+  // ten per cent off is the single most reliable way to make a correctly sized
+  // street look wrong, because every kerb, lane and doorway around it is real.
+  // So the loft is measured back against the spec sheet it was built from.
+  //
+  // Tolerances are literals. 25 mm on the overall box is under the panel gap of
+  // a real car and well inside what the section curve rounds off at the
+  // corners; the wheelbase and track come from the wheel geometry itself and
+  // are held ten times tighter, because those are placed directly rather than
+  // being the outcome of a curve.
+  let worstBox = 0;
+  let worstBoxName = "";
+  let worstBase = 0;
+  let worstBaseName = "";
   for (let i = 0; i < meshes.length; i++) {
-    let hi = -Infinity;
-    for (let v = 1; v < meshes[i].position.length; v += 3) hi = Math.max(hi, meshes[i].position[v]);
-    over = Math.max(over, hi - CAR_ARCHETYPES[i].roofM);
+    const a = CAR_ARCHETYPES[i];
+    const m = meshes[i];
+    let lo = [Infinity, Infinity, Infinity];
+    let hi = [-Infinity, -Infinity, -Infinity];
+    for (let v = 0; v < m.position.length; v += 3) {
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k], m.position[v + k]);
+        hi[k] = Math.max(hi[k], m.position[v + k]);
+      }
+    }
+    const box = [
+      Math.abs(hi[0] - lo[0] - a.lengthM),
+      Math.abs(hi[2] - lo[2] - a.widthM),
+      Math.abs(hi[1] - lo[1] - a.heightM),
+    ];
+    for (const e of box) {
+      if (e > worstBox) {
+        worstBox = e;
+        worstBoxName = a.name;
+      }
+    }
+    // The wheels, found by their own part id, give back the wheelbase and the
+    // track without trusting the code that placed them.
+    const xs: number[] = [];
+    const zs: number[] = [];
+    for (let k = 0; k < m.aPart.length; k += 4) {
+      if (Math.round(m.aPart[k]) !== PART_WHEEL) continue;
+      xs.push(m.position[(k / 4) * 3]);
+      zs.push(m.position[(k / 4) * 3 + 2]);
+    }
+    const front = xs.filter((x) => x > 0);
+    const rear = xs.filter((x) => x <= 0);
+    const mid = (v: number[]): number => (Math.min(...v) + Math.max(...v)) / 2;
+    const right = zs.filter((z) => z > 0);
+    const left = zs.filter((z) => z <= 0);
+    const base = [
+      Math.abs(mid(front) - mid(rear) - a.wheelbaseM),
+      Math.abs(mid(right) - mid(left) - a.trackM),
+    ];
+    for (const e of base) {
+      if (e > worstBase) {
+        worstBase = e;
+        worstBaseName = a.name;
+      }
+    }
   }
-  check("nothing stands above the declared roof", over < 0.001, `${over.toFixed(4)} m over`);
+  check(
+    "the body measures its published length, width and height",
+    worstBox < 0.025,
+    `worst ${worstBoxName} off by ${(worstBox * 1000).toFixed(0)} mm`,
+  );
+  probe("published box", 0.10 < 0.025, "a body 100 mm out would pass");
+  blind("published box", worstBox < 0.025, `${(worstBox * 1000).toFixed(0)} mm`);
+  check(
+    "the wheels stand at the published wheelbase and track",
+    worstBase < 0.0025,
+    `worst ${worstBaseName} off by ${(worstBase * 1000).toFixed(1)} mm`,
+  );
+  probe("wheelbase and track", 0.02 < 0.0025, "an axle 20 mm out would pass");
+  blind("wheelbase and track", worstBase < 0.0025, `${(worstBase * 1000).toFixed(1)} mm`);
 }
 
 // --- the surface parameters the shader reads --------------------------------
@@ -198,24 +267,27 @@ function partUv(m: Mesh, part: number): { u: number; v: number; y: number }[] {
 }
 
 {
-  // Finite, and the axle inset is the same on every vertex of a car and inside
-  // the band a real wheelbase puts it in. The shader places BOTH arches from
-  // this one number, so a drifting value is two arches in the wrong place.
+  // Finite, and the BELTLINE is the same on every vertex of a car and inside
+  // the band a real one falls in. The shader draws the shoulder crease and the
+  // sill shading from this one number against a body whose proportions it does
+  // not otherwise know, so a drifting value is a crease in the wrong place on
+  // every panel.
   let nonFinite = 0;
-  let axleOut = 0;
+  let beltOut = 0;
   for (const m of meshes) {
     for (let i = 0; i < m.aPart.length; i++) if (!Number.isFinite(m.aPart[i])) nonFinite++;
   }
   for (let i = 0; i < meshes.length; i++) {
-    const axles = new Set<number>();
-    for (let k = 3; k < meshes[i].aPart.length; k += 4) axles.add(meshes[i].aPart[k]);
-    // 0.13..0.24 of the length is the band every ordinary road car's front
-    // overhang falls in; outside it the arches are in the doors or off the end.
-    const a = [...axles][0];
-    if (axles.size !== 1 || !(a > 0.13 && a < 0.24)) axleOut++;
+    const belts = new Set<number>();
+    for (let k = 3; k < meshes[i].aPart.length; k += 4) belts.add(meshes[i].aPart[k]);
+    // In WHEEL DIAMETERS. A beltline sits between one and two wheel diameters
+    // up on every road vehicle: below one it is under the axle, above two the
+    // glass starts over the roof of the car beside it.
+    const v = [...belts][0];
+    if (belts.size !== 1 || !(v > 1.0 && v < 2.0)) beltOut++;
   }
   check("every surface parameter is finite", nonFinite === 0, `${nonFinite} non-finite`);
-  check("the axle inset is one plausible number per car", axleOut === 0, `${axleOut} archetypes off`);
+  check("the beltline is one plausible number per car", beltOut === 0, `${beltOut} archetypes off`);
 }
 
 {

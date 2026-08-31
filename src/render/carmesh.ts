@@ -1,23 +1,41 @@
-// Low-poly car archetypes, built from boxes at load time.
+// Car bodies, LOFTED FROM PUBLISHED DIMENSIONS at load time.
 //
 // NO ASSETS, AND THAT IS NOT A COMPROMISE HERE. This repo has no asset
 // pipeline and docs/roadmap.md says why it is not getting one. For cars the
 // argument is stronger than for anything else in the scene: every real make and
 // model is a registered design, correctly licensed models of them do not exist
 // at a price a browser toy can pay, and the rips that circulate are exactly the
-// thing not to ship. What a car has to do here is read as a car at two pixels
-// from an aircraft and as a plausible object at two metres from the pavement,
-// and eighty triangles of box does both.
+// thing not to ship.
 //
-// FOUR ARCHETYPES, NOT ONE. A street of identical saloons is the same failure a
-// stand of identical trees is, and it is cheaper to fix: the silhouette above
-// the waistline is most of what tells a van from a hatchback at any distance,
-// so the four shapes differ in cabin length, cabin height and overall height
-// rather than in detail nobody can resolve.
+// BUT DIMENSIONS ARE NOT A DESIGN. Overall length, width, height, wheelbase,
+// overhangs, track and tyre size are published measurements, and the previous
+// version of this file did not use them: its numbers were invented to look
+// about right, and the result was four boxes that read as a 1990s console game
+// however good the lighting on them got. The figures below are the nominal
+// published ones for four ordinary segments -- a mid-size saloon, a compact
+// hatchback, a short-wheelbase panel van and a mid-size pickup -- rounded to
+// the millimetre they are quoted at. They are a SEGMENT, not a model: what
+// matters is that a car parked at a kerb is 4.9 m long and 1.44 m tall rather
+// than whatever looked right, because everything around it is real size.
+//
+// HOW THE BODY IS BUILT. Not from boxes. Three polylines describe the vehicle
+// the way a package drawing does:
+//
+//   topLine     the upper silhouette in side view: boot deck, backlight base,
+//               roof, windscreen base, bonnet, nose.
+//   bottomLine  the lower silhouette: the valance, the sill, and the WHEEL
+//               ARCHES, which are simply where this line rises.
+//   planLine    half width along the car, so the nose and tail draw in.
+//
+// A cross-section is swept along them and the surface is lofted between
+// stations. That is what makes the shape read as a car: the silhouette is a
+// curve, the flanks are continuous, and the shading normals come from the
+// surface itself instead of being a flat value per quad.
 //
 // The parts carry an id rather than a material, so one draw call paints body,
 // glass, wheels and lamps: `aPart` is read by the fragment shader in
-// render/traffic.ts, which is also where the per-instance colour arrives.
+// render/traffic.ts, which is also where the per-instance colour arrives. The
+// id is interpolated FLAT, so a triangle is never half glass.
 //
 // LOCAL FRAME. +x is the direction the car faces, +y is up, +z is its right
 // hand side, and the origin is on the ground between the wheels. That matches
@@ -30,86 +48,146 @@ export const PART_GLASS = 1;
 export const PART_HEADLIGHT = 2;
 export const PART_TAILLIGHT = 3;
 export const PART_WHEEL = 4;
-/** Everything seen THROUGH a wheel arch: the inner tub and the sill under the
- *  doors. Its own id rather than a dark body panel, because the shader draws a
- *  rim on a wheel and must not draw one on the tub behind it. */
+/** Everything seen THROUGH a wheel arch: the inner tub. Its own id rather than
+ *  a dark body panel, because the shader draws a rim on a wheel and must not
+ *  draw one on the tub behind it. */
 export const PART_UNDER = 5;
 /** The number plate. Four triangles, and one of the strongest cues there is
  *  that a shape is a road vehicle rather than a box on wheels. */
 export const PART_PLATE = 6;
 
+/** (station along the car, value). Station is 0 at the tail, 1 at the nose. */
+export type Profile = readonly (readonly [number, number])[];
+
 export interface CarArchetype {
   name: string;
+  /** Published overall dimensions, in metres. */
   lengthM: number;
   widthM: number;
-  /** Height of the waistline: the top of the lower body. */
-  waistM: number;
-  /** Height of the roof. */
-  roofM: number;
-  /** Where the cabin starts and ends, as a fraction of the length measured
-   *  from the TAIL. A van is nearly 0..1; a pickup's cabin is forward of
-   *  centre and everything behind it is open bed. */
-  cabin0: number;
-  cabin1: number;
-  /** True for a body with an open load bed behind the cabin. */
-  bed: boolean;
-  /** Radius of a wheel, and how far the axles sit from the ends. */
+  heightM: number;
+  wheelbaseM: number;
+  /** Published front overhang; the rear is length minus wheelbase minus this. */
+  frontOverhangM: number;
+  /** Wheel centre separation across an axle. */
+  trackM: number;
+  /** Rolling radius from the quoted tyre size, and the tread width. */
   wheelR: number;
-  overhang: number;
-  /** How far the roof is pulled back from the bottom of the windscreen and of
-   *  the backlight, as a fraction of the cabin's own length. A box with
-   *  vertical glass at both ends is the single loudest tell that a car is four
-   *  cuboids; the rake is what makes the silhouette read as a car at the two
-   *  metres `sf-van-ness-kerb` is taken from. A van is nearly upright and a
-   *  hatchback is not, and that difference is most of what tells them apart. */
-  rakeFront: number;
-  rakeRear: number;
-  /**
-   * How much of the cabin, measured back from the windscreen, is GLAZED.
-   *
-   * The cabin is one box and the shader decides per fragment which of its faces
-   * is glass, so an archetype whose cabin is nearly the whole vehicle -- a van
-   * -- came out as a black glass brick five metres long. A van has a windscreen
-   * and two front side windows and then a metre and a half of blank panel, and
-   * this is the fraction that says where the glass stops. 1 for a car, whose
-   * cabin IS its greenhouse.
-   */
-  glazeFrac: number;
+  tyreW: number;
+  /** Upper silhouette in side view, in metres above the road. */
+  topLine: Profile;
+  /** Lower silhouette. Where this RISES, there is a wheel arch. */
+  bottomLine: Profile;
+  /** Half width as a fraction of half the overall width. */
+  planLine: Profile;
+  /** Beltline: the height at which glass takes over from sheet metal. */
+  beltM: number;
+  /** Stations between which the vehicle is GLAZED above the beltline. A van's
+   *  cab glass stops a metre and a half from its back doors, and getting this
+   *  wrong is what once made every van a five-metre black glass brick. */
+  glassFrom: number;
+  glassTo: number;
 }
 
 /**
- * The set. Proportions are ordinary road-car figures in metres, which matters
- * more than it sounds: a car modelled 10% too big is the most reliable way to
- * make a correctly sized street look wrong.
+ * The four segments.
+ *
+ * Figures are the nominal published ones for each class. Where a spec sheet
+ * quotes a range (roof height with and without rails, tyre by trim) the
+ * commonest fitment is taken. Tyre radii are computed from the quoted section:
+ * a 235/45R18 is 18 x 25.4 + 2 x 235 x 0.45 = 668 mm across, so 0.334 m.
  */
 export const CAR_ARCHETYPES: readonly CarArchetype[] = [
   {
+    // Mid-size saloon, Camry/Accord class. 235/45R18.
     name: "saloon",
-    lengthM: 4.65, widthM: 1.82, waistM: 0.92, roofM: 1.45,
-    cabin0: 0.24, cabin1: 0.74, wheelR: 0.33, overhang: 0.85, bed: false,
-    rakeFront: 0.26, rakeRear: 0.20,
-    glazeFrac: 1.0,
+    lengthM: 4.885, widthM: 1.840, heightM: 1.445,
+    wheelbaseM: 2.825, frontOverhangM: 1.000, trackM: 1.590,
+    wheelR: 0.334, tyreW: 0.235,
+    topLine: [
+      [0.00, 0.80], [0.04, 1.00], [0.12, 1.055], [0.26, 1.09],
+      [0.33, 1.16], [0.47, 1.40], [0.56, 1.443], [0.66, 1.445],
+      [0.72, 1.40], [0.79, 1.19], [0.86, 1.06], [0.94, 1.02],
+      [0.98, 0.98], [1.00, 0.84],
+    ],
+    bottomLine: [
+      [0.00, 0.46], [0.04, 0.30], [0.10, 0.245],
+      [0.122, 0.245], [0.134, 0.50], [0.217, 0.52], [0.300, 0.50], [0.312, 0.245],
+      [0.700, 0.245], [0.712, 0.50], [0.795, 0.52], [0.878, 0.50], [0.890, 0.245],
+      [0.95, 0.30], [1.00, 0.46],
+    ],
+    planLine: [
+      [0.00, 0.78], [0.04, 0.92], [0.14, 0.99], [0.30, 1.00],
+      [0.70, 1.00], [0.86, 0.97], [0.95, 0.88], [1.00, 0.72],
+    ],
+    beltM: 1.00, glassFrom: 0.33, glassTo: 0.79,
   },
   {
+    // Compact hatchback, Golf class. 205/55R16.
     name: "hatch",
-    lengthM: 4.05, widthM: 1.76, waistM: 0.90, roofM: 1.50,
-    cabin0: 0.08, cabin1: 0.66, wheelR: 0.31, overhang: 0.75, bed: false,
-    rakeFront: 0.28, rakeRear: 0.11,
-    glazeFrac: 1.0,
+    lengthM: 4.284, widthM: 1.789, heightM: 1.456,
+    wheelbaseM: 2.636, frontOverhangM: 0.865, trackM: 1.540,
+    wheelR: 0.315, tyreW: 0.205,
+    topLine: [
+      [0.00, 0.92], [0.03, 1.20], [0.09, 1.36], [0.18, 1.43],
+      [0.30, 1.452], [0.50, 1.456], [0.62, 1.44], [0.70, 1.36],
+      [0.78, 1.16], [0.86, 1.02], [0.94, 0.98], [0.98, 0.94], [1.00, 0.80],
+    ],
+    bottomLine: [
+      [0.00, 0.44], [0.03, 0.29], [0.08, 0.235],
+      [0.078, 0.235], [0.090, 0.48], [0.183, 0.50], [0.276, 0.48], [0.288, 0.235],
+      [0.694, 0.235], [0.706, 0.48], [0.798, 0.50], [0.890, 0.48], [0.902, 0.235],
+      [0.95, 0.29], [1.00, 0.44],
+    ],
+    planLine: [
+      [0.00, 0.85], [0.05, 0.95], [0.16, 1.00], [0.32, 1.00],
+      [0.70, 1.00], [0.86, 0.97], [0.95, 0.87], [1.00, 0.70],
+    ],
+    beltM: 0.97, glassFrom: 0.14, glassTo: 0.78,
   },
   {
+    // Short-wheelbase panel van, Transit Custom class. 215/65R16.
     name: "van",
-    lengthM: 5.30, widthM: 1.96, waistM: 1.05, roofM: 2.35,
-    cabin0: 0.03, cabin1: 0.92, wheelR: 0.35, overhang: 0.90, bed: false,
-    rakeFront: 0.10, rakeRear: 0.04,
-    glazeFrac: 0.40,
+    lengthM: 4.972, widthM: 1.986, heightM: 1.925,
+    wheelbaseM: 2.933, frontOverhangM: 0.935, trackM: 1.628,
+    wheelR: 0.343, tyreW: 0.215,
+    topLine: [
+      [0.00, 1.86], [0.02, 1.920], [0.55, 1.925], [0.78, 1.920],
+      [0.84, 1.86], [0.89, 1.62], [0.94, 1.28], [0.975, 1.10], [1.00, 0.96],
+    ],
+    bottomLine: [
+      [0.00, 0.48], [0.03, 0.32], [0.09, 0.28],
+      [0.128, 0.28], [0.140, 0.50], [0.222, 0.53], [0.304, 0.50], [0.316, 0.28],
+      [0.718, 0.28], [0.730, 0.50], [0.812, 0.53], [0.894, 0.50], [0.906, 0.28],
+      [0.96, 0.34], [1.00, 0.50],
+    ],
+    planLine: [
+      [0.00, 0.94], [0.04, 0.99], [0.12, 1.00], [0.80, 1.00],
+      [0.90, 0.98], [0.96, 0.90], [1.00, 0.76],
+    ],
+    beltM: 1.20, glassFrom: 0.76, glassTo: 0.95,
   },
   {
+    // Mid-size pickup, Tacoma/Ranger class. 265/65R17.
     name: "pickup",
-    lengthM: 5.45, widthM: 1.95, waistM: 1.05, roofM: 1.82,
-    cabin0: 0.40, cabin1: 0.78, wheelR: 0.38, overhang: 1.05, bed: true,
-    rakeFront: 0.24, rakeRear: 0.07,
-    glazeFrac: 1.0,
+    lengthM: 5.393, widthM: 1.900, heightM: 1.798,
+    wheelbaseM: 3.235, frontOverhangM: 0.905, trackM: 1.605,
+    wheelR: 0.388, tyreW: 0.265,
+    topLine: [
+      [0.00, 1.12], [0.06, 1.15], [0.34, 1.15], [0.37, 1.22],
+      [0.40, 1.62], [0.50, 1.78], [0.60, 1.798], [0.68, 1.77],
+      [0.74, 1.55], [0.80, 1.33], [0.88, 1.28], [0.95, 1.24], [1.00, 1.08],
+    ],
+    bottomLine: [
+      [0.00, 0.56], [0.03, 0.40], [0.10, 0.345],
+      [0.138, 0.345], [0.150, 0.56], [0.232, 0.60], [0.314, 0.56], [0.326, 0.345],
+      [0.738, 0.345], [0.750, 0.56], [0.832, 0.60], [0.914, 0.56], [0.926, 0.345],
+      [0.96, 0.40], [1.00, 0.56],
+    ],
+    planLine: [
+      [0.00, 0.92], [0.05, 0.99], [0.14, 1.00], [0.80, 1.00],
+      [0.90, 0.98], [0.96, 0.90], [1.00, 0.76],
+    ],
+    beltM: 1.22, glassFrom: 0.40, glassTo: 0.80,
   },
 ];
 
@@ -120,24 +198,47 @@ export interface CarMesh {
    * Where a fragment is ON ITS OWN PART, and what the part needs to know about
    * the car it belongs to. Four components:
    *
-   *   x  part id, as PART_* above.
-   *   y  0..1 along the part, tail to nose. For a body panel that is the whole
-   *      car; for the cabin it is the cabin, so the shader can find the A and C
-   *      posts without being told where the cabin starts.
+   *   x  part id, as PART_* above. Interpolated FLAT by the shader, so a
+   *      triangle is never half glass and half metal.
+   *   y  0..1 along the part. For a body panel that is the station along the
+   *      whole car; for the greenhouse it is 1 at the WINDSCREEN and 0 where
+   *      the glazing ends, so the shader finds the A and C posts without being
+   *      told where the cabin is.
    *   z  0..1 up the part, in units the shader can use without knowing the
-   *      archetype: WHEEL DIAMETERS for a body panel, so the arch is always a
-   *      circle of the same radius about 0.5 whatever the car; the glazing's
-   *      own height for the cabin, so the rubber seal is always at 0.
-   *   w  the axle inset as a fraction of the length. The axles are symmetric
-   *      about the middle, so ONE number places both arches.
-   *
-   * All four are constant along an edge, so this is a linear interpolation and
-   * nothing here needs a derivative.
+   *      archetype: WHEEL DIAMETERS for a body panel, so one set of constants
+   *      fits a hatchback and a van; the glazing's own height for the cabin,
+   *      so the rubber seal is always at 0. On a WHEEL it is the radius as a
+   *      fraction of the tyre, which is all the shader needs to draw a tyre
+   *      wall, a bead lip and a hub.
+   *   w  the beltline height, in the same wheel diameters as z. That is what
+   *      lets the shader put the shoulder crease and the door shuts on the
+   *      right line of a body whose proportions it does not otherwise know.
    */
   aPart: Float32Array;
   index: Uint16Array;
   triangles: number;
 }
+
+/**
+ * Detail levels.
+ *
+ * LOD_SHADOW is the one that matters most for the frame time, and that is not
+ * obvious: a car is drawn FIVE times a frame -- once for the picture, three
+ * times into the sun's shadow cascades and once into the ambient-occlusion
+ * depth prepass -- so four fifths of every triangle on it is spent on a
+ * proxy. Giving the casters their own body is worth more than any reduction to
+ * the one you actually look at.
+ *
+ * BUT IT KEEPS THE SECTION. A caster with fewer section rows has a different
+ * SILHOUETTE from the body it stands in for, so the roof of the real car falls
+ * outside its own shadow and lights up -- with the proxy's faceting printed
+ * across it as a row of triangular teeth. That is what a car shadowing itself
+ * against a proxy of the wrong shape looks like, and it is not subtle. The
+ * saving here is in stations and in wheel facets, never in the section.
+ */
+export const LOD_NEAR = 0;
+export const LOD_FAR = 1;
+export const LOD_SHADOW = 2;
 
 interface Builder {
   pos: number[];
@@ -146,404 +247,395 @@ interface Builder {
   idx: number[];
 }
 
-/** How a part maps a local position to the (u, v) the shader reads. */
-interface Surface {
-  u0: number;
-  uSpan: number;
-  v0: number;
-  vSpan: number;
-  /** Copied into aPart.w for every vertex of the car. */
-  axle: number;
+/** Linear interpolation along a profile, clamped at both ends. */
+export function sampleProfile(p: Profile, s: number): number {
+  if (s <= p[0][0]) return p[0][1];
+  const last = p[p.length - 1];
+  if (s >= last[0]) return last[1];
+  for (let i = 1; i < p.length; i++) {
+    if (s <= p[i][0]) {
+      const [x0, y0] = p[i - 1];
+      const [x1, y1] = p[i];
+      const t = x1 === x0 ? 0 : (s - x0) / (x1 - x0);
+      return y0 + (y1 - y0) * t;
+    }
+  }
+  return last[1];
 }
 
-function push(b: Builder, x: number, y: number, z: number, n: number[], part: number, s: Surface): void {
+/**
+ * The cross-section, as a half: outer sill, round the flank, up over the
+ * shoulder and in to the roof edge.
+ *
+ * ONE SHAPE, SCALED BY EACH STATION'S OWN TOP AND BOTTOM. A station on the
+ * bonnet is short and a station at the B post is tall, so the same normalised
+ * curve gives a bonnet that crowns gently and a greenhouse that tumbles home,
+ * which is what those two things actually do.
+ *
+ * Row 3 is the BELTLINE and is emitted twice, once tagged metal and once
+ * tagged glass. A duplicated row costs no triangles and is what makes the
+ * transition a line rather than a gradient.
+ */
+const SECTION: readonly { v: number; w: number }[] = [
+  { v: 0.00, w: 0.90 }, // sill, tucked under
+  { v: 0.34, w: 1.00 }, // widest point
+  { v: 0.74, w: 0.995 },
+  { v: 1.00, w: 0.965 }, // the beltline
+  { v: 0.42, w: 0.895 }, // above the belt: tumblehome
+  { v: 0.78, w: 0.790 },
+  { v: 0.94, w: 0.660 }, // the roof rail, turning over
+  { v: 1.00, w: 0.430 }, // roof edge
+  { v: 1.00, w: 0.000 }, // the CROWN, on the centreline
+];
+const BELT_ROW = 3;
+/** The crown row sits on z = 0 and is SHARED by both sides. A separate flat
+ *  strip across the top instead of a real row is what put a sawtooth of blown
+ *  highlights down the roof: one wide quad spanning the whole car is not
+ *  planar between stations, so its two triangles disagree, and a clearcoat
+ *  lobe finds that difference immediately. */
+
+
+/** How many section rows a level of detail keeps. */
+function sectionRows(lod: number): number[] {
+  if (lod === LOD_NEAR) return [0, 1, 2, 3, 4, 5, 6, 7, 8];
+  if (lod === LOD_FAR) return [0, 1, 3, 4, 6, 7, 8];
+  return [0, 1, 3, 4, 6, 7, 8];
+}
+
+/**
+ * Stations to loft through.
+ *
+ * The union of every profile's own stations, because those are exactly where
+ * the shape has features: a station set chosen on a regular grid would round
+ * off the boot lip and the cowl, which are the two creases that most say
+ * "saloon". Merged within a tolerance so three coincident points do not
+ * produce two zero-length spans.
+ */
+function stationsFor(a: CarArchetype, lod: number): number[] {
+  // The glazing's own ends are stations whatever else is dropped: the shader
+  // finds the A post at u = 1 and the C post at u = 0, and it can only do that
+  // if a vertex actually lands on each.
+  const all = [
+    ...a.topLine.map((p) => p[0]),
+    ...a.bottomLine.map((p) => p[0]),
+    ...a.planLine.map((p) => p[0]),
+  ].sort((x, y) => x - y);
+  const out: number[] = [];
+  // A coarse level keeps the arch edges and the ends and drops the rest, since
+  // at the distance it is drawn the creases are under a pixel.
+  const minGap = lod === LOD_NEAR ? 0.030 : lod === LOD_FAR ? 0.045 : 0.11;
+  for (const s of all) {
+    if (!out.length || s - out[out.length - 1] > minGap) out.push(s);
+  }
+  if (out[0] > 0) out.unshift(0);
+  if (out[out.length - 1] < 1) out.push(1);
+  for (const s of [a.glassFrom, a.glassTo]) {
+    if (!out.some((o) => Math.abs(o - s) < 1e-6)) out.push(s);
+  }
+  out.sort((x, y) => x - y);
+  return out;
+}
+
+/** Where the surface is, for one station and one section row. */
+interface Vertex {
+  x: number;
+  y: number;
+  z: number;
+  part: number;
+  u: number;
+  v: number;
+}
+
+function buildGrid(a: CarArchetype, lod: number): { grid: Vertex[][]; stations: number[] } {
+  const stations = stationsFor(a, lod);
+  const rows = sectionRows(lod);
+  const hw = a.widthM * 0.5;
+  const wheelD = a.wheelR * 2;
+  const glazedLen = Math.max(a.glassTo - a.glassFrom, 1e-3);
+  const grid: Vertex[][] = [];
+
+  for (const s of stations) {
+    const bottom = sampleProfile(a.bottomLine, s);
+    const top = Math.max(sampleProfile(a.topLine, s), bottom + 0.02);
+    const halfW = hw * sampleProfile(a.planLine, s);
+    // Where the beltline falls in this station's own height. A station whose
+    // roof is below the belt -- a bonnet, a boot deck, a load bed -- has no
+    // greenhouse at all, and its upper rows collapse onto its top edge.
+    const vb = Math.min(1, Math.max(0, (a.beltM - bottom) / (top - bottom)));
+    const glazed = s >= a.glassFrom && s <= a.glassTo && vb < 0.999;
+    const col: Vertex[] = [];
+    for (const r of rows) {
+      const sec = SECTION[r];
+      const above = r > BELT_ROW;
+      const v = above ? vb + sec.v * (1 - vb) : sec.v * vb;
+      const y = bottom + (top - bottom) * v;
+      const part = above && glazed ? PART_GLASS : PART_BODY;
+      col.push({
+        x: (s - 0.5) * a.lengthM,
+        y,
+        z: halfW * sec.w,
+        part,
+        // Along the part: the whole car for metal, the glazed run for glass,
+        // measured so that 1 is the windscreen on every archetype.
+        u: part === PART_GLASS ? (s - a.glassFrom) / glazedLen : s,
+        // Up the part: wheel diameters for metal, the glazing's own height for
+        // glass, so a rubber seal is always at zero.
+        v: part === PART_GLASS
+          ? Math.max(0, (v - vb) / Math.max(1 - vb, 1e-3))
+          : y / wheelD,
+      });
+    }
+    grid.push(col);
+  }
+  return { grid, stations };
+}
+
+/** True when the quad between rows r and r+1 over stations c and c+1 has no area. */
+function degenerate(grid: Vertex[][], c: number, r: number): boolean {
+  const h0 = Math.abs(grid[c][r + 1].y - grid[c][r].y) + Math.abs(grid[c][r + 1].z - grid[c][r].z);
+  const h1 = Math.abs(grid[c + 1][r + 1].y - grid[c + 1][r].y)
+           + Math.abs(grid[c + 1][r + 1].z - grid[c + 1][r].z);
+  return h0 < 1e-5 && h1 < 1e-5;
+}
+
+function pushVertex(b: Builder, x: number, y: number, z: number, part: number, u: number, v: number, belt: number): number {
+  const i = b.pos.length / 3;
   b.pos.push(x, y, z);
-  b.nrm.push(n[0], n[1], n[2]);
-  b.part.push(part, (x - s.u0) / s.uSpan, (y - s.v0) / s.vSpan, s.axle);
-}
-
-/** One quad, wound so the given normal points out of it. */
-function quad(b: Builder, c: number[], n: number[], part: number, s: Surface): void {
-  const base = b.pos.length / 3;
-  for (let i = 0; i < 4; i++) push(b, c[i * 3], c[i * 3 + 1], c[i * 3 + 2], n, part, s);
-  b.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
-}
-
-function cross(ax: number, ay: number, az: number, bx: number, by: number, bz: number): number[] {
-  const x = ay * bz - az * by;
-  const y = az * bx - ax * bz;
-  const z = ax * by - ay * bx;
-  const l = Math.hypot(x, y, z) || 1;
-  return [x / l, y / l, z / l];
+  b.nrm.push(0, 0, 0);
+  b.part.push(part, u, v, belt);
+  return i;
 }
 
 /**
- * Overwrite the surface coordinates of the vertices pushed since `fromVertex`.
+ * Build one archetype at one level of detail.
  *
- * `push` derives u from x, which is exactly wrong for a panel standing across
- * the car: a number plate has one x, so every corner of it would share a
- * coordinate and the shader would have nothing to lay characters along.
+ * The surface normals are ACCUMULATED from the triangles that meet at each
+ * vertex rather than assigned per face. That is the difference between a lofted
+ * body and a faceted one: with a face normal, a whole flank reflects the sky at
+ * a single angle and comes out one flat value, which no amount of material work
+ * can rescue.
+ *
+ * The seam rows at the beltline are duplicated and therefore keep hard normals
+ * across the crease, which is correct -- a beltline IS a crease.
  */
-function setUV(b: Builder, fromVertex: number, uv: number[]): void {
-  for (let v = fromVertex, i = 0; v < b.pos.length / 3; v++, i++) {
-    b.part[v * 4 + 1] = uv[i * 2];
-    b.part[v * 4 + 2] = uv[i * 2 + 1];
-  }
-}
-
-/** A quad whose normal is computed from its own corners rather than given. */
-function facet(b: Builder, c: number[], part: number, s: Surface): void {
-  const n = cross(
-    c[3] - c[0], c[4] - c[1], c[5] - c[2],
-    c[6] - c[0], c[7] - c[1], c[8] - c[2],
-  );
-  quad(b, c, n, part, s);
-}
-
-/**
- * Which faces of a prism to emit.
- *
- * A car built out of five overlapping boxes has a great many faces that are
- * inside another box and can never be seen. Dropping them is not a
- * micro-optimisation at 8,000 instances a frame: the underbody tub alone is six
- * faces of which two are ever visible.
- */
-const F_TOP = 1;
-const F_BOTTOM = 2;
-const F_NOSE = 4;
-const F_TAIL = 8;
-const F_FLANKS = 16;
-const F_ALL = F_TOP | F_BOTTOM | F_NOSE | F_TAIL | F_FLANKS;
-
-/**
- * Bend a run of vertices' normals as though the panel were CURVED.
- *
- * THE SINGLE BIGGEST THING IN THIS FILE, and it costs no triangles at all.
- *
- * A car body is a set of smooth surfaces and this one is six flat quads. With
- * a flat normal, an entire flank reflects the sky at exactly ONE angle, so the
- * whole panel comes out a single flat value and no amount of material work
- * moves it: that is most of what makes a low-poly car read as a toy. A real
- * flank shows a gradient with the horizon running through it, because the
- * normal sweeps as the panel curves away.
- *
- * So the normals are bent to those of an elliptical body section about the
- * car's long axis, blended `k` of the way from the flat face normal. The
- * geometry is untouched -- only the shading normal -- and the blend is kept
- * well under the point where a normal would fall behind its own face, which
- * test/carmesh.check.ts asserts by comparing every shading normal against its
- * triangle's winding.
- *
- * Faces pointing along the car (a windscreen, a bonnet's leading edge, a
- * number plate) are bent about the VERTICAL axis instead, which rounds the
- * front and back in plan.
- */
-function roundPanel(
-  b: Builder,
-  fromVertex: number,
-  cx: number, cy: number, cz: number,
-  rx: number, ry: number, rz: number,
-  k: number,
-): void {
-  for (let v = fromVertex; v < b.pos.length / 3; v++) {
-    const nx = b.nrm[v * 3];
-    const ny = b.nrm[v * 3 + 1];
-    const nz = b.nrm[v * 3 + 2];
-    const px = b.pos[v * 3];
-    const py = b.pos[v * 3 + 1];
-    const pz = b.pos[v * 3 + 2];
-    let tx: number;
-    let ty: number;
-    let tz: number;
-    if (Math.abs(nx) < 0.5) {
-      // A flank, a roof or a floor: the section is an ellipse in y-z.
-      tx = nx;
-      ty = (py - cy) / ry;
-      tz = (pz - cz) / rz;
-    } else {
-      // An end: the section is an ellipse in x-z, so the panel wraps around
-      // the corner rather than meeting the flank at a hard edge.
-      tx = (px - cx) / rx;
-      ty = ny;
-      tz = (pz - cz) / rz;
-    }
-    const tl = Math.hypot(tx, ty, tz) || 1;
-    let mx = nx + k * (tx / tl - nx);
-    let my = ny + k * (ty / tl - ny);
-    let mz = nz + k * (tz / tl - nz);
-    const ml = Math.hypot(mx, my, mz) || 1;
-    b.nrm[v * 3] = mx / ml;
-    b.nrm[v * 3 + 1] = my / ml;
-    b.nrm[v * 3 + 2] = mz / ml;
-  }
-}
-
-/**
- * A box whose top face may be shorter and narrower than its bottom one.
- *
- * With the top equal to the bottom this is an ordinary axis-aligned box. With
- * it pulled in, the four sides slope, and that is the whole point: a cabin
- * needs a raked windscreen and a little tumblehome, and both fall out of one
- * pair of rectangles.
- */
-function prism(
-  b: Builder,
-  bx0: number, bx1: number, bz0: number, bz1: number,
-  tx0: number, tx1: number, tz0: number, tz1: number,
-  y0: number, y1: number,
-  part: number,
-  s: Surface,
-  faces: number = F_ALL,
-): void {
-  // Bottom corners, then top, both counter-clockwise seen from above.
-  const B = [[bx0, y0, bz0], [bx1, y0, bz0], [bx1, y0, bz1], [bx0, y0, bz1]];
-  const T = [[tx0, y1, tz0], [tx1, y1, tz0], [tx1, y1, tz1], [tx0, y1, tz1]];
-  const flat = (r: number[][]): number[] => r.flat();
-  if (faces & F_TOP) quad(b, flat([T[0], T[3], T[2], T[1]]), [0, 1, 0], part, s);
-  if (faces & F_BOTTOM) quad(b, flat([B[0], B[1], B[2], B[3]]), [0, -1, 0], part, s);
-  if (faces & F_NOSE) facet(b, flat([B[1], T[1], T[2], B[2]]), part, s);
-  if (faces & F_TAIL) facet(b, flat([B[3], T[3], T[0], B[0]]), part, s);
-  if (faces & F_FLANKS) {
-    facet(b, flat([B[2], T[2], T[3], B[3]]), part, s);
-    facet(b, flat([B[0], T[0], T[1], B[1]]), part, s);
-  }
-}
-
-/** A symmetric prism, which is what most of this file wants. */
-function box(
-  b: Builder,
-  x0: number, x1: number, hz: number,
-  tx0: number, tx1: number, thz: number,
-  y0: number, y1: number,
-  part: number,
-  s: Surface,
-  faces: number = F_ALL,
-): void {
-  prism(b, x0, x1, -hz, hz, tx0, tx1, -thz, thz, y0, y1, part, s, faces);
-}
-
-/**
- * One road wheel, as an n-sided prism about the z axis.
- *
- * SIZED BY ITS FLAT, not by its circumradius. A polygon inscribed in the wheel
- * radius stands on a vertex and leaves the tyre four centimetres off the road;
- * one circumscribed about it touches along a flat, which is what a loaded tyre
- * does anyway.
- *
- * The OUTBOARD face is a fan and the inboard one is not: the inboard face lives
- * inside the arch and is back-facing from everywhere outside the car. On that
- * fan, `v` is the radius as a fraction of the wheel, which is the whole of what
- * the shader needs to draw a tyre wall, a rim and a hub without a second part
- * id or a texture.
- */
-function wheel(
-  b: Builder,
-  cx: number, cz: number, wheelR: number, halfThick: number,
-  sides: number,
-  axleFrac: number,
-): void {
-  const r = wheelR / Math.cos(Math.PI / sides);
-  const cy = wheelR;
-  const out = cz > 0 ? 1 : -1;
-  const z0 = cz - halfThick;
-  const z1 = cz + halfThick;
-  const zOut = out > 0 ? z1 : z0;
-  // A flat at the bottom: the first vertex sits half a step off the -y axis.
-  const ang = (k: number): number => (2 * Math.PI * (k + 0.5)) / sides - Math.PI / 2;
-  const px = (k: number): number => cx + r * Math.cos(ang(k));
-  const py = (k: number): number => cy + r * Math.sin(ang(k));
-  // On the tread `v` is 1 all over, so the shader's rim test cannot fire there.
-  for (let k = 0; k < sides; k++) {
-    const x0 = px(k);
-    const y0 = py(k);
-    const x1 = px(k + 1);
-    const y1 = py(k + 1);
-    const n = cross(x1 - x0, y1 - y0, 0, 0, 0, z1 - z0);
-    // The tread faces radially outward on BOTH wheels of an axle, so its
-    // winding does not depend on which side the wheel is; only the fan below,
-    // which faces along z, does.
-    const c = [x0, y0, z0, x1, y1, z0, x1, y1, z1, x0, y0, z1];
-    const base = b.pos.length / 3;
-    for (let i = 0; i < 4; i++) {
-      b.pos.push(c[i * 3], c[i * 3 + 1], c[i * 3 + 2]);
-      b.nrm.push(n[0], n[1], n[2]);
-      b.part.push(PART_WHEEL, 0.5, 1.0, axleFrac);
-    }
-    b.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
-  }
-  // The outboard face, as a fan about the hub.
-  const nOut = [0, 0, out];
-  for (let k = 0; k < sides; k++) {
-    const base = b.pos.length / 3;
-    const ring = [[px(k), py(k)], [px(k + 1), py(k + 1)]];
-    const tri = out > 0 ? [[cx, cy], ring[0], ring[1]] : [[cx, cy], ring[1], ring[0]];
-    for (const [x, y] of tri) {
-      b.pos.push(x, y, zOut);
-      b.nrm.push(nOut[0], nOut[1], nOut[2]);
-      // 0 at the hub, 1 at the tread. The polygon is circumscribed, so a
-      // corner is 1/cos(pi/n) out; the shader's bands are set inside that.
-      b.part.push(PART_WHEEL, 0.5, Math.hypot(x - cx, y - cy) / wheelR, axleFrac);
-    }
-    b.idx.push(base, base + 1, base + 2);
-  }
-}
-
-/**
- * Build one archetype.
- *
- * THE ARCHES ARE REAL. The previous mesh was a solid flank with a wheel box
- * tucked behind it, standing one centimetre proud, and the result was a car
- * with no visible wheels at any distance -- which is the first thing anyone
- * notices, because a wheel arch is how the eye reads a car's size and stance.
- * The lower body is therefore three panels with the axles missing from between
- * them, an inner tub closing the hole, and an eight-sided wheel standing in the
- * gap. It costs about sixty triangles a car and it is the difference between a
- * vehicle and a crate.
- *
- * The lamp lenses stand 15 mm proud of the body face they sit on rather than
- * being coplanar with it. Coplanar would z-fight, and the alternative -- a
- * polygon offset -- is a per-material state this mesh should not need when
- * fifteen millimetres is a real dimension a real lamp lens has.
- *
- * There is no separate roof panel. The cabin's top face is body-coloured by
- * the fragment shader, which knows a roof by its normal.
- */
-export function buildCarMesh(archetype: number): CarMesh {
+export function buildCarMesh(archetype: number, lod: number = LOD_NEAR): CarMesh {
   const a = CAR_ARCHETYPES[archetype];
   const b: Builder = { pos: [], nrm: [], part: [], idx: [] };
+  const { grid } = buildGrid(a, lod);
+  const rows = sectionRows(lod).length;
+  const cols = grid.length;
+  const wheelD = a.wheelR * 2;
+  const beltV = a.beltM / wheelD;
   const L = a.lengthM;
-  const hw = a.widthM * 0.5;
   const nose = L * 0.5;
   const tail = -L * 0.5;
-  const axleFrac = a.overhang / L;
 
-  // Arch geometry, all in wheel radii so it is the same car at every size.
-  const sill = a.wheelR * 0.55;      // bottom edge of the lower panels
-  const archTop = a.wheelR * 1.46;   // top of the opening
-  const archHalf = a.wheelR * 1.30;  // half its length
-  const axleF = nose - a.overhang;
-  const axleR = tail + a.overhang;
-
-  // Body panels are measured along the whole car and in wheel diameters up,
-  // which is what makes one set of arch constants fit a hatchback and a van.
-  const bodyS: Surface = { u0: tail, uSpan: L, v0: 0, vSpan: a.wheelR * 2, axle: axleFrac };
-  const anyS: Surface = { u0: tail, uSpan: L, v0: 0, vSpan: Math.max(a.roofM, 1e-3), axle: axleFrac };
-
-  // The skin above the arches, running the length of the car, with a little
-  // tumblehome so there is a shoulder line to catch the light.
-  const skinX0 = tail + 0.12;
-  const skinX1 = nose - 0.12;
-  // The body section every panel below is bent to. `ry` is deliberately much
-  // larger than the panel is tall and `rz` a little larger than the car is
-  // wide: a car's flank is a very shallow curve, and a section as round as the
-  // box would put a hard highlight down the middle of every door.
-  const secCy = (sill + a.waistM) * 0.5;
-  const secRy = (a.waistM - sill) * 1.35;
-  const secRz = hw * 1.15;
-  const secRx = L * 0.55;
-  const round = (from: number, k: number): void =>
-    roundPanel(b, from, 0, secCy, 0, secRx, secRy, secRz, k);
-
-  let mark = b.pos.length / 3;
-  box(b, skinX0, skinX1, hw, skinX0 + 0.04, skinX1 - 0.04, hw * 0.985,
-    archTop, a.waistM, PART_BODY, bodyS, F_ALL & ~F_BOTTOM);
-  round(mark, 0.55);
-
-  // The three panels below it, with the arches missing from between them. Their
-  // nose and tail faces ARE the walls of each arch, so they are kept; their
-  // tops and bottoms are inside the car and are not.
-  const panelFaces = F_NOSE | F_TAIL | F_FLANKS;
-  const panels: [number, number][] = [
-    [skinX0, axleR - archHalf],
-    [axleR + archHalf, axleF - archHalf],
-    [axleF + archHalf, skinX1],
-  ];
-  for (const [x0, x1] of panels) {
-    if (x1 - x0 < 0.02) continue;
-    mark = b.pos.length / 3;
-    box(b, x0, x1, hw, x0, x1, hw, sill, archTop, PART_BODY, bodyS, panelFaces);
-    // Less than the skin above it. The sill is nearly flat on a real car, and
-    // the arch walls this also touches must stay pointing into the arch.
-    round(mark, 0.30);
-  }
-
-  // The inner tub: what you see THROUGH an arch, and the sill under the doors.
-  // Two faces, because the other four are inside the car.
-  box(b, skinX0 + 0.06, skinX1 - 0.06, hw * 0.66, skinX0 + 0.06, skinX1 - 0.06, hw * 0.66,
-    sill * 0.35, a.waistM, PART_UNDER, anyS, F_FLANKS);
-
-  // Cabin. Narrower than the body, and raked at both ends. Glass on every face;
-  // the shader paints the roof and the posts back to body colour, which is
-  // cheaper than modelling them and puts the posts where a fragment can see
-  // them rather than where a vertex is.
-  const c0 = tail + L * a.cabin0;
-  const c1 = tail + L * a.cabin1;
-  const cl = c1 - c0;
-  const cw = hw * 0.93;
-  // Anchored at the WINDSCREEN, not at the back of the cabin: u = 1 is the top
-  // of the windscreen on every archetype, u = 0 is where the glazing ends, and
-  // anything aft of that comes out NEGATIVE, which is how the shader knows a
-  // van's flank from a saloon's rear quarter light without being told which it
-  // is holding.
-  const glazedLen = Math.max(cl * a.glazeFrac, 1e-3);
-  const cabinS: Surface = {
-    u0: c1 - glazedLen, uSpan: glazedLen,
-    v0: a.waistM - 0.02, vSpan: Math.max(a.roofM - a.waistM + 0.02, 1e-3),
-    axle: axleFrac,
-  };
-  mark = b.pos.length / 3;
-  box(b, c0, c1, cw, c0 + cl * a.rakeRear, c1 - cl * a.rakeFront, cw * 0.90,
-    a.waistM - 0.02, a.roofM, PART_GLASS, cabinS, F_ALL & ~F_BOTTOM);
-  // A crowned roof and a wrapped windscreen, about the cabin's own section
-  // rather than the body's: the cabin is a different and much rounder shape,
-  // and a windscreen that reflects one flat value is the second thing after a
-  // flat flank that gives a model away.
-  roundPanel(b, mark, 0, (a.waistM + a.roofM) * 0.5, 0,
-    cl * 0.60, (a.roofM - a.waistM) * 1.25, cw * 1.05, 0.45);
-
-  // The load bed: a shallow open box behind the cabin. It is what stops a
-  // pickup reading as a hatchback with a long bonnet.
-  if (a.bed) {
-    box(b, tail + 0.16, c0, hw * 0.97, tail + 0.16, c0, hw * 0.97,
-      a.waistM - 0.02, a.waistM + 0.22, PART_BODY, bodyS, F_ALL & ~F_BOTTOM);
-  }
-
-  // The wheels, standing in the arches. Flush with the flank rather than one
-  // centimetre proud of it, which is where a road wheel actually sits.
-  for (const ax of [axleF, axleR]) {
-    for (const zs of [-1, 1]) {
-      wheel(b, ax, zs * (hw - 0.115), a.wheelR, 0.105, 8, axleFrac);
+  // Both flanks. `side` is the sign of z; the winding flips with it so every
+  // triangle faces out of the body.
+  const id: number[][][] = [[], []];
+  for (let side = 0; side < 2; side++) {
+    const sgn = side === 0 ? 1 : -1;
+    for (let c = 0; c < cols; c++) {
+      const colIds: number[] = [];
+      for (let r = 0; r < rows; r++) {
+        const g = grid[c][r];
+        // The crown is on the centreline, so the two sides are the same vertex.
+        // Emitting it twice would put a seam of averaged-apart normals straight
+        // down the middle of every roof and bonnet.
+        if (side === 1 && Math.abs(g.z) < 1e-9) colIds.push(id[0][c][r]);
+        else colIds.push(pushVertex(b, g.x, g.y, sgn * g.z, g.part, g.u, g.v, beltV));
+      }
+      id[side].push(colIds);
     }
   }
 
-  // The number plate, four triangles, standing 12 mm off each end. It is out
-  // of all proportion to its size: a bright rectangle low on a dark end is one
-  // of the few marks the eye reads as "road vehicle" with no other context,
-  // and it is what a car in a mirror is recognised by.
-  const plateHalfW = Math.min(0.26, hw * 0.30);
-  const plateY0 = a.waistM * 0.24;
+  const tri = (i0: number, i1: number, i2: number): void => { b.idx.push(i0, i1, i2); };
+  const quad = (i0: number, i1: number, i2: number, i3: number): void => {
+    tri(i0, i1, i2);
+    tri(i0, i2, i3);
+  };
+
+  for (let side = 0; side < 2; side++) {
+    const ids = id[side];
+    for (let c = 0; c + 1 < cols; c++) {
+      for (let r = 0; r + 1 < rows; r++) {
+        // A collapsed row pair is a zero-area quad: at a station whose roof is
+        // below the beltline -- a bonnet, a boot deck, a load bed -- there is
+        // no greenhouse and its rows all sit on the top edge. Emitting those
+        // costs triangles that draw nothing and have no winding to check.
+        if (degenerate(grid, c, r)) continue;
+        const a0 = ids[c][r];
+        const a1 = ids[c + 1][r];
+        const a2 = ids[c + 1][r + 1];
+        const a3 = ids[c][r + 1];
+        if (side === 0) quad(a0, a1, a2, a3);
+        else quad(a0, a3, a2, a1);
+      }
+    }
+  }
+
+  // The underside. Never seen from outside, but it closes the body for the
+  // depth prepass, which needs a solid. Dropped at the coarse level: a car
+  // drawn at that level is never between the camera and anything, and the sun
+  // is above it.
+  if (lod === LOD_NEAR) {
+    for (let c = 0; c + 1 < cols; c++) {
+      quad(id[1][c][0], id[1][c + 1][0], id[0][c + 1][0], id[0][c][0]);
+    }
+  }
+  /**
+   * Emit a triangle wound so its geometric normal points along `wantX`.
+   *
+   * The end caps are fans about a hub, and a fan's winding is NOT constant if
+   * you reason about it row by row: the sign of the cross product flips as the
+   * ring crosses the hub's own height, so half of each cap came out inside
+   * out. Worse than the hole that leaves, the wrongly-wound triangles then
+   * poisoned the SMOOTH NORMALS of every ring vertex they touched, which put
+   * the whole tail station's shading back to front. Deciding the winding from
+   * the triangle itself is both shorter and not a thing to get wrong twice.
+   */
+  const triFacing = (i0: number, i1: number, i2: number, wantX: number): void => {
+    const ay = b.pos[i1 * 3 + 1] - b.pos[i0 * 3 + 1];
+    const az = b.pos[i1 * 3 + 2] - b.pos[i0 * 3 + 2];
+    const by = b.pos[i2 * 3 + 1] - b.pos[i0 * 3 + 1];
+    const bz = b.pos[i2 * 3 + 2] - b.pos[i0 * 3 + 2];
+    const gx = ay * bz - az * by;
+    if (gx * wantX < 0) tri(i0, i2, i1);
+    else tri(i0, i1, i2);
+  };
+
+  // The two ends, as fans about the section's own middle.
+  for (const [c, outward] of [[0, -1], [cols - 1, 1]] as [number, number][]) {
+    let cy = 0;
+    for (let r = 0; r < rows; r++) cy += grid[c][r].y;
+    cy /= rows;
+    const hub = pushVertex(b, grid[c][0].x, cy, 0, PART_BODY, grid[c][0].u, cy / wheelD, beltV);
+    for (let r = 0; r + 1 < rows; r++) {
+      const g0 = grid[c][r];
+      const g1 = grid[c][r + 1];
+      if (Math.abs(g1.y - g0.y) + Math.abs(g1.z - g0.z) < 1e-5) continue;
+      triFacing(hub, id[0][c][r], id[0][c][r + 1], outward);
+      triFacing(hub, id[1][c][r], id[1][c][r + 1], outward);
+    }
+    // Close the fan under the floor. NOT over the crown: that row is on the
+    // centreline and shared between the sides, so the two ends of the ring are
+    // the same vertex and the closing triangle has no area.
+    triFacing(hub, id[0][c][0], id[1][c][0], outward);
+  }
+
+  // Smooth normals, accumulated by triangle area so a long thin triangle does
+  // not outvote a square one.
+  for (let t = 0; t < b.idx.length; t += 3) {
+    const i0 = b.idx[t];
+    const i1 = b.idx[t + 1];
+    const i2 = b.idx[t + 2];
+    const ax = b.pos[i1 * 3] - b.pos[i0 * 3];
+    const ay = b.pos[i1 * 3 + 1] - b.pos[i0 * 3 + 1];
+    const az = b.pos[i1 * 3 + 2] - b.pos[i0 * 3 + 2];
+    const bx = b.pos[i2 * 3] - b.pos[i0 * 3];
+    const by = b.pos[i2 * 3 + 1] - b.pos[i0 * 3 + 1];
+    const bz = b.pos[i2 * 3 + 2] - b.pos[i0 * 3 + 2];
+    const nx = ay * bz - az * by;
+    const ny = az * bx - ax * bz;
+    const nz = ax * by - ay * bx;
+    for (const i of [i0, i1, i2]) {
+      b.nrm[i * 3] += nx;
+      b.nrm[i * 3 + 1] += ny;
+      b.nrm[i * 3 + 2] += nz;
+    }
+  }
+  for (let i = 0; i < b.nrm.length; i += 3) {
+    const l = Math.hypot(b.nrm[i], b.nrm[i + 1], b.nrm[i + 2]);
+    if (l > 1e-9) {
+      b.nrm[i] /= l;
+      b.nrm[i + 1] /= l;
+      b.nrm[i + 2] /= l;
+    } else {
+      b.nrm[i + 1] = 1;
+    }
+  }
+
+  // --- everything that is not the lofted shell ------------------------------
+  const flat = (x: number, y: number, z: number, n: number[], part: number, u: number, v: number): number => {
+    const i = pushVertex(b, x, y, z, part, u, v, beltV);
+    b.nrm[i * 3] = n[0];
+    b.nrm[i * 3 + 1] = n[1];
+    b.nrm[i * 3 + 2] = n[2];
+    return i;
+  };
+  const flatQuad = (c: number[], n: number[], part: number, uv: number[]): void => {
+    const base = b.pos.length / 3;
+    for (let i = 0; i < 4; i++) {
+      flat(c[i * 3], c[i * 3 + 1], c[i * 3 + 2], n, part, uv[i * 2], uv[i * 2 + 1]);
+    }
+    quad(base, base + 1, base + 2, base + 3);
+  };
+
+  // Everything below is detail rather than silhouette, and a shadow caster is
+  // only ever a silhouette.
+  if (lod !== LOD_SHADOW) {
+  // The inner tub: what is seen THROUGH an arch. Two panels, because the other
+  // four faces of it are inside the car.
+  const tubZ = a.trackM * 0.5 - a.tyreW * 0.5 - 0.02;
+  const tubTop = a.beltM * 0.92;
+  const tubBottom = a.wheelR * 0.20;
+  for (const sgn of [1, -1]) {
+    const z = sgn * tubZ;
+    const c = sgn > 0
+      ? [nose - 0.10, tubBottom, z, nose - 0.10, tubTop, z, tail + 0.10, tubTop, z, tail + 0.10, tubBottom, z]
+      : [tail + 0.10, tubBottom, z, tail + 0.10, tubTop, z, nose - 0.10, tubTop, z, nose - 0.10, tubBottom, z];
+    flatQuad(c, [0, 0, sgn], PART_UNDER, [0, 0, 0, 1, 1, 1, 1, 0]);
+  }
+
+  }
+
+  // The wheels, at the published track and wheelbase.
+  const axleF = nose - a.frontOverhangM;
+  const axleR = axleF - a.wheelbaseM;
+  const wheelSides = lod === LOD_NEAR ? 10 : lod === LOD_FAR ? 8 : 4;
+  for (const ax of [axleF, axleR]) {
+    for (const sgn of [1, -1]) {
+      addWheel(b, flat, quad, tri, ax, sgn * a.trackM * 0.5, a.wheelR, a.tyreW * 0.5, wheelSides, beltV);
+    }
+  }
+
+  if (lod === LOD_SHADOW) {
+    return {
+      position: new Float32Array(b.pos),
+      normal: new Float32Array(b.nrm),
+      aPart: new Float32Array(b.part),
+      index: new Uint16Array(b.idx),
+      triangles: b.idx.length / 3,
+    };
+  }
+
+  // The number plate, four triangles standing 12 mm off each end. Out of all
+  // proportion to its size: a bright rectangle low on a dark end is one of the
+  // few marks the eye reads as "road vehicle" with nothing else to go on.
+  const plateHalfW = Math.min(0.26, a.widthM * 0.15);
+  const plateY0 = a.beltM * 0.26;
   const plateY1 = plateY0 + 0.115;
-  for (const [px, dir] of [[skinX1 + 0.012, 1], [skinX0 - 0.012, -1]] as [number, number][]) {
+  for (const [px, dir] of [[nose - 0.02, 1], [tail + 0.02, -1]] as [number, number][]) {
     const c = dir > 0
       ? [px, plateY0, -plateHalfW, px, plateY1, -plateHalfW, px, plateY1, plateHalfW, px, plateY0, plateHalfW]
       : [px, plateY0, plateHalfW, px, plateY1, plateHalfW, px, plateY1, -plateHalfW, px, plateY0, -plateHalfW];
-    const pm = b.pos.length / 3;
-    quad(b, c, [dir, 0, 0], PART_PLATE, anyS);
-    setUV(b, pm, [0, 0, 0, 1, 1, 1, 1, 0]);
+    flatQuad(c, [dir, 0, 0], PART_PLATE, [0, 0, 0, 1, 1, 1, 1, 0]);
   }
 
-  // Lamps. Two at each end, at the height a real lamp cluster sits.
-  const lensX = skinX1 + 0.015;
-  const lensY0 = a.waistM * 0.52;
-  const lensY1 = a.waistM * 0.52 + 0.20;
-  for (const zs of [-1, 1]) {
-    const z0 = zs > 0 ? hw * 0.42 : -hw * 0.92;
-    const z1 = zs > 0 ? hw * 0.92 : -hw * 0.42;
-    quad(b, [lensX, lensY0, z0, lensX, lensY1, z0, lensX, lensY1, z1, lensX, lensY0, z1],
-      [1, 0, 0], PART_HEADLIGHT, anyS);
-    const rx = skinX0 - 0.015;
-    quad(b, [rx, lensY0, z1, rx, lensY1, z1, rx, lensY1, z0, rx, lensY0, z0],
-      [-1, 0, 0], PART_TAILLIGHT, anyS);
+  // Lamp lenses, at the height a real cluster sits and standing proud of the
+  // end they are on so they cannot z-fight with it.
+  const hw = a.widthM * 0.5;
+  const lensY0 = a.beltM * 0.55;
+  const lensY1 = lensY0 + 0.19;
+  for (const sgn of [1, -1]) {
+    const z0 = sgn > 0 ? hw * 0.40 : -hw * 0.86;
+    const z1 = sgn > 0 ? hw * 0.86 : -hw * 0.40;
+    const fx = nose - 0.05;
+    flatQuad([fx, lensY0, z0, fx, lensY1, z0, fx, lensY1, z1, fx, lensY0, z1],
+      [1, 0, 0], PART_HEADLIGHT, [0, 0, 0, 1, 1, 1, 1, 0]);
+    const rx = tail + 0.05;
+    flatQuad([rx, lensY0, z1, rx, lensY1, z1, rx, lensY1, z0, rx, lensY0, z0],
+      [-1, 0, 0], PART_TAILLIGHT, [0, 0, 0, 1, 1, 1, 1, 0]);
   }
 
   return {
@@ -555,7 +647,79 @@ export function buildCarMesh(archetype: number): CarMesh {
   };
 }
 
-/** Triangles in each archetype, for the frame budget the harness reports. */
+/**
+ * One road wheel, as an n-sided prism about the z axis.
+ *
+ * SIZED BY ITS FLAT, not by its circumradius. A polygon inscribed in the wheel
+ * radius stands on a vertex and leaves the tyre several centimetres off the
+ * road; one circumscribed about it touches along a flat, which is what a
+ * loaded tyre does anyway.
+ *
+ * The OUTBOARD face is a fan and the inboard one is not: the inboard face lives
+ * inside the arch and is back-facing from everywhere outside the car. On that
+ * fan, `v` is the radius as a fraction of the tyre, which is the whole of what
+ * the shader needs to draw a tyre wall, a bead lip and a hub with no angle, no
+ * texture and no second part id.
+ */
+function addWheel(
+  b: Builder,
+  flat: (x: number, y: number, z: number, n: number[], part: number, u: number, v: number) => number,
+  quad: (i0: number, i1: number, i2: number, i3: number) => void,
+  tri: (i0: number, i1: number, i2: number) => void,
+  cx: number, cz: number, wheelR: number, halfThick: number, sides: number,
+  beltV: number,
+): void {
+  void beltV;
+  const r = wheelR / Math.cos(Math.PI / sides);
+  const cy = wheelR;
+  const out = cz > 0 ? 1 : -1;
+  const z0 = cz - halfThick;
+  const z1 = cz + halfThick;
+  const zOut = out > 0 ? z1 : z0;
+  // A flat at the bottom: the first vertex sits half a step off the -y axis.
+  const ang = (k: number): number => (2 * Math.PI * (k + 0.5)) / sides - Math.PI / 2;
+  const px = (k: number): number => cx + r * Math.cos(ang(k));
+  const py = (k: number): number => cy + r * Math.sin(ang(k));
+
+  for (let k = 0; k < sides; k++) {
+    const x0 = px(k);
+    const y0 = py(k);
+    const x1 = px(k + 1);
+    const y1 = py(k + 1);
+    // The tread faces radially outward on both wheels of an axle, so its
+    // winding does not depend on which side the wheel is.
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const dl = Math.hypot(dx, dy) || 1;
+    const n = [dy / dl, -dx / dl, 0];
+    const base = b.pos.length / 3;
+    flat(x0, y0, z0, n, PART_WHEEL, 0.5, 1);
+    flat(x1, y1, z0, n, PART_WHEEL, 0.5, 1);
+    flat(x1, y1, z1, n, PART_WHEEL, 0.5, 1);
+    flat(x0, y0, z1, n, PART_WHEEL, 0.5, 1);
+    quad(base, base + 1, base + 2, base + 3);
+  }
+  const nOut = [0, 0, out];
+  for (let k = 0; k < sides; k++) {
+    const ring: [number, number][] = [[px(k), py(k)], [px(k + 1), py(k + 1)]];
+    const pts: [number, number][] = out > 0
+      ? [[cx, cy], ring[0], ring[1]]
+      : [[cx, cy], ring[1], ring[0]];
+    const base = b.pos.length / 3;
+    for (const [x, y] of pts) {
+      flat(x, y, zOut, nOut, PART_WHEEL, 0.5, Math.hypot(x - cx, y - cy) / wheelR);
+    }
+    tri(base, base + 1, base + 2);
+  }
+}
+
+/** Triangles in each archetype at each level, for the frame budget. */
 export const CAR_TRIANGLES: readonly number[] = CAR_ARCHETYPES.map(
-  (_a, i) => buildCarMesh(i).triangles,
+  (_a, i) => buildCarMesh(i, LOD_FAR).triangles,
+);
+export const CAR_TRIANGLES_NEAR: readonly number[] = CAR_ARCHETYPES.map(
+  (_a, i) => buildCarMesh(i, LOD_NEAR).triangles,
+);
+export const CAR_TRIANGLES_SHADOW: readonly number[] = CAR_ARCHETYPES.map(
+  (_a, i) => buildCarMesh(i, LOD_SHADOW).triangles,
 );

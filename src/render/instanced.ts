@@ -42,6 +42,8 @@ export class InstancedField {
   readonly capacity: number;
 
   private readonly attributes: Record<string, THREE.InstancedBufferAttribute> = {};
+  /** Geometries sharing this field's instances, so instanceCount stays in step. */
+  private readonly derived: THREE.InstancedBufferGeometry[] = [];
 
   constructor(base: THREE.BufferGeometry, capacity: number, attrs: readonly InstanceAttribute[]) {
     this.capacity = capacity;
@@ -69,6 +71,27 @@ export class InstancedField {
     this.geometry = geo;
   }
 
+  /**
+   * A SECOND geometry over the same instances, with different base geometry.
+   *
+   * This is how a level of detail is done here. The instance data -- where the
+   * cars are, which way they face, what colour they are -- is identical for
+   * every level, and duplicating it would double the buffer and guarantee the
+   * two copies drift. So the instanced attributes are shared by reference and
+   * only the base mesh differs; which of the two actually draws an instance is
+   * the vertex shader's business, from the instance's own distance.
+   */
+  derive(base: THREE.BufferGeometry): THREE.InstancedBufferGeometry {
+    const geo = new THREE.InstancedBufferGeometry();
+    geo.index = base.index;
+    for (const name of Object.keys(base.attributes)) geo.setAttribute(name, base.attributes[name]);
+    for (const name of Object.keys(this.attributes)) geo.setAttribute(name, this.attributes[name]);
+    geo.instanceCount = this.geometry.instanceCount;
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), Infinity);
+    this.derived.push(geo);
+    return geo;
+  }
+
   /** Publish the first `count` instances of every array to the GPU. */
   upload(count: number): void {
     const n = Math.min(count, this.capacity);
@@ -79,10 +102,12 @@ export class InstancedField {
       attr.needsUpdate = true;
     }
     this.geometry.instanceCount = n;
+    for (const g of this.derived) g.instanceCount = n;
   }
 
   dispose(): void {
     this.geometry.dispose();
+    for (const g of this.derived) g.dispose();
   }
 }
 
