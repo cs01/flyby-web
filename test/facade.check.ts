@@ -663,6 +663,130 @@ const WWR_MAX = 0.18;
     `re-adding the core moves the mean by ${(100 * probe).toFixed(2)}%`);
 }
 
+// --- 7. the closed form tracks the rule on EVERY building --------------------
+//
+// The house check above is the same claim over one family of buildings, and
+// restricting it there is how a quarter of the CITY got away with breaking it:
+// coreSlot was drawn from 0..CORE_PERIOD_MAX-1 while corePeriod is 7..14, so
+// whenever the slot landed past the period nothing could ever satisfy
+// `mod(coreIdx, corePeriod) === coreSlot` and the building had no service core
+// at all, while meanOccupancy went on charging its (1/corePeriod) * pCore term.
+// Measured over the packs at the time: 24.9% of every building in every one of
+// them, and the far field of the affected building sat up to 2.3x above the lit
+// fraction the near field actually drew. That is a brightness STEP as you fly
+// toward a night skyline, in the one pair of functions whose entire contract is
+// that they agree.
+//
+// Two measurements, because they fail differently:
+//
+//   * the aggregate, which is what a pixel spanning a block of the city sees.
+//     Per pack and per hour, so one city cannot hide inside six others.
+//
+//   * the core probe, which is per building and has no sampling noise in it at
+//     all. Setting pCore to 1 and pFloor to 0 turns isLit into a pure indicator
+//     of "is this column a core stripe", and meanOccupancy on the same
+//     parameters is exactly 1/corePeriod. So the two functions are asked the
+//     one question the bug answered differently, with no coin left in either.
+//
+// The aggregate alone would not have been enough: over a whole pack the error
+// averaged 2.2%, which is real but is the same order as an over-tight
+// tolerance. The probe reads a flat 25% of buildings wrong.
+
+/**
+ * Absolute lit-fraction error allowed between the closed form and the rule.
+ *
+ * 1% of the wall. The residual at this sample size is 0.27% and it is
+ * deterministic (every hash in here is), so this is not a tolerance sized to
+ * flakiness, it is one sized to how much wall a finite sample can measure. The
+ * coreSlot bug read 2.18%.
+ */
+const CLOSED_FORM_TOL = 0.01;
+/** Buildings sampled per pack, and floors per tenancy block on each of them. */
+const PER_PACK = 240;
+const FLOOR_REPS = 60;
+
+{
+  let worst = 0;
+  let where = "";
+  let coreBad = 0;
+  let coreTotal = 0;
+  let coreWorst = 0;
+  let coreWhere = "";
+  let houseN = 0;
+  let sampleN = 0;
+
+  for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
+    const pk = await pack(file.replace(".city", ""));
+    // Every pack is thousands of buildings and each one is sampled over a wall
+    // of its own; a stride keeps this a second rather than a minute, and the
+    // stride walks the pack in index order so it is not one district of it.
+    const stride = Math.max(1, Math.floor(pk.buildings.length / PER_PACK));
+    const sample: FacadeParams[] = [];
+    for (let i = 0; i < pk.buildings.length; i += stride) {
+      const b = pk.buildings[i];
+      sample.push(facadeFor(b.kind, b.topM - b.baseM, i));
+    }
+    sampleN += sample.length;
+    houseN += sample.filter((p) => p.house === 1).length;
+
+    for (const hour of [19, 22, 1, 4]) {
+      let frac = 0;
+      let closed = 0;
+      for (const p of sample) {
+        const hf = hourFactorFor(hourFactors(hour), p.group);
+        // The sampled wall is sized to hold a WHOLE number of core periods and
+        // of tenancy blocks. A wall cut mid-period measures its own truncation
+        // -- with a core every 7 to 14 stripes, a fixed 28-column window can
+        // hold two cores or three, which is a 50% swing in the core term and
+        // swamps the thing being measured.
+        const cols = p.coreW * p.corePeriod * p.tenantW;
+        const floors = p.tenantH * FLOOR_REPS;
+        let lit = 0;
+        for (let c = 0; c < cols; c++) {
+          for (let f = 0; f < floors; f++) if (isLit(p, c, f, hf)) lit++;
+        }
+        frac += lit / (cols * floors);
+        closed += meanOccupancy(p, hf);
+      }
+      const d = (frac - closed) / sample.length;
+      if (Math.abs(d) > Math.abs(worst)) {
+        worst = d;
+        where = `${file.replace(".city", "")} @${hour}:00 sampled ` +
+          `${(100 * frac / sample.length).toFixed(2)}% vs closed ${(100 * closed / sample.length).toFixed(2)}%`;
+      }
+    }
+
+    // The noise-free half. pCore 1 and pFloor 0 leave isLit with nothing to
+    // decide: a core column lights, everything else is dark, so its lit
+    // fraction over one period IS the core fraction the rule draws, and
+    // meanOccupancy on the same parameters is the core fraction the closed
+    // form charges. They must be the same number for every building.
+    for (const p of sample) {
+      const probe: FacadeParams = { ...p, pCore: 1, pFloor: 0 };
+      const cols = p.coreW * p.corePeriod;
+      let lit = 0;
+      for (let c = 0; c < cols; c++) if (isLit(probe, c, 0, 1)) lit++;
+      const d = Math.abs(lit / cols - meanOccupancy(probe, 1));
+      coreTotal++;
+      if (d > 1e-9) coreBad++;
+      if (d > coreWorst) {
+        coreWorst = d;
+        coreWhere = `${file.replace(".city", "")} period ${p.corePeriod} slot ${p.coreSlot}`;
+      }
+    }
+  }
+
+  // Not vacuous: an empty sample, or a sample of nothing but houses, would
+  // pass everything below without touching a core at all.
+  check("the sample is every kind of building", sampleN > 1000 && houseN > 100 && houseN < sampleN * 0.9,
+    `${sampleN} buildings, ${houseN} of them houses`);
+  check("the closed form tracks the rule", Math.abs(worst) < CLOSED_FORM_TOL,
+    `worst ${(100 * worst).toFixed(2)}% (tol ${100 * CLOSED_FORM_TOL}%) ${where}`);
+  check("every building's core is reachable", coreBad === 0,
+    `${coreBad}/${coreTotal} charge a core the rule never draws` +
+    (coreBad > 0 ? `, worst ${(100 * coreWorst).toFixed(2)}% of the wall (${coreWhere})` : ""));
+}
+
 console.log(failures === 0 ? "\nall facade checks ok" : `\n${failures} facade check(s) FAILED`);
 process.exit(failures === 0 ? 0 : 1);
 

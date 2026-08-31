@@ -477,6 +477,20 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
   // a night skyline was full of them.
   const glassFrac = clamp01(s.glass * (0.82 + 0.36 * h1(seed, 0x44)) * (1 + 0.55 * tall));
 
+  // A CORE THE RULE CAN ACTUALLY REACH.
+  //
+  // The slot has to be drawn modulo the period, not out of the widest period
+  // there is. It used to be `floor(hash * CORE_PERIOD_MAX)` against a period of
+  // 7..14, so a slot past the period made `mod(coreIdx, corePeriod) ===
+  // coreSlot` unsatisfiable and the building had NO service core, while
+  // meanOccupancy went on charging it (1/corePeriod) * pCore. Measured over the
+  // packs: 24.9% of every building in every one of them, exactly the arithmetic
+  // (the mean of (14-p)/14 over p in 7..14 is 28/112), and the far field of an
+  // affected building sat up to 2.3x above the lit fraction its near field drew.
+  // test/facade.check.ts gates both halves now.
+  const corePeriod = CORE_PERIOD_MIN + Math.floor(h1(seed, 0x58) * (CORE_PERIOD_MAX - CORE_PERIOD_MIN + 1));
+  const coreSlot = Math.floor(h1(seed, 0x59) * CORE_PERIOD_MAX) % corePeriod;
+
   const group = occupancyGroup(family, kind, heightM);
   const office = group === 1;
 
@@ -529,8 +543,8 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
     tenantW: office ? 3 + Math.floor(h1(seed, 0x55) * 6) : 2 + Math.floor(h1(seed, 0x55) * 3),
     tenantH: office ? 1 + Math.floor(h1(seed, 0x56) * 3) : 1 + Math.floor(h1(seed, 0x56) * 2),
     coreW: 1 + Math.floor(h1(seed, 0x57) * 2),
-    corePeriod: CORE_PERIOD_MIN + Math.floor(h1(seed, 0x58) * (CORE_PERIOD_MAX - CORE_PERIOD_MIN + 1)),
-    coreSlot: Math.floor(h1(seed, 0x59) * CORE_PERIOD_MAX),
+    corePeriod,
+    coreSlot,
     group,
     seed: (seed % 4096) / 4096,
   };
