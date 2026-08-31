@@ -124,6 +124,7 @@ const FP_KINDS = new Set([BuildingKind.Industrial, BuildingKind.Commercial, Buil
 
 interface PackScore {
   name: string;
+  selfLabelled: boolean;
   recallHit: number;
   recallTotal: number;
   fpHit: number;
@@ -196,6 +197,17 @@ for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
 
   scores.push({
     name: file.replace(".city", ""),
+    // A pack RE-BAKED since inferResidential existed already carries the
+    // rule's own output as its `kind` bytes, so re-running promotes exactly
+    // nothing and every promoted building is then indistinguishable from one a
+    // mapper tagged. Such a pack cannot be ground truth for the rule that
+    // wrote it: measured on the re-baked emeraldhills it took that pack's
+    // "tagged houses" from 5418 to 30117 and its recall from 0.905 to 0.983,
+    // which is the rule marking its own homework. The pack format carries no
+    // provenance bit to tell the two apart, so promotion count is the proxy:
+    // no promotions means either already-inferred or no suburb, and neither is
+    // evidence about the rule.
+    selfLabelled: residentialAfter === residentialBefore,
     recallHit,
     recallTotal,
     fpHit,
@@ -206,10 +218,11 @@ for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
   });
 }
 
-const totalRecallHit = scores.reduce((a, s) => a + s.recallHit, 0);
-const totalRecallTotal = scores.reduce((a, s) => a + s.recallTotal, 0);
-const totalFpHit = scores.reduce((a, s) => a + s.fpHit, 0);
-const totalFpTotal = scores.reduce((a, s) => a + s.fpTotal, 0);
+const contributing = scores.filter((s) => !s.selfLabelled);
+const totalRecallHit = contributing.reduce((a, s) => a + s.recallHit, 0);
+const totalRecallTotal = contributing.reduce((a, s) => a + s.recallTotal, 0);
+const totalFpHit = contributing.reduce((a, s) => a + s.fpHit, 0);
+const totalFpTotal = contributing.reduce((a, s) => a + s.fpTotal, 0);
 const recall = totalRecallHit / totalRecallTotal;
 const fp = totalFpHit / totalFpTotal;
 
@@ -222,7 +235,8 @@ for (const s of scores) {
       `${(s.recallHit / s.recallTotal).toFixed(3)}   ` +
       `${String(s.fpTotal).padStart(7)}   ${(s.fpHit / s.fpTotal).toFixed(3)}    ` +
       `${(s.shareBefore * 100).toFixed(1)}% -> ${(s.share * 100).toFixed(1)}%`.padStart(16) +
-      `    ${(s.coreShare * 100).toFixed(1)}%`,
+      `    ${(s.coreShare * 100).toFixed(1)}%` +
+      (s.selfLabelled ? "   EXCLUDED: self-labelled" : ""),
   );
 }
 console.log("");
@@ -232,6 +246,27 @@ check(
   recall >= MIN_RECALL,
   `${(recall * 100).toFixed(1)}% of ${totalRecallTotal} tagged houses recovered (need >= ${(MIN_RECALL * 100).toFixed(0)}%)`,
 );
+/**
+ * Packs that must still supply ground truth.
+ *
+ * Without this the exclusion above is a slow-acting hole: re-bake every pack
+ * and every one becomes self-labelled, the aggregate is then taken over an
+ * empty set, and a gate that measures nothing reports 0 checked and exits 0
+ * forever. Seven packs ship and one (emeraldhills) has been re-baked, so five
+ * leaves room for one more re-bake before somebody has to think about it.
+ */
+const MIN_CONTRIBUTING = 5;
+
+check(
+  "enough packs predate the rule to still be ground truth",
+  contributing.length >= MIN_CONTRIBUTING,
+  `${contributing.length} of ${scores.length} packs contributing` +
+    (scores.length > contributing.length
+      ? `, excluded: ${scores.filter((s) => s.selfLabelled).map((s) => s.name).join(", ")}`
+      : "") +
+    ` (need >= ${MIN_CONTRIBUTING})`,
+);
+
 check(
   "false positives on tagged Industrial/Commercial/Retail",
   fp <= MAX_FP,
