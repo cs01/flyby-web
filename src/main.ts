@@ -430,13 +430,14 @@ async function main() {
   // further down read it, which is the whole reason it is not solved inside
   // either of them; see data/bridgedeck.ts.
   const bridgeDecks = roadPack
-    ? buildBridgeDecks(roadPack.roads, terrain.heightAt)
+    ? buildBridgeDecks(roadPack.roads, terrain.heightAt, roadPack.radiusM)
     : null;
   if (bridgeDecks) {
     const bs = bridgeDecks.stats;
     console.log(
       `[flyby] bridge decks: ${bs.bridgeWays} ways in ${bs.chains} chains, ` +
-      `${bs.abutments} abutments, ${bs.orphanChains} orphan, ` +
+      `${bs.abutments} abutments, ${bs.orphanChains} orphan ` +
+      `(${bs.orphanChainsLifted} lifted, ${bs.orphanChainsDraped} draped), ` +
       `longest chain ${bs.longestChainM.toFixed(0)} m, ${bs.buildMs} ms`,
     );
   }

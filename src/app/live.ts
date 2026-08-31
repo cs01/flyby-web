@@ -305,7 +305,7 @@ export class LiveWorld {
         };
         // The live path has no car on it, but the decks are what put a bridge
         // over the water instead of in it, so it solves them the same way.
-        const decks = buildBridgeDecks(roads, heightAt).deck;
+        const decks = buildBridgeDecks(roads, heightAt, LIVE_WORLD_RADIUS_M).deck;
         const r = new Roads(pack, heightAt, shadow, this.tileBudget, decks);
         scene.add(r.group);
         this.opts.roadUniforms.push(r.uniforms);

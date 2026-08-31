@@ -61,6 +61,31 @@ import { isDriveable } from "./roadgraph";
 const JOIN_M = 0.30;
 
 /**
+ * How near the pack's own edge a chain has to reach before we believe its
+ * approaches were CLIPPED AWAY rather than never existing, in metres.
+ *
+ * A pack is cut at a radius, so a real crossing that leaves the city loses the
+ * ordinary road at its far end and looks exactly like a tagging artifact. This
+ * is the width of the band where that excuse is credible. It is generous
+ * because being wrong at the edge costs a deck in the water, and being wrong in
+ * the middle costs a car flying over the street.
+ */
+export const ORPHAN_EDGE_MARGIN_M = 200;
+
+/**
+ * How long an abutment-less chain has to be before it is believed to be a real
+ * bridge rather than a mis-tagged stub, in metres.
+ *
+ * Nothing in the middle of a city spans this far without touching an ordinary
+ * road somewhere, so a chain this long with no abutment is one whose approaches
+ * are outside the pack. The artifacts this rule exists to catch are the
+ * opposite shape: 2 to 4 vertex stubs a few tens of metres long, tagged
+ * `bridge=yes` with their approach ways tagged the same, so no ordinary road
+ * ever touches the chain and the old rule stood them a storey above the street.
+ */
+export const ORPHAN_SPAN_M = 250;
+
+/**
  * A bridge way's deck, as heights at breakpoints along the way.
  *
  * PIECEWISE, NOT A SINGLE SPAN, and the reason is where the breakpoints are:
@@ -84,6 +109,13 @@ export interface BridgeDeckStats {
   abutments: number;
   /** Chains with no abutment at all, which fall back to the ground at their ends. */
   orphanChains: number;
+  /** Of those, the ones plausibly clipped by the pack edge, which keep the old
+   *  bridge lift. */
+  orphanChainsLifted: number;
+  /** Of those, the ones wholly interior to the pack, which drape at the
+   *  ordinary road lift because a bridge nothing reaches in the middle of a
+   *  city is a tagging artifact, not a bridge. */
+  orphanChainsDraped: number;
   /** The longest single chain, in metres. */
   longestChainM: number;
   buildMs: number;
@@ -168,10 +200,16 @@ class Joiner {
  * hundred points in a city rather than once per vertex. That is not an
  * optimisation, it is the model: nothing between the abutments has any say in
  * where the deck is.
+ *
+ * `packRadiusM` is the radius the pack was cut at, and it is what tells an
+ * orphan chain that was CLIPPED from a real bridge apart from one that is
+ * simply mis-tagged. Omitting it keeps every orphan on the old lift, which is
+ * the behaviour a caller with no extent had before.
  */
 export function buildBridgeDecks(
   roads: readonly Road[],
   groundAt: (x: number, z: number) => number,
+  packRadiusM?: number,
 ): BridgeDecks {
   const t0 = Date.now();
   const deck: (Deck | null)[] = new Array(roads.length).fill(null);
@@ -182,7 +220,7 @@ export function buildBridgeDecks(
   }
   const empty = (): BridgeDecks => ({
     deck,
-    stats: { bridgeWays: bridgeIdx.length, chains: 0, abutments: 0, orphanChains: 0, longestChainM: 0, buildMs: Date.now() - t0 },
+    stats: { bridgeWays: bridgeIdx.length, chains: 0, abutments: 0, orphanChains: 0, orphanChainsLifted: 0, orphanChainsDraped: 0, longestChainM: 0, buildMs: Date.now() - t0 },
   });
   if (bridgeIdx.length === 0) return empty();
 
@@ -283,6 +321,8 @@ export function buildBridgeDecks(
   let chains = 0;
   let abutments = 0;
   let orphanChains = 0;
+  let orphanChainsLifted = 0;
+  let orphanChainsDraped = 0;
   let longestChainM = 0;
 
 
@@ -311,14 +351,29 @@ export function buildBridgeDecks(
       : nodes.filter((n) => roadTouch[n] || pathTouch[n]);
     abutments += sources.length;
     if (sources.length === 0) {
-      // A chain nothing ordinary reaches: clipped at the city radius, or a
-      // bridge whose approaches are outside the pack. There is nothing to
-      // interpolate BETWEEN, so this keeps the OLD behaviour deliberately --
-      // draped on the ground with the old bridge lift. It is wrong in the way
-      // described at the top of this file, and it is wrong only at the edge of
-      // the world, where the alternative is a deck lying in the water.
+      // A chain nothing ordinary reaches. There is nothing to interpolate
+      // BETWEEN, so the question is only which of two wrong answers is less
+      // wrong here, and that turns on WHY the chain has no abutment.
+      //
+      // CLIPPED: the bridge leaves the pack, or its approaches were cut off at
+      // the radius. Draping it puts the deck in the water, so it keeps the old
+      // fixed lift. A chain that reaches the boundary band, or one long enough
+      // that nothing in a city spans it without touching a road, is this case.
+      //
+      // MIS-TAGGED: a short stub wholly inside the pack whose approach ways are
+      // themselves tagged bridge=yes, so no ordinary road ever touches the
+      // chain. Chicago has nine driveable ways like this, the nearest 199 m from
+      // the pack centre in the middle of the Loop, and the old rule stood them
+      // 3.85 m over the street with cars driving along them in mid air. There is
+      // no water under those, so they drape.
       orphanChains++;
-      for (const n of nodes) jointY.set(n, groundAt(joints.x[n], joints.z[n]) + ROAD_LIFT_M + BRIDGE_LIFT_M);
+      const clipped =
+        packRadiusM === undefined ||
+        chainM > ORPHAN_SPAN_M ||
+        nodes.some((n) => Math.hypot(joints.x[n], joints.z[n]) > packRadiusM - ORPHAN_EDGE_MARGIN_M);
+      if (clipped) orphanChainsLifted++; else orphanChainsDraped++;
+      const lift = clipped ? ROAD_LIFT_M + BRIDGE_LIFT_M : ROAD_LIFT_M;
+      for (const n of nodes) jointY.set(n, groundAt(joints.x[n], joints.z[n]) + lift);
       continue;
     }
 
@@ -395,6 +450,8 @@ export function buildBridgeDecks(
       chains,
       abutments,
       orphanChains,
+      orphanChainsLifted,
+      orphanChainsDraped,
       longestChainM,
       buildMs: Date.now() - t0,
     },

@@ -33,8 +33,8 @@ import {
   roadLiftM,
   type RoadPack,
 } from "../src/data/roadpack";
-import { buildRoadGraph, type RoadEdge } from "../src/data/roadgraph";
-import { buildBridgeDecks, deckYAt } from "../src/data/bridgedeck";
+import { buildRoadGraph, isDriveable, type RoadEdge } from "../src/data/roadgraph";
+import { ORPHAN_EDGE_MARGIN_M, buildBridgeDecks, deckYAt } from "../src/data/bridgedeck";
 import { Origin } from "../src/geo";
 
 declare const process: { exit(code?: number): never };
@@ -87,12 +87,13 @@ const ground = (x: number, z: number): number => {
   return base + 6 * Math.sin(x / 140) * Math.cos(z / 190);
 };
 
-const decks = buildBridgeDecks(pack.roads, ground);
+const decks = buildBridgeDecks(pack.roads, ground, pack.radiusM);
 const graph = buildRoadGraph(pack.roads);
 
 console.log(
   `     ${decks.stats.bridgeWays} bridge ways in ${decks.stats.chains} chains, ` +
-  `${decks.stats.abutments} abutments, ${decks.stats.orphanChains} orphan, ` +
+  `${decks.stats.abutments} abutments, ${decks.stats.orphanChains} orphan ` +
+  `(${decks.stats.orphanChainsLifted} lifted, ${decks.stats.orphanChainsDraped} draped), ` +
   `longest chain ${decks.stats.longestChainM.toFixed(0)} m, ${decks.stats.buildMs} ms`,
 );
 
@@ -298,6 +299,94 @@ function stepsAt(y: (e: RoadEdge, n: number) => number): { steps: number; joins:
     const sv = street ? Number(street[1]) : 400;
     probe("bridge fade", sv >= 2 * longest, `the street fade of ${sv} m does not`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// An orphan chain in the MIDDLE of the city is a tagging artifact, not a
+// bridge.
+//
+// WHY CHICAGO AND WHY A FLAT GROUND. sf was the only pack this file loaded, and
+// that is how this shipped. A chain with no abutment kept the old fixed lift on
+// the grounds that an orphan is a crossing clipped at the pack radius, where
+// draping it would put the deck in the water. Over chicago.roads that excuse
+// covers almost none of them: nine DRIVEABLE ways sat at 3.85 m, the nearest
+// 199 m from the pack centre, in the middle of the Loop. They are 2 to 4 vertex
+// stubs whose approaches are themselves tagged bridge=yes, so no ordinary road
+// touches the chain -- and the car sim spawned cars on them and drove them one
+// storey above the street.
+//
+// The ground here is FLAT, so every height reported below is pure lift and the
+// assertion is about the rule rather than about Illinois.
+// ---------------------------------------------------------------------------
+
+{
+  const chi = load("chicago");
+  const flat = (): number => 0;
+  const now = buildBridgeDecks(chi.roads, flat, chi.radiusM);
+  const then = buildBridgeDecks(chi.roads, flat); // no extent: the old rule
+  const s = now.stats;
+  console.log(
+    `     chicago: ${s.bridgeWays} bridge ways in ${s.chains} chains, ` +
+    `${s.abutments} abutments, ${s.orphanChains} orphan ` +
+    `(${s.orphanChainsLifted} lifted, ${s.orphanChainsDraped} draped), ` +
+    `longest chain ${s.longestChainM.toFixed(0)} m, ${s.buildMs} ms`,
+  );
+
+  /**
+   * Driveable bridge ways lying wholly inside the pack that float above `bound`.
+   *
+   * INTERIOR is the whole point: a chain that reaches the pack's edge may have
+   * had its approaches cut off, and lifting that one is right. The margin is the
+   * solver's own, so the gate and the rule cannot drift apart about where the
+   * edge of the world is.
+   */
+  function floaters(decks: ReturnType<typeof buildBridgeDecks>, bound: number): { ways: number[]; worst: number } {
+    const ways: number[] = [];
+    let worst = 0;
+    for (let i = 0; i < chi.roads.length; i++) {
+      const r = chi.roads[i];
+      const d = decks.deck[i];
+      if (!d || !isDriveable(r)) continue;
+      let interior = true;
+      for (let v = 0; v < r.pts.length; v += 2) {
+        if (Math.hypot(r.pts[v], r.pts[v + 1]) > chi.radiusM - ORPHAN_EDGE_MARGIN_M) { interior = false; break; }
+      }
+      if (!interior) continue;
+      let hi = 0;
+      for (let k = 0; k < d.y.length; k++) if (d.y[k] > hi) hi = d.y[k];
+      if (hi > worst) worst = hi;
+      if (hi > bound) ways.push(i);
+    }
+    return { ways, worst };
+  }
+
+  // 0.5 m, against a ROAD_LIFT_M of 0.35: an interior deck under flat ground is
+  // pinned to abutments that are all at 0.35, so it is at 0.35 everywhere, and
+  // anything materially over that is a fixed lift nobody reconciled.
+  const BOUND_M = 0.5;
+  const f = floaters(now, BOUND_M);
+  check(
+    "no interior chicago deck floats over the street",
+    f.ways.length === 0,
+    `${f.ways.length} driveable ways over ${BOUND_M} m, worst ${f.worst.toFixed(2)} m`,
+  );
+  const fOld = floaters(then, BOUND_M);
+  probe(
+    "interior orphan lift",
+    fOld.ways.length === 0,
+    `the old orphan rule floats ${fOld.ways.length} driveable ways, worst ${fOld.worst.toFixed(2)} m`,
+  );
+
+  check(
+    "chicago's orphan chains are mostly interior artifacts, not clipped spans",
+    s.orphanChains > 50 && s.orphanChainsDraped > s.orphanChainsLifted,
+    `${s.orphanChainsDraped} draped vs ${s.orphanChainsLifted} lifted of ${s.orphanChains}`,
+  );
+  probe(
+    "orphan split",
+    then.stats.orphanChains > 50 && then.stats.orphanChainsDraped > then.stats.orphanChainsLifted,
+    `the old rule lifted all ${then.stats.orphanChains} of them`,
+  );
 }
 
 function wayLength(pts: Float32Array): number {
