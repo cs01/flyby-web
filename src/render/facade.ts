@@ -89,6 +89,31 @@ interface FamilySpec {
   glass: number;
   /** 0 = mirror, 1 = fully matte. Drives the specular lobe width. */
   roughness: number;
+  /**
+   * Normal-incidence reflectance of the GLAZING this family is built with.
+   *
+   * Not a look knob and not derived from roughness: it is the exterior visible
+   * reflectance of a specific glazing product, and the families differ because
+   * the products do.
+   *
+   *   A single air/glass interface reflects 4% at normal incidence, and that is
+   *   the number a bare dielectric gets. A PUNCHED WINDOW in a masonry wall is
+   *   close to it: the pane has a second surface, but behind that surface is an
+   *   unlit room that absorbs nearly all of what reaches it, so almost nothing
+   *   comes back out and the wall behaves as one interface.
+   *
+   *   A CURTAIN WALL does not. It is an insulating glass unit with a
+   *   solar-control or low-e coating sputtered onto surface 2 -- a metallic
+   *   film whose whole purpose is to reflect, and which sits in front of the
+   *   room rather than behind it. Published exterior visible reflectance for
+   *   that product runs 0.10 to 0.35 depending on how hard the coating works.
+   *   An uncoated clear IGU is already 0.14 on its four air/glass interfaces.
+   *
+   * This is why a glass tower is a mirror at angles where Schlick off a bare
+   * dielectric gives nothing: at 45 degrees a 0.04 surface returns 7% and a
+   * 0.22 one returns 27%, and 27% of a bright sky is most of the pixel.
+   */
+  f0: number;
   /** Depth of the reveal around a window, metres-ish; 0 is a flat facade. */
   relief: number;
   /** Parapet wall above the roof slab, metres. */
@@ -100,26 +125,41 @@ const FAMILY: Record<FacadeFamily, FamilySpec> = {
     lo: [0.19, 0.23, 0.29], hi: [0.38, 0.42, 0.47],
     storeyM: 3.9, columnM: 1.6, win: [0.05, 0.95, 0.08, 0.96],
     glass: 0.92, roughness: 0.06, relief: 0.10, parapetM: 0.9,
+    // Solar-control coated IGU, the standard commercial curtain wall since the
+    // 1970s. Mid of the 0.10-0.35 product range: brighter than a plain low-e
+    // unit, short of the 1980s mirror glass that would make every tower a
+    // chrome slab.
+    f0: 0.22,
   },
   [FacadeFamily.Brick]: {
     lo: [0.31, 0.15, 0.11], hi: [0.54, 0.31, 0.23],
     storeyM: 3.1, columnM: 3.3, win: [0.29, 0.71, 0.28, 0.82],
     glass: 0.20, roughness: 0.86, relief: 0.75, parapetM: 1.0,
+    f0: 0.05,   // punched sash over a dark room: one effective interface
   },
   [FacadeFamily.Stucco]: {
     lo: [0.44, 0.41, 0.35], hi: [0.68, 0.64, 0.55],
     storeyM: 3.0, columnM: 3.0, win: [0.25, 0.75, 0.26, 0.84],
     glass: 0.22, roughness: 0.78, relief: 0.50, parapetM: 0.7,
+    f0: 0.05,   // same punched window, rendered wall rather than brick
   },
   [FacadeFamily.Concrete]: {
     lo: [0.31, 0.31, 0.30], hi: [0.58, 0.57, 0.55],
     storeyM: 3.5, columnM: 2.4, win: [0.13, 0.87, 0.24, 0.78],
     glass: 0.45, roughness: 0.62, relief: 0.55, parapetM: 1.1,
+    // THE FAMILY WITH NO ONE GLAZING TYPE. It spans a four-storey block with
+    // punched holes and a forty-storey ribbon-windowed slab, and those are not
+    // the same product. It gets the uncoated clear IGU at 0.14 -- the four
+    // air/glass interfaces of a double-glazed unit with no coating on any of
+    // them -- which is right for the ribbon window and generous for the punched
+    // one, and the glassFrac term already carries most of that difference.
+    f0: 0.14,
   },
   [FacadeFamily.Stone]: {
     lo: [0.42, 0.39, 0.34], hi: [0.63, 0.59, 0.52],
     storeyM: 4.2, columnM: 3.6, win: [0.30, 0.70, 0.24, 0.84],
     glass: 0.18, roughness: 0.72, relief: 0.80, parapetM: 1.4,
+    f0: 0.05,   // masonry stock, single glazed or clear IGU in a deep reveal
   },
 };
 
@@ -313,6 +353,8 @@ export interface FacadeParams {
   /** Linear albedo. */
   colour: [number, number, number];
   roughness: number;
+  /** Normal-incidence reflectance of this family's glazing; see FamilySpec. */
+  f0: number;
   storeyM: number;
   columnM: number;
   /** Window rectangle inside a cell: x0, x1, y0, y1, all 0..1. */
@@ -517,6 +559,11 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
     family,
     colour,
     roughness: clamp01(s.roughness * (1 + 0.2 * (h1(seed, 0x45) - 0.5))),
+    // No per-building jitter. Two curtain walls on one street are glazed in
+    // the same generation of product far more reliably than they are the same
+    // colour, and a randomised reflectance reads as a rendering error rather
+    // than as variety.
+    f0: s.f0,
     storeyM,
     columnM,
     win,
@@ -680,7 +727,7 @@ export function packFacade(p: FacadeParams, out: Float32Array, i: number): void 
   // so it costs no bytes and no extra fetch across 187k buildings. The last
   // component is written anyway: the gate fills the buffer with NaN first, so
   // a slot nobody writes now fails rather than reading as a silent zero.
-  out[o++] = p.house;     out[o++] = 0;
+  out[o++] = p.house;     out[o++] = p.f0;
 }
 
 // --- the GLSL half ----------------------------------------------------------
@@ -702,6 +749,7 @@ uniform vec3 uHourFactor;   // residential, office, other
 struct Facade {
   vec3  colour;
   float roughness;
+  float f0;
   float storeyM;
   float columnM;
   float glassFrac;
@@ -764,7 +812,7 @@ Facade readFacade(float bidx) {
   p.tenantW = e.x;    p.tenantH = e.y;  p.coreW = e.z;      p.corePeriod = e.w;
   p.coreSlot = f.x;   p.group = floor(f.y / 8.0);  p.family = f.y - p.group * 8.0;
   p.relief = f.z;     p.parapetM = f.w;
-  p.groundStoreyM = g.x;  p.shopfront = g.y;  p.house = g.z;
+  p.groundStoreyM = g.x;  p.shopfront = g.y;  p.house = g.z;  p.f0 = g.w;
 
   // A DEAD TABLE MUST DEGRADE, NOT BREAK.
   //
@@ -804,6 +852,7 @@ Facade readFacade(float bidx) {
     p.relief = 0.5; p.parapetM = 0.9;
     p.group = 1.0; p.family = fb2 > 0.82 ? 0.0 : 1.0;
     p.groundStoreyM = 4.0; p.shopfront = 0.45; p.house = 0.0;
+    p.f0 = fb2 > 0.82 ? 0.22 : 0.05;
   }
 
   // Belt and braces: clamp every divisor at the point of use anyway, so a

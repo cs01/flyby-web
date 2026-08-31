@@ -568,8 +568,19 @@ async function main() {
   // tools/verify-glass.ts does not have to guess which pixels are wall from
   // their colour. The terrain and the sky still draw normally, exactly as they
   // do under `?terrainDebug`, so the mask occludes what the beauty frame
-  // occludes and the two agree pixel for pixel.
-  const buildingDebug = new URLSearchParams(location.search).get("buildingDebug") === "1";
+  // occludes and the two agree pixel for pixel. `=2` narrows the same marker to
+  // the fragments whose FACE is seen at a grazing angle, which is how the
+  // Fresnel assertion in that tool splits one frame into two populations.
+  const buildingDebug = Number(new URLSearchParams(location.search).get("buildingDebug") ?? 0) || 0;
+
+  // `?flatrefl=1` restores the facade reflection this repo had before the
+  // glazing reflectance work: one bare-dielectric F0 of 0.04 on every family,
+  // and the probe's open sunlit ground under every downward reflected ray. It
+  // is the vacuity probe for the reflection assertions in
+  // tools/verify-glass.ts, which has to run the OLD behaviour in the SAME
+  // binary -- the reveal half of that tool already has `?flatglass=1`, and the
+  // two are separate because they are separate claims about the same wall.
+  const flatRefl = new URLSearchParams(location.search).get("flatrefl") === "1";
 
   for (const u of terrain.uniforms) {
     u.uUrban.value = urban.texture;
@@ -1457,7 +1468,10 @@ async function main() {
       // Written every frame rather than once at start-up, because streamed
       // tiles add their own uniform set to this array long after that.
       b.uFlatGlass.value = flatGlass ? 1 : 0;
-      b.uBuildingDebug.value = buildingDebug ? 1 : 0;
+      b.uFlatRefl.value = flatRefl ? 1 : 0;
+      b.uUrban.value = urban.texture;
+      b.uUrbanExtent.value = urban.extent;
+      b.uBuildingDebug.value = buildingDebug;
     }
 
     for (const r of roadUniformSets) {

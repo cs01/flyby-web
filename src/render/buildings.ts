@@ -292,13 +292,33 @@ uniform float uSunSurface;
 // block in the facade branch, and tools/verify-glass.ts, which needs to run the
 // old behaviour in the SAME binary or its assertions measure nothing.
 uniform float uFlatGlass;
+// ?flatrefl=1: put the ENV REFLECTION back to what this repo had before the
+// glazing reflectance work -- one bare-dielectric F0 of 0.04 for every family,
+// and the probe's open sunlit ground under every downward reflected ray. The
+// vacuity probe for the reflection half of tools/verify-glass.ts.
+uniform float uFlatRefl;
+// Built-ness over the city, 0..1, from render/urbanmask.ts. The same coverage
+// grid terrain.ts lights its streets from; here it says how much of what a
+// facade reflects BELOW the horizon is other buildings rather than open ground.
+uniform sampler2D uUrban;
+uniform float uUrbanExtent;
 // ?buildingDebug=1 replaces the shaded output with a flat marker on the FACADE
 // fragments and nothing else, so a measurement of a facade can ask the shader
 // which pixels are facade instead of guessing from colour. Pure blue rather
 // than white: r and g stay at zero through the tonemap, and nothing else in a
 // daylight frame -- not sky, not water, not pale render -- comes out with two
 // dead channels.
+//
+// ?buildingDebug=2 is the same marker restricted to the facade fragments seen
+// at a GRAZING angle, so a measurement of the Fresnel term can ask the shader
+// which faces are grazing instead of drawing boxes on a frame. Same encoding,
+// so one mask reader serves both, and mode 1 minus mode 2 is the square-on set.
 uniform float uBuildingDebug;
+
+// The split between "grazing" and "square-on" for buildingDebug=2, as cos of
+// the angle off the wall normal. 0.5 is 60 degrees off, which is where Schlick
+// starts to run away: a 0.04 surface returns 7% at 45 degrees and 15% at 70.
+const float GRAZE_COS = 0.5;
 
 float hash11(float p) {
   p = fract(p * 0.1031);
@@ -1333,6 +1353,35 @@ void main() {
   // matte. A tower that is shiny all over reads as plastic.
   if (glassMask > 0.004) {
     vec3 refl = reflect(-v, n);
+
+    // WHAT IS UNDER THE HORIZON IS A CITY, NOT A FIELD.
+    //
+    // The probe has no geometry in it (see render/skyprobe.ts, which explains
+    // why), so its lower hemisphere is one shaded ground plane at 0.16 albedo
+    // with the sun full on it. For a tower in open country that is right. For
+    // one in the Loop it is the single most wrong thing in the reflection: a
+    // downward reflected ray there lands on the flank of the building opposite,
+    // which is in its own shadow half the day and is dark building mass the
+    // rest of it, and instead the facade returns bright sunlit prairie.
+    //
+    // The fix is not an invented darkening. render/urbanmask.ts already carries
+    // a MEASURED built-ness field over the footprints in the pack, and it is
+    // sampled at the building's own position, so a tower downtown reflects dark
+    // mass below the horizon and one on the edge of the map still reflects
+    // ground. Same texture and same lookup the terrain shader runs.
+    vec2 urbanUv = vWorld.xz / (2.0 * uUrbanExtent) + 0.5;
+    float built = texture(uUrban, urbanUv).r
+                * step(0.0, urbanUv.x) * step(urbanUv.x, 1.0)
+                * step(0.0, urbanUv.y) * step(urbanUv.y, 1.0);
+    // Faded across the horizon over a few degrees rather than switched at it:
+    // a hard edge here draws a hard line across every glass tower in the frame,
+    // which is the defect the probe's own ground fade exists to avoid.
+    float underHorizon = smoothstep(0.02, -0.10, refl.y);
+    // 0.55 leaves 45% of the open-ground radiance at full built-ness. A dense
+    // downtown block is not black -- it is masonry and glass at 0.2 albedo lit
+    // by the same sky, next to open ground at 0.16 albedo lit by sky AND sun --
+    // so roughly half is what the difference between those two actually is.
+    float urbanDark = 1.0 - 0.55 * built * underHorizon * (1.0 - uFlatRefl);
     // The cube holds RADIANCE in the same linear HDR space this shader writes,
     // so it goes straight into the Fresnel mix with no scale factor. That is
     // the point of capturing it through the same atmosphere the sky dome runs:
@@ -1345,11 +1394,24 @@ void main() {
     // coming back off it. A pane at the bottom of a 100 mm box reflects the
     // soffit above it, not the dome, and without this the reveal shows up
     // everywhere except on the buildings it was written for.
-    vec3 skyRefl = (textureLod(uEnv, refl, clamp(roughness, 0.0, 1.0) * uEnvMaxLod).rgb
+    vec3 skyRefl = (textureLod(uEnv, refl, clamp(roughness, 0.0, 1.0) * uEnvMaxLod).rgb * urbanDark
                  + uNightGlow * 0.4) * revealOcc;
-    // Schlick, with the 4% normal-incidence reflectance of glass.
+    // Schlick, on the reflectance of the glazing this family is actually built
+    // with -- fp.f0, out of the same table roughness and relief come from. A
+    // curtain wall is a coated insulating unit at 0.22 and a punched masonry
+    // window is a bare pane over a dark room at 0.05; see the note on f0 in
+    // render/facade.ts for where those two numbers come from.
+    //
+    // This replaced a flat 0.04 for every wall in the city, which is the
+    // reflectance of ONE air/glass interface and is the wrong material: it put
+    // 7% of the sky on a curtain wall at 45 degrees, so a tower shaded almost
+    // entirely as diffuse albedo and read as painted concrete. Measured over
+    // the facade mask on chicago-loop-day, the old reflection moved mean facade
+    // luminance by 1.3% against a non-directional one -- the radiance term was
+    // never the problem, the reflectance was.
+    float f0 = mix(fp.f0, 0.04, uFlatRefl);
     float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
-    float fres = 0.04 + 0.96 * f;
+    float fres = f0 + (1.0 - f0) * f;
     lit = mix(lit, skyRefl, fres * glassMask * (1.0 - roughness * 0.6));
   }
 
@@ -1370,7 +1432,15 @@ void main() {
   vec3 inscatter = atmosphere(ro, rd, vViewDist, trans);
 
   fragColor = vec4(lit * trans + inscatter, 1.0);
-  if (uBuildingDebug > 0.5) fragColor = vec4(0.0, 0.0, facadeMarker, 1.0);
+  if (uBuildingDebug > 0.5) {
+    // The GEOMETRIC normal, not the relief-perturbed n the Fresnel term uses:
+    // this is classifying FACES, and the per-pixel bump would scatter pixels
+    // across the threshold inside one wall and blur the two populations into
+    // each other. The face angle is what the classification is about.
+    float faceCos = clamp(dot(v, normalize(vNormal)), 0.0, 1.0);
+    float graze = uBuildingDebug > 1.5 ? step(faceCos, GRAZE_COS) : 1.0;
+    fragColor = vec4(0.0, 0.0, facadeMarker * graze, 1.0);
+  }
 }
 `;
 
@@ -1389,6 +1459,11 @@ export interface BuildingUniforms extends SunShadowUniforms, AoUniforms {
   uSunSurface: THREE.IUniform<number>;
   /** 1 puts the glazing back in the wall plane; see `?flatglass=1` in main.ts. */
   uFlatGlass: THREE.IUniform<number>;
+  /** 1 restores the bare-dielectric F0 and the open ground half; `?flatrefl=1`. */
+  uFlatRefl: THREE.IUniform<number>;
+  /** Built-ness coverage grid; see render/urbanmask.ts. */
+  uUrban: THREE.IUniform<THREE.Texture | null>;
+  uUrbanExtent: THREE.IUniform<number>;
   /** 1 draws the facade mask instead of the shaded building; `?buildingDebug=1`. */
   uBuildingDebug: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
@@ -1427,6 +1502,9 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uWetness: { value: 0 },
     uSunSurface: { value: 0.105 },
     uFlatGlass: { value: 0 },
+    uFlatRefl: { value: 0 },
+    uUrban: { value: null },
+    uUrbanExtent: { value: 1 },
     uBuildingDebug: { value: 0 },
     uExposure: { value: 1 },
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
