@@ -291,6 +291,76 @@ check("hash3 is pinned", Math.abs(hash3(12345, 678, 90) - 0.48969510104507208) <
   check("packFacade fills every slot", bufA.every((v) => Number.isFinite(v)), "no NaN, no holes");
 }
 
+// --- 3b. the glazing reflectance reaches the shader ---------------------------
+//
+// f0 is the exterior reflectance of the glazing a family is actually built
+// with, and it rides in the LAST component of the last texel -- the one that
+// was a hard zero until the reflection work, and which the NaN fill above only
+// proves is written at all. Written is not correct: a slot filled with the
+// wrong constant is finite too. So this pins the numbers themselves, pins the
+// ORDER they land in the buffer, and checks the shader still unpacks that
+// component into p.f0.
+{
+  const EXPECTED: Record<FacadeFamily, number> = {
+    // A solar-control coated IGU. The number the whole change is about.
+    [FacadeFamily.Glass]: 0.22,
+    // A punched sash over a dark room: one effective air/glass interface.
+    [FacadeFamily.Brick]: 0.05,
+    [FacadeFamily.Stucco]: 0.05,
+    [FacadeFamily.Stone]: 0.05,
+    // An uncoated clear IGU: four air/glass interfaces, no coating on any.
+    [FacadeFamily.Concrete]: 0.14,
+  };
+
+  const buf = new Float32Array(FACADE_FLOATS).fill(Number.NaN);
+  const seen = new Map<FacadeFamily, Set<number>>();
+  for (let seed = 0; seed < 4000; seed++) {
+    const p = facadeFor(seed % 7, 3 + (seed % 220), seed * 13 + 5);
+    let set = seen.get(p.family);
+    if (!set) seen.set(p.family, (set = new Set()));
+    set.add(p.f0);
+    packFacade(p, buf, 0);
+    // The slot, not merely the value: packFacade's write order IS the shader's
+    // read order, and a value in the wrong component decodes as something else.
+    // Math.fround, because the buffer is a Float32Array: 0.22 does not survive
+    // the narrowing exactly, and comparing a float32 with a double would fail
+    // on every family for a reason that has nothing to do with the slot.
+    if (buf[FACADE_FLOATS - 1] !== Math.fround(p.f0)) {
+      set.add(Number.NaN); // forces the per-family check below to fail loudly
+    }
+  }
+
+  check("every family is glazed in something", seen.size === FAMILY_COUNT,
+    `${seen.size} of ${FAMILY_COUNT} families sampled`);
+  for (const [family, values] of [...seen].sort((a, b) => a[0] - b[0])) {
+    const want = EXPECTED[family];
+    // ONE value per family, not a range. A randomised reflectance reads as a
+    // rendering error rather than as variety: two curtain walls on one street
+    // are glazed in the same generation of product far more reliably than they
+    // are the same colour.
+    check(`${FAMILY_NAMES[family]} glazing is ${want} in the last slot`,
+      values.size === 1 && [...values][0] === want,
+      // Capped: a jittered f0 produces one distinct value per building, and a
+      // failure detail thousands of numbers long is unreadable.
+      `${values.size} distinct: ${[...values].slice(0, 4).map(String).join(", ")}${values.size > 4 ? " ..." : ""}`);
+  }
+
+  // The claim the reflection rests on, as a relation and not only as literals:
+  // a curtain wall returns several times what a punched masonry window does at
+  // normal incidence, which is why one is a mirror and the other is a hole.
+  check("a curtain wall out-reflects a punched sash",
+    EXPECTED[FacadeFamily.Glass] >= 4 * EXPECTED[FacadeFamily.Brick],
+    `${EXPECTED[FacadeFamily.Glass]} vs ${EXPECTED[FacadeFamily.Brick]} at normal incidence`);
+
+  // And the shader has to unpack it. The component is the giveaway: reading
+  // g.z twice is exactly the bug that left this slot dead before.
+  check("readFacade unpacks f0", /p\.f0\s*=\s*g\.w/.test(FACADE_GLSL), "p.f0 = g.w");
+  check("the dead-table fallback sets f0", (() => {
+    const i = FACADE_GLSL.indexOf("p.relief = 0.5;");
+    return i > 0 && FACADE_GLSL.slice(i, i + 400).includes("p.f0");
+  })(), "a facade with no table still has glazing");
+}
+
 {
   // Order independence: building 7's facade must not depend on whether
   // building 6 was asked for first. Anything with hidden state fails here.
