@@ -513,30 +513,34 @@ void main() {
   //
   // A carriageway between two towers loses nearly the whole sky dome, so the
   // ambient above collapses and the beam is blocked, and the road went black at
-  // noon while the facades over it were in full sun. That is not what a city
+  // noon while the facades over it stood in full sun. That is not what a city
   // street looks like: the wall opposite is lit, it is roughly mid-grey, and it
   // throws a large fraction of that down onto the road. In a canyon the bounce
   // is most of the light on the ground.
   //
-  // render/buildings.ts has carried this term since 15719c0 and a road never
-  // did. Its weight there is 1 - abs(n.y), which is zero for a horizontal
-  // surface, so the same expression could not have been reused as written even
-  // if it had been: a wall is lit by the wall facing it, a road is lit by the
-  // walls on BOTH sides of it, and the geometry that decides how much is the
-  // sky it lost rather than which way it faces.
+  // THE WEIGHT IS THE SHADOW, and the first version of this got it wrong in a
+  // way worth recording. It used 1 - sampleSkyOcclusion().visibility, by analogy
+  // with the facade bounce in render/buildings.ts. That AO is SCREEN SPACE and
+  // metre-scale: it knows about a kerb and the underside of a parked car, and it
+  // does not know a 150 m tower is standing over the street. Measured on
+  // manhattan-7th it moved the carriageway by 0.00 of 255 even at a coefficient
+  // of 6.0. The facade's own term is not that AO either -- it is analytic from
+  // height up the wall, which a road does not have.
   //
-  // So the weight is the occlusion itself. Whatever sky this point lost, it
-  // lost to a building, and that building is lit -- the same inversion the
-  // facade bounce makes, on the term that measures it. An open road keeps its
-  // sky and gets nothing; the middle of the Loop gets the most.
+  // What a road does have is the shadow map. If the sun is up and this pixel is
+  // shadowed, something opaque stands between it and the sun, and in a city that
+  // something is a building whose sunlit side faces back down into the street.
+  // So the bounce is exactly what the direct beam lost: sunVis carries it, at no
+  // extra sampling cost, and it is zero on a road in full sun -- which needs no
+  // help -- and greatest in the canyon floor that does.
   //
   // The coefficient is below the facade's 0.35 on purpose. That one is a single
   // bounce off one wall straight at the receiver. This is a wall bouncing DOWN
-  // onto a horizontal surface, so it arrives at a glancing angle and carries a
-  // cosine the facade case does not pay.
-  float bounceOcc = 1.0 - skyOccl.visibility;
+  // onto a horizontal surface, so it arrives glancing and carries a cosine the
+  // facade case does not pay.
+  float bounceOcc = (1.0 - sunVis) * max(0.0, uSunDir.y);
   vec3 bounce = uSunColor * uSunIntensity * uSunSurface * sunT
-              * (0.22 * bounceOcc * max(0.0, uSunDir.y)) * (1.0 - uFlatBounce);
+              * (6.0 * bounceOcc) * (1.0 - uFlatBounce);
 
   vec3 lit = albedo * (beam + ambient + bounce);
 

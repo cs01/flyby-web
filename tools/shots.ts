@@ -299,6 +299,28 @@ export const POSES: Pose[] = [
     what: "the Golden Gate broadside, deck and towers in one frame",
   },
   {
+    name: "chicago-lasalle-kerb",
+    city: "chicago",
+    // LaSalle Street between Madison and Monroe, from the kerb, looking north up
+    // the canyon: forty-storey walls on both sides of a 24 m street.
+    //
+    // THE POSE THE STREET BOUNCE NEEDS, and the reason it exists is that no
+    // other frame in this set can see the defect. sf-street is a wide avenue in
+    // full sun, so a carriageway there is lit by the beam and a bounce term is
+    // correctly worth nothing; manhattan-7th is pointed at facades and has
+    // almost no road in frame. A shadowed canyon floor under lit walls is the
+    // one case where the bounce is most of the light, and it is what a user
+    // reported as "the street is super dark, even in daytime".
+    //
+    // Ground is 179 m AMSL here and the field below is AMSL, so this is the
+    // carriageway plus about two metres.
+    lat: 41.8810, lon: -87.6325, altM: 190, hdgDeg: 2, pitchDeg: -1,
+    t: D("2025-06-21T16:39:00Z"), // 11:39 CDT, the hour in the report: high sun,
+                                  // and the canyon floor still in shadow
+    wx: CLEAR,
+    what: "Chicago LaSalle Street canyon from the kerb, late morning",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is
