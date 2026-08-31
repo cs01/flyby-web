@@ -379,6 +379,142 @@ export interface BuildingConversion {
   skips: Skips;
 }
 
+// --- zoning inference -------------------------------------------------------
+//
+// 86-90% of every pack is `building=yes` and lands in BuildingKind.Generic
+// (85.7% chicago, 85.7% emeraldhills, 87.0% manhattan, 89.9% sf, measured over
+// the shipped packs). A suburb is almost entirely that, so a street of houses
+// renders as a row of flat commercial slabs: no pitched roof, parapets and
+// chillers on top of every bungalow. The tags cannot be fixed from here, but
+// the SHAPE of a subdivision can be read off the footprints, which is what the
+// pass below does.
+
+/** Two storeys and a roof. Anything taller is not a detached house. */
+export const HOUSE_MAX_TOP_M = 9.0;
+/**
+ * A detached single-family house is 90-350 m^2. The slop takes in small
+ * terraces and generous lots; under the floor is a shed, over the ceiling is a
+ * pad. Measured on the packs' tagged buildings, dropping the floor to 35 m^2
+ * or lifting the ceiling to 550 m^2 buys about a point of recall each and
+ * costs about a point of false positives each, so neither pays for itself.
+ */
+export const HOUSE_MIN_AREA_M2 = 45;
+export const HOUSE_MAX_AREA_M2 = 400;
+/**
+ * A house wall is 10-18 m, a house with an attached double garage reaches the
+ * low 20s, and a warehouse elevation is 40 m+. This is the single cleanest
+ * separator between the two ends: on the packs' tagged buildings the recall
+ * this rule can possibly reach, before the density test takes any of it back,
+ * is 0.64 at an 18 m cap, 0.80 at 22 m and 0.87 at 25 m, against a
+ * false-positive ceiling of 0.078 / 0.119 / 0.145. 22 m leaves nothing for the
+ * density term to spend (it would have to run at N=2 to clear a 0.75 recall
+ * target, which is not a density test at all), so the cap is 25.
+ */
+export const HOUSE_MAX_EDGE_M = 25;
+/**
+ * The neighbour test, which is what actually carries the decision.
+ *
+ * A subdivision is a run of near-identical small footprints at regular
+ * spacing. A lone small footprint next to nothing else small is a kiosk, a
+ * substation or a pump house. Density is the signal that separates those two,
+ * and it is the signal a road-class test (unavailable here: roads are a
+ * separate pack, and this module has no access to one) would only have been
+ * standing in for.
+ *
+ * Tuned against the packs' own labels, swept over 35-45 m^2 floors, 400-550
+ * m^2 ceilings, 22-28 m edges, 60-80 m radii and N of 4-10. The frontier is
+ * flat in the radius (60, 70 and 80 m reach the same recall for the same false
+ * positives, at a different N), so the count is the real knob and 70 m is
+ * kept. N=6 lands at recall 0.799 for a 0.066 false-positive rate; N=4 would
+ * be 0.829 for 0.083 and N=10 would be 0.715 for 0.044.
+ */
+export const NEIGHBOUR_RADIUS_M = 70;
+export const MIN_NEIGHBOURS = 6;
+
+/** Footprint area and longest edge, in metres, from the quantised offsets. */
+function houseMetrics(b: PackedBuilding): { area: number; longestEdge: number } {
+  const n = b.dx.length;
+  let a2 = 0;
+  let longest = 0;
+  for (let i = 0; i < n; i++) {
+    const j = i + 1 === n ? 0 : i + 1;
+    a2 += b.dx[i] * b.dz[j] - b.dx[j] * b.dz[i];
+    const ex = (b.dx[j] - b.dx[i]) * QUANT;
+    const ez = (b.dz[j] - b.dz[i]) * QUANT;
+    const e = Math.hypot(ex, ez);
+    if (e > longest) longest = e;
+  }
+  return { area: Math.abs(a2 / 2) * QUANT * QUANT, longestEdge: longest };
+}
+
+/**
+ * Promote untagged footprints that are geometrically houses. Mutates in place.
+ *
+ * Runs as a second pass because the decision needs neighbour context that does
+ * not exist until every footprint has been placed.
+ *
+ * A promoted building takes a pitched roof only where the mapper said nothing
+ * about the roof. `roofTagged[i]` is true when element i carried an explicit
+ * `roof:shape`, and somebody who wrote `roof:shape=flat` on their house is
+ * evidence: classifyRoof already believes them, and so does this.
+ *
+ * @returns how many buildings were promoted.
+ */
+export function inferResidential(
+  buildings: PackedBuilding[],
+  roofTagged: readonly boolean[],
+): number {
+  const candidates: number[] = [];
+  for (let i = 0; i < buildings.length; i++) {
+    const b = buildings[i];
+    if (b.kind !== BuildingKind.Generic) continue;
+    if (b.topM > HOUSE_MAX_TOP_M) continue;
+    const { area, longestEdge } = houseMetrics(b);
+    if (area < HOUSE_MIN_AREA_M2 || area > HOUSE_MAX_AREA_M2) continue;
+    if (longestEdge > HOUSE_MAX_EDGE_M) continue;
+    candidates.push(i);
+  }
+
+  // Bucketed at exactly the search radius so the 3x3 neighbourhood of a cell
+  // contains every point within it: 180k buildings is far too many for the
+  // O(n^2) version of this loop.
+  const cells = new Map<string, number[]>();
+  const cellOf = (b: PackedBuilding): string =>
+    `${Math.floor(b.cx / NEIGHBOUR_RADIUS_M)},${Math.floor(b.cz / NEIGHBOUR_RADIUS_M)}`;
+  for (const i of candidates) {
+    const key = cellOf(buildings[i]);
+    const list = cells.get(key);
+    if (list === undefined) cells.set(key, [i]);
+    else list.push(i);
+  }
+
+  const r2 = NEIGHBOUR_RADIUS_M * NEIGHBOUR_RADIUS_M;
+  let promoted = 0;
+  for (const i of candidates) {
+    const b = buildings[i];
+    const gx = Math.floor(b.cx / NEIGHBOUR_RADIUS_M);
+    const gz = Math.floor(b.cz / NEIGHBOUR_RADIUS_M);
+    let near = 0;
+    for (let ox = -1; ox <= 1 && near < MIN_NEIGHBOURS; ox++) {
+      for (let oz = -1; oz <= 1 && near < MIN_NEIGHBOURS; oz++) {
+        const list = cells.get(`${gx + ox},${gz + oz}`);
+        if (list === undefined) continue;
+        for (const j of list) {
+          if (j === i) continue;
+          const dx = buildings[j].cx - b.cx;
+          const dz = buildings[j].cz - b.cz;
+          if (dx * dx + dz * dz <= r2 && ++near >= MIN_NEIGHBOURS) break;
+        }
+      }
+    }
+    if (near < MIN_NEIGHBOURS) continue;
+    b.kind = BuildingKind.Residential;
+    if (!roofTagged[i]) b.roof = RoofShape.Pitched;
+    promoted++;
+  }
+  return promoted;
+}
+
 /**
  * OSM elements to packed buildings, in the order the elements arrive.
  *
@@ -394,6 +530,10 @@ export function buildingsFromOsm(
 ): BuildingConversion {
   const skips = new Skips();
   const buildings: PackedBuilding[] = [];
+  // One flag per PUSHED building, not per element: a relation contributes an
+  // outer ring per member, and an array built per element would slip out of
+  // alignment the first time one did.
+  const roofTagged: boolean[] = [];
 
   for (const el of elements) {
     const tags = el.tags ?? {};
@@ -443,6 +583,9 @@ export function buildingsFromOsm(
     }
     const kind = classifyKind(tags, heights.topM);
     const roof = classifyRoof(tags, kind, heights.topM);
+    const taggedRoof =
+      ROOF_BY_SHAPE[(tags["roof:shape"] ?? tags["building:roof:shape"] ?? "").toLowerCase()] !==
+      undefined;
 
     for (const ring of rings) {
       const area = signedArea(ring);
@@ -507,8 +650,11 @@ export function buildingsFromOsm(
       }
 
       buildings.push({ cx, cz, baseM: heights.baseM, topM: heights.topM, kind, roof, dx, dz });
+      roofTagged.push(taggedRoof);
     }
   }
+
+  inferResidential(buildings, roofTagged);
 
   return { buildings, skips };
 }

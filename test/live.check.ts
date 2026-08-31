@@ -372,6 +372,29 @@ check(
   `${livePath.length} buildings, ${new Set(livePath.map((b) => b.kind)).size} distinct kinds`,
 );
 
+// The zoning pass that recovers Residential from footprint shape and neighbour
+// density lives in the shared converter, so a streamed city gets it without a
+// re-bake and the two paths cannot drift apart on it. How ACCURATE it is, is
+// measured against the packs' own labels in test/zoning.check.ts; what belongs
+// here is only that it ran on the live path at all, and that every building it
+// claimed was one the tag table had given up on.
+let taggedResidential = 0;
+for (const el of buildingEls) {
+  const tags = el.tags ?? {};
+  const h = resolveHeights(tags);
+  if (h !== null && classifyKind(tags, h.topM) === BuildingKind.Residential) taggedResidential++;
+}
+const liveResidential = livePath.filter((b) => b.kind === BuildingKind.Residential).length;
+const promotedHouses = livePath.filter(
+  (b) => b.kind === BuildingKind.Residential && b.topM <= 9 && minDim(b.ring) <= 25,
+).length;
+check(
+  "the live path infers zoning, not just the tag table",
+  liveResidential > taggedResidential && promotedHouses >= liveResidential - taggedResidential,
+  `${liveResidential - taggedResidential} of ${livePath.length} promoted from building=yes, ` +
+    `on top of ${taggedResidential} the mapper tagged`,
+);
+
 // ===========================================================================
 // 3. The one combined request asks for exactly what the three bakes ask for.
 // ===========================================================================
