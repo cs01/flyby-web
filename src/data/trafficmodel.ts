@@ -280,3 +280,28 @@ export function trafficState(
   }
   return { frac, speed };
 }
+
+/**
+ * A city's UTC offset in seconds, from its longitude alone.
+ *
+ * WHY THIS EXISTS RATHER THAN JUST FALLING BACK TO UTC. The offset the model
+ * really wants is the one Open-Meteo reports, but that arrives on a network
+ * fetch, and two things go wrong if its absence means zero. A city whose
+ * forecast failed would run San Francisco's streets on London's clock, which is
+ * an eight hour error and empties an evening avenue. Worse, tools/shots.ts
+ * exists so that the only thing differing between a before and an after set is
+ * the code, and it deliberately does not block the forecast call on the grounds
+ * that it "cannot change a pixel" -- which stopped being true the moment
+ * traffic started reading the hour. A fixed pose would then photograph a busy
+ * street or a dead one depending on whether a fetch happened to succeed.
+ *
+ * Fifteen degrees an hour is the nautical convention and it is wrong wherever
+ * politics or daylight saving disagree, by an hour in most of Europe and by
+ * more in China or Spain. That is the right kind of wrong here: it is bounded,
+ * it is the same on every run, and an hour of error moves the traffic curve by
+ * less than the gap between two adjacent hours on it. Being deterministically
+ * an hour out beats being eight hours out at random.
+ */
+export function utcOffsetFromLongitude(lon: number): number {
+  return Math.round(lon / 15) * 3600;
+}

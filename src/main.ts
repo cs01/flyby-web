@@ -48,7 +48,12 @@ import { Roads } from "./render/roads";
 import { Pavement } from "./render/pavement";
 import { isCarriageway } from "./data/pavement";
 import { roadWidthM, RoadClass } from "./data/roadpack";
-import { trafficState, localHour, CLASS_COUNT } from "./data/trafficmodel";
+import {
+  trafficState,
+  localHour,
+  utcOffsetFromLongitude,
+  CLASS_COUNT,
+} from "./data/trafficmodel";
 import { StreetLamps, LAMP_TRIANGLES } from "./render/streetlamps";
 import type { StreetLampUniforms } from "./render/streetlamps";
 import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
@@ -1012,7 +1017,18 @@ async function main() {
   let lastElapsed = 0;
   const classClock = new Float64Array(CLASS_COUNT);
   const classTraffic = new Float32Array(CLASS_COUNT * 2);
-  let trafficNow = trafficState(now, timeline?.utcOffsetSeconds ?? 0, wx);
+  // The offset the traffic curves are read at, resolved ONCE.
+  //
+  // Not `timeline?.utcOffsetSeconds ?? 0` at each call site: that makes the
+  // hour of the day depend on whether a network fetch succeeded, and in
+  // `?shot` it makes a fixed pose photograph a busy street or an empty one
+  // depending on the weather feed. Shot mode therefore ignores the feed
+  // entirely and takes the longitude, which is the same on every run; a live
+  // session prefers the real offset and keeps the longitude as its floor.
+  const trafficUtcOffset = shotMode
+    ? utcOffsetFromLongitude(city.lon)
+    : timeline?.utcOffsetSeconds ?? utcOffsetFromLongitude(city.lon);
+  let trafficNow = trafficState(now, trafficUtcOffset, wx);
 
   // Frames drawn since the loop started, and their raw costs. The harness waits
   // on the count (a first frame still has shaders compiling and textures
@@ -1419,7 +1435,7 @@ async function main() {
     // `now` and not a fresh sceneNow(): the same instant the sun was placed at
     // this frame, so a scrubbed 08:00 has both the light and the rush hour of
     // 08:00. It also saves a Date allocation on every frame.
-    const ts = trafficState(now, timeline?.utcOffsetSeconds ?? 0, wx);
+    const ts = trafficState(now, trafficUtcOffset, wx);
     trafficNow = ts;
     for (let c = 0; c < CLASS_COUNT; c++) {
       classClock[c] += dEl * ts.speed[c];
@@ -1770,7 +1786,7 @@ async function main() {
        */
       get trafficModel() {
         return {
-          localHour: localHour(now, timeline?.utcOffsetSeconds ?? 0),
+          localHour: localHour(now, trafficUtcOffset),
           frac: trafficNow.frac[RoadClass.Primary],
           speed: trafficNow.speed[RoadClass.Primary],
         };

@@ -35,6 +35,7 @@
 import {
   trafficState,
   localHour,
+  utcOffsetFromLongitude,
   CLASS_COUNT,
   type TrafficState,
 } from "../src/data/trafficmodel";
@@ -511,6 +512,77 @@ blind(
     hi = Math.max(hi, v);
   }
   check("the rank hash stays inside 0..1", lo >= 0 && hi < 1, `${lo.toFixed(5)}..${hi.toFixed(5)}`);
+}
+
+// --- the longitude fallback -------------------------------------------------
+//
+// The offset a shot is taken at, and the offset a city gets when its forecast
+// feed is down. It has to put the sun's hour and the traffic's hour in the same
+// half of the day; being an hour out is the price, being eight out is the bug.
+
+{
+  // Every curated city: the longitude offset must land within 150 minutes of
+  // the real civil offset for that date. Two and a half hours is the widest
+  // any inhabited place strays from its nautical meridian once DST is in play.
+  const CITIES: Array<{ name: string; lon: number; zone: string }> = [
+    { name: "manhattan", lon: -73.99, zone: "America/New_York" },
+    { name: "sf", lon: -122.42, zone: "America/Los_Angeles" },
+    { name: "chicago", lon: -87.63, zone: "America/Chicago" },
+    { name: "paris", lon: 2.35, zone: "Europe/Paris" },
+    { name: "london", lon: -0.13, zone: "Europe/London" },
+    { name: "tokyo", lon: 139.69, zone: "Asia/Tokyo" },
+    { name: "sydney", lon: 151.21, zone: "Australia/Sydney" },
+  ];
+  /** True civil offset in seconds, from the platform's own tz database. */
+  function realOffset(zone: string, when: Date): number {
+    const s = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone, timeZoneName: "longOffset",
+    }).format(when);
+    const m = /GMT([+-])(\d{1,2}):(\d{2})/.exec(s);
+    if (!m) return 0;
+    const sign = m[1] === "-" ? -1 : 1;
+    return sign * (Number(m[2]) * 3600 + Number(m[3]) * 60);
+  }
+  const when = new Date("2025-06-21T12:00:00Z");
+  let worst = 0;
+  let worstName = "";
+  for (const c of CITIES) {
+    const err = Math.abs(utcOffsetFromLongitude(c.lon) - realOffset(c.zone, when)) / 60;
+    if (err > worst) { worst = err; worstName = c.name; }
+  }
+  check(
+    "the longitude offset is within 150 min of civil time for every curated city",
+    worst <= 150,
+    `worst is ${worstName} at ${worst.toFixed(0)} min`,
+  );
+  // Blinded: the same probe must reject the zero it replaced, which is the
+  // whole defect (San Francisco run on London's clock).
+  let worstZero = 0;
+  for (const c of CITIES) {
+    worstZero = Math.max(worstZero, Math.abs(0 - realOffset(c.zone, when)) / 60);
+  }
+  check(
+    "blinded: the offset probe rejects a flat UTC fallback",
+    worstZero > 150,
+    `a UTC fallback is ${worstZero.toFixed(0)} min out at worst`,
+  );
+  check(
+    "the longitude offset is a whole number of hours and is deterministic",
+    utcOffsetFromLongitude(-122.42) % 3600 === 0 &&
+      utcOffsetFromLongitude(-122.42) === utcOffsetFromLongitude(-122.42),
+    `${utcOffsetFromLongitude(-122.42) / 3600} h at SF's meridian`,
+  );
+  // The reason it exists at all: it must actually move the curve off UTC.
+  const wxNone = null;
+  const sfEvening = new Date("2025-06-22T02:10:00Z"); // the sf-vanness pose
+  const withLon = trafficState(sfEvening, utcOffsetFromLongitude(-122.42), wxNone);
+  const withUtc = trafficState(sfEvening, 0, wxNone);
+  check(
+    "at the sf-vanness pose the longitude offset keeps the avenue awake",
+    withLon.frac[RoadClass.Primary] > 0.5 && withUtc.frac[RoadClass.Primary] < 0.2,
+    `longitude ${(withLon.frac[RoadClass.Primary] * 100).toFixed(0)}% out, ` +
+    `UTC ${(withUtc.frac[RoadClass.Primary] * 100).toFixed(0)}% out`,
+  );
 }
 
 console.log(`\n${checks} checks, ${failures} failed`);
