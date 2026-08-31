@@ -480,8 +480,49 @@ html, body {
 
 .label b { font-weight: 500; color: var(--ink); }
 .label i { font-style: normal; font-size: 10px; color: var(--accent); }
+/* A label is a control when it has somewhere to go: clicking it flies you to
+   the thing it names. Only the tag opts back into pointer events -- the .labels
+   overlay spans the viewport and must stay click-through, see the `#ui >
+   .labels` rule above. */
+.label.clickable { pointer-events: auto; cursor: pointer; user-select: none; }
+.label.clickable:hover { background: rgba(12, 20, 32, 0.86); border-color: var(--accent); }
+.label.clickable:active { transform: translate(-50%, -100%) scale(0.97); }
+
 .label.done { opacity: 0.45; }
 .label.done i { color: var(--dim); }
+
+/* --- The street sign ------------------------------------------------------ */
+
+/* Bottom centre and above the instrument strip, which is where a driver is
+   already looking. Centred on the viewport rather than laid out in a corner:
+   the name is the thing being read, so it goes where the road vanishing point
+   is. */
+.street-sign {
+  position: absolute;
+  bottom: 58px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  white-space: nowrap;
+}
+
+.street-sign b {
+  display: block;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink);
+}
+
+.street-sign span {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--accent);
+}
 
 /* --- Places to fly to ---------------------------------------------------- */
 

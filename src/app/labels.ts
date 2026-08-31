@@ -55,12 +55,27 @@ export class Labels {
   private root: HTMLDivElement;
   private els: HTMLElement[] = [];
   private ndc = new THREE.Vector3();
+  private onPick: ((name: string) => void) | null = null;
 
   visible = true;
 
-  constructor(parent: HTMLElement) {
+  /**
+   * `onPick` makes the labels the same control the list on the left already is.
+   *
+   * The name of a thing was drawn ON the thing and was the one place in the app
+   * where knowing what you were looking at did not let you go to it: you read
+   * the label, then found the same name in the list and clicked that. The label
+   * is the more direct target of the two, because you found it by looking.
+   *
+   * Dispatched by NAME rather than by index. The array the labels are drawn
+   * from is re-sorted by range every time the aeroplane moves, so an index
+   * captured when the element was created names a different landmark a few
+   * seconds later.
+   */
+  constructor(parent: HTMLElement, onPick?: (name: string) => void) {
     this.root = document.createElement("div");
     this.root.className = "labels";
+    this.onPick = onPick ?? null;
     parent.append(this.root);
   }
 
@@ -69,6 +84,18 @@ export class Labels {
       const e = document.createElement("div");
       e.className = "label";
       e.innerHTML = `<b></b><i></i>`;
+      if (this.onPick) {
+        // The overlay itself stays click-through -- it spans the viewport and
+        // would eat every drag on the scene -- so only the tag opts back in.
+        // See the `#ui > .labels` rule in style.css for why that has to be
+        // done on the child and not by relaxing the parent.
+        e.classList.add("clickable");
+        e.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          const name = e.dataset["name"];
+          if (name) this.onPick?.(name);
+        });
+      }
       this.root.append(e);
       this.els.push(e);
     }
@@ -166,6 +193,7 @@ export class Labels {
 
       const name = el.firstElementChild as HTMLElement;
       const range = el.lastElementChild as HTMLElement;
+      if (el.dataset["name"] !== t.name) el.dataset["name"] = t.name;
       if (name.textContent !== t.name) name.textContent = t.name;
       const label = formatDistance(dist);
       if (range.textContent !== label) range.textContent = label;

@@ -29,6 +29,7 @@ import type { Budget } from "../render/budget";
 import type { SunShadowUniforms } from "../render/sunshadow";
 import { unpackBuildings, type Building, type CityPack } from "../data/citypack";
 import { unpackRoads, type RoadPack } from "../data/roadpack";
+import { buildBridgeDecks } from "../data/bridgedeck";
 import { buildingsFromOsm, isBuildingElement } from "../data/osmbuildings";
 import { isRoadElement, roadsFromOsm } from "../data/osmroads";
 import { LiveVegetation } from "../data/osmveg";
@@ -302,7 +303,10 @@ export class LiveWorld {
           radiusM: LIVE_WORLD_RADIUS_M,
           roads,
         };
-        const r = new Roads(pack, heightAt, shadow, this.tileBudget);
+        // The live path has no car on it, but the decks are what put a bridge
+        // over the water instead of in it, so it solves them the same way.
+        const decks = buildBridgeDecks(roads, heightAt).deck;
+        const r = new Roads(pack, heightAt, shadow, this.tileBudget, decks);
         scene.add(r.group);
         this.opts.roadUniforms.push(r.uniforms);
         this.stats.roads += roads.length;

@@ -362,12 +362,25 @@ void main() {
     float post = max(smoothstep(0.16, 0.06, u), smoothstep(0.84, 0.94, u));
     post = max(post, (1.0 - smoothstep(0.0, 0.045, abs(u - 0.52)))
                      * step(0.30, u) * step(u, 0.74));
-    // The roof is painted, and the test has to be generous: on a LOFTED body
-    // the roof rail turns over gradually, so a knife-edge test leaves a band of
-    // near-horizontal fragments tagged glass -- at grazing incidence, where
-    // Fresnel is nearly 1 -- and that band blows out white with the section
-    // rows printed across it as teeth.
-    float roof = smoothstep(0.30, 0.62, n.y);
+    // A BACKSTOP, NOT THE ROOF TEST. The roof is decided in carmesh.ts, where
+    // both the section and the PROFILE are known: the roof panel is the run of
+    // stations whose topLine is at the top of the cabin, and only there are the
+    // cap rows tagged metal. Nothing that reaches here is roof by construction.
+    //
+    // This used to be smoothstep(0.30, 0.62, n.y) and be the only thing
+    // deciding it, which measured 93-97% of the glass AREA on all four
+    // archetypes painted body colour: the greenhouse tumbles home so hard that
+    // its smoothed normals point mostly upward, so the test called almost the
+    // whole window a roof. A tightened version still painted out the backlight,
+    // which lies at 19 degrees on a saloon and reads n.y = 0.945 -- a rear
+    // window is not a roof at any angle, and no threshold on n.y can tell the
+    // two apart because on this body they are the same number.
+    //
+    // What is left is a guard for a cabin whose top is genuinely FLAT, which no
+    // archetype has today and one added later might. It is deliberately narrow
+    // enough that nothing currently in CAR_ARCHETYPES reaches it, and
+    // test/carmesh.check.ts reads this line and measures that.
+    float roof = smoothstep(0.985, 0.999, n.y);
     // Aft of where the glazing ends, u goes negative and the panel is metal on
     // EVERY face, not just the flanks: the back of a van is a door, not a
     // window. A car's cabin is glazed to its own back edge and never reaches
@@ -380,7 +393,13 @@ void main() {
     glazed = (1.0 - painted) * (1.0 - seal);
     albedo = mix(vec3(0.016, 0.018, 0.022), body, painted);
     albedo = mix(albedo, vec3(0.010, 0.010, 0.011), seal * (1.0 - painted));
-    gloss = mix(0.92, 0.55, painted);
+    // Roll the clearcoat off as the glass lies down, rather than painting the
+    // glass out to avoid the blow-out. A window near horizontal is looking
+    // straight into the sky at a Fresnel of nearly 1, and the section rows
+    // print across it as teeth; a window standing up is the one you can see
+    // into. Same defect the old roof test was really treating, treated where it
+    // is instead of by deleting the part.
+    gloss = mix(0.92, 0.55, painted) * mix(1.0, 0.45, smoothstep(0.55, 0.88, n.y));
   } else if (isWheel > 0.5) {
     // v is the RADIUS on a wheel's outboard face and exactly 1 across its
     // tread, so one number draws the tyre wall, the rim and the hub without a

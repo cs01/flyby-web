@@ -17,9 +17,18 @@
 // browser could not be the oracle for the writer.
 
 export const ROAD_MAGIC = 0x524f4144; // "ROAD"
-const ROAD_VERSION = 1;
+/**
+ * 2 added the NAME TABLE. A v1 pack still parses and simply has no names on it,
+ * which matters because the packs are committed to the repo and a name needs an
+ * Overpass round trip to bake: without back-compatibility, one format bump
+ * makes every city in the repo unloadable until all of them are re-fetched.
+ */
+const ROAD_VERSION = 2;
 const ROAD_HEADER_BYTES = 32;
 const ROAD_RECORD_BYTES = 16;
+
+/** The name-table id that means "OSM gave this way no name". */
+const NO_NAME = 0xffff;
 
 /** Quarter-metre fixed point for centreline vertices, relative to the centroid. */
 const VERT_SCALE = 0.25;
@@ -251,6 +260,15 @@ export function roadWidthM(cls: RoadClass, lanes: number, flags = 0): number {
 
 export interface Road {
   cls: RoadClass;
+  /**
+   * The street's name, or "" when OSM has none.
+   *
+   * Carried per WAY and not per graph edge, so a way split by the packer or cut
+   * by the graph keeps its name on every piece. Empty is the common case, not
+   * an error: 79% of Manhattan's ways are footways and service roads, and most
+   * of those are genuinely nameless.
+   */
+  name: string;
   /** 0 means untagged; use roadWidthM rather than reading this directly. */
   lanes: number;
   /** ROAD_ONEWAY | ROAD_BRIDGE | ROAD_TUNNEL | ROAD_LINK. */
@@ -279,6 +297,8 @@ export interface RoadPack {
  */
 export interface PackedWay {
   cls: RoadClass;
+  /** As Road.name. Written to the pack's string table, deduplicated. */
+  name: string;
   lanes: number;
   flags: number;
   layer: number;
@@ -296,8 +316,33 @@ export function encodeRoadPack(
   lon0: number,
   radiusM: number,
 ): Uint8Array {
+  // The string table, deduplicated. A city names both sides of a street the
+  // same, and Manhattan carries about eight thousand ways over four thousand
+  // distinct names; storing the name on the record would nearly double the
+  // pack.
+  const nameIds = new Map<string, number>();
+  const names: string[] = [];
+  const idOf = (n: string): number => {
+    if (n === "") return NO_NAME;
+    const seen = nameIds.get(n);
+    if (seen !== undefined) return seen;
+    // NO_NAME is 0xffff, so that many DISTINCT names is the ceiling. Every city
+    // measured is an order of magnitude under it, and a pack that hit it would
+    // silently alias two streets, so it throws.
+    if (names.length >= NO_NAME) throw new Error(`.roads: over ${NO_NAME} distinct street names`);
+    const id = names.length;
+    names.push(n);
+    nameIds.set(n, id);
+    return id;
+  };
+  const wayNameId = ways.map((w) => idOf(w.name));
+  const encoded = names.map((n) => new TextEncoder().encode(n));
+
   let size = ROAD_HEADER_BYTES;
   for (const w of ways) size += ROAD_RECORD_BYTES + 4 * w.dx.length;
+  // The name section: a count, one u16 id per way, then length-prefixed UTF-8.
+  size += 4 + 2 * ways.length;
+  for (const e of encoded) size += 2 + e.length;
 
   const buf = new ArrayBuffer(size);
   const dv = new DataView(buf);
@@ -324,7 +369,17 @@ export function encodeRoadPack(
       dv.setInt16(o, w.dz[i], true); o += 2;
     }
   }
-  return new Uint8Array(buf);
+
+  // Names go AFTER the ways rather than into the record, which is what keeps
+  // the record 16 bytes and the geometry loop byte-identical to v1.
+  const bytes = new Uint8Array(buf);
+  dv.setUint32(o, names.length, true); o += 4;
+  for (const id of wayNameId) { dv.setUint16(o, id, true); o += 2; }
+  for (const e of encoded) {
+    dv.setUint16(o, e.length, true); o += 2;
+    bytes.set(e, o); o += e.length;
+  }
+  return bytes;
 }
 
 /** Packed records to renderer records, without going through a file. The
@@ -344,7 +399,7 @@ export function unpackRoads(packed: readonly PackedWay[]): Road[] {
     }
     out[i] = {
       cls: p.cls, lanes: p.lanes, flags: p.flags, layer: p.layer,
-      surface: p.surface, cx, cz, pts,
+      surface: p.surface, cx, cz, pts, name: p.name,
     };
   }
   return out;
@@ -359,7 +414,9 @@ export function parseRoadPack(buf: ArrayBuffer): RoadPack {
     throw new Error(`not a .roads pack (magic 0x${magic.toString(16)})`);
   }
   const version = dv.getUint32(o, true); o += 4;
-  if (version !== ROAD_VERSION) throw new Error(`unsupported .roads version ${version}`);
+  if (version !== 1 && version !== ROAD_VERSION) {
+    throw new Error(`unsupported .roads version ${version}`);
+  }
 
   const lat0 = dv.getFloat64(o, true); o += 8;
   const lon0 = dv.getFloat64(o, true); o += 8;
@@ -383,7 +440,26 @@ export function parseRoadPack(buf: ArrayBuffer): RoadPack {
       pts[v * 2] = cx + dv.getInt16(o, true) * VERT_SCALE; o += 2;
       pts[v * 2 + 1] = cz + dv.getInt16(o, true) * VERT_SCALE; o += 2;
     }
-    roads[i] = { cls, lanes, flags, layer, surface, cx, cz, pts };
+    roads[i] = { cls, lanes, flags, layer, surface, cx, cz, pts, name: "" };
+  }
+
+  // The name section, present from version 2. A v1 pack ends with the geometry
+  // and every road keeps the empty name it was built with.
+  if (version >= 2) {
+    const nameCount = dv.getUint32(o, true); o += 4;
+    const ids = new Uint16Array(count);
+    for (let i = 0; i < count; i++) { ids[i] = dv.getUint16(o, true); o += 2; }
+    const table: string[] = new Array(nameCount);
+    const dec = new TextDecoder();
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < nameCount; i++) {
+      const len = dv.getUint16(o, true); o += 2;
+      table[i] = dec.decode(bytes.subarray(o, o + len)); o += len;
+    }
+    for (let i = 0; i < count; i++) {
+      const id = ids[i];
+      if (id !== NO_NAME) roads[i].name = table[id] ?? "";
+    }
   }
 
   return { lat0, lon0, radiusM, roads };

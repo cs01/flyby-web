@@ -26,7 +26,8 @@ import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./si
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
-import { buildRoadGraph } from "./data/roadgraph";
+import { buildRoadGraph, type RoadGraph } from "./data/roadgraph";
+import { buildBridgeDecks } from "./data/bridgedeck";
 import { DetailRing } from "./render/detailring";
 import { CityCollision } from "./sim/citycollision";
 import { Input } from "./sim/input";
@@ -74,6 +75,8 @@ import { SkyProbe } from "./render/skyprobe";
 import { Skyline } from "./sim/skyline";
 import { reverseGeocode, placeLabel } from "./data/place";
 import { Labels } from "./app/labels";
+import { StreetSignHud } from "./app/streetsign";
+import { streetSign } from "./data/streetsign";
 import { Layers } from "./app/layers";
 import { Places, type PlaceRow } from "./app/places";
 import { Autopilot } from "./sim/autopilot";
@@ -422,8 +425,22 @@ async function main() {
   // still flies, its streets are just whatever the satellite drape shows.
   const roadPack = await roadPromise;
   let roads: Roads | null = null;
+  // Where every bridge deck is, solved ONCE. Both the ribbon below and the car
+  // further down read it, which is the whole reason it is not solved inside
+  // either of them; see data/bridgedeck.ts.
+  const bridgeDecks = roadPack
+    ? buildBridgeDecks(roadPack.roads, terrain.heightAt)
+    : null;
+  if (bridgeDecks) {
+    const bs = bridgeDecks.stats;
+    console.log(
+      `[flyby] bridge decks: ${bs.bridgeWays} ways in ${bs.chains} chains, ` +
+      `${bs.abutments} abutments, ${bs.orphanChains} orphan, ` +
+      `longest chain ${bs.longestChainM.toFixed(0)} m, ${bs.buildMs} ms`,
+    );
+  }
   if (roadPack) {
-    roads = new Roads(roadPack, terrain.heightAt, sunShadow.uniforms, budget);
+    roads = new Roads(roadPack, terrain.heightAt, sunShadow.uniforms, budget, bridgeDecks!.deck);
     scene.add(roads.group);
     const rs = roads.stats;
     console.log(
@@ -439,7 +456,11 @@ async function main() {
   // The driveable network, for the car. Derived from the same pack the ribbons
   // are drawn from, so what you can drive on is what you can see. A city with
   // no .roads pack simply has no car, the same way it has no skyline.
-  const car = roadPack ? new Car(buildRoadGraph(roadPack.roads)) : null;
+  // Kept alongside the car because the street sign walks it, and the car owns
+  // its graph privately.
+  const roadGraph: RoadGraph | null = roadPack ? buildRoadGraph(roadPack.roads) : null;
+  const car = roadGraph ? new Car(roadGraph) : null;
+  if (car && bridgeDecks) car.setBridgeDecks(bridgeDecks.deck);
   if (car) {
     const cs = car.stats;
     console.log(
@@ -788,7 +809,13 @@ async function main() {
 
   // Names on the beacons. The beam said "something is here" and nothing else,
   // which is the half of the question nobody was asking.
-  const labels = new Labels(ui);
+  //
+  // And the name is a CONTROL, not a caption. `arriveAt` is declared below and
+  // is only called from the click, which happens long after this line runs.
+  const labels = new Labels(ui, (name) => {
+    const p = nearby.find((r) => r.name === name);
+    if (p) arriveAt(p);
+  });
   const beacon = new Beacon();
   scene.add(beacon.group);
 
@@ -827,6 +854,7 @@ async function main() {
   scene.add(model.group);
 
   const osd = new Osd(ui);
+  const streetSignHud = new StreetSignHud(ui);
 
   // A heading-up moving map with a compass round it. Fed the footprints once;
   // after that it only needs where the aeroplane is and which way it points.
@@ -1180,8 +1208,21 @@ async function main() {
     hud.setLayers(layers.weather);
     osd.root.style.display = layers.instruments ? "" : "none";
 
-    labels.visible = layers.landmarks;
+    // NOT WHILE DRIVING. From a car the landmark labels are at eye level and
+    // three deep across the windscreen, naming towers a mile off that you are
+    // not going to reach at 20 knots down a one-way street. The list stays --
+    // it is off to the side and it is how you leave -- but the world stops
+    // being annotated.
+    labels.visible = layers.landmarks && !carActive;
     places.setVisible(layers.landmarks);
+
+    // What road is this, and what am I coming to. Only the car has an answer:
+    // the aeroplane is not on the graph and the drone has left it.
+    streetSignHud.update(
+      carActive && car && roadGraph && car.track
+        ? streetSign(roadGraph, car.track.half, car.track.s)
+        : null,
+    );
     // Above the thing, not on it: a label at ground level is behind the
     // building it names as soon as you are lower than the roof.
     labels.update(
@@ -1304,7 +1345,7 @@ async function main() {
     // was always a beam and it was always somebody else's idea.
     const t = autopilot.target;
     beacon.update(
-      t && layers.landmarks
+      t && layers.landmarks && !carActive
         ? { x: t.x, z: t.z, groundY: terrain.heightAt(t.x, t.z) }
         : null,
       elapsed,
@@ -1771,7 +1812,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe, ao, car, detailRing,
+      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph,
       get droneActive() { return droneActive; },
       get carActive() { return carActive; },
       get wx() { return wx; },
