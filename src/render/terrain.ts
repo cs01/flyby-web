@@ -92,6 +92,10 @@ uniform sampler2D uLandFar;
 uniform float uLandNearExtent;
 uniform float uLandFarExtent;
 uniform float uHasLand;
+// Coverage grid over the baked road centrelines; see render/roadmask.ts.
+uniform sampler2D uRoadMask;
+uniform float uRoadMaskExtent;
+uniform float uHasRoadMask;
 
 float hash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -126,6 +130,23 @@ void main() {
                 smoothstep(0.9, 1.0, lcR));
   float lcWater = lc.r;
   float lcBuilt = lc.g;
+  // Roads, which the landcover cannot see. WorldCover is a 10 m posting and a
+  // suburban street plus its verges is one texel of it, classified by whatever
+  // dominates: in a leafy suburb that is lawn, so the measurement paints grass
+  // over the tarmac and up to and over the kerb. The road pack knows where the
+  // carriageway is to within a metre, so it vetoes the herbaceous channel.
+  //
+  // Herbaceous ONLY. Canopy still applies over a road (a street under trees is
+  // shaded by them), water still applies (a road on a causeway does not drain
+  // the bay), and built is what a road is.
+  vec2 rmUv = vWorld.xz / (2.0 * uRoadMaskExtent) + 0.5;
+  // The same guard the urban mask uses: clamp-to-edge would smear the border
+  // texel, and roads reach the edge of the pack, so the border texel is not
+  // zero and the smear would be a stripe of dead grass out to the horizon.
+  float roadCov = texture(uRoadMask, rmUv).r * uHasRoadMask
+                * step(0.0, rmUv.x) * step(rmUv.x, 1.0)
+                * step(0.0, rmUv.y) * step(rmUv.y, 1.0);
+
   // Ground vegetation, from the two channels that exist to describe it. This
   // is what stops Central Park being green paint: the drape carries the right
   // large-scale pattern (mown against rough, the shadow of a stand of trees)
@@ -136,7 +157,7 @@ void main() {
   // It MODULATES the drape rather than replacing it. Luminance is kept, so a
   // lawn in the sun stays brighter than one in a photographed shadow, and only
   // the chroma and the fine structure come from here.
-  float herb = lc.a * uHasLand;
+  float herb = lc.a * uHasLand * (1.0 - roadCov);
   float canopy = lc.b * uHasLand;
   float veg = clamp(herb + canopy, 0.0, 1.0);
   if (veg > 0.004) {
@@ -520,7 +541,9 @@ void main() {
   //  11 landcover false-colour: blue water, red built, green tree, white
   //     herbaceous. Black means no pack, which is the one thing the
   //     single-channel views cannot distinguish from "none of this class".
-  //  12 landcover tree           13 landcover herbaceous
+  //  12 landcover tree           13 landcover herbaceous (after the road veto)
+  //  14 road coverage: white on a carriageway, ramping off across the verge.
+  //     Black everywhere for a city with no road pack, which is most of them.
   if (uDebug > 0.5) {
     if (uDebug < 1.5)       col = albedo;
     else if (uDebug < 2.5)  col = beam;
@@ -535,7 +558,8 @@ void main() {
     else if (uDebug < 11.5) col = (vec3(0.1, 0.3, 1.0) * lc.r + vec3(1.0, 0.15, 0.1) * lc.g
               + vec3(0.1, 0.8, 0.2) * lc.b + vec3(1.0) * lc.a) * uHasLand;
     else if (uDebug < 12.5) col = vec3(canopy);
-    else col = vec3(herb);
+    else if (uDebug < 13.5) col = vec3(herb);
+    else col = vec3(roadCov);
   }
 
   fragColor = vec4(col, 1.0);
@@ -561,6 +585,9 @@ export interface TerrainUniforms extends SunShadowUniforms, AoUniforms {
   uLandNearExtent: THREE.IUniform<number>;
   uLandFarExtent: THREE.IUniform<number>;
   uHasLand: THREE.IUniform<number>;
+  uRoadMask: THREE.IUniform<THREE.Texture | null>;
+  uRoadMaskExtent: THREE.IUniform<number>;
+  uHasRoadMask: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
   uSunSurface: THREE.IUniform<number>;
   uDebug: THREE.IUniform<number>;
@@ -600,6 +627,9 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uLandNearExtent: { value: 1 },
     uLandFarExtent: { value: 1 },
     uHasLand: { value: 0 },
+    uRoadMask: { value: null },
+    uRoadMaskExtent: { value: 1 },
+    uHasRoadMask: { value: 0 },
     uExposure: { value: 1 },
     uSunSurface: { value: 0.105 },
     uDebug: { value: 0 },

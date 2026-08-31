@@ -39,6 +39,7 @@ import { loadCityPack } from "./data/citypack-load";
 import { Buildings } from "./render/buildings";
 import { hourFactors } from "./render/facade";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
+import { buildRoadMask, emptyRoadMask, type RoadMask } from "./render/roadmask";
 import { loadLandPack } from "./data/landcover-load";
 import { loadRoadPack } from "./data/roadpack-load";
 import { loadStreetPack } from "./data/streetpack-load";
@@ -498,6 +499,19 @@ async function main() {
   // from the daylight imagery and lighting up the whole map.
   const urban: UrbanMask = pack ? buildUrbanMask(pack) : emptyUrbanMask();
 
+  // Where the carriageways are, so ground grass stops at the kerb instead of
+  // running over it. The landcover posting is 10 m and a suburban street is one
+  // texel of it; the road pack is the only thing in the scene that knows better.
+  // Only four cities have a .roads pack, so the empty mask is the common path
+  // and it leaves the terrain exactly as it was.
+  const roadMask: RoadMask = roadPack ? buildRoadMask(roadPack) : emptyRoadMask();
+  if (roadMask.has) {
+    console.log(
+      `[flyby] road mask: ${(roadMask.bytes / 1048576).toFixed(2)} MiB, ` +
+        `${roadMask.cellM.toFixed(2)} m/texel over +-${roadMask.extent} m`,
+    );
+  }
+
   // Measured landcover: what is water, what is built, what is green. It is
   // awaited AFTER the terrain exists and can never fail the load, because a
   // city without a .land pack is not broken, it just falls back to the
@@ -521,6 +535,9 @@ async function main() {
     u.uLandNearExtent.value = land.nearExtent;
     u.uLandFarExtent.value = land.farExtent;
     u.uHasLand.value = land.has ? 1 : 0;
+    u.uRoadMask.value = roadMask.texture;
+    u.uRoadMaskExtent.value = roadMask.extent;
+    u.uHasRoadMask.value = roadMask.has ? 1 : 0;
     if (Number.isFinite(terrainDebug)) u.uDebug.value = terrainDebug;
   }
 
