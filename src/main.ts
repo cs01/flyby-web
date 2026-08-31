@@ -585,6 +585,7 @@ async function main() {
   // do under `?terrainDebug`, so the mask occludes what the beauty frame
   // occludes and the two agree pixel for pixel.
   const buildingDebug = gateFlag("buildingDebug");
+  const flatBounce = gateFlag("flatbounce");
 
   for (const u of terrain.uniforms) {
     u.uUrban.value = urban.texture;
@@ -1484,6 +1485,7 @@ async function main() {
       r.uSunColor.value.copy(light.sunColor);
       r.uSunIntensity.value = light.sunIntensity;
       r.uWetness.value = light.wetness;
+      r.uFlatBounce.value = flatBounce ? 1 : 0;
       r.uSnow.value = light.snow;
       r.uNight.value = light.night;
       r.uNightGlow.value.copy(light.nightGlow);

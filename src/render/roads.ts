@@ -194,6 +194,10 @@ uniform vec3  uCameraPos;
 uniform samplerCube uEnv;
 uniform float uEnvMaxLod;
 uniform float uWetness;
+// ?flatbounce=1 removes the canyon bounce below, so tools/verify-street.ts can
+// run the old black-canyon behaviour in the SAME binary. Dev builds only; see
+// the gate-flag note in main.ts.
+uniform float uFlatBounce;
 uniform float uSnow;
 uniform float uNight;
 uniform vec3  uNightGlow;
@@ -502,8 +506,39 @@ void main() {
   // A road is horizontal and open, so this is near 1 in the middle of a
   // carriageway and does its work at the kerb and under the buildings that
   // stand on it.
-  vec3 ambient = occludedSkyIrradiance(n);
-  vec3 lit = albedo * (beam + ambient);
+  SkyOcclusion skyOccl = sampleSkyOcclusion(n);
+  vec3 ambient = min(shIrradiance(skyOccl.bentNormal) * skyOccl.visibility, shIrradiance(n));
+
+  // BOUNCE OFF THE WALLS, which is what actually lights a street canyon.
+  //
+  // A carriageway between two towers loses nearly the whole sky dome, so the
+  // ambient above collapses and the beam is blocked, and the road went black at
+  // noon while the facades over it were in full sun. That is not what a city
+  // street looks like: the wall opposite is lit, it is roughly mid-grey, and it
+  // throws a large fraction of that down onto the road. In a canyon the bounce
+  // is most of the light on the ground.
+  //
+  // render/buildings.ts has carried this term since 15719c0 and a road never
+  // did. Its weight there is 1 - abs(n.y), which is zero for a horizontal
+  // surface, so the same expression could not have been reused as written even
+  // if it had been: a wall is lit by the wall facing it, a road is lit by the
+  // walls on BOTH sides of it, and the geometry that decides how much is the
+  // sky it lost rather than which way it faces.
+  //
+  // So the weight is the occlusion itself. Whatever sky this point lost, it
+  // lost to a building, and that building is lit -- the same inversion the
+  // facade bounce makes, on the term that measures it. An open road keeps its
+  // sky and gets nothing; the middle of the Loop gets the most.
+  //
+  // The coefficient is below the facade's 0.35 on purpose. That one is a single
+  // bounce off one wall straight at the receiver. This is a wall bouncing DOWN
+  // onto a horizontal surface, so it arrives at a glancing angle and carries a
+  // cosine the facade case does not pay.
+  float bounceOcc = 1.0 - skyOccl.visibility;
+  vec3 bounce = uSunColor * uSunIntensity * uSunSurface * sunT
+              * (0.22 * bounceOcc * max(0.0, uSunDir.y)) * (1.0 - uFlatBounce);
+
+  vec3 lit = albedo * (beam + ambient + bounce);
 
   // Wet asphalt is a MIRROR, and a rainy city is mostly that: a bright sky
   // lying on a dark street. The sun glint below is one point of light, the
@@ -615,6 +650,8 @@ export interface RoadUniforms extends SunShadowUniforms, AoUniforms {
   uEnv: THREE.IUniform<THREE.CubeTexture | null>;
   uEnvMaxLod: THREE.IUniform<number>;
   uWetness: THREE.IUniform<number>;
+  /** 1 removes the canyon bounce off the lit walls; `?flatbounce=1`. */
+  uFlatBounce: THREE.IUniform<number>;
   uSnow: THREE.IUniform<number>;
   uNight: THREE.IUniform<number>;
   uNightGlow: THREE.IUniform<THREE.Color>;
@@ -647,6 +684,7 @@ export function makeRoadUniforms(shadow: SunShadowUniforms): RoadUniforms {
     uEnv: { value: null },
     uEnvMaxLod: { value: 6 },
     uWetness: { value: 0 },
+    uFlatBounce: { value: 0 },
     uSnow: { value: 0 },
     uNight: { value: 0 },
     uNightGlow: { value: new THREE.Color(0, 0, 0) },
