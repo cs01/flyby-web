@@ -129,6 +129,7 @@ export function showDiagnostics(canvas: HTMLCanvasElement): void {
       flyby?: {
         time?: Date;
         wx?: { totalCover?: number; precip?: number; tempC?: number };
+        trafficModel?: { localHour?: number; frac?: number; speed?: number };
         buildings?: { stats?: { drawn?: number; triangles?: number } };
         renderer?: { info?: { memory?: { textures?: number; geometries?: number } } };
       };
@@ -141,6 +142,18 @@ export function showDiagnostics(canvas: HTMLCanvasElement): void {
       out.push(line("scene time", String(f.time ?? "?")));
       if (f.wx) {
         out.push(line("cloud/precip", `${f.wx.totalCover?.toFixed(2)} / ${f.wx.precip?.toFixed(2)}`));
+      }
+      // H6: an empty street at 08:00, or a rush hour that never slows, is a
+      // traffic model that has stopped reading the clock. Both render fine.
+      const tm = f.trafficModel;
+      if (tm) {
+        out.push(
+          line(
+            "local hour",
+            `${tm.localHour?.toFixed(2)} (primary ${((tm.frac ?? 0) * 100).toFixed(0)}% out, ` +
+            `${tm.speed?.toFixed(2)}x free flow)`,
+          ),
+        );
       }
       const st = f.buildings?.stats;
       out.push(

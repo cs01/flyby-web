@@ -308,14 +308,15 @@ const PAVEMENT_BYTES_PER_TRIANGLE = 36 + 1.5 * 4;
  * Instanced fields invert the usual accounting: the base mesh is uploaded once
  * (a car is ~80 triangles and there are four archetypes, so under 30 KB in
  * total) and the resident cost is the per-instance attributes, allocated once
- * at capacity and never grown. A lamp carries two vec4s and a car carries two
- * vec4s and a vec2; see render/instanced.ts for why it is vec4s and not a mat4.
+ * at capacity and never grown. A lamp carries two vec4s and a car carries three
+ * (the third is its colour, archetype, road class and thinning rank); see
+ * render/instanced.ts for why it is vec4s and not a mat4.
  *
  * Counting instances also makes the line item say the useful thing. "4,000 cars"
  * is a number the owner can argue with; "320k triangles of car" is not.
  */
 const LAMP_BYTES_PER_INSTANCE = 2 * 16;
-const CAR_BYTES_PER_INSTANCE = 2 * 16 + 8;
+const CAR_BYTES_PER_INSTANCE = 3 * 16;
 /** Base meshes, uploaded once each and shared by every instance. */
 const STREET_BASE_MESH_BYTES = 64 * 1024;
 

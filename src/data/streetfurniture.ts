@@ -701,6 +701,19 @@ export interface TrafficInstance {
   /** Body archetype and colour seed, both 0..1. */
   archetype: number;
   tint: number;
+  /**
+   * Which cars are on the road first, 0..1.
+   *
+   * The field is placed once at the busiest hour and thinned by a uniform (see
+   * data/trafficmodel.ts), so every car needs a stable place in the queue: the
+   * shader keeps the ones whose rank is below the hour's fraction. It has to be
+   * INDEPENDENT of everything else the instance carries. Ranking by `phase`
+   * would empty the start of every run and leave the tail full, which is a
+   * street with a gap in it rather than a quiet street; ranking by `tint` would
+   * take all the red cars off the road first. Hence its own hash multiplier,
+   * and a gate in test/trafficmodel.check.ts that measures the correlation.
+   */
+  rank: number;
   cls: RoadClass;
   road: number;
 }
@@ -796,6 +809,7 @@ export function addTraffic(
             speedMs: speed * (0.82 + 0.36 * hash1(seed * 5.3)),
             archetype: hash1(seed * 9.7),
             tint: hash1(seed * 11.3),
+            rank: hash1(seed * 13.9),
             cls: r.cls,
             road: roadIndex,
           });

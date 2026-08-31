@@ -47,7 +47,8 @@ import { PointIndex, LAMP_SNAP_M, type StreetWorld } from "./data/streetfurnitur
 import { Roads } from "./render/roads";
 import { Pavement } from "./render/pavement";
 import { isCarriageway } from "./data/pavement";
-import { roadWidthM } from "./data/roadpack";
+import { roadWidthM, RoadClass } from "./data/roadpack";
+import { trafficState, localHour, CLASS_COUNT } from "./data/trafficmodel";
 import { StreetLamps, LAMP_TRIANGLES } from "./render/streetlamps";
 import type { StreetLampUniforms } from "./render/streetlamps";
 import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
@@ -1002,6 +1003,17 @@ async function main() {
   const clock = new THREE.Clock();
   let elapsed = 0;
 
+  // The traffic model's half of the clock, pushed into the car shaders below.
+  //
+  // `classClock[c]` is seconds of TRAVEL that road class has done, which stops
+  // tracking `elapsed` the moment the class is congested. Kept at double
+  // precision because it is an accumulator that runs for the life of the
+  // session, unlike the frac beside it, which is recomputed from scratch.
+  let lastElapsed = 0;
+  const classClock = new Float64Array(CLASS_COUNT);
+  const classTraffic = new Float32Array(CLASS_COUNT * 2);
+  let trafficNow = trafficState(now, timeline?.utcOffsetSeconds ?? 0, wx);
+
   // Frames drawn since the loop started, and their raw costs. The harness waits
   // on the count (a first frame still has shaders compiling and textures
   // uploading in it) and reads the ring for the frame-cost number.
@@ -1387,6 +1399,33 @@ async function main() {
       u.uTurbidity.value = light.turbidity;
       u.uCamAltitude.value = camAlt;
     }
+    // THE HOUR OF THE DAY, on the traffic. Two numbers per road class: how much
+    // of the placed peak density is out, and a clock that has been integrated
+    // at that class's own congested speed.
+    //
+    // Integrated against the DELTA OF `elapsed`, which is what keeps `?shot`
+    // reproducible: in shot mode `elapsed` never moves, so `dEl` is zero for
+    // ever and every class clock stays at zero however long the page is open.
+    // Integrating wall clock here, or reading the scene clock directly, would
+    // put the cars somewhere different on every run of the same pinned URL.
+    //
+    // And it is an integral rather than a multiplier because the shader is at
+    // fract(phase + clock * rate): scaling the rate would move every car the
+    // instant the hour changed, which under a dragged scrubber or a 600x
+    // timelapse is the whole city jumping. Changing only the derivative leaves
+    // every car exactly where it was.
+    const dEl = elapsed - lastElapsed;
+    lastElapsed = elapsed;
+    // `now` and not a fresh sceneNow(): the same instant the sun was placed at
+    // this frame, so a scrubbed 08:00 has both the light and the rush hour of
+    // 08:00. It also saves a Date allocation on every frame.
+    const ts = trafficState(now, timeline?.utcOffsetSeconds ?? 0, wx);
+    trafficNow = ts;
+    for (let c = 0; c < CLASS_COUNT; c++) {
+      classClock[c] += dEl * ts.speed[c];
+      classTraffic[c * 2] = ts.frac[c];
+      classTraffic[c * 2 + 1] = classClock[c];
+    }
     for (const u of [traffic, parkedCars]) {
       if (!u) continue;
       // The animation clock, and nothing else: the car shader takes its sky
@@ -1395,6 +1434,7 @@ async function main() {
       // clock is what `?shot` holds at zero, so traffic that moved on wall-clock
       // phase would make two runs of the same pinned URL differ.
       u.uniforms.uTime.value = elapsed;
+      u.uniforms.uClassTraffic.value.set(classTraffic);
     }
 
     if (foliage) {
@@ -1720,6 +1760,21 @@ async function main() {
       get carActive() { return carActive; },
       get wx() { return wx; },
       get time() { return now; },
+      /**
+       * What the traffic model believes, for the primary class.
+       *
+       * The one visible number that says the model is running: a frac that
+       * never moves as the scrubber crosses 03:00, or a speed stuck at 1 in a
+       * downpour, is a dead parameter table and looks exactly like a working
+       * one from the air. `?diag=1` prints it.
+       */
+      get trafficModel() {
+        return {
+          localHour: localHour(now, timeline?.utcOffsetSeconds ?? 0),
+          frac: trafficNow.frac[RoadClass.Primary],
+          speed: trafficNow.speed[RoadClass.Primary],
+        };
+      },
       setOffsetHours: (h: number) => timebar.setOffset(h * 3600),
       setExposure: (v: number) => (exposureScale = v),
     },
