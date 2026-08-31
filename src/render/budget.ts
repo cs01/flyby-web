@@ -63,6 +63,18 @@ export const CITY_RINGS: TerrainRing[] = [
   // because the pixellation it fixes is a low-and-slow problem. Recentering
   // this ring as the camera moves is what ground vehicles will need.
   { extent: 400, segments: 128, imageryZoom: 18 },
+  // THE GAP RING. Between the 400 m bubble and the 2.2 km ring there was a
+  // step of two zoom levels, and it is the one you see: the ground goes from
+  // sharp to smudged at the exact radius you are looking at from a few hundred
+  // feet, and then visibly resolves as you fly into it.
+  //
+  // Zoom 17 is ~1.2 m a pixel. The reason this can afford it and the 400 m
+  // bubble cannot afford to simply grow is which cost each pays. The bubble
+  // RESTITCHES as the camera moves, so its cost is paid again every recentre:
+  // taking it to 900 m makes that 96 MB a restitch, which is a stall you feel.
+  // This ring is stitched once, and at 1.1 km it is ten tiles across -- a
+  // 2560 px canvas, about 35 MB, the same order as the 2.2 km ring below it.
+  { extent: 1100, segments: 192, imageryZoom: 17 },
   // The ring the aircraft actually flies through. At zoom 15 a street is
   // ~3.6 m per pixel, which is a smear; zoom 16 halves that and road markings,
   // car parks and pitch lines resolve. It is only 2.2 km across, so the extra
@@ -92,6 +104,8 @@ export const CITY_RINGS: TerrainRing[] = [
  */
 export const MOBILE_CITY_RINGS: TerrainRing[] = [
   { extent: 400, segments: 96, imageryZoom: 18 },
+  // The gap ring, one level down like everything else on this plan.
+  { extent: 1100, segments: 144, imageryZoom: 16 },
   { extent: 2200, segments: 160, imageryZoom: 15 },
   { extent: 6000, segments: 224, imageryZoom: 14 },
   { extent: 20000, segments: 192, imageryZoom: 12 },

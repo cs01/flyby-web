@@ -28,6 +28,17 @@ import {
   type DeviceDescriptor,
 } from "../src/render/budget";
 
+/**
+ * The ring tables as they were at IMPORT, before anything under test has run.
+ *
+ * The mutation probe below used to hardcode "5 rings, and the last mobile zoom
+ * is 9", which meant adding a ring failed the probe for a reason that had
+ * nothing to do with mutation. A snapshot checks the actual property -- that
+ * nothing handed out a reference and had it written through -- and keeps
+ * checking it whatever the plan becomes.
+ */
+const RING_TABLES_AT_IMPORT = JSON.stringify([CITY_RINGS, MOBILE_CITY_RINGS]);
+
 let failures = 0;
 
 function check(label: string, ok: boolean, detail: string): void {
@@ -372,8 +383,8 @@ const CEILING_BYTES = 300 * MB;
   // module-level array stops being pure.
   check(
     "probe: the exported ring tables are untouched",
-    CITY_RINGS.length === 5 && CITY_RINGS[0].imageryZoom === 18 && MOBILE_CITY_RINGS[4].imageryZoom === 9,
-    `${CITY_RINGS.length} desktop rings, ${MOBILE_CITY_RINGS.length} mobile rings`,
+    JSON.stringify([CITY_RINGS, MOBILE_CITY_RINGS]) === RING_TABLES_AT_IMPORT,
+    `${CITY_RINGS.length} desktop rings, ${MOBILE_CITY_RINGS.length} mobile rings, byte-identical to import`,
   );
 }
 

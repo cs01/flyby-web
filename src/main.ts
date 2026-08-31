@@ -826,13 +826,54 @@ async function main() {
   // only read is a list of things you now have to find by hand at a hundred
   // knots over a city you have never seen from the air.
   const autopilot = new Autopilot();
+  /**
+   * Put the aircraft half a mile off a place, pointed at it.
+   *
+   * Clicking a landmark used to ENGAGE THE AUTOPILOT toward it, which is the
+   * right thing if you want the flight and the wrong thing almost every time:
+   * at a hundred knots a landmark four miles away is two and a half minutes of
+   * watching the same city go past, and the reason to click it was to look at
+   * it. So a click arrives; the autopilot is still there for anyone who wants
+   * to be flown.
+   *
+   * APPROACHED FROM WHERE YOU ALREADY ARE. The new position is half a mile out
+   * along the bearing from the target back to the aircraft, so the city stays
+   * the way round it was and the move reads as closing the distance rather than
+   * as being teleported to the far side. Height is the landmark's own top,
+   * which frames a tower from its middle rather than looking down on it, with a
+   * floor that keeps the aeroplane off the terrain and out of the buildings.
+   */
+  const HALF_MILE_M = 804.7;
+  const arriveAt = (p: PlaceRow): void => {
+    const dx = ac.position.x - p.x;
+    const dz = ac.position.z - p.z;
+    const len = Math.hypot(dx, dz);
+    // Standing exactly on it has no bearing to back off along; come in from
+    // the south, which is where a first look at anything in the northern
+    // hemisphere wants the sun.
+    const ux = len > 1 ? dx / len : 0;
+    const uz = len > 1 ? dz / len : 1;
+    const x = p.x + ux * HALF_MILE_M;
+    const z = p.z + uz * HALF_MILE_M;
+    const ground = terrain.heightAt(x, z);
+    const y = Math.max(ground + 120, p.topY - 40);
+    // Compass heading from the new position back to the target. atan2(east,
+    // north) with north as -z, which is the same convention Aircraft.reset
+    // undoes internally.
+    const hdg = (Math.atan2(p.x - x, -(p.z - z)) * 180) / Math.PI;
+    ac.reset(x, y, z, (hdg + 360) % 360);
+    droneActive = false;
+    carActive = false;
+    input.setPointerLock(false);
+    autopilot.disengage();
+    places.setActive(p.name);
+    places.setNote("");
+    hud.toast(`${p.name} \u00b7 half a mile out`);
+  };
+
   const places = new Places(
     ui,
-    (p) => {
-      autopilot.engage({ name: p.name, x: p.x, z: p.z });
-      places.setActive(p.name);
-      places.setNote("");
-    },
+    (p) => arriveAt(p),
     // Nothing in the list matched, so look for the name across all of
     // Wikipedia. Anything inside the loaded world becomes a target here;
     // anything beyond it is a different flight, and the app already knows how
@@ -849,9 +890,7 @@ async function main() {
           const row = { name: hit.name, x: w.x, z: w.z, topY: terrain.heightAt(w.x, w.z) + 120 };
           nearby.push(row);
           sortByRange();
-          autopilot.engage({ name: row.name, x: row.x, z: row.z });
-          places.setActive(row.name);
-          places.setNote("");
+          arriveAt(row);
         } else {
           places.setNote(`${hit.name} is a separate flight - loading`);
           goToCoords(hit.lat, hit.lon);
