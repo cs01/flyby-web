@@ -556,6 +556,21 @@ async function main() {
   // go red -- an assertion that passes both ways is measuring nothing.
   const flatWater = new URLSearchParams(location.search).get("flatwater") === "1";
 
+  // `?flatglass=1` restores the facade this repo had before the window reveal:
+  // glazing exactly in the plane of the wall, with no parallax and no shadow
+  // cast by the head or the jamb. It is the vacuity probe for
+  // tools/verify-glass.ts, which has to run the OLD behaviour in the SAME
+  // binary and see its assertions go red -- an assertion that passes either way
+  // is measuring nothing.
+  const flatGlass = new URLSearchParams(location.search).get("flatglass") === "1";
+
+  // `?buildingDebug=1` makes the building shader output its own facade mask, so
+  // tools/verify-glass.ts does not have to guess which pixels are wall from
+  // their colour. The terrain and the sky still draw normally, exactly as they
+  // do under `?terrainDebug`, so the mask occludes what the beauty frame
+  // occludes and the two agree pixel for pixel.
+  const buildingDebug = new URLSearchParams(location.search).get("buildingDebug") === "1";
+
   for (const u of terrain.uniforms) {
     u.uUrban.value = urban.texture;
     u.uUrbanExtent.value = urban.extent;
@@ -1439,6 +1454,10 @@ async function main() {
       b.uCamAltitude.value = camAlt;
       b.uExposure.value = light.exposure * exposureScale;
       b.uHourFactor.value.set(hf.residential, hf.office, hf.other);
+      // Written every frame rather than once at start-up, because streamed
+      // tiles add their own uniform set to this array long after that.
+      b.uFlatGlass.value = flatGlass ? 1 : 0;
+      b.uBuildingDebug.value = buildingDebug ? 1 : 0;
     }
 
     for (const r of roadUniformSets) {

@@ -288,6 +288,17 @@ uniform vec3  uMoonDir;
 uniform vec3  uMoonLight;
 uniform float uWetness;
 uniform float uSunSurface;
+// ?flatglass=1: put the glazing back in the plane of the wall. See the reveal
+// block in the facade branch, and tools/verify-glass.ts, which needs to run the
+// old behaviour in the SAME binary or its assertions measure nothing.
+uniform float uFlatGlass;
+// ?buildingDebug=1 replaces the shaded output with a flat marker on the FACADE
+// fragments and nothing else, so a measurement of a facade can ask the shader
+// which pixels are facade instead of guessing from colour. Pure blue rather
+// than white: r and g stay at zero through the tonemap, and nothing else in a
+// daylight frame -- not sky, not water, not pale render -- comes out with two
+// dead channels.
+uniform float uBuildingDebug;
 
 float hash11(float p) {
   p = fract(p * 0.1031);
@@ -331,6 +342,25 @@ float vnoise(vec2 p) {
  */
 float tent(float x, float c, float ew) {
   return smoothstep(c - ew, c, x) * smoothstep(c + ew, c, x);
+}
+
+/**
+ * The window rectangle sampled at an ARBITRARY point in grid space, every edge
+ * widened by the pixel footprint the way the main window mask is.
+ *
+ * The reveal needs the same aperture three times at three different offsets --
+ * where the glass is, where the wall face is, and where the sun reaches
+ * through it -- so it stops being something to write out inline.
+ *
+ * g is the continuous grid coordinate, not a cell coordinate: fract() is
+ * taken here so a caller may push the sample past the edge of its own cell and
+ * land on the neighbouring window, which is where a real facade's next opening
+ * actually is.
+ */
+float winRect(vec2 g, vec4 win, vec2 w) {
+  vec2 c = fract(g);
+  return smoothstep(win.x - w.x, win.x + w.x, c.x) * smoothstep(win.y + w.x, win.y - w.x, c.x)
+       * smoothstep(win.z - w.y, win.z + w.y, c.y) * smoothstep(win.w + w.y, win.w - w.y, c.y);
 }
 
 /**
@@ -378,6 +408,25 @@ void main() {
   // 1.0 on a roof; less and less as you go down into a street canyon.
   float skyOcc = 1.0;
 
+  // How much DIRECT sun reaches this fragment from inside its own window
+  // reveal. 1.0 everywhere except in the shadow the head and one jamb cast on
+  // the glazing set back behind them; see the reveal block below. It is a
+  // separate quantity from albedo because being in shadow takes the beam away
+  // and leaves the sky, and darkening the albedo instead would take both.
+  float revealShade = 1.0;
+
+  // And how much of the SKY it can see from in there. A reveal is not a sun
+  // effect: a recessed pane sees less of the dome than the wall around it,
+  // most of all in the band directly under the head, which is why a window on
+  // the shadowed side of a street still reads as a hole and not as a decal.
+  // Applied to the ambient AND to the glass reflection -- on a curtain wall the
+  // reflection is nearly all of the pixel, so occluding the ambient alone moves
+  // nothing at all.
+  float revealOcc = 1.0;
+
+  /** 1 on a wall fragment, 0 on a roof or a parapet. See uBuildingDebug. */
+  float facadeMarker = 0.0;
+
   // PART_GABLE shares the facade branch, so the chain cannot be a plain
   // ascending ladder any more: the shingle test has to come first (it is the
   // highest tag but the clutter branch is the trailing else), and the gable
@@ -421,6 +470,7 @@ void main() {
     // n is left alone: the tent carries a real per-face normal already.
   } else if (part < 0.5 || gableEnd) {
     // --- Facade ---------------------------------------------------------
+    facadeMarker = 1.0;
     // Storey and column pitch are per BUILDING, out of the parameter texture.
     // A curtain wall's mullions are 1.6 m apart and a brick terrace's windows
     // are 3.3 m apart; sharing one grid between them is most of why a street
@@ -486,10 +536,101 @@ void main() {
     // has to STOP at the roof line -- otherwise the coping gets a row of
     // windows in it and the parapet reads as one more storey.
     float capped = step(vUv.y, bldH);
-    float winX = smoothstep(fp.win.x - w.x, fp.win.x + w.x, cell.x)
-               * smoothstep(fp.win.y + w.x, fp.win.y - w.x, cell.x);
-    float winY = smoothstep(fp.win.z - w.y, fp.win.z + w.y, cell.y)
-               * smoothstep(fp.win.w + w.y, fp.win.w - w.y, cell.y);
+
+    // --- THE REVEAL: the glass is BEHIND the wall, not in it ---------------
+    //
+    // Until this block the glazing sat exactly in the wall plane, and that is
+    // geometric, not textural: a flat sheet with a pattern on it is what a
+    // Chicago or Manhattan tower was, which is why it read as painted concrete
+    // however the pattern was tuned. Real glazing is set back 100-250 mm and
+    // two things fall out of the setback, both of them needed:
+    //
+    //   * PARALLAX. Seen off normal, the glass slides within its opening. The
+    //     wall overhangs it on the near side and the jamb is exposed on the
+    //     far side, so the opening stops being a decal and starts being a
+    //     hole. One offset along the view vector in the wall's tangent frame.
+    //     No march: the second sample would buy a silhouette nobody can see at
+    //     this scale and cost a loop on every building pixel in the frame.
+    //
+    //   * SELF-SHADOW. The aperture casts onto the recessed plane, giving a
+    //     hard line under every head and down exactly ONE jamb, and the jamb
+    //     it picks swaps as the sun crosses the facade. At a grazing angle
+    //     this is most of what tells the eye the wall has thickness, and it is
+    //     the part that shows in a still.
+    //
+    // Depths are measured, not tuned, and they differ by building type because
+    // the openings do: a curtain wall's glass sits just behind its mullion
+    // line, while a punched opening in solid masonry is a whole brick deep.
+    // fp.relief is already the per-family measure of how modelled a wall is
+    // (0.10 on glass, 0.75-0.80 on brick and stone), so it picks the depth and
+    // no second table can drift away from the first.
+    const float REVEAL_CURTAIN_M = 0.10;  // curtain wall: glass behind the mullion
+    const float REVEAL_PUNCHED_M = 0.25;  // punched opening in solid masonry
+    // How much of the beam the shaded part of a reveal loses. Not 1.0: the
+    // jamb opposite is a bright diffuse bounce a few centimetres away, and a
+    // reveal that goes black reads as a hole punched through the building.
+    const float REVEAL_SHADOW = 0.80;
+    // The band under the head, which loses most of the dome even at noon under
+    // cloud. This is the term that survives into the shade.
+    const float REVEAL_HEAD_SKY = 0.60;
+    // The exposed jamb face itself: turned ninety degrees off the wall, so it
+    // sees about half the sky the wall does and takes a matching albedo knock.
+    const float REVEAL_SIDE_SKY = 0.45;
+    const float REVEAL_SIDE_DARK = 0.22;
+
+    // ?flatglass=1 puts the glass back in the wall plane, in this same
+    // binary, so tools/verify-glass.ts can watch its own assertions go red.
+    float recess = 1.0 - step(0.5, uFlatGlass);
+    float revealM = mix(REVEAL_CURTAIN_M, REVEAL_PUNCHED_M, clamp(fp.relief, 0.0, 1.0)) * recess;
+
+    // uv.x runs along +(-n.z, 0, n.x). buildWall() gives a wall quad the
+    // outward normal (dz, 0, -dx)/len and runs u along (dx, 0, dz)/len, so the
+    // along-wall axis is the normal turned the OTHER way from the tang the
+    // relief block below uses. Getting this backwards does not look subtly
+    // wrong, it makes the glass appear to stand proud of the wall.
+    vec3 uDir = vec3(-n.z, 0.0, n.x);
+    vec3 upDir = vec3(0.0, 1.0, 0.0);
+    vec3 eyeDir = normalize(uCameraPos - vWorld);
+    // Clamped at 0.35, which is 70 degrees off normal. The exact offset is
+    // depth * tan(angle) and diverges at grazing incidence; past 70 degrees a
+    // real opening is occluded by its own jamb anyway, so the honest limit is
+    // a fixed slide rather than an offset that runs away.
+    vec2 par = -(revealM / max(dot(eyeDir, n), 0.35))
+             * vec2(dot(eyeDir, uDir) / fp.columnM, dot(eyeDir, upDir) / fp.storeyM);
+    // The aperture's own shadow on the recessed plane: the same construction
+    // with the sun in place of the eye. A point set back by revealM is lit
+    // only if the ray from it to the sun clears the opening, which is the
+    // aperture tested at this offset.
+    float sn = dot(uSunDir, n);
+    vec2 shd = (revealM / max(sn, 0.35))
+             * vec2(dot(uSunDir, uDir) / fp.columnM, dot(uSunDir, upDir) / fp.storeyM);
+    // A wall the sun is behind is wholly in shade and has no reveal shadow to
+    // draw inside it.
+    float sunFacing = step(0.02, sn);
+    // Half a window of slide is as far as this can mean anything: past that
+    // fract() would wrap the sample onto the NEXT opening along, which is a
+    // periodicity artifact and not a deeper reveal.
+    vec2 slide = 0.5 * vec2(winMeanX, winMeanY);
+    par = clamp(par, -slide, slide);
+    shd = clamp(shd, -slide, slide);
+
+    // LOD. A window is a few pixels across from any distance worth flying and
+    // an offset that survives to sub-pixel scale is aliasing, so both offsets
+    // fade on the pixel footprint -- per axis, the way every other mask in
+    // this branch does, so a wall seen along its length keeps its heads while
+    // losing its jambs. What the fade costs in contrast is put back as the
+    // reveal's own MEAN further down rather than deleted, or the far city
+    // would sit at a different brightness from the near one.
+    vec2 parPx = par * vec2(detailX, detailY);
+    vec2 shdPx = shd * vec2(detailX, detailY);
+
+    // The recessed glazing. This is the only change to the mask itself: the
+    // same rectangle, sampled where the glass actually is.
+    vec2 pcell = fract(grid + parPx);
+    float winX = smoothstep(fp.win.x - w.x, fp.win.x + w.x, pcell.x)
+               * smoothstep(fp.win.y + w.x, fp.win.y - w.x, pcell.x);
+    float winY = smoothstep(fp.win.z - w.y, fp.win.z + w.y, pcell.y)
+               * smoothstep(fp.win.w + w.y, fp.win.w - w.y, pcell.y);
     // Each axis converges to its own mean as it runs out of pixels, so a wall
     // seen along its length keeps a row of ribbon windows instead of going
     // blank. Far away both terms converge and this equals the old winMean.
@@ -523,6 +664,61 @@ void main() {
 
     vec3 glass = mix(vec3(0.075, 0.095, 0.125), vec3(0.15, 0.19, 0.24), hash11(fp.seed + 3.3));
     albedo = mix(albedo, glass, glassMask);
+
+    // --- What the reveal does to the light ---------------------------------
+    //
+    // Three samples of one rectangle, no loop:
+    //   apertureDeep  the glazing, already computed above as winX * winY
+    //   apertureFlat  the same opening in the plane of the WALL
+    //   sunReach      the opening as the sun sees it through the setback
+    //
+    // Where the wall-plane opening is inside and the recessed one is not, this
+    // fragment is looking at the SIDE of the hole -- a jamb, a head or a sill.
+    // A flat facade has no pixels for that surface at all, which is the whole
+    // defect: there is nothing there to shade.
+    float apertureDeep = winX * winY;
+    float apertureFlat = winRect(grid, fp.win, w);
+    float jamb = clamp(apertureFlat - apertureDeep, 0.0, 1.0) * capped * step(groundH, vUv.y);
+    float sunReach = winRect(grid + parPx + shdPx, fp.win, w);
+    // Everything inside the opening the sun cannot see into.
+    float aperture = clamp(apertureDeep + jamb, 0.0, 1.0);
+    float inShade = (1.0 - sunReach) * aperture
+                  * sunFacing * capped * step(groundH, vUv.y);
+    // The same construction with the ZENITH in place of the sun: the band the
+    // head keeps the sky out of. This one has no sunFacing gate, because it is
+    // there on the north elevation at midnight as much as at noon.
+    float skyShd = revealM / fp.storeyM;
+    float skyReach = winRect(grid + parPx + vec2(0.0, skyShd * detailY), fp.win, w);
+    float headBlock = (1.0 - skyReach) * aperture * capped * step(groundH, vUv.y);
+
+    // AND WHAT IT AVERAGES TO, for when the reveal is under a pixel.
+    //
+    // Fading the shadow to nothing would leave a distant facade brighter than
+    // the near one that has it, so the far field gets the mean instead of the
+    // deletion: the fraction of the opening the head and jamb take away is the
+    // shadow offset over the opening's own size, which is arithmetic on
+    // numbers already in registers. par/shd here are the UNFADED offsets,
+    // so this term survives exactly where the per-pixel one dies.
+    float apMean = winMeanX * winMeanY;
+    float shadeFrac = min(1.0, abs(shd.x) / max(winMeanX, 0.02) + abs(shd.y) / max(winMeanY, 0.02));
+    float jambFrac = min(1.0, abs(par.x) / max(winMeanX, 0.02) + abs(par.y) / max(winMeanY, 0.02));
+    float inShadeMean = apMean * shadeFrac * sunFacing * capped * step(groundH, vUv.y);
+    float jambMean = apMean * jambFrac * capped * step(groundH, vUv.y);
+    float headMean = apMean * min(1.0, skyShd / max(winMeanY, 0.02))
+                   * capped * step(groundH, vUv.y);
+
+    // The beam, not the albedo: a shaded reveal loses the sun and keeps the
+    // sky, and taking it out of albedo would take both and turn the reveal
+    // into a smudge that stayed dark at dusk.
+    revealShade = 1.0 - REVEAL_SHADOW * mix(inShadeMean, inShade, detail);
+    // The exposed jamb is a face turned off the wall: less sky, and a knock on
+    // the albedo for the ambient occlusion of a 200 mm slot.
+    float jambLod = mix(jambMean, jamb, detail);
+    // Kept as a value rather than applied to skyOcc here: the canyon term below
+    // assigns skyOcc outright, so a multiply at this point would be discarded.
+    revealOcc = 1.0 - REVEAL_HEAD_SKY * mix(headMean, headBlock, detail)
+                    - REVEAL_SIDE_SKY * jambLod;
+    albedo *= 1.0 - REVEAL_SIDE_DARK * jambLod;
 
     // --- The ground storey ------------------------------------------------
     //
@@ -815,6 +1011,7 @@ void main() {
     // of a wall whose pavement happens to be visible, and there the extra
     // darkening is the right answer anyway.
     skyOcc = mix(0.34, 1.0, smoothstep(0.0, 48.0, vUv.y));
+    skyOcc *= revealOcc;
 
     // --- Lit windows at night -------------------------------------------
     if (uNight > 0.02) {
@@ -1030,6 +1227,10 @@ void main() {
   // the light bouncing off everything opposite, which is why real city shadows
   // are blue rather than black.
   float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
+  // The window reveal shadows itself before the cascade ever gets to say so: a
+  // 200 mm setback is far under one shadow-map texel, so nothing in the pass
+  // above can draw the line under a window head.
+  sunVis *= revealShade;
   vec3 direct = uSunColor * uSunIntensity * uSunSurface * sunT * ndl * sunVis;
   // Moonlight, same units as the sun beam. Lit windows alone made a night city
   // read as a floating grid of dots with no buildings behind them; this is
@@ -1139,8 +1340,13 @@ void main() {
     //
     // Skyglow is added on top because the probe has no city in it, and after
     // dark a glass tower reflects the city rather than the sky.
-    vec3 skyRefl = textureLod(uEnv, refl, clamp(roughness, 0.0, 1.0) * uEnvMaxLod).rgb
-                 + uNightGlow * 0.4;
+    // revealOcc, because on a curtain wall this reflection IS the pixel: the
+    // glass albedo is 0.08 and everything you see in a glass tower is the sky
+    // coming back off it. A pane at the bottom of a 100 mm box reflects the
+    // soffit above it, not the dome, and without this the reveal shows up
+    // everywhere except on the buildings it was written for.
+    vec3 skyRefl = (textureLod(uEnv, refl, clamp(roughness, 0.0, 1.0) * uEnvMaxLod).rgb
+                 + uNightGlow * 0.4) * revealOcc;
     // Schlick, with the 4% normal-incidence reflectance of glass.
     float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
     float fres = 0.04 + 0.96 * f;
@@ -1164,6 +1370,7 @@ void main() {
   vec3 inscatter = atmosphere(ro, rd, vViewDist, trans);
 
   fragColor = vec4(lit * trans + inscatter, 1.0);
+  if (uBuildingDebug > 0.5) fragColor = vec4(0.0, 0.0, facadeMarker, 1.0);
 }
 `;
 
@@ -1180,6 +1387,10 @@ export interface BuildingUniforms extends SunShadowUniforms, AoUniforms {
   uMoonLight: THREE.IUniform<THREE.Color>;
   uWetness: THREE.IUniform<number>;
   uSunSurface: THREE.IUniform<number>;
+  /** 1 puts the glazing back in the wall plane; see `?flatglass=1` in main.ts. */
+  uFlatGlass: THREE.IUniform<number>;
+  /** 1 draws the facade mask instead of the shaded building; `?buildingDebug=1`. */
+  uBuildingDebug: THREE.IUniform<number>;
   uExposure: THREE.IUniform<number>;
   uSunDir: THREE.IUniform<THREE.Vector3>;
   uSunColor: THREE.IUniform<THREE.Color>;
@@ -1215,6 +1426,8 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uMoonLight: { value: new THREE.Color(0, 0, 0) },
     uWetness: { value: 0 },
     uSunSurface: { value: 0.105 },
+    uFlatGlass: { value: 0 },
+    uBuildingDebug: { value: 0 },
     uExposure: { value: 1 },
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunColor: { value: new THREE.Color(1, 1, 1) },
