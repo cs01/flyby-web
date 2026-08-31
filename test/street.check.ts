@@ -55,12 +55,14 @@ import {
   type StreetWorld,
   type TrafficInstance,
 } from "../src/data/streetfurniture";
-import { isCarriageway } from "../src/data/pavement";
+import { isCarriageway, KERB_HEIGHT_M } from "../src/data/pavement";
 import {
   parseRoadPack,
   parkingStripM,
+  roadLiftM,
   roadWidthM,
   RoadClass,
+  ROAD_BRIDGE,
   ROAD_ONEWAY,
   type RoadPack,
 } from "../src/data/roadpack";
@@ -1231,24 +1233,70 @@ console.log("\n--- and the same over Chicago ---");
 
   // Every instance sits on the height field rather than at zero. The cheapest
   // possible bug in a placement that takes a callback is not calling it.
+  //
+  // AND IT SITS ON THE DECK, NOT ON THE TERRAIN. render/roads.ts draws the
+  // carriageway lifted off the ground under it, so a car placed at the raw
+  // height field is BELOW the tarmac by that lift. At 0.35 m against a road
+  // wheel of 0.33 m that buried every car in every city to its axles, which is
+  // what it looked like: vehicles wading through the road rather than standing
+  // on it. A lamp column takes the same lift plus a kerb, because it stands on
+  // the pavement rather than in the gutter.
+  //
+  // The expected heights below are computed from the pack's own flags but the
+  // BAND is a literal, so raising the lift cannot move the goalposts with it.
+  const deck = (p: { x: number; z: number; road: number }): number => {
+    const r = chi.roads[p.road];
+    return RAMP(p.x, p.z) + roadLiftM(r.flags, r.layer);
+  };
   const flat = [...chiLamps, ...chiParked].filter((p) => p.y === 0).length;
-  const onRamp = [...chiLamps, ...chiParked].filter(
-    (p) => Math.abs(p.y - RAMP(p.x, p.z)) < 1e-3,
+  const parkedOnDeck = chiParked.filter((p) => Math.abs(p.y - deck(p)) < 1e-3).length;
+  const lampsOnKerb = chiLamps.filter(
+    (p) => Math.abs(p.y - deck(p) - KERB_HEIGHT_M) < 1e-3,
   ).length;
   check(
-    "every column and every parked car sits on the ground it is standing on",
-    flat === 0 && onRamp === chiLamps.length + chiParked.length,
-    `${onRamp} of ${chiLamps.length + chiParked.length} on the ramp, ${flat} at y=0`,
+    "every column and every parked car sits on the deck, not in it",
+    flat === 0 && parkedOnDeck === chiParked.length && lampsOnKerb === chiLamps.length,
+    `${parkedOnDeck}/${chiParked.length} parked on the deck, ` +
+      `${lampsOnKerb}/${chiLamps.length} lamps on the kerb, ${flat} at y=0`,
+  );
+
+  // And the clearance is inside the band a real kerbed street occupies,
+  // independent of how it was arrived at. 0.20 m is under any road wheel this
+  // repo builds, so a car standing this high off the terrain cannot be buried;
+  // 0.90 m is well under the 3.85 m a bridge deck adds, so this is a statement
+  // about ordinary streets and the sample is restricted to them.
+  const onGrade = chiParked.filter((p) => (chi.roads[p.road].flags & ROAD_BRIDGE) === 0);
+  let lowest = Infinity;
+  let highest = -Infinity;
+  for (const p of onGrade) {
+    const c = p.y - RAMP(p.x, p.z);
+    lowest = Math.min(lowest, c);
+    highest = Math.max(highest, c);
+  }
+  check(
+    "a parked car on an ordinary street stands clear of the terrain",
+    onGrade.length >= MIN_SAMPLE && lowest > 0.20 && highest < 0.90,
+    `${onGrade.length} cars, clearance ${lowest.toFixed(3)}..${highest.toFixed(3)} m`,
+  );
+  probe(
+    "the clearance test rejects a car left on the raw height field",
+    onGrade.length >= MIN_SAMPLE && 0 > 0.20 && 0 < 0.90,
+    "placing at groundY gives a clearance of 0.000 m",
+  );
+  blind(
+    "the clearance test accepts the cars as placed",
+    onGrade.length >= MIN_SAMPLE && lowest > 0.20 && highest < 0.90,
+    `${lowest.toFixed(3)}..${highest.toFixed(3)} m`,
   );
   probe(
     "the height test rejects instances left at zero",
-    [{ x: 1, y: 0, z: 1 }].filter((p) => Math.abs(p.y - RAMP(p.x, p.z)) < 1e-3).length === 1,
-    "a y of zero is not the ramp anywhere in this city",
+    [{ x: 1, y: 0, z: 1, road: 0 }].filter((p) => Math.abs(p.y - deck(p)) < 1e-3).length === 1,
+    "a y of zero is not the deck anywhere in this city",
   );
   blind(
     "the height test accepts the instances as placed",
-    onRamp === chiLamps.length + chiParked.length,
-    `${onRamp} on the ramp`,
+    parkedOnDeck === chiParked.length && lampsOnKerb === chiLamps.length,
+    `${parkedOnDeck} parked, ${lampsOnKerb} lamps`,
   );
 
   // Runs on a real city, so `runsFor` is exercised against digitised geometry

@@ -282,7 +282,8 @@ void main() {
   float isGlass = step(0.5, part) * step(part, 1.5);
   float isHead  = step(1.5, part) * step(part, 2.5);
   float isTail  = step(2.5, part) * step(part, 3.5);
-  float isWheel = step(3.5, part);
+  float isWheel = step(3.5, part) * step(part, 4.5);
+  float isUnder = step(4.5, part);
   // A flank, as against a roof, a nose or a tail. Everything below that is
   // drawn rather than modelled -- the arches, the shut lines, the posts --
   // belongs on a flank and nowhere else.
@@ -329,7 +330,32 @@ void main() {
     albedo = mix(albedo, vec3(0.010, 0.010, 0.011), seal * (1.0 - painted));
     gloss = mix(0.92, 0.55, painted);
   } else if (isWheel > 0.5) {
-    albedo = vec3(0.012, 0.012, 0.013);
+    // v is the RADIUS on a wheel's outboard face and exactly 1 across its
+    // tread, so one number draws the tyre wall, the rim and the hub without a
+    // second part id, a texture, or a branch on the normal.
+    //
+    // A rim matters out of all proportion to its size. A wheel is the one part
+    // of a car with a bright thing in the middle of a dark thing, and a car
+    // with four black discs where its wheels are reads as a toy however good
+    // the paint is.
+    // Read as an ANNULUS, not a disc. A wheel painted as one bright circle is
+    // a whitewall on a 1950s tyre; a real alloy is a narrow bright lip at the
+    // tyre bead, a duller spoke face inside it, and a dark hub in the middle,
+    // and those three bands in that order are what the eye recognises without
+    // ever resolving a spoke. Radial bands only, so none of this needs an
+    // angle, which the fan does not carry.
+    float lip   = smoothstep(0.50, 0.58, v) * (1.0 - smoothstep(0.62, 0.69, v));
+    float face  = (1.0 - smoothstep(0.50, 0.58, v)) * smoothstep(0.14, 0.21, v);
+    float hub   = 1.0 - smoothstep(0.14, 0.21, v);
+    albedo = vec3(0.013, 0.013, 0.014);                            // tyre
+    albedo = mix(albedo, vec3(0.150, 0.154, 0.162), face * detail); // spoke face
+    albedo = mix(albedo, vec3(0.38, 0.39, 0.41), lip * detail);     // bead lip
+    albedo = mix(albedo, vec3(0.040, 0.040, 0.043), hub * detail);  // hub
+    gloss = 0.40 * (lip + face) * detail;
+  } else if (isUnder > 0.5) {
+    // The tub behind the arches. Flat and dark, and deliberately NOT the wheel
+    // material: it must never grow a rim.
+    albedo = vec3(0.014, 0.014, 0.015);
     gloss = 0.0;
   } else if (isHead > 0.5) {
     albedo = vec3(0.52, 0.50, 0.46);
@@ -340,17 +366,17 @@ void main() {
   } else {
     // A painted panel, and everything drawn on it.
     //
-    // WHEEL ARCHES FIRST. A flat flank with wheels poking out from under it is
-    // the reason a boxy car model reads as a crate on castors: real sheet metal
-    // is cut away above each wheel, and that dark ellipse is most of what the
-    // eye uses to place a car in perspective. The axles are symmetric about the
-    // middle, so one distance covers both, and v is in WHEEL DIAMETERS -- the
-    // wheel centre is therefore at 0.5 on every archetype and the arch is one
-    // set of constants rather than four.
+    // THE ARCH IS REAL GEOMETRY NOW, so what is left to draw is the shadow
+    // just inside its lip: a real arch is a rolled edge with the tyre a few
+    // centimetres in behind it, and that band of shade is what gives the
+    // opening depth from an angle where you cannot see into it. The axles are
+    // symmetric about the middle, so one distance covers both, and v is in
+    // WHEEL DIAMETERS -- the wheel centre is at 0.5 on every archetype and the
+    // lip is one set of constants rather than four.
     float d = min(abs(u - axle), abs(u - (1.0 - axle)));
     vec2 q = vec2(d / 0.098, (v - 0.50) / 0.62);
-    float arch = flank * (1.0 - smoothstep(0.86, 1.04, length(q))) * detail;
-    albedo *= mix(1.0, 0.10, arch);
+    float lip = flank * smoothstep(1.22, 1.03, length(q)) * detail;
+    albedo *= mix(1.0, 0.58, lip);
 
     // Panel shut lines: the door edges, and the gap at each end of the doors.
     // Two texels wide wherever they are resolved at all, and gone the moment

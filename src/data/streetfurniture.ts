@@ -40,12 +40,14 @@
 import {
   LANE_WIDTH_M,
   parkingStripM,
+  roadLiftM,
   roadWidthM,
   RoadClass,
   ROAD_ONEWAY,
   ROAD_TUNNEL,
   type Road,
 } from "./roadpack";
+import { KERB_HEIGHT_M } from "./pavement";
 
 // --- tiling -----------------------------------------------------------------
 
@@ -428,7 +430,7 @@ export function addLamps(
     const az = -nz * side;
     out.push({
       x: cx,
-      y: world.groundY(cx, cz2),
+      y: world.groundY(cx, cz2) + roadLiftM(r.flags, r.layer) + KERB_HEIGHT_M,
       z: cz2,
       // instanceToWorld maps local +x to (cos yaw, -sin yaw); see instanced.ts.
       yaw: Math.atan2(-az, ax),
@@ -739,6 +741,13 @@ export function addTraffic(
   const lanes = trafficLaneOffsetsM(r);
   if (!lanes.length) return 0;
 
+  // THE CARRIAGEWAY IS NOT THE TERRAIN. render/roads.ts draws the deck at
+  // roadLiftM above the ground under it, so a vehicle placed at groundY sits
+  // 0.35 m BELOW the tarmac it is supposed to be standing on -- and a road
+  // wheel is 0.33 m in radius, which is why every car in every city was buried
+  // to its axles and looked like it was wading. One constant, two readers.
+  const lift = roadLiftM(r.flags, r.layer);
+
   const oneway = (r.flags & ROAD_ONEWAY) !== 0;
   const runs = runsFor(r);
   let placed = 0;
@@ -776,10 +785,10 @@ export function addTraffic(
           const h = hash1(seed * 3.1);
           out.push({
             x0: ax,
-            y0: world.groundY(ax, az),
+            y0: world.groundY(ax, az) + lift,
             z0: az,
             x1: bx,
-            y1: world.groundY(bx, bz),
+            y1: world.groundY(bx, bz) + lift,
             z1: bz,
             // Spread evenly and then jittered, so a lane is a stream with gaps
             // in it rather than a comb.
@@ -848,6 +857,10 @@ export function addParked(
   // The middle of the parking strip, which runs from the kerb inward.
   const offset = half - strip * 0.5;
 
+  // See addTraffic: the deck is lifted off the terrain and a car stands on
+  // the deck.
+  const lift = roadLiftM(r.flags, r.layer);
+
   const arc = arcLengths(r.pts);
   const total = arc[arc.length - 1];
   let placed = 0;
@@ -874,7 +887,7 @@ export function addParked(
       const az = st.dirZ * along;
       out.push({
         x: px,
-        y: world.groundY(px, pz),
+        y: world.groundY(px, pz) + lift,
         z: pz,
         yawTurns: Math.atan2(-az, ax) / (Math.PI * 2),
         archetype: hash1(seed * 7.7),

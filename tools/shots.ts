@@ -189,6 +189,30 @@ export const POSES: Pose[] = [
     what: "SF down Van Ness from the kerb, two metres up",
   },
   {
+    // A PARKED CAR, FROM SIX METRES, AT THE HEIGHT OF ITS ROOF.
+    //
+    // This pose exists because a car's wheels were invisible in every other
+    // pose in this file and nobody could tell. `sf-street` and
+    // `sf-van-ness-kerb` both look ALONG a carriageway across a raised
+    // pavement, which hides the bottom third of every vehicle beyond it, so a
+    // mesh whose wheels stood one centimetre proud of a solid flank -- no arch,
+    // nothing to see -- photographed identically to one with real arches. A
+    // pose set that cannot see the thing being worked on is a pose set that
+    // reports every version of it as fine.
+    //
+    // Computed rather than eyeballed: addParked over the committed sf pack puts
+    // a saloon at 37.788502,-122.422147 facing 189 degrees, and this stands on
+    // the carriageway 6.5 m off its road-facing flank. 58.4 m AMSL is 1.6 m
+    // over a road that measures 56.8 m, which is a person's eye and not a
+    // camera on a tripod.
+    name: "sf-parked-car",
+    city: "sf",
+    lat: 37.788447, lon: -122.422169, altM: 58.4, hdgDeg: 17, pitchDeg: -6,
+    t: D("2025-06-21T18:30:00Z"), // 11:30 PDT, the same clock as sf-street
+    wx: CLEAR,
+    what: "a parked saloon on Van Ness from six metres",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is

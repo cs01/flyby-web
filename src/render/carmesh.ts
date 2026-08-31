@@ -30,6 +30,10 @@ export const PART_GLASS = 1;
 export const PART_HEADLIGHT = 2;
 export const PART_TAILLIGHT = 3;
 export const PART_WHEEL = 4;
+/** Everything seen THROUGH a wheel arch: the inner tub and the sill under the
+ *  doors. Its own id rather than a dark body panel, because the shader draws a
+ *  rim on a wheel and must not draw one on the tub behind it. */
+export const PART_UNDER = 5;
 
 export interface CarArchetype {
   name: string;
@@ -180,6 +184,21 @@ function facet(b: Builder, c: number[], part: number, s: Surface): void {
 }
 
 /**
+ * Which faces of a prism to emit.
+ *
+ * A car built out of five overlapping boxes has a great many faces that are
+ * inside another box and can never be seen. Dropping them is not a
+ * micro-optimisation at 8,000 instances a frame: the underbody tub alone is six
+ * faces of which two are ever visible.
+ */
+const F_TOP = 1;
+const F_BOTTOM = 2;
+const F_NOSE = 4;
+const F_TAIL = 8;
+const F_FLANKS = 16;
+const F_ALL = F_TOP | F_BOTTOM | F_NOSE | F_TAIL | F_FLANKS;
+
+/**
  * A box whose top face may be shorter and narrower than its bottom one.
  *
  * With the top equal to the bottom this is an ordinary axis-aligned box. With
@@ -189,28 +208,117 @@ function facet(b: Builder, c: number[], part: number, s: Surface): void {
  */
 function prism(
   b: Builder,
-  bx0: number, bx1: number, bz: number,
-  tx0: number, tx1: number, tz: number,
+  bx0: number, bx1: number, bz0: number, bz1: number,
+  tx0: number, tx1: number, tz0: number, tz1: number,
   y0: number, y1: number,
   part: number,
   s: Surface,
+  faces: number = F_ALL,
 ): void {
   // Bottom corners, then top, both counter-clockwise seen from above.
-  const B = [[bx0, y0, -bz], [bx1, y0, -bz], [bx1, y0, bz], [bx0, y0, bz]];
-  const T = [[tx0, y1, -tz], [tx1, y1, -tz], [tx1, y1, tz], [tx0, y1, tz]];
+  const B = [[bx0, y0, bz0], [bx1, y0, bz0], [bx1, y0, bz1], [bx0, y0, bz1]];
+  const T = [[tx0, y1, tz0], [tx1, y1, tz0], [tx1, y1, tz1], [tx0, y1, tz1]];
   const flat = (r: number[][]): number[] => r.flat();
-  // Top and bottom.
-  quad(b, flat([T[0], T[3], T[2], T[1]]), [0, 1, 0], part, s);
-  quad(b, flat([B[0], B[1], B[2], B[3]]), [0, -1, 0], part, s);
-  // The four sloping sides, each wound so its computed normal faces outward.
-  facet(b, flat([B[1], T[1], T[2], B[2]]), part, s); // nose
-  facet(b, flat([B[3], T[3], T[0], B[0]]), part, s); // tail
-  facet(b, flat([B[2], T[2], T[3], B[3]]), part, s); // +z flank
-  facet(b, flat([B[0], T[0], T[1], B[1]]), part, s); // -z flank
+  if (faces & F_TOP) quad(b, flat([T[0], T[3], T[2], T[1]]), [0, 1, 0], part, s);
+  if (faces & F_BOTTOM) quad(b, flat([B[0], B[1], B[2], B[3]]), [0, -1, 0], part, s);
+  if (faces & F_NOSE) facet(b, flat([B[1], T[1], T[2], B[2]]), part, s);
+  if (faces & F_TAIL) facet(b, flat([B[3], T[3], T[0], B[0]]), part, s);
+  if (faces & F_FLANKS) {
+    facet(b, flat([B[2], T[2], T[3], B[3]]), part, s);
+    facet(b, flat([B[0], T[0], T[1], B[1]]), part, s);
+  }
+}
+
+/** A symmetric prism, which is what most of this file wants. */
+function box(
+  b: Builder,
+  x0: number, x1: number, hz: number,
+  tx0: number, tx1: number, thz: number,
+  y0: number, y1: number,
+  part: number,
+  s: Surface,
+  faces: number = F_ALL,
+): void {
+  prism(b, x0, x1, -hz, hz, tx0, tx1, -thz, thz, y0, y1, part, s, faces);
+}
+
+/**
+ * One road wheel, as an n-sided prism about the z axis.
+ *
+ * SIZED BY ITS FLAT, not by its circumradius. A polygon inscribed in the wheel
+ * radius stands on a vertex and leaves the tyre four centimetres off the road;
+ * one circumscribed about it touches along a flat, which is what a loaded tyre
+ * does anyway.
+ *
+ * The OUTBOARD face is a fan and the inboard one is not: the inboard face lives
+ * inside the arch and is back-facing from everywhere outside the car. On that
+ * fan, `v` is the radius as a fraction of the wheel, which is the whole of what
+ * the shader needs to draw a tyre wall, a rim and a hub without a second part
+ * id or a texture.
+ */
+function wheel(
+  b: Builder,
+  cx: number, cz: number, wheelR: number, halfThick: number,
+  sides: number,
+  axleFrac: number,
+): void {
+  const r = wheelR / Math.cos(Math.PI / sides);
+  const cy = wheelR;
+  const out = cz > 0 ? 1 : -1;
+  const z0 = cz - halfThick;
+  const z1 = cz + halfThick;
+  const zOut = out > 0 ? z1 : z0;
+  // A flat at the bottom: the first vertex sits half a step off the -y axis.
+  const ang = (k: number): number => (2 * Math.PI * (k + 0.5)) / sides - Math.PI / 2;
+  const px = (k: number): number => cx + r * Math.cos(ang(k));
+  const py = (k: number): number => cy + r * Math.sin(ang(k));
+  // On the tread `v` is 1 all over, so the shader's rim test cannot fire there.
+  for (let k = 0; k < sides; k++) {
+    const x0 = px(k);
+    const y0 = py(k);
+    const x1 = px(k + 1);
+    const y1 = py(k + 1);
+    const n = cross(x1 - x0, y1 - y0, 0, 0, 0, z1 - z0);
+    // The tread faces radially outward on BOTH wheels of an axle, so its
+    // winding does not depend on which side the wheel is; only the fan below,
+    // which faces along z, does.
+    const c = [x0, y0, z0, x1, y1, z0, x1, y1, z1, x0, y0, z1];
+    const base = b.pos.length / 3;
+    for (let i = 0; i < 4; i++) {
+      b.pos.push(c[i * 3], c[i * 3 + 1], c[i * 3 + 2]);
+      b.nrm.push(n[0], n[1], n[2]);
+      b.part.push(PART_WHEEL, 0.5, 1.0, axleFrac);
+    }
+    b.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  // The outboard face, as a fan about the hub.
+  const nOut = [0, 0, out];
+  for (let k = 0; k < sides; k++) {
+    const base = b.pos.length / 3;
+    const ring = [[px(k), py(k)], [px(k + 1), py(k + 1)]];
+    const tri = out > 0 ? [[cx, cy], ring[0], ring[1]] : [[cx, cy], ring[1], ring[0]];
+    for (const [x, y] of tri) {
+      b.pos.push(x, y, zOut);
+      b.nrm.push(nOut[0], nOut[1], nOut[2]);
+      // 0 at the hub, 1 at the tread. The polygon is circumscribed, so a
+      // corner is 1/cos(pi/n) out; the shader's bands are set inside that.
+      b.part.push(PART_WHEEL, 0.5, Math.hypot(x - cx, y - cy) / wheelR, axleFrac);
+    }
+    b.idx.push(base, base + 1, base + 2);
+  }
 }
 
 /**
  * Build one archetype.
+ *
+ * THE ARCHES ARE REAL. The previous mesh was a solid flank with a wheel box
+ * tucked behind it, standing one centimetre proud, and the result was a car
+ * with no visible wheels at any distance -- which is the first thing anyone
+ * notices, because a wheel arch is how the eye reads a car's size and stance.
+ * The lower body is therefore three panels with the axles missing from between
+ * them, an inner tub closing the hole, and an eight-sided wheel standing in the
+ * gap. It costs about sixty triangles a car and it is the difference between a
+ * vehicle and a crate.
  *
  * The lamp lenses stand 15 mm proud of the body face they sit on rather than
  * being coplanar with it. Coplanar would z-fight, and the alternative -- a
@@ -218,9 +326,7 @@ function prism(
  * fifteen millimetres is a real dimension a real lamp lens has.
  *
  * There is no separate roof panel. The cabin's top face is body-coloured by
- * the fragment shader, which knows a roof by its normal, and twelve triangles
- * that exist only to be a different colour are twelve triangles on the mesh
- * with more instances in the frame than anything else.
+ * the fragment shader, which knows a roof by its normal.
  */
 export function buildCarMesh(archetype: number): CarMesh {
   const a = CAR_ARCHETYPES[archetype];
@@ -229,29 +335,50 @@ export function buildCarMesh(archetype: number): CarMesh {
   const hw = a.widthM * 0.5;
   const nose = L * 0.5;
   const tail = -L * 0.5;
-  // The sill sits above the ground, so the shadow under the car has a gap in it
-  // the way a real one does.
-  const sill = a.wheelR * 0.55;
-  const axle = a.overhang / L;
+  const axleFrac = a.overhang / L;
+
+  // Arch geometry, all in wheel radii so it is the same car at every size.
+  const sill = a.wheelR * 0.55;      // bottom edge of the lower panels
+  const archTop = a.wheelR * 1.46;   // top of the opening
+  const archHalf = a.wheelR * 1.30;  // half its length
+  const axleF = nose - a.overhang;
+  const axleR = tail + a.overhang;
 
   // Body panels are measured along the whole car and in wheel diameters up,
   // which is what makes one set of arch constants fit a hatchback and a van.
-  const bodyS: Surface = { u0: tail, uSpan: L, v0: 0, vSpan: a.wheelR * 2, axle };
-  const anyS: Surface = { u0: tail, uSpan: L, v0: 0, vSpan: Math.max(a.roofM, 1e-3), axle };
+  const bodyS: Surface = { u0: tail, uSpan: L, v0: 0, vSpan: a.wheelR * 2, axle: axleFrac };
+  const anyS: Surface = { u0: tail, uSpan: L, v0: 0, vSpan: Math.max(a.roofM, 1e-3), axle: axleFrac };
 
-  // Lower body, tucked in a little at each end so the corners are not square,
-  // and a touch narrower at the waist than at the sill.
-  prism(b, tail + 0.12, nose - 0.12, hw, tail + 0.16, nose - 0.16, hw * 0.985,
-    sill, a.waistM, PART_BODY, bodyS);
-  // A dark sill band under the body: it hides the gap between the wheels and
-  // reads as shadow from any angle.
-  prism(b, tail + 0.30, nose - 0.30, hw * 0.94, tail + 0.30, nose - 0.30, hw * 0.94,
-    sill * 0.35, sill + 0.02, PART_WHEEL, anyS);
+  // The skin above the arches, running the length of the car, with a little
+  // tumblehome so there is a shoulder line to catch the light.
+  const skinX0 = tail + 0.12;
+  const skinX1 = nose - 0.12;
+  box(b, skinX0, skinX1, hw, skinX0 + 0.04, skinX1 - 0.04, hw * 0.985,
+    archTop, a.waistM, PART_BODY, bodyS, F_ALL & ~F_BOTTOM);
 
-  // Cabin. Narrower than the body, so there is a shoulder line to catch light,
-  // and raked at both ends. Glass on every face; the shader paints the roof and
-  // the posts back to body colour, which is cheaper than modelling them and
-  // puts the posts where a fragment can see them rather than where a vertex is.
+  // The three panels below it, with the arches missing from between them. Their
+  // nose and tail faces ARE the walls of each arch, so they are kept; their
+  // tops and bottoms are inside the car and are not.
+  const panelFaces = F_NOSE | F_TAIL | F_FLANKS;
+  const panels: [number, number][] = [
+    [skinX0, axleR - archHalf],
+    [axleR + archHalf, axleF - archHalf],
+    [axleF + archHalf, skinX1],
+  ];
+  for (const [x0, x1] of panels) {
+    if (x1 - x0 < 0.02) continue;
+    box(b, x0, x1, hw, x0, x1, hw, sill, archTop, PART_BODY, bodyS, panelFaces);
+  }
+
+  // The inner tub: what you see THROUGH an arch, and the sill under the doors.
+  // Two faces, because the other four are inside the car.
+  box(b, skinX0 + 0.06, skinX1 - 0.06, hw * 0.66, skinX0 + 0.06, skinX1 - 0.06, hw * 0.66,
+    sill * 0.35, a.waistM, PART_UNDER, anyS, F_FLANKS);
+
+  // Cabin. Narrower than the body, and raked at both ends. Glass on every face;
+  // the shader paints the roof and the posts back to body colour, which is
+  // cheaper than modelling them and puts the posts where a fragment can see
+  // them rather than where a vertex is.
   const c0 = tail + L * a.cabin0;
   const c1 = tail + L * a.cabin1;
   const cl = c1 - c0;
@@ -265,41 +392,28 @@ export function buildCarMesh(archetype: number): CarMesh {
   const cabinS: Surface = {
     u0: c1 - glazedLen, uSpan: glazedLen,
     v0: a.waistM - 0.02, vSpan: Math.max(a.roofM - a.waistM + 0.02, 1e-3),
-    axle,
+    axle: axleFrac,
   };
-  prism(b, c0, c1, cw, c0 + cl * a.rakeRear, c1 - cl * a.rakeFront, cw * 0.90,
-    a.waistM - 0.02, a.roofM, PART_GLASS, cabinS);
+  box(b, c0, c1, cw, c0 + cl * a.rakeRear, c1 - cl * a.rakeFront, cw * 0.90,
+    a.waistM - 0.02, a.roofM, PART_GLASS, cabinS, F_ALL & ~F_BOTTOM);
 
   // The load bed: a shallow open box behind the cabin. It is what stops a
   // pickup reading as a hatchback with a long bonnet.
   if (a.bed) {
-    prism(b, tail + 0.16, c0, hw * 0.97, tail + 0.16, c0, hw * 0.97,
-      a.waistM - 0.02, a.waistM + 0.22, PART_BODY, bodyS);
+    box(b, tail + 0.16, c0, hw * 0.97, tail + 0.16, c0, hw * 0.97,
+      a.waistM - 0.02, a.waistM + 0.22, PART_BODY, bodyS, F_ALL & ~F_BOTTOM);
   }
 
-  // Wheels, as boxes. A cylinder would be sixteen more triangles for a shape
-  // that is under two pixels wherever it is not partly hidden by its own arch.
-  const axleF = nose - a.overhang;
-  const axleR = tail + a.overhang;
+  // The wheels, standing in the arches. Flush with the flank rather than one
+  // centimetre proud of it, which is where a road wheel actually sits.
   for (const ax of [axleF, axleR]) {
     for (const zs of [-1, 1]) {
-      const zc = zs * (hw - 0.10);
-      const b0 = zc - 0.11;
-      const b1 = zc + 0.11;
-      // A wheel is placed by its own box, so it gets the whole-car surface: no
-      // shader term reads a wheel's uv.
-      prism(b, ax - a.wheelR, ax + a.wheelR, (b1 - b0) * 0.5,
-        ax - a.wheelR, ax + a.wheelR, (b1 - b0) * 0.5,
-        0.0, a.wheelR * 2, PART_WHEEL, anyS);
-      // prism is centred on z = 0, so shift the four-and-twenty vertices it
-      // just pushed onto the axle. Cheaper than a second parameterisation.
-      const n = 24 * 3;
-      for (let i = b.pos.length - n + 2; i < b.pos.length; i += 3) b.pos[i] += zc;
+      wheel(b, ax, zs * (hw - 0.115), a.wheelR, 0.105, 8, axleFrac);
     }
   }
 
   // Lamps. Two at each end, at the height a real lamp cluster sits.
-  const lensX = nose - 0.12 + 0.015;
+  const lensX = skinX1 + 0.015;
   const lensY0 = a.waistM * 0.52;
   const lensY1 = a.waistM * 0.52 + 0.20;
   for (const zs of [-1, 1]) {
@@ -307,7 +421,7 @@ export function buildCarMesh(archetype: number): CarMesh {
     const z1 = zs > 0 ? hw * 0.92 : -hw * 0.42;
     quad(b, [lensX, lensY0, z0, lensX, lensY1, z0, lensX, lensY1, z1, lensX, lensY0, z1],
       [1, 0, 0], PART_HEADLIGHT, anyS);
-    const rx = tail + 0.12 - 0.015;
+    const rx = skinX0 - 0.015;
     quad(b, [rx, lensY0, z1, rx, lensY1, z1, rx, lensY1, z0, rx, lensY0, z0],
       [-1, 0, 0], PART_TAILLIGHT, anyS);
   }
