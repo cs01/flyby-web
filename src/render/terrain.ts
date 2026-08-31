@@ -179,6 +179,76 @@ void main() {
     vegCol.g *= 1.0 + (tuft - 0.5) * 0.10 * veg;
     albedo = mix(albedo, vegCol, veg * (0.45 + 0.40 * detail));
 
+    // --- and WITHIN A FEW METRES, stop showing a photograph of grass ------
+    //
+    // Everything above modulates the drape, which is the right answer from the
+    // air and the wrong one from a footpath. The imagery is 0.47 m a pixel at
+    // its very best and several metres a pixel away from the start point, so
+    // standing on a lawn you are looking at a photo with nothing in it: a
+    // smear of green and orange blobs a metre across. No amount of saturating
+    // that makes it grass, because the structure is not there to saturate.
+    //
+    // So inside grassNear the drape stops deciding the colour and starts
+    // deciding only the TONE. Chlorophyll green, mixed by how much herbaceous
+    // cover the measurement says is there, modulated by the drape's own
+    // luminance so a mown strip stays lighter than the rough beside it and a
+    // photographed shadow stays a shadow. That is the part of the imagery that
+    // survives at this range; the hue is not.
+    //
+    // This is deliberately NOT what the block above does, and the distinction
+    // is the whole reason both exist. Mixing toward chlorophyll at ALL
+    // distances is what once painted the entire peninsula spring green, since
+    // WorldCover calls a Californian hill "grass" in June when it is straw
+    // gold. From two metres that failure cannot happen: you can see what is
+    // under your feet, and it is either grass or it is not.
+    // TWO TIERS, and they are not the same job.
+    //
+    // The HUE has to reach much further than the structure does. A lawn two
+    // hundred metres off is still unmistakably green, but the 9 cm blade noise
+    // that makes it read as grass at arm's length has no pixels to live in out
+    // there and would alias into a shimmering rash. So the colour runs out to
+    // a couple of hundred metres and the blades stop at seventy, which is what
+    // removes the band of orange smear that a single gate leaves across the
+    // middle of a park.
+    float grassFar = smoothstep(260.0, 60.0, vViewDist);
+    float grassNear = smoothstep(70.0, 14.0, vViewDist);
+    if (grassFar > 0.001 && herb > 0.05) {
+      // Blades at ~9 cm and clumps at ~45 cm. Two scales, because a lawn read
+      // from a metre away has both and one alone reads as noise. The blade
+      // octave is faded out with the near gate rather than switched off, so it
+      // dissolves instead of ending on a line.
+      float blade = grassNear > 0.0 ? vnoise2(vWorld.xz * 11.0) : 0.5;
+      float clod  = vnoise2(vWorld.xz * 2.2 + vec2(4.7, 9.1));
+      float g = mix(clod, 0.62 * blade + 0.38 * clod, grassNear);
+
+      // A real lawn is not one green. It runs from a yellow-green in the sun
+      // to a blue-green in the thatch, and that spread is most of what makes
+      // it read as living material rather than as paint.
+      vec3 dry  = vec3(0.145, 0.132, 0.052);
+      vec3 lush = vec3(0.048, 0.098, 0.032);
+      vec3 grass = mix(dry, lush, smoothstep(0.25, 0.80, clod));
+      grass *= 0.72 + 0.56 * g;
+
+      // Keep the drape's tone: lum is its luminance before any of this, so a
+      // path worn through the grass, a shadow and a bare patch all survive.
+      float shade = clamp(lum / 0.16, 0.45, 1.7);
+      grass *= shade;
+
+      albedo = mix(albedo, grass, herb * min(0.88, 0.52 * grassFar + 0.36 * grassNear));
+
+      // And it has to catch the light like grass, not like tarmac painted
+      // green. The normal wobble is small on purpose: at 9 cm a strong one is
+      // a field of hard dots the moment the period drops under a pixel.
+      if (grassNear > 0.0) {
+        const float GE = 0.06;
+        float gx = vnoise2((vWorld.xz + vec2(GE, 0.0)) * 11.0)
+                 - vnoise2((vWorld.xz - vec2(GE, 0.0)) * 11.0);
+        float gz = vnoise2((vWorld.xz + vec2(0.0, GE)) * 11.0)
+                 - vnoise2((vWorld.xz - vec2(0.0, GE)) * 11.0);
+        n = normalize(n + vec3(-gx, 0.0, -gz) * 0.55 * herb * grassNear);
+      }
+    }
+
     // Under a canopy the floor is genuinely dark, and the dapple stands in for
     // the crown shadows the instanced trees stop drawing past their own fade.
     // The handoff between the two is what keeps a forest reading as a forest

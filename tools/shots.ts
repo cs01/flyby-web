@@ -248,6 +248,22 @@ export const POSES: Pose[] = [
     what: "straight down over the Sunset, for drape colour",
   },
   {
+    // CENTRAL PARK FROM A FOOTPATH, which is the only place in the set where
+    // grass fills the frame.
+    //
+    // Every other ground-level pose is on a carriageway between buildings, so
+    // the vegetation material was never once photographed at the range it
+    // exists for -- and from two metres the drape is a satellite photo at
+    // several metres a pixel, which is a smear of green and orange blobs a
+    // metre across. That is what this watches.
+    name: "central-park-path",
+    city: "manhattan",
+    lat: 40.7712, lon: -73.9740, altM: 34, hdgDeg: 340, pitchDeg: -6,
+    t: D("2025-06-21T15:00:00Z"), // 11:00 EDT
+    wx: CLEAR,
+    what: "Central Park from a path, two metres up",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is
