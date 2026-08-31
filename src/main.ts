@@ -1417,7 +1417,12 @@ async function main() {
       ...(traffic ? [traffic.depthScene] : []),
       ...(parkedCars ? [parkedCars.depthScene] : []),
     ];
-    const extraCasters = foliage ? [foliage.depthScene] : [];
+    // The AO prepass needs the SAME list. Anything whose vertex shader places
+    // it, and which is therefore absent from this buffer, does not merely fail
+    // to occlude its neighbours: its own fragments read the sky occlusion of
+    // whatever is BEHIND it. A car in a street canyon then shades against the
+    // pavement under the far kerb and comes out black, which is exactly what it
+    // did until this line stopped being a shorter list than the one above it.
     sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale, shadowCasters);
     // The environment probe renders the city into a cube with its own camera
     // and its own viewport, where a gl_FragCoord lookup into a buffer built for
@@ -1426,7 +1431,7 @@ async function main() {
     setAo(0);
     model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
     sky.syncCamera(camera);
-    ao.render(renderer, scene, camera, extraCasters);
+    ao.render(renderer, scene, camera, shadowCasters);
     setAo(1);
 
     // Drift angle: the difference between where the nose points and where the

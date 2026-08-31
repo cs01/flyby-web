@@ -88,16 +88,22 @@ const RUN_END_FADE = 0.04;
 const BODY_COLOURS: [number, number, number][] = [
   [0.62, 0.62, 0.63], // white
   [0.62, 0.62, 0.63],
-  [0.030, 0.030, 0.032], // black
-  [0.030, 0.030, 0.032],
-  [0.115, 0.118, 0.125], // grey
+  // Black car paint measures four to six per cent diffuse, not three: the
+  // three was a guess, and it put a third of the fleet at 7 of 255 against a
+  // pavement at 81 whenever the street was in its own shadow. Two slots of it
+  // was also too many -- black is about a fifth of the real fleet, not a third
+  // -- so the second one is now the dark grey that a lot of "black" cars
+  // actually are.
+  [0.048, 0.048, 0.051], // black
+  [0.088, 0.088, 0.093], // graphite
+  [0.125, 0.128, 0.135], // grey
   [0.205, 0.212, 0.222], // silver
   [0.205, 0.212, 0.222],
   [0.155, 0.020, 0.018], // red
   [0.022, 0.040, 0.115], // blue
   [0.030, 0.062, 0.038], // green
   [0.145, 0.100, 0.030], // beige
-  [0.085, 0.085, 0.090], // dark grey
+  [0.095, 0.095, 0.100], // dark grey
 ];
 
 const PALETTE_GLSL = /* glsl */ `
@@ -124,7 +130,7 @@ const VERT_COMMON = /* glsl */ `
 precision highp float;
 in vec3 position;
 in vec3 normal;
-in vec2 aPart;   // x part id, y 0 at the tail to 1 at the nose
+in vec4 aPart;   // see CarMesh.aPart: part id, u, v, axle inset
 
 in vec4 iRoute;  // x0, z0, x1, z1
 in vec4 iDrive;  // phase 0..1 (a parked car packs its heading here), turns per
@@ -202,7 +208,7 @@ const VERT = /* glsl */ `
 ${VERT_COMMON}
 out vec3 vNormal;
 out vec3 vWorld;
-out vec2 vPart;
+out vec4 vPart;
 out vec2 vLook;
 out float vViewDist;
 
@@ -235,7 +241,7 @@ const FRAG = /* glsl */ `
 precision highp float;
 in vec3 vNormal;
 in vec3 vWorld;
-in vec2 vPart;
+in vec4 vPart;
 in vec2 vLook;
 in float vViewDist;
 out vec4 fragColor;
@@ -266,22 +272,100 @@ uniform float uMoving;
 void main() {
   vec3 n = normalize(vNormal);
   float part = vPart.x;
+  float u = vPart.y;      // 0 at the tail of this part, 1 at its nose
+  float v = vPart.z;      // up the part; wheel diameters on a body panel
+  float axle = vPart.w;   // where the axles sit, as a fraction of the length
   vec3 body = bodyColour(vLook.x);
 
-  // Glass is dark and reflective, wheels are near black, the lamps are their
-  // own thing. Four branches on a part id rather than four materials, because
-  // four materials is four draw calls per archetype per field.
+  // Which part this is. Four ranges on one id rather than four materials,
+  // because four materials is four draw calls per archetype per field.
   float isGlass = step(0.5, part) * step(part, 1.5);
   float isHead  = step(1.5, part) * step(part, 2.5);
   float isTail  = step(2.5, part) * step(part, 3.5);
   float isWheel = step(3.5, part);
+  // A flank, as against a roof, a nose or a tail. Everything below that is
+  // drawn rather than modelled -- the arches, the shut lines, the posts --
+  // belongs on a flank and nowhere else.
+  float flank = step(0.55, abs(n.z));
+
+  // How much of the part one pixel covers. Everything drawn on the paint has
+  // to dissolve before it goes sub-pixel: three door posts alternating with
+  // three panes of glass across nine pixels is a checkerboard, and a street of
+  // parked cars a hundred metres off is exactly where that happens. The same
+  // rule the road markings already follow.
+  float px = max(fwidth(u), fwidth(v));
+  float detail = 1.0 - smoothstep(0.020, 0.075, px);
 
   vec3 albedo = body;
-  albedo = mix(albedo, vec3(0.022, 0.024, 0.028), isGlass);
-  albedo = mix(albedo, vec3(0.012, 0.012, 0.013), isWheel);
-  albedo = mix(albedo, vec3(0.52, 0.50, 0.46), isHead);
-  albedo = mix(albedo, vec3(0.28, 0.030, 0.024), isTail);
+  // How much of this fragment is actually GLAZING, as against a painted part of
+  // the cabin box. Only glazing gets the mirror term below, which is the whole
+  // difference between a window and a black panel.
+  float glazed = 0.0;
+  // Clearcoat, on paint and glass, absent on rubber.
+  float gloss = 0.55;
 
+  if (isGlass > 0.5) {
+    // The cabin is one box, so the roof and the posts have to be found rather
+    // than modelled. The roof is the face pointing up. The posts are three
+    // bands across the flank: the A post ahead of the windscreen, the C post
+    // behind the rear quarter, and a B post at the door shut. Between them is
+    // glass, and it is that alternation -- not the shape of the box -- that
+    // makes a cabin read as a cabin.
+    float post = max(smoothstep(0.16, 0.06, u), smoothstep(0.84, 0.94, u));
+    post = max(post, (1.0 - smoothstep(0.0, 0.045, abs(u - 0.52)))
+                     * step(0.30, u) * step(u, 0.74));
+    float roof = smoothstep(0.55, 0.80, n.y);
+    // Aft of where the glazing ends, u goes negative and the panel is metal on
+    // EVERY face, not just the flanks: the back of a van is a door, not a
+    // window. A car's cabin is glazed to its own back edge and never reaches
+    // here, which is why the ramp starts below zero rather than at it.
+    float behind = 1.0 - smoothstep(-0.10, -0.02, u);
+    float painted = max(max(roof, behind), flank * post * detail);
+    // The rubber at the bottom edge of the glazing, and the black frit band a
+    // real windscreen is bonded through.
+    float seal = 1.0 - smoothstep(0.02, 0.075, v);
+    glazed = (1.0 - painted) * (1.0 - seal);
+    albedo = mix(vec3(0.016, 0.018, 0.022), body, painted);
+    albedo = mix(albedo, vec3(0.010, 0.010, 0.011), seal * (1.0 - painted));
+    gloss = mix(0.92, 0.55, painted);
+  } else if (isWheel > 0.5) {
+    albedo = vec3(0.012, 0.012, 0.013);
+    gloss = 0.0;
+  } else if (isHead > 0.5) {
+    albedo = vec3(0.52, 0.50, 0.46);
+    gloss = 0.9;
+  } else if (isTail > 0.5) {
+    albedo = vec3(0.28, 0.030, 0.024);
+    gloss = 0.9;
+  } else {
+    // A painted panel, and everything drawn on it.
+    //
+    // WHEEL ARCHES FIRST. A flat flank with wheels poking out from under it is
+    // the reason a boxy car model reads as a crate on castors: real sheet metal
+    // is cut away above each wheel, and that dark ellipse is most of what the
+    // eye uses to place a car in perspective. The axles are symmetric about the
+    // middle, so one distance covers both, and v is in WHEEL DIAMETERS -- the
+    // wheel centre is therefore at 0.5 on every archetype and the arch is one
+    // set of constants rather than four.
+    float d = min(abs(u - axle), abs(u - (1.0 - axle)));
+    vec2 q = vec2(d / 0.098, (v - 0.50) / 0.62);
+    float arch = flank * (1.0 - smoothstep(0.86, 1.04, length(q))) * detail;
+    albedo *= mix(1.0, 0.10, arch);
+
+    // Panel shut lines: the door edges, and the gap at each end of the doors.
+    // Two texels wide wherever they are resolved at all, and gone the moment
+    // they are not, so a car at fifty metres does not shimmer.
+    float shutU = min(abs(u - 0.34), abs(u - 0.62));
+    float shut = flank * (1.0 - smoothstep(0.004, 0.010, shutU))
+              * smoothstep(0.55, 0.75, v) * detail;
+    albedo *= mix(1.0, 0.34, shut);
+
+    // A rubbing strip along the flank at bumper height, and the dirt every car
+    // carries up from the sill. Both darken the bottom of the panel, which is
+    // what stops a white car reading as a sheet of paper.
+    albedo *= mix(0.66, 1.0, smoothstep(0.42, 1.05, v));
+    gloss = 0.62;
+  }
   float ndl = max(0.0, dot(n, uSunDir));
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
   vec3 sunE = uSunColor * uSunIntensity * uSunSurface * sunT;
@@ -292,8 +376,8 @@ void main() {
   vec3 lit = albedo * (sunE * ndl * sunVis + ambient + moon);
 
   // The specular is what makes a painted panel read as a painted panel. Sharp
-  // on the body, sharper on the glass, absent on the wheels.
-  float gloss = mix(mix(0.55, 0.9, isGlass), 0.0, isWheel);
+  // on the body, sharper on the glass, absent on the wheels; set with the
+  // albedo above, because which part it is decides both.
   if (gloss > 0.01) {
     vec3 vdir = normalize(uCameraPos - vWorld);
     vec3 hv = normalize(vdir + uSunDir);
@@ -309,8 +393,24 @@ void main() {
     // multiply-adds instead of a filtered cube fetch on the shader that runs on
     // more instances than anything else in the frame.
     vec3 refl = reflect(-vdir, n);
-    float f = pow(1.0 - clamp(dot(vdir, n), 0.0, 1.0), 5.0);
-    lit += shIrradiance(refl) * mix(0.045, 0.5, f) * gloss;
+    // Schlick, against the SH probe's own convention: shIrradiance returns
+    // pi * L for a constant environment, and a MIRROR wants L, so the fetch is
+    // divided by pi before the Fresnel weight is applied. Getting that wrong is
+    // not a subtle error on glass: a windscreen has an albedo of 0.02 and every
+    // bit of its brightness is this term, so an under-weighted reflection does
+    // not make the glass slightly dark, it makes it black. It did, until the
+    // weight stopped being an eyeballed 0.045.
+    float cosv = clamp(dot(vdir, n), 0.0, 1.0);
+    // Flat glass takes Schlick exactly, because a windscreen IS flat. Sheet
+    // metal does not, and the reason is the model rather than the physics: a
+    // real wing is curved, so a real flank shows the sky over a whole spread of
+    // incidences at once and never at only the one this flat quad has. A softer
+    // exponent over a raised floor is that spread. Without it a black car is a
+    // black rectangle -- 7 of 255 against a pavement at 81 -- because 3% paint
+    // under a 4% head-on Fresnel has nowhere to get any light from.
+    float fGlass = 0.04 + 0.96 * pow(1.0 - cosv, 5.0);
+    float fPaint = 0.075 + 0.60 * pow(1.0 - cosv, 3.0);
+    lit += shIrradiance(refl) * 0.31831 * mix(fPaint, fGlass, glazed) * gloss;
   }
 
   lit += albedo * uNightGlow * uNight * 0.6;
@@ -482,7 +582,7 @@ abstract class CarField {
       const base = new THREE.BufferGeometry();
       base.setAttribute("position", new THREE.BufferAttribute(mesh.position, 3));
       base.setAttribute("normal", new THREE.BufferAttribute(mesh.normal, 3));
-      base.setAttribute("aPart", new THREE.BufferAttribute(mesh.aPart, 2));
+      base.setAttribute("aPart", new THREE.BufferAttribute(mesh.aPart, 4));
       base.setIndex(new THREE.BufferAttribute(mesh.index, 1));
 
       const field = new InstancedField(base, per, [
