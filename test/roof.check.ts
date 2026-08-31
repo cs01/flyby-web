@@ -21,7 +21,16 @@
 import { readdirSync } from "node:fs";
 import { parseCityPack } from "../src/data/citypack";
 import { facadeFor } from "../src/render/facade";
-import { addBuilding, emptyScratch, type RoofExtras } from "../src/render/buildings";
+import {
+  PART_CLUTTER,
+  PART_PARAPET,
+  PART_SHINGLE,
+  addBuilding,
+  emptyScratch,
+  insideRing,
+  pitchFor,
+  type RoofExtras,
+} from "../src/render/buildings";
 
 const DIR = "public/cities";
 let failures = 0;
@@ -79,6 +88,54 @@ for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
   const name = file.replace(".city", "");
   check(`${name} roofs face up`, roofPct > 99, `${roofPct.toFixed(1)}% of ${roofUp + roofDown} (want >99)`);
   check(`${name} walls face outward`, wallPct > 99, `${wallPct.toFixed(1)}% of ${wallOut + wallIn} (want >99)`);
+
+  // --- The pitched roof -------------------------------------------------
+  //
+  // Which buildings took the pitch is asked of buildings.ts rather than
+  // decided again here, for the reason in this file's header: a second copy of
+  // the rule would only ever agree with itself. What IS checked here is the
+  // geometry that came out, one building at a time so a failure names a
+  // footprint instead of a pack.
+  let pitched = 0;
+  let withParapet = 0, withClutter = 0, ridgeMoved = 0, wallTooShort = 0, noOverhang = 0;
+
+  for (const [i, b] of pack.buildings.slice(0, 3000).entries()) {
+    const height = b.topM - b.baseM;
+    const fp = facadeFor(b.kind, height, i);
+    // The seed addBuilding derives for this building.
+    if (!pitchFor(b, height, fp.seed * 4096)) continue;
+    pitched++;
+
+    const one = emptyScratch();
+    addBuilding(one, b, 0, i, extras, fp);
+
+    let maxY = -Infinity;
+    let wallH = Infinity;
+    let outside = 0;
+    for (let v = 0; v * 3 < one.pos.length; v++) {
+      const part = one.info[v * 4 + 3];
+      if (part === PART_PARAPET) withParapet++;
+      if (part === PART_CLUTTER) withClutter++;
+      maxY = Math.max(maxY, one.pos[v * 3 + 1]);
+      wallH = Math.min(wallH, one.info[v * 4 + 1]);
+      // An eave that projects has to land outside the footprint it projects
+      // over. Nothing else in the file measures the overhang at all.
+      if (part === PART_SHINGLE && !insideRing(b.ring, one.pos[v * 3], one.pos[v * 3 + 2])) outside++;
+    }
+    // The ridge takes the flat top's place exactly: the drone collider and the
+    // skyline both read topM and neither is told about the roof.
+    if (Math.abs(maxY - b.topM) > 1e-3) ridgeMoved++;
+    // What is left under the tent still has to be a storey.
+    if (wallH < 2.4 - 1e-6) wallTooShort++;
+    if (outside === 0) noOverhang++;
+  }
+
+  check(`${name} pitched roofs built`, pitched > 0, `${pitched} of 3000 sampled`);
+  check(`${name} pitched: no parapet`, withParapet === 0, `${withParapet} parapet vertices (want 0)`);
+  check(`${name} pitched: no plant`, withClutter === 0, `${withClutter} clutter vertices (want 0)`);
+  check(`${name} pitched: ridge at top`, ridgeMoved === 0, `${ridgeMoved} of ${pitched} moved the top`);
+  check(`${name} pitched: wall >= 2.4 m`, wallTooShort === 0, `${wallTooShort} of ${pitched} under 2.4 m`);
+  check(`${name} pitched: eave overhangs`, noOverhang === 0, `${noOverhang} of ${pitched} inside the ring`);
 }
 
 console.log(failures === 0 ? "\nall façade windings ok" : `\n${failures} winding check(s) FAILED`);

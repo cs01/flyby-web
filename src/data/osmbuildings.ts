@@ -219,7 +219,14 @@ const ROOF_BY_SHAPE: Record<string, RoofShape> = {
   tented: RoofShape.Tapered,
 };
 
-export function classifyRoof(tags: Record<string, string>, kind: BuildingKind): RoofShape {
+/** Above this, an untagged residential building is flat. See below. */
+export const PITCHED_MAX_M = 15;
+
+export function classifyRoof(
+  tags: Record<string, string>,
+  kind: BuildingKind,
+  topM: number,
+): RoofShape {
   const shape = (tags["roof:shape"] ?? tags["building:roof:shape"] ?? "").toLowerCase();
   const mapped = ROOF_BY_SHAPE[shape];
   if (mapped !== undefined) return mapped;
@@ -227,7 +234,16 @@ export function classifyRoof(tags: Record<string, string>, kind: BuildingKind): 
   const b = (tags["building"] ?? "").toLowerCase();
   if (b === "church" || b === "cathedral" || b === "chapel") return RoofShape.Tapered;
   if (b === "mosque" || b === "temple" || b === "synagogue") return RoofShape.Dome;
-  if (kind === BuildingKind.Residential && b !== "apartments") return RoofShape.Pitched;
+  // Height gates the guess, and it has to: `building=residential` is tagged on
+  // 200 m towers as readily as on bungalows, and without this a Hong Kong
+  // block came out with a 4.5 m tent on top of it. A pitched roof spans the
+  // building, so it survives to about four storeys and then stops; anything
+  // taller has a flat deck with the plant on it. A roof:shape that somebody
+  // actually mapped is still believed at any height, because it is evidence
+  // rather than a guess.
+  if (kind === BuildingKind.Residential && b !== "apartments" && topM <= PITCHED_MAX_M) {
+    return RoofShape.Pitched;
+  }
   return RoofShape.Flat;
 }
 
@@ -426,7 +442,7 @@ export function buildingsFromOsm(
       continue;
     }
     const kind = classifyKind(tags, heights.topM);
-    const roof = classifyRoof(tags, kind);
+    const roof = classifyRoof(tags, kind, heights.topM);
 
     for (const ring of rings) {
       const area = signedArea(ring);

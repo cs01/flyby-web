@@ -328,12 +328,18 @@ const kindCases: [Record<string, string>, number, BuildingKind, RoofShape][] = [
   [{ building: "yes", "roof:shape": "gabled" }, 9, BuildingKind.Generic, RoofShape.Pitched],
   [{ building: "yes", "roof:shape": "onion" }, 9, BuildingKind.Generic, RoofShape.Dome],
   [{ building: "yes", shop: "bakery" }, 9, BuildingKind.Retail, RoofShape.Flat],
+  // Height gates the untagged residential guess, and an explicit roof:shape
+  // does not care: `building=residential` sits on Hong Kong towers as readily
+  // as on bungalows.
+  [{ building: "house" }, 7, BuildingKind.Residential, RoofShape.Pitched],
+  [{ building: "residential" }, 60, BuildingKind.Residential, RoofShape.Flat],
+  [{ building: "residential", "roof:shape": "gabled" }, 60, BuildingKind.Residential, RoofShape.Pitched],
 ];
 let classOk = true;
 const classDetail: string[] = [];
 for (const [tags, h, wantKind, wantRoof] of kindCases) {
   const k = classifyKind(tags, h);
-  const r = classifyRoof(tags, k);
+  const r = classifyRoof(tags, k, h);
   if (k !== wantKind || r !== wantRoof) {
     classOk = false;
     classDetail.push(`${JSON.stringify(tags)} @ ${h} m -> kind ${k}/${wantKind} roof ${r}/${wantRoof}`);

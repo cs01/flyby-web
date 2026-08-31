@@ -41,7 +41,13 @@ import {
   packFacade,
   type FacadeParams,
 } from "./facade";
-import { footprintGroundY, type Building, type CityPack } from "../data/citypack";
+import {
+  BuildingKind,
+  RoofShape,
+  footprintGroundY,
+  type Building,
+  type CityPack,
+} from "../data/citypack";
 
 const CELL_M = 1500;
 
@@ -103,7 +109,19 @@ export interface RoofExtras {
 
 const NO_EXTRAS: RoofExtras = { parapet: false, boxes: 0, overrun: false };
 
-function roofExtras(distM: number, k: number, heightM: number, areaM2: number): RoofExtras {
+function roofExtras(
+  distM: number,
+  k: number,
+  heightM: number,
+  areaM2: number,
+  kind: BuildingKind,
+  roof: RoofShape,
+): RoofExtras {
+  // A parapet exists to hide roof plant and to give a fire separation on a flat
+  // commercial roof. Nothing residential has one, and nothing with a pitch to
+  // it could: the wall stops at the eave. Putting a chiller on a house is the
+  // same mistake seen from further away.
+  if (roof !== RoofShape.Flat || kind === BuildingKind.Residential) return NO_EXTRAS;
   if (heightM < 6 || areaM2 < 120) return NO_EXTRAS;
   const parapet = distM < PARAPET_M / k;
   if (!parapet) return NO_EXTRAS;
@@ -136,8 +154,12 @@ function solveLod(pack: CityPack, triangleBudget: number): number {
       if (h < minHeightAt(dist, k)) continue;
       const n = b.ring.length / 2;
       tris += triangleCost(n);
+      // The tent, when this footprint gets one. A hip is 4 to 6 and a gable is
+      // 6, so 8 deliberately overestimates: the pitch itself also depends on
+      // the OBB fill test, which is far too expensive to run inside this loop.
+      if (b.roof === RoofShape.Pitched && h >= 4.0 && h <= 20.0) tris += 8;
       if (dist < PARAPET_M / k) {
-        tris += extrasCost(n, roofExtras(dist, k, h, Math.abs(signedArea(b.ring))));
+        tris += extrasCost(n, roofExtras(dist, k, h, Math.abs(signedArea(b.ring)), b.kind, b.roof));
       }
       if (tris > triangleBudget) break;
     }
@@ -174,10 +196,18 @@ void main() {
 `;
 
 /** info.w: which piece of the building a fragment belongs to. */
-const PART_WALL = 0;
-const PART_ROOF = 1;
-const PART_PARAPET = 2;
-const PART_CLUTTER = 3;
+export const PART_WALL = 0;
+export const PART_ROOF = 1;
+export const PART_PARAPET = 2;
+export const PART_CLUTTER = 3;
+export const PART_SHINGLE = 4;
+/**
+ * The vertical triangle under a gable ridge. It is siding, so it runs the
+ * facade branch; it needs a tag of its own only because it is the one wall
+ * piece that legitimately reaches above info.y, where PART_WALL would take it
+ * for a parapet and paint it with the coping's pale grey.
+ */
+export const PART_GABLE = 5;
 
 const FRAG = /* glsl */ `
 precision highp float;
@@ -274,6 +304,11 @@ void main() {
   vec3 n = normalize(vNormal);
   vec3 albedo = fp.colour;
 
+  // Roughness is a local, not fp.roughness read straight through, because the
+  // shingle branch has to override it: a facade family's roughness describes
+  // its WALL, and a house's wall and its roof covering are not the same stuff.
+  float roughness = fp.roughness;
+
   // A lit window EMITS. It was being added into the albedo, which then went
   // through the sun and ambient terms like everything else -- so a lit window
   // got dimmer at night, which is the one time it is supposed to be the
@@ -288,7 +323,48 @@ void main() {
   // 1.0 on a roof; less and less as you go down into a street canyon.
   float skyOcc = 1.0;
 
-  if (part < 0.5) {
+  // PART_GABLE shares the facade branch, so the chain cannot be a plain
+  // ascending ladder any more: the shingle test has to come first (it is the
+  // highest tag but the clutter branch is the trailing else), and the gable
+  // has to be pulled back out of it.
+  bool gableEnd = part > 4.5;
+
+  if (part > 3.5 && !gableEnd) {
+    // --- Shingle --------------------------------------------------------
+    // Asphalt shingle or tile, and it is DARK: a real roof covering is
+    // 0.05-0.14 linear, which is well under any wall it sits on.
+    float pick = hash11(fp.seed * 23.0 + 1.0);
+    vec3 cover = pick < 0.45 ? vec3(0.045, 0.046, 0.049)      // charcoal asphalt
+               : pick < 0.80 ? vec3(0.078, 0.070, 0.060)      // weathered grey-brown
+                             : vec3(0.105, 0.060, 0.044);     // faded clay tile
+    // Granules, on the smooth noise for the same reason the flat roof uses it:
+    // from the air this is the largest surface in the frame, and a lattice of
+    // flat random squares seen from above reads as pixelation.
+    float grain = vnoise(vWorld.xz * 5.5 + fp.seed * 31.0);
+    albedo = cover * (0.88 + 0.24 * grain);
+
+    // THE COURSES. This is the thing that says shingle rather than grey slab:
+    // a 0.30 m band up the slope with its lower edge in its own shadow, and a
+    // weaker tab break across it every 0.90 m.
+    //
+    // Filtered and faded exactly the way the wall's mortar course is: a 0.3 m
+    // stripe is under a pixel from any height worth flying, and point-sampling
+    // it would moire against the pixel grid rather than converge.
+    float cy = vUv.y / 0.30;
+    float wy = max(fwidth(cy), 1e-4);
+    float courseFade = 1.0 - clamp(wy * 1.6, 0.0, 1.0);
+    float course = 1.0 - smoothstep(0.0, max(0.18, wy), fract(cy));
+    float cx = vUv.x / 0.90;
+    float wx = max(fwidth(cx), 1e-4);
+    float tabFade = 1.0 - clamp(wx * 1.6, 0.0, 1.0);
+    float tab = 1.0 - smoothstep(0.0, max(0.10, wx), fract(cx));
+    albedo *= 1.0 - 0.18 * course * courseFade - 0.08 * tab * tabFade;
+
+    roughness = 0.92;    // shingle is matte, whatever the wall under it is
+    skyOcc = 1.0;        // a pitched roof sees the whole dome
+    glassMask = 0.0;
+    // n is left alone: the tent carries a real per-face normal already.
+  } else if (part < 0.5 || gableEnd) {
     // --- Facade ---------------------------------------------------------
     // Storey and column pitch are per BUILDING, out of the parameter texture.
     // A curtain wall's mullions are 1.6 m apart and a brick terrace's windows
@@ -586,7 +662,10 @@ void main() {
       }
     }
 
-    if (capped < 0.5) {
+    // Above the wall top, a PART_WALL fragment is the outer face of the
+    // parapet. A gable end is above it too and is not: it is the same siding
+    // carried up to the ridge.
+    if (capped < 0.5 && !gableEnd) {
       albedo = parapetColour(fp);
       skyOcc = 0.9;
     }
@@ -762,18 +841,18 @@ void main() {
     //
     // Skyglow is added on top because the probe has no city in it, and after
     // dark a glass tower reflects the city rather than the sky.
-    vec3 skyRefl = textureLod(uEnv, refl, clamp(fp.roughness, 0.0, 1.0) * uEnvMaxLod).rgb
+    vec3 skyRefl = textureLod(uEnv, refl, clamp(roughness, 0.0, 1.0) * uEnvMaxLod).rgb
                  + uNightGlow * 0.4;
     // Schlick, with the 4% normal-incidence reflectance of glass.
     float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
     float fres = 0.04 + 0.96 * f;
-    lit = mix(lit, skyRefl, fres * glassMask * (1.0 - fp.roughness * 0.6));
+    lit = mix(lit, skyRefl, fres * glassMask * (1.0 - roughness * 0.6));
   }
 
   // Specular: a tight sun glint on glass, a broad one on wet stone.
   float gloss = max(glassMask, uWetness);
   if (gloss > 0.02) {
-    float shine = mix(900.0, 40.0, fp.roughness);
+    float shine = mix(900.0, 40.0, roughness);
     vec3 h = normalize(v + uSunDir);
     float spec = pow(max(0.0, dot(n, h)), shine);
     lit += uSunColor * uSunIntensity * uSunSurface * sunT * spec * gloss * 1.4 * sunVis;
@@ -866,7 +945,7 @@ export function emptyScratch(): Scratch {
 }
 
 /** True when (x, z) is inside the ring. Standard crossing count. */
-function insideRing(ring: Float32Array, x: number, z: number): boolean {
+export function insideRing(ring: Float32Array, x: number, z: number): boolean {
   let inside = false;
   const n = ring.length / 2;
   for (let i = 0, j = n - 1; i < n; j = i++) {
@@ -976,6 +1055,260 @@ function addRoofPlant(
   }
 }
 
+/**
+ * The oriented bounding box of a footprint: centre, long axis, half-extents.
+ *
+ * Exported because test/roof.check.ts measures the tent against the same box
+ * the tent was built on, rather than against a second copy of this search.
+ */
+export interface Obb {
+  cx: number;
+  cz: number;
+  /** Unit LONG axis. The short axis is v = (-uz, ux). */
+  ux: number;
+  uz: number;
+  halfL: number;
+  /** Always <= halfL: the axes are swapped rather than left in edge order. */
+  halfW: number;
+  area: number;
+}
+
+/**
+ * Minimum-area rectangle by rotating callipers' cheap cousin: the optimal
+ * rectangle is flush with some edge of the convex hull, so trying every EDGE
+ * direction and keeping the smallest finds it (and on a non-convex ring it
+ * finds something at least as tight as the axis-aligned box, which is all this
+ * is used for).
+ *
+ * O(n^2), which is why the caller caps the vertex count.
+ */
+export function footprintObb(ring: Float32Array): Obb | null {
+  const n = ring.length / 2;
+  if (n < 3) return null;
+
+  let best = Infinity;
+  let bux = 1, buz = 0, bu0 = 0, bu1 = 0, bv0 = 0, bv1 = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = ring[j * 2] - ring[i * 2];
+    const dz = ring[j * 2 + 1] - ring[i * 2 + 1];
+    const len = Math.hypot(dx, dz);
+    // A near-duplicate vertex gives a direction that is pure rounding noise.
+    if (len < 0.05) continue;
+    const ux = dx / len, uz = dz / len;
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let k = 0; k < n; k++) {
+      const x = ring[k * 2], z = ring[k * 2 + 1];
+      const u = x * ux + z * uz;
+      const v = -x * uz + z * ux;
+      if (u < u0) u0 = u;
+      if (u > u1) u1 = u;
+      if (v < v0) v0 = v;
+      if (v > v1) v1 = v;
+    }
+    const area = (u1 - u0) * (v1 - v0);
+    if (area < best) {
+      best = area;
+      bux = ux; buz = uz;
+      bu0 = u0; bu1 = u1; bv0 = v0; bv1 = v1;
+    }
+  }
+  if (!isFinite(best)) return null;
+
+  const cu = (bu0 + bu1) / 2, cv = (bv0 + bv1) / 2;
+  const cx = cu * bux + cv * -buz;
+  const cz = cu * buz + cv * bux;
+  let halfL = (bu1 - bu0) / 2;
+  let halfW = (bv1 - bv0) / 2;
+  let ux = bux, uz = buz;
+  if (halfW > halfL) {
+    // Rotate the frame onto v rather than just relabelling the extents: taking
+    // u' = (-uz, ux) keeps v' = (-u'z, u'x) = -u, so the frame stays right
+    // handed and every winding worked out in it stays valid.
+    ux = -buz; uz = bux;
+    const t = halfL; halfL = halfW; halfW = t;
+  }
+  if (halfW < 0.5) return null;
+  return { cx, cz, ux, uz, halfL, halfW, area: 4 * halfL * halfW };
+}
+
+/** Eave and rake projection past the wall, in metres. */
+const OVERHANG_M = 0.45;
+
+/**
+ * Tallest building that gets a tent.
+ *
+ * The renderer's own bound, deliberately looser than the classifier's
+ * PITCHED_MAX_M and independent of it: the rise below is clamped to 4.5 m, and
+ * 4.5 m of roof on a 30 m building is not a roof, it is a hat. Keeping it here
+ * as well as in classifyRoof is what repairs a pack baked before the classifier
+ * learned this, which is every pack in public/cities, without a rebake.
+ */
+const PITCH_MAX_M = 20.0;
+
+/** The roof's own hash salt, kept clear of the plant's 0x800 / 0x900. */
+const ROOF_SALT = 0xf00f;
+
+/** What a pitched roof turned out to be, or null if this footprint gets none. */
+export interface Pitch {
+  obb: Obb;
+  /**
+   * Ridge height above the eave. It comes off the WALL rather than sitting on
+   * top of it: OSM's `height` already includes the roof, and the drone collider
+   * in sim/citycollision.ts keys off topM, so the ridge has to land exactly
+   * where the flat top used to.
+   */
+  rise: number;
+  /** Vertical siding at the ends instead of a fourth and fifth slope. */
+  gable: boolean;
+  /** Half-length of the ridge line. Zero on a square footprint, i.e. a pyramid. */
+  ridgeHalfL: number;
+}
+
+/**
+ * Decide whether one building gets a tent, and how steep.
+ *
+ * Exported so the gate can ask which buildings took this path without owning a
+ * second copy of the rule, which would only ever agree with itself.
+ */
+export function pitchFor(b: Building, height: number, seed: number): Pitch | null {
+  if (b.roof !== RoofShape.Pitched) return null;
+  // Under about four metres there is no room to take a rise out of the wall and
+  // still leave a storey behind it.
+  if (height < 4.0 || height > PITCH_MAX_M) return null;
+  const n = b.ring.length / 2;
+  if (n < 3 || n > 64) return null;   // the OBB search is O(n^2)
+
+  const obb = footprintObb(b.ring);
+  if (!obb) return null;
+
+  // The tent is built on the OBB, not on the polygon, so it is only honest on a
+  // footprint the OBB nearly IS. A straight-skeleton hip over an arbitrary ring
+  // has real failure modes at a reflex vertex, and an actual house is a
+  // rectangle; this test is what keeps the cheap answer off the shapes where
+  // the expensive one would have been the only correct one.
+  const fill = Math.abs(signedArea(b.ring)) / obb.area;
+  if (fill < 0.72) return null;
+
+  const pitchDeg = 20 + 14 * hash3(seed, ROOF_SALT, 1);   // 4:12 to 8:12
+  let rise = obb.halfW * Math.tan((pitchDeg * Math.PI) / 180);
+  // A roof is not most of a house, and what is left under it has to be a storey
+  // you could stand in.
+  rise = Math.min(rise, 4.5, 0.55 * height, height - 2.4);
+  if (rise < 1.0) return null;
+
+  // A gable end is a flat triangle of siding, so it only reads right when the
+  // footprint really does end in a straight wall across the short axis.
+  const gable = fill >= 0.88 && hash3(seed, ROOF_SALT, 2) < 0.5;
+  return { obb, rise, gable, ridgeHalfL: Math.max(0, obb.halfL - obb.halfW) };
+}
+
+/**
+ * The tent itself: two slopes, plus either two hips or two gable ends.
+ *
+ * Everything is laid out in the OBB's own frame, u along the ridge and
+ * v across it, and mapped out to world at the last moment. Winding was worked
+ * out once in the canonical frame (u = +x, v = +z) and holds for every rotation
+ * of it because that map has determinant +1; test/roof.check.ts is the gate.
+ */
+function addTent(
+  s: Scratch,
+  pitch: Pitch,
+  eaveY: number,
+  top: number,
+  base: number,
+  bidx: number,
+  wallH: number,
+): void {
+  const { obb, gable, ridgeHalfL } = pitch;
+  const { ux, uz, halfL, halfW } = obb;
+  const vx = -uz, vz = ux;
+  const eL = halfL + OVERHANG_M;
+  const eW = halfW + OVERHANG_M;
+  const rise = top - eaveY;
+  // Up-slope run from eave to ridge, which is what a shingle course is measured
+  // in. Not the horizontal half-width: the courses are laid ON the slope.
+  const slopeLen = Math.hypot(eW, rise);
+  const hipLen = Math.hypot(eL - ridgeHalfL, rise);
+
+  /** One planar face, fanned from its first vertex. [a, w, y, u, v] per vertex. */
+  const face = (
+    vs: ReadonlyArray<readonly [number, number, number, number, number]>,
+    nx: number, ny: number, nz: number,
+    part: number, isRoof: number,
+  ): void => {
+    const v0 = s.pos.length / 3;
+    for (const [a, w, y, u, v] of vs) {
+      s.pos.push(obb.cx + a * ux + w * vx, y, obb.cz + a * uz + w * vz);
+      s.nrm.push(nx, ny, nz);
+      s.uv.push(u, v);
+      s.info.push(bidx, wallH, isRoof, part);
+    }
+    for (let i = 1; i + 1 < vs.length; i++) s.idx.push(v0, v0 + i, v0 + i + 1);
+  };
+
+  // Ridge half-length: the full eave on a gable (the ridge runs out to the rake
+  // and the ends are vertical), inset by the half-width on a hip.
+  const rl = gable ? eL : ridgeHalfL;
+
+  // Slope normals. The plane runs from the eave at w = +/-eW up to the ridge at
+  // w = 0, so its normal leans out by `rise` and up by `eW`.
+  const sy = eW / slopeLen;
+  const sh = rise / slopeLen;
+
+  // uv.x runs along the ridge and uv.y up the slope from the eave, so both
+  // slopes are parametrised from their own left-hand eave corner.
+  const ridgeTop: Array<readonly [number, number, number, number, number]> = [
+    [-eL, eW, eaveY, 0, 0],
+    [eL, eW, eaveY, 2 * eL, 0],
+    [rl, 0, top, rl + eL, slopeLen],
+    [-rl, 0, top, eL - rl, slopeLen],
+  ];
+  const ridgeBot: Array<readonly [number, number, number, number, number]> = [
+    [eL, -eW, eaveY, 0, 0],
+    [-eL, -eW, eaveY, 2 * eL, 0],
+    [-rl, 0, top, eL + rl, slopeLen],
+    [rl, 0, top, eL - rl, slopeLen],
+  ];
+  // A square footprint gives rl == 0, where the two ridge points coincide and
+  // the quad's second triangle would be degenerate. Emit a triangle instead.
+  if (rl < 1e-3) { ridgeTop.pop(); ridgeBot.pop(); }
+  face(ridgeTop, vx * sh, sy, vz * sh, PART_SHINGLE, 1);
+  face(ridgeBot, -vx * sh, sy, -vz * sh, PART_SHINGLE, 1);
+
+  if (gable) {
+    // The end walls, at the UN-overhung short edges: the rake projects past
+    // them, which is what puts the gable triangle in its own shadow.
+    // uv continues the wall's own convention, y measured from the true base, so
+    // the siding's storey lines run on through the triangle.
+    face(
+      [[halfL, halfW, eaveY, 0, wallH], [halfL, -halfW, eaveY, 2 * halfW, wallH],
+       [halfL, 0, top, halfW, top - base]],
+      ux, 0, uz, PART_GABLE, 0,
+    );
+    face(
+      [[-halfL, -halfW, eaveY, 0, wallH], [-halfL, halfW, eaveY, 2 * halfW, wallH],
+       [-halfL, 0, top, halfW, top - base]],
+      -ux, 0, -uz, PART_GABLE, 0,
+    );
+  } else {
+    // The hips. Same construction as a slope, rotated a quarter turn: the plane
+    // leans out by `rise` and up by the horizontal run to the ridge point.
+    const hy = (eL - ridgeHalfL) / hipLen;
+    const hh = rise / hipLen;
+    face(
+      [[eL, eW, eaveY, 0, 0], [eL, -eW, eaveY, 2 * eW, 0],
+       [ridgeHalfL, 0, top, eW, hipLen]],
+      ux * hh, hy, uz * hh, PART_SHINGLE, 1,
+    );
+    face(
+      [[-eL, -eW, eaveY, 0, 0], [-eL, eW, eaveY, 2 * eW, 0],
+       [-ridgeHalfL, 0, top, eW, hipLen]],
+      -ux * hh, hy, -uz * hh, PART_SHINGLE, 1,
+    );
+  }
+}
+
 export function addBuilding(
   s: Scratch,
   b: Building,
@@ -995,15 +1328,33 @@ export function addBuilding(
   // Sink the base so the walls meet sloping terrain instead of hovering.
   const sunk = base - 3.0;
 
+  const seed = params ? params.seed * 4096 : bidx;
+  const pitch = pitchFor(b, height, seed);
+
   // The parapet is drawn by carrying the WALL up past the roof slab rather
   // than as its own ring of geometry: the outer face is already there, so the
   // only new triangles are the inner face looking back down at the roof. The
   // shader knows where the building stops (info.y) and stops the window grid
   // there, so the band above it comes out as the coping it is.
-  const parapetM = extras.parapet && params ? Math.max(0.4, params.parapetM) : 0;
-  const wallTop = top + parapetM;
+  //
+  // A pitched roof cannot have one whatever the caller asked for, and the veto
+  // has to live here rather than at the call site: the gate forces the extras
+  // on for every building precisely so the windings get exercised.
+  const parapetM = !pitch && extras.parapet && params ? Math.max(0.4, params.parapetM) : 0;
+  // The ridge takes the building's existing top, so the eave is where the WALL
+  // now stops. Flat roofs keep eaveY === top and every number below is
+  // unchanged from what it was.
+  const eaveY = pitch ? top - pitch.rise : top;
+  const wallTop = pitch ? eaveY : top + parapetM;
 
-  const pushInfo = (isRoof: number, part: number) => s.info.push(bidx, height, isRoof, part);
+  // What the shader calls bldH, and it is the top of the WALL, not of the
+  // building: it drives the ground-storey clamp, the `capped` that stops the
+  // window grid, and the cornice band, and all three want the eave. Passing the
+  // full height on a pitched building is what would put a row of windows in the
+  // roof.
+  const wallH = eaveY - base;
+
+  const pushInfo = (isRoof: number, part: number) => s.info.push(bidx, wallH, isRoof, part);
 
   // --- Walls ---
   let run = 0;
@@ -1025,7 +1376,7 @@ export function addBuilding(
     // v runs from 0 at the true base (not the sunk base) so the storey grid
     // lines up with the visible building rather than with the buried part.
     const vBot = sunk - base;
-    const vTop = height + parapetM;
+    const vTop = wallH + parapetM;
     s.uv.push(run, vBot, run + len, vBot, run + len, vTop, run, vTop);
     for (let k = 0; k < 4; k++) pushInfo(0, PART_WALL);
 
@@ -1056,14 +1407,17 @@ export function addBuilding(
   }
 
   // --- Roof ---
+  // At the EAVE when there is a tent over it. Mostly hidden and it costs
+  // nothing new, but without it any gap where a gable end meets the wall is a
+  // hole you can see down into the building through.
   const tri = triangulate(b.ring);
   if (tri.length) {
     const v0 = s.pos.length / 3;
     for (let i = 0; i < n; i++) {
-      s.pos.push(b.ring[i * 2], top, b.ring[i * 2 + 1]);
+      s.pos.push(b.ring[i * 2], eaveY, b.ring[i * 2 + 1]);
       s.nrm.push(0, 1, 0);
       s.uv.push(b.ring[i * 2], b.ring[i * 2 + 1]);
-      s.info.push(bidx, height, 1, PART_ROOF);
+      s.info.push(bidx, wallH, 1, PART_ROOF);
     }
     // REVERSED against the ring's own winding, and that is not a typo.
     //
@@ -1082,8 +1436,12 @@ export function addBuilding(
     }
   }
 
-  if (extras.boxes > 0 || extras.overrun) {
-    addRoofPlant(s, b, top, extras, bidx, height, params ? params.seed * 4096 : bidx);
+  if (pitch) {
+    addTent(s, pitch, eaveY, top, base, bidx, wallH);
+  } else if (extras.boxes > 0 || extras.overrun) {
+    // Same veto as the parapet, and for the same reason: nothing stands on a
+    // slope, and the gate forces the extras on for every building.
+    addRoofPlant(s, b, top, extras, bidx, wallH, seed);
   }
 }
 
@@ -1249,7 +1607,7 @@ export class Buildings {
       params.push(fp);
       families[fp.family]++;
 
-      const extras = roofExtras(dist, lodK, h, area);
+      const extras = roofExtras(dist, lodK, h, area, b.kind, b.roof);
       if (extras.parapet) parapets++;
       plantBoxes += extras.boxes + (extras.overrun ? 1 : 0);
 
