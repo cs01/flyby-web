@@ -63,7 +63,7 @@ import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { WaterHistory } from "./render/waterssr";
 import { Foliage, TREE_LOD_TRIANGLES } from "./render/trees";
-import { buildLandMaskRGBA } from "./data/landmask";
+import { buildLandMaskRGBA, waterLevelM } from "./data/landmask";
 import { CompositeRoadIndex, FootprintMask, RoadIndex, treeRoadClearanceM } from "./data/trees";
 import { LiveVegetation } from "./data/osmveg";
 import { bakedCityCoverage, LiveWorld, LIVE_EXTENT_M } from "./app/live";
@@ -376,7 +376,9 @@ async function main() {
   if (params.get("ao") === "0") ao.enabled = false;
   if (params.get("ao") === "1") ao.enabled = true;
 
-  const terrain = new Terrain(origin, fields, drapes, sunShadow.uniforms);
+  // The plan the drapes were stitched for. Defaulting to CITY_RINGS here gave a
+  // reduced-tier device the desktop meshes under its own smaller drapes.
+  const terrain = new Terrain(origin, fields, drapes, sunShadow.uniforms, budget.rings);
   scene.add(terrain.group);
 
   // Buildings. A city with no baked pack still flies, it just has no skyline,
@@ -633,7 +635,14 @@ async function main() {
   // mask and beauty frame occlude alike and agree pixel for pixel.
   const groundDebug = gateNum("groundDebug");
 
+  // Where the far landcover level meets a cliff, the DEM decides; it needs to
+  // know what height the water is at to do that. See uWaterLevel.
+  const waterLevel = landPack
+    ? waterLevelM(landPack.levels[1] ?? landPack.levels[0], terrain.heightAt) ?? 0
+    : 0;
+
   for (const u of terrain.uniforms) {
+    u.uWaterLevel.value = waterLevel;
     u.uUrban.value = urban.texture;
     u.uUrbanExtent.value = urban.extent;
     u.uLandNear.value = land.near;

@@ -20,7 +20,7 @@ import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import type { Heightfield } from "../data/dem";
 import type { StitchedImage } from "../data/imagery";
-import { Origin } from "../geo";
+import { Origin, latToTileY } from "../geo";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 import { GROUND_BOUNCE_GLSL, groundBounceUniforms, type GroundBounceUniforms } from "./groundbounce";
 import { SH_GLSL, shHemispherical } from "./sh";
@@ -170,6 +170,9 @@ uniform vec2 uWind;
 // no glint. It exists so tools/verify-water.ts can run the OLD behaviour in the
 // SAME binary and prove its assertions can fail.
 uniform float uFlatWater;
+// Height of the water surface the DEM reports, metres; see waterLevelM in
+// data/landmask.ts. 0 for a coast, 176 for Chicago's lakefront.
+uniform float uWaterLevel;
 
 float hash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -232,7 +235,18 @@ void main() {
   float lcR = max(abs(vWorld.x), abs(vWorld.z)) / max(1.0, uLandNearExtent);
   vec4 lc = mix(texture(uLandNear, lcUvN), texture(uLandFar, lcUvF),
                 smoothstep(0.9, 1.0, lcR));
-  float lcWater = lc.r;
+  // Past the near level the mask is ~137 m a texel, and its bilinear ramp
+  // reaches a hundred metres up any sea cliff: the Marin headland's lower
+  // slopes shaded as half water, reflecting the sky. The DEM posts at 30 m and
+  // knows where the cliff is, so on the far level ground that is BOTH more
+  // than a few metres above the water surface AND sloped past ~8 degrees is
+  // taken out of the water. Both, because the DEM carries low flat patches out
+  // on open water (the old holes in the Hudson) and a beach is flat and low.
+  // The near level's ramp is one 10 m texel and needs no help.
+  float lcFar = smoothstep(0.9, 1.0, lcR);
+  float cliff = smoothstep(uWaterLevel + 2.0, uWaterLevel + 6.0, vWorld.y)
+              * smoothstep(0.995, 0.98, normalize(vNormal).y);
+  float lcWater = lc.r * (1.0 - cliff * lcFar);
   float lcBuilt = lc.g;
   // Roads, which the landcover cannot see. WorldCover is a 10 m posting and a
   // suburban street plus its verges is one texel of it, classified by whatever
@@ -1108,6 +1122,7 @@ export interface TerrainUniforms
   uWind: THREE.IUniform<THREE.Vector2>;
   /** 1 restores the pre-wave flat water, for the vacuity probe in tools/verify-water.ts. */
   uFlatWater: THREE.IUniform<number>;
+  uWaterLevel: THREE.IUniform<number>;
   uRoadMask: THREE.IUniform<THREE.Texture | null>;
   uRoadMaskExtent: THREE.IUniform<number>;
   uHasRoadMask: THREE.IUniform<number>;
@@ -1155,6 +1170,7 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uTime: { value: 0 },
     uWind: { value: new THREE.Vector2() },
     uFlatWater: { value: 0 },
+    uWaterLevel: { value: 0 },
     uRoadMask: { value: null },
     uRoadMaskExtent: { value: 1 },
     uHasRoadMask: { value: 0 },
@@ -1238,6 +1254,12 @@ function buildRingGrid(
 
   const positions = new Float32Array((gridCount + edge.length) * 3);
   const uvs = new Float32Array((gridCount + edge.length) * 2);
+  // v in WEB MERCATOR, not linear in latitude: the stitched canvas is a stack
+  // of Mercator tiles, so its rows are evenly spaced in tile y. Linear-in-lat
+  // drifts by (1/8) y'' dlat^2 at mid-span, measured at SF as ~2 m over the
+  // 6 km ring, ~24 m over the 20 km one and ~300 m over the 70 km one.
+  const yN = latToTileY(drapeBbox.north, 0);
+  const yS = latToTileY(drapeBbox.south, 0);
 
   for (let j = 0; j <= n; j++) {
     for (let i = 0; i <= n; i++) {
@@ -1249,7 +1271,7 @@ function buildRingGrid(
       positions[v * 3 + 1] = height(ll.lat, ll.lon);
       positions[v * 3 + 2] = z;
       uvs[v * 2] = (ll.lon - drapeBbox.west) / (drapeBbox.east - drapeBbox.west);
-      uvs[v * 2 + 1] = (drapeBbox.north - ll.lat) / (drapeBbox.north - drapeBbox.south);
+      uvs[v * 2 + 1] = (latToTileY(ll.lat, 0) - yN) / (yS - yN);
     }
   }
 
@@ -1494,6 +1516,15 @@ function drapeTexture(drape: StitchedImage): THREE.Texture {
   // Decoded in the shader by srgbToLinear(); tagging it sRGB here as well
   // would decode it twice.
   tex.colorSpace = THREE.NoColorSpace;
+  // Row 0 of the canvas is the NORTH edge and the ring uvs put v = 0 there, so
+  // the upload must not flip. three defaults flipY to true and current Chrome
+  // honours UNPACK_FLIP_Y_WEBGL for an OffscreenCanvas source, which mirrored
+  // every drape north-south about the city centre: SF's streets were painted
+  // with the bay, and the Marin headland with open ocean (a featureless
+  // green-teal once the vegetation saturation ran over it). Measured straight
+  // down over the Golden Gate under ?terrainDebug=1 against =11: the drape had
+  // Marin south of the strait, the landcover and the DEM had it north.
+  tex.flipY = false;
   tex.wrapS = THREE.ClampToEdgeWrapping;
   tex.wrapT = THREE.ClampToEdgeWrapping;
   tex.anisotropy = 16;

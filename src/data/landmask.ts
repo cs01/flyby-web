@@ -214,3 +214,40 @@ export function encodeShoreDistance(d: Float32Array, maxM: number): Uint8Array {
   }
   return out;
 }
+
+/**
+ * The height of the water surface as the DEM sees it: the median terrain
+ * height under the level's water texels, sampled on a stride. Null when the
+ * level has no water.
+ *
+ * A median and not zero, because Lake Michigan's surface is at 176 m and the
+ * terrain shader uses this to tell a sea cliff from the water at its foot
+ * where the far level, at ~137 m a texel, cannot. A median and not a mean,
+ * because the DEM carries the odd positive patch out on open water.
+ */
+export function waterLevelM(
+  level: LandLevel,
+  heightAt: (x: number, z: number) => number,
+  maxSamples = 4096,
+): number | null {
+  const { n, cls, extentM } = level;
+  const cell = (extentM * 2) / n;
+  let water = 0;
+  for (let t = 0; t < cls.length; t++) {
+    if (cls[t] === LandClass.Water || cls[t] === LandClass.NoData) water++;
+  }
+  if (water === 0) return null;
+  const stride = Math.max(1, Math.floor(water / maxSamples));
+  const hs: number[] = [];
+  let seen = 0;
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < n; i++) {
+      const c = cls[k * n + i];
+      if (c !== LandClass.Water && c !== LandClass.NoData) continue;
+      if (seen++ % stride !== 0) continue;
+      hs.push(heightAt(-extentM + (i + 0.5) * cell, -extentM + (k + 0.5) * cell));
+    }
+  }
+  hs.sort((a, b) => a - b);
+  return hs[hs.length >> 1];
+}

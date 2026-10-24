@@ -417,6 +417,22 @@ export const POSES: Pose[] = [
     what: "Paris over the Seine",
   },
   {
+    // THE MARIN HEADLANDS FROM 120 M OVER THE RIDGE, looking north-west along
+    // the coast toward Point Bonita: chaparral, grass, bare cut slopes and sea
+    // cliffs, with no buildings and no canopy to hide the ground. The ground
+    // material case: every other low pose is a city or a park lawn.
+    //
+    // 7.5 km from the SF scene centre on purpose, past the 6 km ring, the
+    // near landcover level and the trees: this is the ground that rendered as
+    // flat facets under a smear (see the 10 km ring in render/budget.ts).
+    name: "marin-headlands",
+    city: "sf",
+    lat: 37.8270, lon: -122.4930, altM: 330, hdgDeg: 285, pitchDeg: -14,
+    t: D("2025-06-21T18:00:00Z"), // 11:00 PDT, the Golden Gate pose's clock
+    wx: CLEAR,
+    what: "the Marin Headlands from just over the ridge",
+  },
+  {
     // Mount Fuji, from the north with the cone filling the frame.
     //
     // A terrain pose, deliberately: every other pose in this set is a city, so

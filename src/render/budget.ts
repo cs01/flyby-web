@@ -81,7 +81,15 @@ export const CITY_RINGS: TerrainRing[] = [
   // sharpness costs about a hundred tiles rather than thousands.
   { extent: 2200, segments: 224, imageryZoom: 16 },
   { extent: 6000, segments: 320, imageryZoom: 15 },
-  { extent: 20000, segments: 256, imageryZoom: 13 },
+  // THE MARIN RING. Past 6 km the ground went straight to z13 (15 m a pixel)
+  // on a 156 m mesh, and that is exactly where several poses stand: the Golden
+  // Gate pose is 7.3 km out, and the Marin headland a kilometre in front of it
+  // rendered as a dozen flat facets under a smear. z14 halves the texel for
+  // ~2800 px of drape, and 62.5 m vertices get much closer to the ~30 m the z12
+  // DEM actually posts. Widening the 6 km ring instead would need a 4608 px
+  // z15 canvas, past the 4096 the full tier is allowed.
+  { extent: 10000, segments: 320, imageryZoom: 14 },
+  { extent: 20000, segments: 384, imageryZoom: 13 },
   { extent: 70000, segments: 192, imageryZoom: 10 },
 ];
 
@@ -108,6 +116,7 @@ export const MOBILE_CITY_RINGS: TerrainRing[] = [
   { extent: 1100, segments: 144, imageryZoom: 16 },
   { extent: 2200, segments: 160, imageryZoom: 15 },
   { extent: 6000, segments: 224, imageryZoom: 14 },
+  { extent: 10000, segments: 192, imageryZoom: 13 },
   { extent: 20000, segments: 192, imageryZoom: 12 },
   { extent: 70000, segments: 160, imageryZoom: 9 },
 ];
