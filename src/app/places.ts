@@ -18,6 +18,8 @@ export interface PlaceRow {
   z: number;
   /** World height to hang the label at, above whatever is at x,z. */
   topY: number;
+  /** An airport id: picking the row hovers the drone there to watch traffic. */
+  spot?: string;
 }
 
 /** More than this and it stops being a list and becomes a directory. */

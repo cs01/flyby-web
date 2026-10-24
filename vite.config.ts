@@ -9,5 +9,9 @@ export default defineConfig({
   server: {
     host: true,
     watch: { ignored: ["**/.claude/worktrees/**"] },
+    // The live-traffic feed (app/airtraffic.ts) is same-origin in production,
+    // where flyby is served from chadsmith.dev/flyby/ beside /planes/. The dev
+    // server is not, so it forwards.
+    proxy: { "/planes": { target: "https://chadsmith.dev", changeOrigin: true } },
   },
 });

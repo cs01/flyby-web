@@ -92,6 +92,9 @@ import { Places, type PlaceRow } from "./app/places";
 import { Autopilot } from "./sim/autopilot";
 import { EasyStick } from "./sim/easystick";
 import { fetchNearby, searchNamedPlaces } from "./data/nearby";
+import { AirTrafficLayer } from "./app/airtraffic";
+import { AIRPORTS, airportById, spotPose } from "./data/airports";
+import { haversine } from "./geo";
 
 function chooseCity(): City | null {
   const params = new URLSearchParams(location.search);
@@ -107,6 +110,10 @@ function chooseCity(): City | null {
     }
   }
   const q = params.get("city");
+  // `?spot=lga` alone is a flight over the baked city the airport shares a
+  // sky with, the same as the menu card for it.
+  const spot = airportById(params.get("spot") ?? "");
+  if (!q && spot) return cityById(spot.cityId) ?? cityAt(spot.lat, spot.lon);
   if (!q) return null;
   return cityById(q) ?? cityById(DEFAULT_CITY) ?? CITIES[0];
 }
@@ -1047,6 +1054,60 @@ async function main() {
   // A city with no building pack still gets the compass and the landmarks.
   if (pack) minimap.setCity(pack);
   const layers = new Layers(ui);
+  const airTraffic = new AirTrafficLayer({ scene, ui, model, origin, groundAt: terrain.heightAt, shotMode });
+  const drawSize = new THREE.Vector2();
+
+  /**
+   * Hover the drone beside the runway in use at an airport and watch.
+   *
+   * Spotted from inside the baked city's world rather than from a flight
+   * centred on the airport: the city's land pack is what knows the runways
+   * are land (see Airport.cityId), and the 400 m z18 detail ring follows a
+   * camera under 40 m, so the apron under the drone is sharp anyway. Only an
+   * airport outside this world (past 30 km, or another city's) reloads.
+   */
+  const spotAt = (id: string): void => {
+    const a = airportById(id);
+    if (!a) return;
+    if (haversine(a, origin) > 30000) {
+      const params = new URLSearchParams(location.search);
+      params.delete("at");
+      params.set("city", a.cityId);
+      params.set("spot", a.id);
+      location.search = params.toString();
+      return;
+    }
+    // Height from the median of the runway's middle, not its threshold. The
+    // DEM has a 28 m spike 110 m off LGA's runway 22 threshold (terrarium
+    // z13, sampled 2026-10-24), where the runway runs out on a pier, and at
+    // the z12 the near field loads it bleeds onto the threshold itself.
+    const hAt = (lat: number, lon: number) => {
+      const p = origin.toWorld(lat, lon);
+      return terrain.heightAt(p.x, p.z);
+    };
+    const sides = ([1, -1] as const).map((sd) => spotPose(a, wx.windDir, sd));
+    const { threshold: t0, far: t1 } = sides[0];
+    const along = [0.3, 0.4, 0.5, 0.6, 0.7]
+      .map((f) => hAt(t0.lat + (t1.lat - t0.lat) * f, t0.lon + (t1.lon - t0.lon) * f))
+      .sort((p, q) => p - q);
+    const thrY = along[2];
+    const pose = sides.reduce((b, c) =>
+      Math.abs(hAt(c.lat, c.lon) - thrY) < Math.abs(hAt(b.lat, b.lon) - thrY) - 2 ? c : b);
+    const w = origin.toWorld(pose.lat, pose.lon);
+    // The drone keeps its own clearance over whatever is under the spot.
+    const y = thrY + pose.aglM;
+    carActive = false;
+    droneActive = true;
+    drone.enterFrom(new THREE.Vector3(w.x, y, w.z), pose.hdgDeg, new THREE.Vector3());
+    drone.pitchDeg = pose.pitchDeg;
+    // Through the drone's own lens: the chase view parks the airframe in the
+    // middle of the frame, which is exactly where the runway is.
+    input.cameraCycled = CAMERA_MODES.indexOf("cockpit");
+    autopilot.disengage();
+    // Taxiing traffic is close and slow and every tag is worth reading.
+    airTraffic.focus(a.lat, a.lon, 16);
+    hud.toast(`${a.icao.slice(1)} runway ${pose.runway} \u00b7 drone hovering, live traffic on`);
+  };
 
   // Places you can fly to, and something that flies you there. A list you can
   // only read is a list of things you now have to find by hand at a hundred
@@ -1074,6 +1135,10 @@ async function main() {
    */
   const HALF_MILE_M = 804.7;
   const arriveAt = (p: PlaceRow): void => {
+    if (p.spot) {
+      spotAt(p.spot);
+      return;
+    }
     const dx = ac.position.x - p.x;
     const dz = ac.position.z - p.z;
     const len = Math.hypot(dx, dz);
@@ -1140,6 +1205,13 @@ async function main() {
     const w = origin.toWorld(l.lat, l.lon);
     return { name: l.name, x: w.x, z: w.z, topY: terrain.heightAt(w.x, w.z) + (l.height ?? 40) + 60 };
   });
+  // The airports in this sky, as spots to watch from. 40 km takes in all
+  // three around each listed city from its origin.
+  for (const a of AIRPORTS) {
+    if (haversine(a, origin) > 40000) continue;
+    const w = origin.toWorld(a.lat, a.lon);
+    curated.push({ name: `${a.icao.slice(1)} ${a.name} spotting`, x: w.x, z: w.z, topY: terrain.heightAt(w.x, w.z) + 120, spot: a.id });
+  }
   let nearby: PlaceRow[] = [...curated];
   const sortedAt = { x: 0, z: 0 };
   const sortByRange = () => {
@@ -1189,6 +1261,11 @@ async function main() {
   };
   if (!timeline) {
     hud.toast("No forecast feed — the clock moves the sun only");
+  }
+
+  {
+    const spot = new URLSearchParams(location.search).get("spot");
+    if (spot) spotAt(spot);
   }
 
   loading.done();
@@ -1437,6 +1514,7 @@ async function main() {
         done: autopilot.target?.name === p.name,
       })),
       ac.position,
+      airTraffic.tags.rects,
     );
 
     if (input.helpToggled > 0) {
@@ -1583,6 +1661,9 @@ async function main() {
 
     const solar = solarState(now, city.lat, city.lon);
     const light = computeLighting(solar, wx);
+
+    renderer.getDrawingBufferSize(drawSize);
+    airTraffic.update(camera, drawSize.y, dt, light.night, layers.traffic, droneActive ? drone.position : carActive ? undefined : ac.position);
 
     const camAlt = camera.position.y;
     sky.update(solar, wx, camAlt, elapsed);
@@ -1832,10 +1913,14 @@ async function main() {
     // The drone samples the same environment probe this pass renders into,
     // so it must not be in the scene while the probe is drawn (Chrome logged
     // a framebuffer feedback loop every frame).
+    // The live traffic samples it too.
     const droneShown = droneModel.group.visible;
+    const trafficShown = airTraffic.render.group.visible;
     droneModel.group.visible = false;
+    airTraffic.render.group.visible = false;
     model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
     droneModel.group.visible = droneShown;
+    airTraffic.render.group.visible = trafficShown;
     sky.syncCamera(camera);
     ao.render(renderer, scene, camera, shadowCasters);
     setAo(1);
@@ -1992,6 +2077,26 @@ async function main() {
   Object.assign(window as unknown as Record<string, unknown>, {
     flybyShot: {
       get frames() { return shotFrames; },
+      // What the live-traffic layer has and draws, for the traffic checks.
+      get traffic() {
+        return {
+          tracks: airTraffic.traffic.tracks.size,
+          polls: airTraffic.polls,
+          error: airTraffic.lastError,
+          ...airTraffic.render.stats,
+          tags: airTraffic.tags.root.querySelectorAll(".ttag:not([style*='display: none'])").length,
+        };
+      },
+      /** Every track as lat/lon/AMSL, for pointing a pose at a real aircraft. */
+      trafficList: () =>
+        [...airTraffic.traffic.tracks.values()].map((t) => ({
+          ...origin.toLatLon(t.pose.x, t.pose.z),
+          y: t.pose.y,
+          hdg: t.pose.headingDeg,
+          flight: t.info.flight,
+          type: t.info.type,
+          ground: t.k.ground,
+        })),
       capture: () => canvas.toDataURL("image/png"),
       // What the aeroplane is doing, for a harness that drives the controls
       // and has to say what came of it. On a phone in clean view no

@@ -152,7 +152,13 @@ export function parseAc3d(path: string): { materials: AcMaterial[]; objects: AcO
           objects.push(obj);
           for (let i = 0; i < kids; i++) {
             const kl = readLine();
-            if (kl === null) throw new Error("EOF looking for kid OBJECT");
+            // fgdata's 757-200.ac declares six kids on its world and ships
+            // five. Every declared object has been read by then, so stopping
+            // loses nothing; a short file anywhere else still throws.
+            if (kl === null) {
+              console.warn(`${path}: ${obj.name} declares ${kids} kids, file ends after ${i}`);
+              return;
+            }
             if (!kl.startsWith("OBJECT ")) throw new Error(`expected OBJECT, got ${kl}`);
             parseObject(kl, obj.loc);
           }

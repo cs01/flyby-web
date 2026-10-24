@@ -106,6 +106,11 @@ export class Labels {
     targets: LabelTarget[],
     /** The aeroplane, so labels do not get drawn across it. */
     subject?: THREE.Vector3,
+    /**
+     * Other screen boxes to keep clear of (centre x/y, CSS px): the live
+     * traffic tags, which name something moving and so win the space.
+     */
+    avoid: readonly { x: number; y: number; w: number; h: number }[] = [],
   ): void {
     if (!this.visible) {
       this.root.style.display = "none";
@@ -179,7 +184,8 @@ export class Labels {
           Math.abs(p.y - py) < (p.w === PLANE_W_PX ? PLANE_ROWS_PX : ROW_PX) &&
           Math.abs(p.x - px) < (p.w + w) / 2,
       );
-      if (clash || shown >= MAX_ON_SCREEN) {
+      const blocked = avoid.some((r) => Math.abs(r.y - py) < (r.h + ROW_PX) / 2 && Math.abs(r.x - px) < (r.w + w) / 2);
+      if (clash || blocked || shown >= MAX_ON_SCREEN) {
         if (el.style.display !== "none") el.style.display = "none";
         continue;
       }

@@ -252,7 +252,7 @@ export interface TrackInfo {
   type: string;
   desc: string;
   cat: string;
-  /** Feet, for the tag: baro when present (what ATC and the pilot see). */
+  /** Feet above mean sea level, for the tag. */
   altFt: number | null;
   gsKt: number | null;
   vrFpm: number | null;
@@ -381,12 +381,18 @@ export class LiveTraffic {
         type: r.type,
         desc: r.desc,
         cat: r.cat,
-        altFt: r.ground ? 0 : r.baro ?? r.alt,
+        // The QNH-corrected height, which is what the pilot's altimeter reads
+        // below transition. Raw pressure altitude read -400 ft for a 737 on
+        // short final at LGA on a 1033 hPa day.
+        altFt: r.ground ? 0 : Math.round(k.y / FT),
         gsKt: r.gs,
         vrFpm: r.vr,
         ground: r.ground,
       };
       const prev = this.tracks.get(r.hex);
+      // A parked aircraft reports no track. Keep the heading it last moved on
+      // rather than swinging every one at the gates to face north.
+      if (r.track === null && prev) k.trackDeg = prev.k.trackDeg;
       if (prev) {
         if (k.t <= prev.k.t) continue; // the same position, re-reported
         k.turnDps = turnRate(prev.k, k);
@@ -465,4 +471,62 @@ function wrap360(d: number): number {
 }
 function wrap180(d: number): number {
   return ((((d + 180) % 360) + 360) % 360) - 180;
+}
+
+// --- routes -------------------------------------------------------------------
+
+export interface RouteEnd {
+  city: string;
+  code: string;
+  name: string;
+  lat: number;
+  lon: number;
+}
+
+export interface Route {
+  from: RouteEnd;
+  to: RouteEnd;
+  airline: string;
+}
+
+/** A /planes/api/route body, or null for `{}` and anything malformed. */
+export function parseRoute(body: unknown): Route | null {
+  const b = body as { from?: Partial<RouteEnd>; to?: Partial<RouteEnd>; airline?: unknown } | null;
+  const end = (e: Partial<RouteEnd> | undefined): RouteEnd | null =>
+    e && typeof e.code === "string" && num(e.lat) !== null && num(e.lon) !== null
+      ? { city: str(e.city), code: e.code, name: str(e.name), lat: e.lat!, lon: e.lon! }
+      : null;
+  const from = end(b?.from);
+  const to = end(b?.to);
+  return from && to ? { from, to, airline: str(b?.airline) } : null;
+}
+
+/**
+ * Whether an aircraft at lat/lon could be flying `r`.
+ *
+ * adsbdb's routes are keyed by callsign and go stale when an airline reuses a
+ * flight number: on 2026-10-24 DAL964 over New Jersey came back as San Jose to
+ * Atlanta. A tag saying so is worse than no route, so the route is shown only
+ * if the aircraft is within 150 km of either end or of the great circle
+ * between them, and not past either end of it.
+ */
+export function routePlausible(r: Route, lat: number, lon: number): boolean {
+  const R = 6371000;
+  const toV = (la: number, lo: number) => {
+    const a = la * D2R, b = lo * D2R;
+    return [Math.cos(a) * Math.cos(b), Math.cos(a) * Math.sin(b), Math.sin(a)];
+  };
+  const dot = (u: number[], v: number[]) => u[0] * v[0] + u[1] * v[1] + u[2] * v[2];
+  const A = toV(r.from.lat, r.from.lon), B = toV(r.to.lat, r.to.lon), P = toV(lat, lon);
+  const ang = (u: number[], v: number[]) => Math.acos(Math.max(-1, Math.min(1, dot(u, v))));
+  const NEAR = 150000;
+  if (ang(A, P) * R < NEAR || ang(B, P) * R < NEAR) return true;
+  const n = [A[1] * B[2] - A[2] * B[1], A[2] * B[0] - A[0] * B[2], A[0] * B[1] - A[1] * B[0]];
+  const nl = Math.hypot(n[0], n[1], n[2]);
+  if (nl < 1e-9) return false;
+  const cross = Math.abs(Math.asin(dot(n, P) / nl)) * R;
+  // Along the path: the point's distance to each end must not exceed the
+  // route's own length, or it is beyond one end.
+  const len = ang(A, B);
+  return cross < NEAR && ang(A, P) < len + 0.01 && ang(B, P) < len + 0.01;
 }

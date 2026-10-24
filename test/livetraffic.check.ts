@@ -30,6 +30,8 @@ import {
   feedQnh,
   parseFeed,
   worldToGeo,
+  routePlausible,
+  parseRoute,
   FT,
   KT,
   type Kinematics,
@@ -38,6 +40,8 @@ import {
   type Pose,
 } from "../src/data/livetraffic";
 import { familyFor, liveryFor, airlineOf } from "../src/data/aircrafttypes";
+import { airportById, spotPose, bearingDeg } from "../src/data/airports";
+import { haversine } from "../src/geo";
 
 let checks = 0;
 let failures = 0;
@@ -262,6 +266,31 @@ function worstExcess(drawn: Pose[], perFrameM: number): number {
   const cases: [string, string][] = [["DAL964", "DAL"], ["EDV5045", "DAL"], ["RPA4500", "default"], ["N543TH", "default"], ["JBU12", "default"], ["ENY3300", "AAL"]];
   const liveriesMatch = (fn: typeof liveryFor) => cases.every(([cs, w]) => fn(cs, liv) === w);
   claim("callsigns pick their brand's livery, or plain", liveriesMatch, liveryFor, (cs: string) => airlineOf(cs) || "default", `${cases.length} cases; probe: raw prefix`);
+}
+
+// --- 8. route plausibility -------------------------------------------------------------
+{
+  const end = (code: string, lat: number, lon: number) => ({ city: code, code, name: code, lat, lon });
+  const jfkBos = parseRoute({ from: end("JFK", 40.64, -73.78), to: end("BOS", 42.36, -71.01), airline: "JetBlue" })!;
+  const sjcAtl = parseRoute({ from: end("SJC", 37.36, -121.93), to: end("ATL", 33.64, -84.43), airline: "Delta" })!;
+  // Over Long Island Sound, halfway up.
+  claim("a JFK-BOS flight over the Sound has a plausible route", (r: typeof jfkBos) => routePlausible(r, 41.1, -72.9), jfkBos, sjcAtl, "probe: SJC-ATL, the stale route DAL964 came back with");
+  claim("a route ending behind the aircraft is not plausible", (lat: number) => !routePlausible(jfkBos, lat, -70.0), 44.5, 41.5, "past BOS vs mid-route");
+  claim("parseRoute reads {} as no route", (b: unknown) => parseRoute(b) === null, {}, { from: end("A", 1, 1), to: end("B", 2, 2) }, "");
+}
+
+// --- 9. airport spotting pose --------------------------------------------------------------
+{
+  const lga = airportById("lga")!;
+  const sw = spotPose(lga, 215);
+  claim("a south-west wind at LGA puts the drone on runway 22", (p: typeof sw) => p.runway === "22", sw, spotPose(lga, 35), `wind 215 -> ${sw.runway}; probe: wind 035 -> ${spotPose(lga, 35).runway}`);
+  const thr = lga.runways[0][1];
+  const off = haversine(thr, sw);
+  claim("and 60-150 m beside its threshold", (m: number) => m > 60 && m < 150, off, haversine(thr, lga), `${off.toFixed(0)} m; probe: the airport reference point`);
+  // On the right: the bearing from the threshold to the drone is ~90 deg
+  // clockwise of the runway heading.
+  const side = ((bearingDeg(thr, sw) - bearingDeg(thr, lga.runways[0][0]) + 360) % 360);
+  claim("on the right of the centreline, looking down the runway", (d: number) => Math.abs(d - 90) < 3, side, 270, `${side.toFixed(1)} deg off the runway heading, looking ${sw.hdgDeg.toFixed(0)}`);
 }
 
 console.log(`\n${checks} checks, ${failures} failed`);
