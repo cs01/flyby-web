@@ -213,6 +213,42 @@ void main() {
 }
 `;
 
+const TRAIL_VERT = /* glsl */ `
+precision highp float;
+in vec3 position;
+/** x: opacity along the trail; y: -1..1 across it, for soft edges. */
+in vec2 trail;
+uniform mat4 modelViewMatrix;
+uniform mat4 projectionMatrix;
+out vec2 vTrail;
+void main() {
+  vTrail = trail;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`;
+
+const TRAIL_FRAG = /* glsl */ `
+precision highp float;
+${SH_GLSL}
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+uniform float uSunIntensity;
+uniform float uSunSurface;
+in vec2 vTrail;
+out vec4 fragColor;
+void main() {
+  // Ice crystals scatter the sun forward and sideways alike, plus the sky.
+  vec3 lit = uSunColor * uSunIntensity * uSunSurface * 0.5 * max(uSunDir.y + 0.1, 0.0) + shIrradiance(vec3(0.0, 1.0, 0.0));
+  float across = 1.0 - vTrail.y * vTrail.y;
+  fragColor = vec4(lit, vTrail.x * across * 0.8);
+}
+`;
+
+/** Contrails form in the cold above roughly FL260 (Appleman, at ISA). */
+const TRAIL_MIN_M = 8000;
+/** A young contrail, before it spreads: 3 km long, 20 m to 160 m wide. */
+const TRAIL_LEN_M = 3000;
+
 /** Per-aircraft phase so the strobes over a city do not all fire together. */
 function phaseOf(hex: string): number {
   let h = 0;
@@ -227,7 +263,7 @@ const WHITE = [1.0, 0.97, 0.92];
 
 export class AirTraffic {
   readonly group = new THREE.Group();
-  readonly stats = { meshes: 0, dots: 0, triangles: 0, buckets: 0 };
+  readonly stats = { meshes: 0, dots: 0, triangles: 0, buckets: 0, trails: 0 };
 
   private manifest: Record<string, FamilyInfo> | null = null;
   private families = new Map<Kind, FamilyGeo | "loading" | "failed">();
@@ -249,6 +285,13 @@ export class AirTraffic {
    * any contact shadow a jet at the gate reads as hovering over the apron.
    */
   private shadows: THREE.InstancedMesh;
+  /** Contrail ribbons, rebuilt on the CPU each frame: four vertices a jet. */
+  private trails: THREE.Mesh;
+  private trailPos = new Float32Array(0);
+  private trailUv = new Float32Array(0);
+  private tmpA = new THREE.Vector3();
+  private tmpB = new THREE.Vector3();
+  private tmpS = new THREE.Vector3();
   private shadowMat: THREE.RawShaderMaterial;
 
   private m = new THREE.Matrix4();
@@ -307,6 +350,20 @@ export class AirTraffic {
       polygonOffsetUnits: -2,
     });
     this.shadows = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2), this.shadowMat, 1);
+    this.trails = new THREE.Mesh(
+      new THREE.BufferGeometry(),
+      new THREE.RawShaderMaterial({
+        glslVersion: THREE.GLSL3,
+        vertexShader: TRAIL_VERT,
+        fragmentShader: TRAIL_FRAG,
+        uniforms: { ...model.uniforms },
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    this.trails.frustumCulled = false;
+    this.group.add(this.trails);
     this.grow(64);
 
     void fetch(BASE + "manifest.json")
@@ -333,6 +390,16 @@ export class AirTraffic {
     lg.setAttribute("tint", new THREE.BufferAttribute(this.lightTint, 4).setUsage(THREE.DynamicDrawUsage));
     this.lights.geometry.dispose();
     this.lights.geometry = lg;
+    this.trailPos = new Float32Array(n * 4 * 3);
+    this.trailUv = new Float32Array(n * 4 * 2);
+    const idx = new Uint32Array(n * 6);
+    for (let i = 0; i < n; i++) idx.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4 + 2, i * 4 + 1, i * 4 + 3], i * 6);
+    const tg = new THREE.BufferGeometry();
+    tg.setAttribute("position", new THREE.BufferAttribute(this.trailPos, 3).setUsage(THREE.DynamicDrawUsage));
+    tg.setAttribute("trail", new THREE.BufferAttribute(this.trailUv, 2).setUsage(THREE.DynamicDrawUsage));
+    tg.setIndex(new THREE.BufferAttribute(idx, 1));
+    this.trails.geometry.dispose();
+    this.trails.geometry = tg;
     this.group.remove(this.shadows);
     this.shadows.dispose();
     this.shadows = new THREE.InstancedMesh(this.shadows.geometry, this.shadowMat, n);
@@ -444,6 +511,7 @@ export class AirTraffic {
     for (const b of this.buckets.values()) b.nBody = b.nGear = 0;
     let nDot = 0;
     let nShadow = 0;
+    let nTrail = 0;
     let nLight = 0;
     let tris = 0;
     let meshes = 0;
@@ -462,6 +530,32 @@ export class AirTraffic {
       const kind: Kind = t.info.cat.startsWith("C") ? "vehicle" : familyFor(t.info.type, t.info.cat);
       const geo = this.family(kind);
       const span = geo?.info.span ?? (kind === "pa28" ? 10 : kind === "cl60" ? 20 : 34);
+      if (p.y > TRAIL_MIN_M && !t.k.ground && (t.info.gsKt ?? 0) > 250 && (kind as string) !== "heli") {
+        // Straight back along the track from the tail, widening as it ages,
+        // turned edge-on to nothing: its width vector is perpendicular to
+        // both the trail and the line of sight, so it never goes to a line.
+        const h = (p.headingDeg * Math.PI) / 180;
+        this.tmpA.set(p.x - Math.sin(h) * 20, p.y, p.z + Math.cos(h) * 20);
+        this.tmpB.set(p.x - Math.sin(h) * TRAIL_LEN_M, p.y + 40, p.z + Math.cos(h) * TRAIL_LEN_M);
+        this.sphere.center.copy(this.tmpA).add(this.tmpB).multiplyScalar(0.5);
+        this.sphere.radius = TRAIL_LEN_M / 2 + 100;
+        if (this.frustum.intersectsSphere(this.sphere)) {
+          this.v.subVectors(this.tmpB, this.tmpA);
+          this.tmpS.subVectors(this.sphere.center, cam).cross(this.v).normalize();
+          const o = nTrail * 12;
+          const u = nTrail * 8;
+          // Never thinner than ~1.5 px: a real contrail 30 km off is the
+          // brightest line in the sky, and at its true 20 m it would be a
+          // fifth of a pixel and vanish.
+          const floor = (1.5 * this.sphere.center.distanceTo(cam)) / px / 2;
+          for (const [k, end, wide, alpha] of [[0, this.tmpA, Math.max(10, floor), 0.9], [2, this.tmpB, Math.max(80, floor * 2), 0]] as const) {
+            this.trailPos.set([end.x - this.tmpS.x * wide, end.y - this.tmpS.y * wide, end.z - this.tmpS.z * wide], o + k * 3);
+            this.trailPos.set([end.x + this.tmpS.x * wide, end.y + this.tmpS.y * wide, end.z + this.tmpS.z * wide], o + k * 3 + 3);
+            this.trailUv.set([alpha, -1, alpha, 1], u + k * 2);
+          }
+          nTrail++;
+        }
+      }
       this.sphere.center.set(p.x, p.y, p.z);
       this.sphere.radius = span;
       if (!this.frustum.intersectsSphere(this.sphere)) continue;
@@ -549,6 +643,12 @@ export class AirTraffic {
         b.gear.visible = b.nGear > 0;
       }
     }
+    const tg = this.trails.geometry;
+    (tg.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    (tg.attributes.trail as THREE.BufferAttribute).needsUpdate = true;
+    tg.setDrawRange(0, nTrail * 6);
+    this.trails.visible = nTrail > 0;
+    this.stats.trails = nTrail;
     this.shadows.count = nShadow;
     this.shadows.instanceMatrix.needsUpdate = nShadow > 0;
     this.shadows.visible = nShadow > 0;
