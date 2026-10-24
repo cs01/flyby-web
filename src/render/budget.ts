@@ -279,6 +279,12 @@ const ENV_BYTES_PER_TEXEL = 8;
 const AIRCRAFT_SHADOW_BYTES_PER_TEXEL = 4 + 4;
 /** AO runs at half resolution in each axis: a depth target plus two RGBA16F targets. */
 const AO_SCALE = 0.5;
+/**
+ * The water's reflection history (render/waterssr.ts): RGBA16F at the full
+ * drawing buffer, colour plus linear depth, with a mip chain for the
+ * roughness blur.
+ */
+const WATER_HISTORY_BYTES_PER_PIXEL = 8 * MIPMAP_FACTOR;
 const AO_BYTES_PER_PIXEL = (4 + 1) + 8 + 8;
 /**
  * Building geometry, per triangle.
@@ -518,6 +524,10 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
     {
       what: `aircraft self-shadow ${plan.aircraftShadowSize}`,
       bytes: plan.aircraftShadowSize ** 2 * AIRCRAFT_SHADOW_BYTES_PER_TEXEL,
+    },
+    {
+      what: `water reflection history ${w}x${h}`,
+      bytes: w * h * WATER_HISTORY_BYTES_PER_PIXEL,
     },
     {
       what: `ambient occlusion ${plan.aoEnabled ? `${aoW}x${aoH}` : "off"}`,

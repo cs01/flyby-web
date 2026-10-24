@@ -60,6 +60,7 @@ import { StreetLamps, LAMP_TRIANGLES } from "./render/streetlamps";
 import type { StreetLampUniforms } from "./render/streetlamps";
 import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
+import { WaterHistory } from "./render/waterssr";
 import { Foliage, TREE_LOD_TRIANGLES } from "./render/trees";
 import { buildLandMaskRGBA } from "./data/landmask";
 import { CompositeRoadIndex, FootprintMask, RoadIndex, treeRoadClearanceM } from "./data/trees";
@@ -119,7 +120,7 @@ function goToCity(city: City): void {
 }
 
 /**
- * `?wx=low:0.95:900:2100,mid:0:3800:5000,high:0:8500:9400,precip:0` pins the
+ * `?wx=low:0.95:900:2100,mid:0:3800:5000,high:0:8500:9400,precip:0,wind:11:270` pins the
  * cloud fields to exact numbers, so a sky that renders badly can be reproduced
  * on any machine on any day. Each deck is `cover:base:top`, cover 0..1 and the
  * heights in metres AMSL; any term may be left out and keeps the observed
@@ -166,6 +167,12 @@ function wxOverride(observed: Weather): Weather | null {
     const key = f[0];
     if (key === "precip") {
       out.precip = Math.max(0, num(1, out.precip));
+    } else if (key === "wind") {
+      // `wind:speed:fromDeg`, so a pose can pin a sea state. The default
+      // 4 m/s is Beaufort 3, which by design has no whitecaps to look at.
+      out.windSpeed = Math.max(0, num(1, out.windSpeed));
+      out.windDir = num(2, out.windDir);
+      out.gust = Math.max(out.gust, out.windSpeed * 1.4);
     } else if (key === "low" || key === "mid" || key === "high") {
       const deck = out[key];
       out[key] = {
@@ -318,6 +325,8 @@ async function main() {
   };
   const composite = new Composite(renderer);
   const target = createSceneTarget(renderer, budget);
+  // The previous frame, for the water's screen-space reflections.
+  const waterHistory = new WaterHistory(renderer);
   // Screen-space sky occlusion. Runs before the main pass, because the surface
   // shaders read its result rather than the composite doing so; see render/ao.ts.
   const ao = new AoPass(renderer);
@@ -326,6 +335,7 @@ async function main() {
   const resizeTargets = () => {
     const s2 = renderer.getDrawingBufferSize(new THREE.Vector2());
     target.setSize(s2.x, s2.y);
+    waterHistory.resize(renderer);
     composite.resize(renderer);
     ao.resize(renderer);
   };
@@ -574,6 +584,12 @@ async function main() {
   // go red -- an assertion that passes both ways is measuring nothing.
   const flatWater = gateFlag("flatwater");
 
+  // `?nossr=1` turns off the water's scene reflection and leaves the sky
+  // reflection alone. It is the vacuity probe for the reflection assertion in
+  // tools/verify-water.ts, which needs the waves and everything else exactly
+  // as they are and only the mirrored skyline gone.
+  waterHistory.enabled = !gateFlag("nossr");
+
   // `?flatglass=1` restores the facade this repo had before the window reveal:
   // glazing exactly in the plane of the wall, with no parallax and no shadow
   // cast by the head or the jamb. It is the vacuity probe for
@@ -622,6 +638,8 @@ async function main() {
     u.uLandNearExtent.value = land.nearExtent;
     u.uLandFarExtent.value = land.farExtent;
     u.uHasLand.value = land.has ? 1 : 0;
+    u.uShoreNear.value = land.shoreNear;
+    u.uShoreFar.value = land.shoreFar;
     u.uRoadMask.value = roadMask.texture;
     u.uRoadMaskExtent.value = roadMask.extent;
     u.uHasRoadMask.value = roadMask.has ? 1 : 0;
@@ -1744,6 +1762,8 @@ async function main() {
     // Pass 1: the world, in linear HDR, into the offscreen target.
     renderer.setRenderTarget(target);
     renderer.render(scene, camera);
+    // What this frame drew is what the next frame's water reflects.
+    waterHistory.capture(renderer, target, camera);
 
     // Pass 2 + 3: clouds raymarched at half resolution against that target's
     // depth, then a full-resolution present that folds them in and tone maps.

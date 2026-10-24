@@ -216,7 +216,12 @@ desktop tier never gets one.
 - **Parallax occlusion mapping.** Depends on the texture pipeline.
 - **SSR.** Narrow payoff (street level, night, rain) against real cost in a
   budget already dominated by per-fragment work, and `skyprobe.ts` already feeds
-  wet-road reflections.
+  wet-road reflections. **Reinstated for open water only** (`render/waterssr.ts`):
+  a river beside 200 m towers that mirrors only the sky was the most obviously
+  wrong thing in the water, and on water the cost is bounded. It marches the
+  PREVIOUS frame's colour and depth (the drape cannot read the target it is
+  drawing into), runs on water pixels only, and exits the moment a ray reaches
+  open sky; measured +0.1 to +1.9 ms on the water poses.
 
 ## Live OSM: what is measured about the sources
 

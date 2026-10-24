@@ -130,3 +130,87 @@ export function sampleMaskBilinear(
   const bare = Math.max(0, 1 - (out[0] + out[1] + out[2] + out[3]));
   return { water: out[0], built: out[1], tree: out[2], herb: out[3], bare };
 }
+
+/**
+ * Distance in metres from each texel centre to the nearest LAND texel centre,
+ * zero on land. Exact Euclidean (Felzenszwalb and Huttenlocher's two-pass
+ * lower envelope), because a chamfer approximation is off by up to 8% along
+ * diagonals and this number becomes a fetch, a foam band and a shallow tint.
+ *
+ * Water is what the R channel of buildLandMaskRGBA means: the water class and
+ * nodata. Only land is a source, so the GRID EDGE is not a shore: a bay that
+ * runs off the side of the near level reads as open water there, which is what
+ * it is, rather than as a coast that does not exist.
+ *
+ * Why the water needs this at all: the waves on a 60 m river and on a 5 km bay
+ * under the same wind differ by an order of magnitude in wavelength (the fetch
+ * they have had to grow over), and the foam and the shallows live within
+ * metres of a coast. The mask alone says "water"; it cannot say how much of it
+ * there is around a pixel.
+ */
+export function shoreDistanceM(level: LandLevel): Float32Array {
+  const { n, cls } = level;
+  const cell = (level.extentM * 2) / n;
+  const INF = 1e20;
+  const f = new Float32Array(n * n);
+  for (let t = 0; t < cls.length; t++) {
+    f[t] = CHANNEL_OF_CLASS[cls[t]] === 0 ? INF : 0;
+  }
+  const line = new Float64Array(n);
+  const out = new Float64Array(n);
+  const v = new Int32Array(n);
+  const z = new Float64Array(n + 1);
+  const edt1d = (): void => {
+    let k = 0;
+    v[0] = 0;
+    z[0] = -INF;
+    z[1] = INF;
+    for (let q = 1; q < n; q++) {
+      let s = (line[q] + q * q - (line[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      while (s <= z[k]) {
+        k--;
+        s = (line[q] + q * q - (line[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      }
+      k++;
+      v[k] = q;
+      z[k] = s;
+      z[k + 1] = INF;
+    }
+    k = 0;
+    for (let q = 0; q < n; q++) {
+      while (z[k + 1] < q) k++;
+      const d = q - v[k];
+      out[q] = d * d + line[v[k]];
+    }
+  };
+  // Columns, then rows; squared distances in texels throughout.
+  for (let i = 0; i < n; i++) {
+    for (let k = 0; k < n; k++) line[k] = f[k * n + i];
+    edt1d();
+    for (let k = 0; k < n; k++) f[k * n + i] = out[k];
+  }
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < n; i++) line[i] = f[k * n + i];
+    edt1d();
+    for (let i = 0; i < n; i++) f[k * n + i] = out[i];
+  }
+  // A grid with no land at all is still INF everywhere: open sea, which the
+  // encoder clamps.
+  for (let t = 0; t < f.length; t++) f[t] = Math.sqrt(f[t]) * cell;
+  return f;
+}
+
+/**
+ * Shore distance packed for an 8-bit texture: sqrt(d / maxM), so the first few
+ * metres off a coast (where the foam and the shallows live) get most of the
+ * 256 codes and the open water past maxM saturates. A float texture would be
+ * simpler and is exactly what the unresolved Android black-buildings report
+ * suspects, so the ground stays on 8-bit.
+ */
+export function encodeShoreDistance(d: Float32Array, maxM: number): Uint8Array {
+  const out = new Uint8Array(d.length);
+  for (let t = 0; t < d.length; t++) {
+    out[t] = Math.round(255 * Math.sqrt(Math.min(1, d[t] / maxM)));
+  }
+  return out;
+}

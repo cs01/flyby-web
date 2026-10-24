@@ -372,6 +372,21 @@ export const POSES: Pose[] = [
     what: "Sydney over the harbour",
   },
   {
+    // San Francisco Bay on a summer afternoon: the westerly that blows in
+    // through the Gate most days, pinned at 11 m/s (Beaufort 6), low over the
+    // water off Aquatic Park looking west into a low sun.
+    //
+    // The sea-state pose. Every other water pose runs the harness's 4 m/s,
+    // where by design nothing breaks, so whitecaps, the glow through a
+    // backlit crest and a wind-driven glitter path have no frame without it.
+    name: "sf-bay-windy",
+    city: "sf",
+    lat: 37.8125, lon: -122.4300, altM: 60, hdgDeg: 275, pitchDeg: -9,
+    t: D("2025-06-22T01:00:00Z"), // 18:00 PDT: sun low in the west
+    wx: `${CLEAR},wind:11:265`,
+    what: "SF bay in an afternoon westerly",
+  },
+  {
     // Hong Kong, over Victoria Harbour looking at the Central towers.
     //
     // The densest vertical city in the set and the one with the most glass, so

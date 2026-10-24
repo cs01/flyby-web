@@ -17,8 +17,8 @@
 // CHANNEL_OF_CLASS table in src/data/landmask.ts turns every water and every
 // built assertion red at once.
 
-import { parseLandPack, type LandPack } from "../src/data/landcover";
-import { buildLandMaskRGBA, sampleMaskBilinear } from "../src/data/landmask";
+import { LandClass, parseLandPack, type LandPack } from "../src/data/landcover";
+import { buildLandMaskRGBA, sampleMaskBilinear, shoreDistanceM } from "../src/data/landmask";
 import { Origin } from "../src/geo";
 
 const DIR = "public/cities";
@@ -157,6 +157,65 @@ console.log(
 );
 check("old elevation rule misses Lake Michigan", oldRule < 0.001, `${oldRule.toFixed(4)} < 0.001`);
 check("landcover catches Lake Michigan", lakeWater > 0.9, `${lakeWater.toFixed(4)} > 0.9`);
+
+// THE SHORE DISTANCE the water's fetch, foam line and shallows are built on.
+//
+// Oracle: brute force over every land texel of a seeded random 48 x 48 grid,
+// Euclidean, in metres. The transform under test is a two-pass lower-envelope
+// algorithm whose failure modes (an off-by-one in the envelope, a swapped
+// pass) give distances that are plausible everywhere and wrong by a texel in
+// places, so it is compared at EVERY texel, not sampled. The vacuity probe is
+// a city-block (L1) distance through the same comparison: it is the classic
+// cheap substitute, it is wrong by up to 41% on diagonals, and if the
+// comparison cannot see that it cannot see anything.
+{
+  const n = 48;
+  const extentM = 240; // 10 m texels, like the near level
+  const cell = (2 * extentM) / n;
+  const cls = new Uint8Array(n * n);
+  let seed = 12345;
+  const rnd = (): number => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  for (let t = 0; t < cls.length; t++) cls[t] = rnd() < 0.08 ? LandClass.Built : LandClass.Water;
+  const got = shoreDistanceM({ extentM, n, cls });
+  const brute = (metric: (dx: number, dz: number) => number): Float64Array => {
+    const out = new Float64Array(n * n);
+    for (let k = 0; k < n; k++) for (let i = 0; i < n; i++) {
+      let best = Infinity;
+      for (let kk = 0; kk < n; kk++) for (let ii = 0; ii < n; ii++) {
+        if (cls[kk * n + ii] === LandClass.Water) continue;
+        best = Math.min(best, metric(ii - i, kk - k) * cell);
+      }
+      out[k * n + i] = best;
+    }
+    return out;
+  };
+  const euclid = brute((dx, dz) => Math.hypot(dx, dz));
+  const cityBlock = brute((dx, dz) => Math.abs(dx) + Math.abs(dz));
+  const maxErr = (a: ArrayLike<number>, b: ArrayLike<number>): number => {
+    let m = 0;
+    for (let t = 0; t < n * n; t++) m = Math.max(m, Math.abs(a[t] - b[t]));
+    return m;
+  };
+  const err = maxErr(got, euclid);
+  check("shore distance matches brute force", err < 0.01, `max |err| ${err.toFixed(4)} m < 0.01`);
+  const probeErr = maxErr(cityBlock, euclid);
+  check("vacuity: city-block distance fails the same test", probeErr >= 0.01, `${probeErr.toFixed(2)} m >= 0.01`);
+}
+
+// And at a named place: the Lake Michigan probe sits about a kilometre off the
+// lakefront (measured 994 m), against a Chicago river that is never more than
+// ~40 m from a bank. Half a kilometre is the floor because a transposed index
+// or a swapped pass lands this point on the shore or in the city.
+if (lakePack) {
+  const level = lakePack.levels[0];
+  const origin = new Origin(lakePack.lat0, lakePack.lon0);
+  const w = origin.toWorld(lakeProbe.lat, lakeProbe.lon);
+  const cell = (2 * level.extentM) / level.n;
+  const i = Math.floor((w.x + level.extentM) / cell);
+  const k = Math.floor((w.z + level.extentM) / cell);
+  const d = shoreDistanceM(level)[k * level.n + i];
+  check("Lake Michigan probe is far from any coast", d > 500, `${d.toFixed(0)} m > 500`);
+}
 
 console.log(failures === 0 ? "\nall landmask probes ok" : `\n${failures} landmask check(s) FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -43,6 +43,27 @@
 //                       that sparkles here is a failure, and deleting the
 //                       footprint fade is exactly what would make it sparkle.
 //
+// AND THREE MORE CLAIMS, added with the sea state and the scene reflection:
+//
+//   chicago-river-kerb  the river MIRRORS THE SKYLINE. The column profile of
+//                       the band of water under the far bank has to correlate
+//                       with the column profile of the scene just above it,
+//                       after a high-pass that removes the shadows and the
+//                       sky gradient both bands share anyway. Probe: the same
+//                       frame under ?nossr=1, which keeps the waves and the
+//                       sky reflection and drops only the reflected city.
+//   sf-bay-windy        an 11 m/s westerly BREAKS. Whitecap coverage over the
+//                       water has a floor, and the foam pixels are visibly
+//                       whiter than the water round them. Probes: the same
+//                       coverage measure on the 4 m/s harbour, and the
+//                       brightness measure on the ?flatwater frame.
+//   sydney-harbour      a 4 m/s breeze DOES NOT. Beaufort 3 has no whitecaps;
+//                       coverage there has a ceiling, probed with the windy
+//                       frame.
+//
+// The foam mask comes from ?terrainDebug=18, for the same reason the water
+// mask comes from =7.
+//
 // THE WATER MASK IS NOT GUESSED. Each pose is rendered a second time with
 // `?terrainDebug=7`, which makes the terrain output its own water term as
 // greyscale, so "which pixels are water" is answered by the shader that decides
@@ -94,6 +115,29 @@ function probe(label: string, checkerSaidOk: boolean, detail: string): void {
 //   sydney-harbour      luminance sd     39.36     52.39    >= 45
 //   sydney-harbour      mirror ratio     0.933     1.088    >= 1.02
 //
+// Re-measured when the sea state, the rough-surface Fresnel and the scene
+// reflection landed (flat or probe, then the new water):
+//
+//   chicago-river-kerb  relative LC      0.0037    0.0847   >= 0.020 (kept)
+//   chicago-river-kerb  luminance sd     28.70     20.75    DROPPED, see below
+//   sydney-harbour      relative LC      0.0079    0.0053   <= 0.012 (kept)
+//   sydney-harbour      luminance sd     39.35     43.41    >= 41.5
+//   sydney-harbour      mirror ratio     0.931     1.034    >= 1.02 (kept)
+//   chicago-river-kerb  skyline corr     -0.039    0.325    >= 0.15 (?nossr)
+//   sf-bay-windy        whitecap cover   0.0003    0.0125   >= 0.005 (calm)
+//   sydney-harbour      whitecap cover   0.0125    0.0003   <= 0.002 (windy)
+//   sf-bay-windy        foam - ring lum  -0.9      80.5     >= 40
+//
+// The Chicago sd floor was dropped, not loosened: the river now mirrors the
+// dark tower beside it, and a mirror of a dark wall is darker and more uniform
+// than the old sky-only water, so the sd went DOWN past the flat frame's and
+// no bound can sit between them. The claim it stood for (the river is not one
+// value) is carried by the local contrast, 23x the flat frame's, and by the
+// skyline correlation. The Sydney sd bound moved from 45 to 41.5, midway
+// between its two new measurements: the rough-surface Fresnel takes some of
+// the angular swing out of the far water, which is the physics, and the old
+// number had been measured against a water with none.
+//
 // The two Chicago bounds have several times the separation they need and are
 // where the reported defect lives. The Sydney sd and mirror bounds are TIGHT --
 // about 15% and 8% clear of each measurement - and that is not carelessness,
@@ -123,21 +167,39 @@ interface PoseGate {
    * there, it is a picture of the sun.
    */
   mirror: number | null;
+  /** False where no sd floor separates flat from wave; see the table. */
+  sdFloor: boolean;
 }
 
 const GATES: PoseGate[] = [
-  { name: "chicago-river-kerb", lc: { kind: "floor", bound: 0.020 }, sd: 36, mirror: null },
-  { name: "sydney-harbour", lc: { kind: "ceiling", bound: 0.012 }, sd: 45, mirror: 1.02 },
+  { name: "chicago-river-kerb", lc: { kind: "floor", bound: 0.020 }, sd: 0, sdFloor: false, mirror: null },
+  { name: "sydney-harbour", lc: { kind: "ceiling", bound: 0.012 }, sd: 41.5, sdFloor: true, mirror: 1.02 },
 ];
+
+/** The pose the river reflection is asserted on, and its correlation floor. */
+const REFLECT_POSE = "chicago-river-kerb";
+const REFLECT_CORR = 0.15;
+/** Rows of scene above, and of water below, the far waterline in each column. */
+const REFLECT_BAND = 40;
+/** Half-width in columns of the box the profiles are high-passed against. */
+const REFLECT_HP = 60;
+
+/** The breaking sea, and the breeze that must not break. */
+const WINDY_POSE = "sf-bay-windy";
+const CALM_POSE = "sydney-harbour";
+const FOAM_FLOOR = 0.005;
+const FOAM_CEILING = 0.002;
+/** Foam luminance over the water within 6 px of it, 0..255. */
+const FOAM_CONTRAST = 40;
 
 /** Neighbour distance for the local contrast, in pixels. */
 const LC_RADIUS = 2;
 
 /** Run the existing screenshot harness once, for one query variant. */
-async function shoot(outDir: string, query: string, port: number, dbg: number): Promise<void> {
+async function shoot(outDir: string, query: string, port: number, dbg: number, poses: string[]): Promise<void> {
   const args = [
     "tools/shots.ts",
-    "--only", GATES.map((g) => g.name).join(","),
+    "--only", poses.join(","),
     "--out", outDir,
     "--port", String(port),
     "--debug-port", String(dbg),
@@ -178,6 +240,11 @@ function luminance(path: string): Frame {
  * rejects the sky, the drape and the buildings, none of which come out neutral.
  */
 function waterMask(path: string): Uint8Array {
+  return greyMask(path);
+}
+
+/** The same rule for any of the terrain's binary debug outputs; see waterMask. */
+function greyMask(path: string): Uint8Array {
   const img = decodePng(path);
   const m = new Uint8Array(img.w * img.h);
   for (let i = 0; i < m.length; i++) {
@@ -273,6 +340,89 @@ function mirrorRatio(f: Frame, mask: Uint8Array): number {
   return cols ? water / sky : 0;
 }
 
+/**
+ * Does the water under the far bank carry the skyline above it?
+ *
+ * For every column, the mean luminance of REFLECT_BAND rows of scene above the
+ * first water pixel, and of REFLECT_BAND rows of water below it. Both profiles
+ * are high-passed (minus their own box mean over 2 * REFLECT_HP + 1 columns)
+ * and correlated. Raw, they correlate at 0.6 to 0.8 under every variant,
+ * because a tower's shadow on the water and the sky gradient line up with the
+ * scene above whatever the water does; the high-pass leaves the tower edges,
+ * which only a reflection can copy.
+ */
+function skylineCorrelation(f: Frame, mask: Uint8Array): number {
+  const A: number[] = [];
+  const B: number[] = [];
+  const H = REFLECT_BAND;
+  for (let x = 0; x < f.w; x++) {
+    let yt = -1;
+    for (let y = 0; y < f.h - 4; y++) {
+      const i = y * f.w + x;
+      if (mask[i] && mask[i + f.w] && mask[i + 2 * f.w] && mask[i + 3 * f.w]) { yt = y; break; }
+    }
+    if (yt < H + 4 || yt + H + 4 >= f.h) continue;
+    let a = 0, an = 0, b = 0, bn = 0;
+    for (let k = 4; k <= H; k++) {
+      const ia = (yt - k) * f.w + x;
+      const ib = (yt + k) * f.w + x;
+      if (!mask[ia]) { a += f.lum[ia]; an++; }
+      if (mask[ib]) { b += f.lum[ib]; bn++; }
+    }
+    if (an < H / 2 || bn < H / 2) continue;
+    A.push(a / an);
+    B.push(b / bn);
+  }
+  const hp = (v: number[]): number[] => v.map((x, i) => {
+    let s = 0, n = 0;
+    for (let k = Math.max(0, i - REFLECT_HP); k <= Math.min(v.length - 1, i + REFLECT_HP); k++) { s += v[k]; n++; }
+    return x - s / n;
+  });
+  const a = hp(A);
+  const b = hp(B);
+  const n = a.length;
+  // Too few columns with a waterline under scene is not a measurement.
+  if (n < 100) return 0;
+  const ma = a.reduce((s, x) => s + x, 0) / n;
+  const mb = b.reduce((s, x) => s + x, 0) / n;
+  let sab = 0, saa = 0, sbb = 0;
+  for (let i = 0; i < n; i++) {
+    sab += (a[i] - ma) * (b[i] - mb);
+    saa += (a[i] - ma) ** 2;
+    sbb += (b[i] - mb) ** 2;
+  }
+  return sab / Math.sqrt(saa * sbb || 1);
+}
+
+/** Fraction of the water pixels the foam mask covers. */
+function foamCoverage(water: Uint8Array, foam: Uint8Array): number {
+  let nw = 0, nf = 0;
+  for (let i = 0; i < water.length; i++) if (water[i]) { nw++; if (foam[i]) nf++; }
+  return nw ? nf / nw : 0;
+}
+
+/**
+ * Mean luminance of the foam pixels minus that of the water within 6 px of
+ * them. The mask says where the shader put foam; this says it was DRAWN, i.e.
+ * that the foam term reaches the frame as something whiter than the sea
+ * around it. A ring rather than all the water, so the glitter path and the
+ * dark far field do not decide it.
+ */
+function foamContrast(f: Frame, water: Uint8Array, foam: Uint8Array): number {
+  let sf = 0, cf = 0, sn = 0, cn = 0;
+  for (let i = 0; i < f.lum.length; i++) {
+    if (!water[i]) continue;
+    if (foam[i]) { sf += f.lum[i]; cf++; continue; }
+    let near = false;
+    for (let d = -6; d <= 6 && !near; d += 3) {
+      const a = i + d, b = i + d * f.w;
+      if ((a >= 0 && a < foam.length && foam[a]) || (b >= 0 && b < foam.length && foam[b])) near = true;
+    }
+    if (near) { sn += f.lum[i]; cn++; }
+  }
+  return cf && cn ? sf / cf - sn / cn : 0;
+}
+
 async function main(): Promise<void> {
   const outDir = arg("out", "shots/water");
   const port = Number(arg("port", "5179"));
@@ -282,13 +432,18 @@ async function main(): Promise<void> {
   // `--reuse` measures frames already in --out instead of rendering them. It is
   // for working on the MEASUREMENT: three passes of the shot harness is eight
   // minutes, and nothing about tuning a bound needs the pictures taken again.
+  const all = [...GATES.map((g) => g.name), WINDY_POSE];
   if (!has("reuse")) {
     console.log("rendering the wave water ...");
-    await shoot(`${outDir}/wave`, "", port, dbg);
+    await shoot(`${outDir}/wave`, "", port, dbg, all);
     console.log("rendering the flat water (?flatwater=1) ...");
-    await shoot(`${outDir}/flat`, "flatwater=1", port, dbg);
+    await shoot(`${outDir}/flat`, "flatwater=1", port, dbg, all);
     console.log("rendering the water mask (?terrainDebug=7) ...");
-    await shoot(`${outDir}/mask`, "terrainDebug=7", port, dbg);
+    await shoot(`${outDir}/mask`, "terrainDebug=7", port, dbg, all);
+    console.log("rendering the river without its reflection (?nossr=1) ...");
+    await shoot(`${outDir}/nossr`, "nossr=1", port, dbg, [REFLECT_POSE]);
+    console.log("rendering the foam mask (?terrainDebug=18) ...");
+    await shoot(`${outDir}/foam`, "terrainDebug=18", port, dbg, [WINDY_POSE, CALM_POSE]);
     console.log("");
   }
 
@@ -349,14 +504,43 @@ async function main(): Promise<void> {
     }
 
     // AND IT IS NOT ONE VALUE.
-    check(`${g.name}: luminance sd over water`, wave.sd >= g.sd, `${wave.sd.toFixed(2)} >= ${g.sd}`);
-    probe(`${g.name}: luminance sd, ?flatwater`, flat.sd >= g.sd, `${flat.sd.toFixed(2)} >= ${g.sd}`);
+    if (g.sdFloor) {
+      check(`${g.name}: luminance sd over water`, wave.sd >= g.sd, `${wave.sd.toFixed(2)} >= ${g.sd}`);
+      probe(`${g.name}: luminance sd, ?flatwater`, flat.sd >= g.sd, `${flat.sd.toFixed(2)} >= ${g.sd}`);
+    }
 
     if (g.mirror !== null) {
       // AND AT THE HORIZON IT IS A MIRROR.
       check(`${g.name}: grazing water against the sky`, mw >= g.mirror, `${mw.toFixed(3)} >= ${g.mirror}`);
       probe(`${g.name}: mirror ratio, ?flatwater`, mf >= g.mirror, `${mf.toFixed(3)} >= ${g.mirror}`);
     }
+  }
+
+  // THE RIVER MIRRORS THE SKYLINE.
+  {
+    const mask = waterMask(`${outDir}/mask/${REFLECT_POSE}.png`);
+    const cw = skylineCorrelation(luminance(`${outDir}/wave/${REFLECT_POSE}.png`), mask);
+    const cn = skylineCorrelation(luminance(`${outDir}/nossr/${REFLECT_POSE}.png`), mask);
+    check(`${REFLECT_POSE}: water carries the skyline`, cw >= REFLECT_CORR, `${cw.toFixed(3)} >= ${REFLECT_CORR}`);
+    probe(`${REFLECT_POSE}: skyline, ?nossr`, cn >= REFLECT_CORR, `${cn.toFixed(3)} >= ${REFLECT_CORR}`);
+  }
+
+  // AN 11 M/S SEA BREAKS AND A 4 M/S ONE DOES NOT.
+  {
+    const wWater = waterMask(`${outDir}/mask/${WINDY_POSE}.png`);
+    const wFoam = greyMask(`${outDir}/foam/${WINDY_POSE}.png`);
+    const cWater = waterMask(`${outDir}/mask/${CALM_POSE}.png`);
+    const cFoam = greyMask(`${outDir}/foam/${CALM_POSE}.png`);
+    const windy = foamCoverage(wWater, wFoam);
+    const calm = foamCoverage(cWater, cFoam);
+    check(`${WINDY_POSE}: whitecap coverage`, windy >= FOAM_FLOOR, `${windy.toFixed(4)} >= ${FOAM_FLOOR}`);
+    probe(`${WINDY_POSE}: coverage, ${CALM_POSE}'s`, calm >= FOAM_FLOOR, `${calm.toFixed(4)} >= ${FOAM_FLOOR}`);
+    check(`${CALM_POSE}: no whitecaps at 4 m/s`, calm <= FOAM_CEILING, `${calm.toFixed(4)} <= ${FOAM_CEILING}`);
+    probe(`${CALM_POSE}: ceiling, ${WINDY_POSE}'s`, windy <= FOAM_CEILING, `${windy.toFixed(4)} <= ${FOAM_CEILING}`);
+    const kw = foamContrast(luminance(`${outDir}/wave/${WINDY_POSE}.png`), wWater, wFoam);
+    const kf = foamContrast(luminance(`${outDir}/flat/${WINDY_POSE}.png`), wWater, wFoam);
+    check(`${WINDY_POSE}: foam is drawn white`, kw >= FOAM_CONTRAST, `${kw.toFixed(1)} >= ${FOAM_CONTRAST}`);
+    probe(`${WINDY_POSE}: foam contrast, ?flatwater`, kf >= FOAM_CONTRAST, `${kf.toFixed(1)} >= ${FOAM_CONTRAST}`);
   }
 
   if (!has("keep")) rmSync(outDir, { recursive: true, force: true });

@@ -28,6 +28,7 @@ import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 // The ring plan and the choice between plans live in render/budget.ts, with
 // every other number the device tier decides.
 import { CITY_RINGS, type TerrainRing } from "./budget";
+import { WATER_SSR_GLSL, WATER_SSR_UNIFORMS, type WaterSsrUniforms } from "./waterssr";
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -52,6 +53,62 @@ void main() {
 }
 `;
 
+/**
+ * The fixed wave set the water sums, as GLSL constant arrays.
+ *
+ * Fixed because a wavelength that varied with the local fetch shears the
+ * phase (see THE WAVES ARE FIXED in the shader), and generated here rather
+ * than derived per pixel because every term in it is a constant. Computing
+ * them in the shader (a sin, cos, pow, sqrt and three hashes per wave per
+ * water pixel) measured 12.03 ms mean on sydney-harbour with the scene
+ * reflection off; this table measured 10.73 ms on the same frame.
+ *
+ * Geometric from 60 m down by 0.74 a step, jittered +-14% so no two are
+ * harmonics: an exact ratio lines the crests up every few periods and the sum
+ * shows as a regular lattice, which is what exact steps looked like from the
+ * Chicago kerb. Long waves run with the wind and short ones spread round it,
+ * which is what a real directional spread does and what keeps the chop from
+ * reading as corduroy; signs are random rather than alternating, because two
+ * waves at +a and -a sum to a diamond lattice.
+ */
+export const WAVE_N = 24;
+function waveTableGlsl(): string {
+  // mulberry32: deterministic, so the sea is the same sea on every build.
+  let a = 0x2f6b9e1d;
+  const rnd = (): number => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const lnLam0: string[] = [];
+  const k: string[] = [];
+  const omega: string[] = [];
+  const rot: string[] = [];
+  const phase: string[] = [];
+  for (let i = 0; i < WAVE_N; i++) {
+    const lam0 = 60 * Math.pow(0.74, i);
+    const lam = lam0 * (0.86 + 0.28 * rnd());
+    const spread = (rnd() * 2 - 1) * (0.25 + (1.25 * i) / WAVE_N);
+    const kk = (2 * Math.PI) / lam;
+    lnLam0.push(Math.log(lam0).toFixed(6));
+    k.push(kk.toFixed(6));
+    omega.push(Math.sqrt(9.81 * kk).toFixed(6));
+    rot.push(`vec2(${Math.cos(spread).toFixed(6)}, ${Math.sin(spread).toFixed(6)})`);
+    phase.push((2 * Math.PI * rnd()).toFixed(6));
+  }
+  const arr = (type: string, name: string, v: string[]): string =>
+    `const ${type} ${name}[${WAVE_N}] = ${type}[${WAVE_N}](${v.join(", ")});`;
+  return [
+    `#define WAVE_N ${WAVE_N}`,
+    arr("float", "WAVE_LNLAM0", lnLam0),
+    arr("float", "WAVE_K", k),
+    arr("float", "WAVE_OMEGA", omega),
+    arr("vec2", "WAVE_ROT", rot),
+    arr("float", "WAVE_PHASE", phase),
+  ].join("\n");
+}
+
 const FRAG = /* glsl */ `
 precision highp float;
 in vec2 vUv;
@@ -70,6 +127,8 @@ ${SUN_SHADOW_GLSL}
 ${GROUND_BOUNCE_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
+${WATER_SSR_GLSL}
+${waveTableGlsl()}
 
 uniform sampler2D uDrape;
 uniform vec3  uCameraPos;
@@ -92,6 +151,10 @@ uniform sampler2D uLandFar;
 uniform float uLandNearExtent;
 uniform float uLandFarExtent;
 uniform float uHasLand;
+// Distance from water to the nearest land, sqrt-encoded against 4 km (near) and
+// 40 km (far); see encodeShoreDistance in data/landmask.ts.
+uniform sampler2D uShoreNear;
+uniform sampler2D uShoreFar;
 // Coverage grid over the baked road centrelines; see render/roadmask.ts.
 uniform sampler2D uRoadMask;
 uniform float uRoadMaskExtent;
@@ -461,82 +524,247 @@ void main() {
   // a single blown-out slab of paper. Water reads as water because its normal
   // varies from facet to facet, and nothing else in this shader supplies that.
   //
-  // Two octaves of the value noise this file already carries, scrolling
-  // downwind. A gradient noise would be a little smoother; it would also be a
-  // second noise function in a shader that already has one the grass trusts.
+  // A SEA STATE, not a texture. A directional sum of travelling waves whose
+  // longest wavelength, slope budget and direction come from the wind and the
+  // fetch, each moving at its own deep-water speed (omega = sqrt(g k)), so a
+  // long wave overtakes the chop riding on it the way it does on real water.
+  // Isotropic noise scrolled downwind, which this replaces, has no wavelength
+  // and no direction: it reads as a texture sliding over a plane at every
+  // range, which is exactly the "flat glassy gradient" it was reported as.
   vec3 wn = n;
   float waveAlpha = 0.0;
+  // How much of the frame's whitecap is foam (0..1), and how far up a crest
+  // this pixel sits in units of the resolved sea's rms (for the subsurface
+  // glow). Both stay at their calm values under ?flatwater.
+  float foam = 0.0;
+  float crestN = 0.0;
+  float waveRes = 0.0;
+  // Rms slope the waves left UNRESOLVED at this pixel, along one direction.
+  float sigV = 0.0;
+  float waterSure = 0.0;
+  float shoreD = 1e4;
+  float dbgSsr = 0.0;
+  float fetchM = 1e4;
+  float lamP = 1.0;
+  // Derivatives OUTSIDE the branch: inside non-uniform control flow they are
+  // undefined, and on the GPUs where that bites the waves go to static along
+  // the water's edge, exactly where the branch changes from pixel to pixel.
+  vec2 wdx = dFdx(vWorld.xz);
+  vec2 wdy = dFdy(vWorld.xz);
+  float pxFoot = max(length(wdx), length(wdy)) + 1e-4;
+  vec2 duvx = dFdx(vUv);
+  vec2 duvy = dFdy(vUv);
   if (water > 0.01 && uFlatWater < 0.5) {
-    // How hard it is blowing, as a multiplier on both the steepness and the
-    // drift. uWind is the observed 10 m wind, so 4 m/s is an ordinary day; the
-    // clamp stops a dead calm being a perfect mirror (there is always a swell
-    // too long to resolve here) and a gale being corrugated iron.
-    float wind = clamp(length(uWind) / 6.0, 0.30, 1.70);
+    // Fetch, from the distance to the nearest coast. The fetch that matters is
+    // the upwind one, which one distance cannot give; four times the nearest
+    // coast is about what a point in a round bay sees across it, and the 200 m
+    // floor is the channel a river or a harbour arm has along its own length.
+    float sN = texture(uShoreNear, lcUvN).r;
+    float sF = texture(uShoreFar, lcUvF).r;
+    shoreD = mix(sN * sN * 4000.0, sF * sF * 40000.0, smoothstep(0.9, 1.0, lcR));
+    // No pack: no measurement, so assume a harbour rather than a river or an
+    // ocean, the middle of what the elevation heuristic finds.
+    shoreD = mix(400.0, shoreD, uHasLand);
+    fetchM = 4.0 * shoreD + 200.0;
 
-    // THE PIXEL FOOTPRINT IN METRES, and this is the whole anti-aliasing story.
+    // Wind at 10 m, clamped below at half a metre a second: a true calm is a
+    // mirror, and there is always some air moving over a city.
+    float U = clamp(length(uWind), 0.5, 25.0);
+    vec2 wdir = length(uWind) > 0.01 ? normalize(uWind) : vec2(1.0, 0.0);
+
+    // GUSTS AND SLICKS. From a few hundred metres up every wind wave is
+    // sub-pixel, and what is left to see on real water is that the roughness
+    // is not uniform: cat's paws where a gust touches down, glassy slicks
+    // between, all streaked along the wind. That is what gives open water its
+    // scale from the air, and it is low-frequency, so it cannot alias. The
+    // finer octave fades with the footprint for the same reason every wave
+    // below does.
+    vec2 qa = vec2(dot(vWorld.xz, wdir), dot(vWorld.xz, vec2(-wdir.y, wdir.x)));
+    float g1 = vnoise2((qa - vec2(U * 0.55 * uTime, 0.0)) / vec2(560.0, 190.0));
+    float g2 = vnoise2((qa - vec2(U * 0.75 * uTime, 0.0)) / vec2(170.0, 55.0) + vec2(7.3, 2.1));
+    float gust = g1 * 0.6 + mix(0.5, g2, smoothstep(14.0, 4.0, pxFoot)) * 0.4;
+    // Slope VARIANCE multiplier, mean ~1: the patches run from about a third
+    // of the mean to about twice it, which is the contrast a slick has.
+    float rough = 0.30 + 1.40 * smoothstep(0.15, 0.85, gust);
+
+    // Mean square slope, Cox and Munk's clean-surface fit (0.003 + 5.12e-3 U),
+    // shortened by the fetch: a sheltered river under the same wind is far
+    // calmer than the bay it runs into.
+    float fetchK = fetchM / (fetchM + 800.0);
+    float mss = (0.003 + 0.00512 * U) * (0.6 + 0.4 * fetchK) * rough;
+
+    // Peak wavelength. JONSWAP's fetch-limited peak (omega_p = 22 (g^2 / U F)^1/3),
+    // capped at Pierson-Moskowitz's fully developed one (omega_p = 0.877 g / U).
+    // Measured against the formula at 4 m/s: a 60 m river gives ~0.65 m, the
+    // middle of SF bay ~5 m, open ocean caps at ~13 m.
+    float omegaP = max(22.0 * pow(96.24 / (U * fetchM), 1.0 / 3.0), 0.877 * 9.81 / U);
+    lamP = 6.2832 * 9.81 / (omegaP * omegaP);
+
+    // THE WAVES ARE FIXED; THE SPECTRUM OVER THEM IS NOT. Every pixel sums the
+    // same 24 wavelengths, 60 m down to 4 cm, in the same directions, and only
+    // their AMPLITUDES follow the local wind and fetch. The first version let
+    // the wavelengths themselves follow the fetch, and a phase k(x) * x whose
+    // k varies in space has a gradient of k + x dk/dx: kilometres from the
+    // origin, every kink in the shore distance became a seam of compressed
+    // waves, ruled across Sydney harbour as dotted lines.
     //
-    // The drape is ~10 m a texel and water fills the lower half of a grazing
-    // frame, so a 2 m wave is sub-pixel a few hundred metres out. A sub-pixel
-    // bump is not detail: it is a fresh random number per pixel that changes
-    // every time the camera moves, which is a sheet of sparkling static.
-    // fwidth answers "how much world does this pixel cover" directly, and it
-    // answers it for GRAZING angles too -- which distance alone cannot, because
-    // a shallow view stretches the footprint along the view ray long before the
-    // range gets large. That is exactly the frame this defect was reported in.
-    float px = max(fwidth(vWorld.x), fwidth(vWorld.z)) + 1e-4;
-
-    // Wavelengths in metres and the peak slope each carries at an ordinary
-    // wind. Chop on a river and in a harbour is metre-scale; anything longer is
-    // swell the drape's own shading already stands in for.
-    const float LAM_A = 2.6;
-    const float LAM_B = 0.95;
-    const float SLOPE_A = 0.30;
-    const float SLOPE_B = 0.22;
-
-    // An octave lives while its wavelength is comfortably over the footprint,
-    // and is faded out rather than switched off: a hard cutoff draws a ring on
-    // the water at whatever range it fires.
-    float keepA = smoothstep(LAM_A * 0.85, LAM_A * 0.30, px);
-    float keepB = smoothstep(LAM_B * 0.85, LAM_B * 0.30, px);
-
-    vec2 drift = uWind * uTime * 0.35;
-    vec2 pa = (vWorld.xz - drift) / LAM_A;
-    vec2 pb = (vWorld.xz - drift * 1.6 + vec2(31.7, 11.3)) / LAM_B;
-
-    // Central differences a fifth of a wavelength apart. The step is in NOISE
-    // CELLS rather than metres, so both octaves are differenced over the same
-    // fraction of their own period and neither is measured off its own scale.
-    const float E = 0.2;
-    vec2 ga = vec2(vnoise2(pa + vec2(E, 0.0)) - vnoise2(pa - vec2(E, 0.0)),
-                   vnoise2(pa + vec2(0.0, E)) - vnoise2(pa - vec2(0.0, E)));
-    vec2 gb = vec2(vnoise2(pb + vec2(E, 0.0)) - vnoise2(pb - vec2(E, 0.0)),
-                   vnoise2(pb + vec2(0.0, E)) - vnoise2(pb - vec2(0.0, E)));
-    vec2 slope = ga * (SLOPE_A * wind * keepA) + gb * (SLOPE_B * wind * keepB);
+    // The shape is Pierson-Moskowitz's low-frequency cutoff, exp(-1.25 (lam /
+    // lamP)^2) in wavelength, over a saturation range with equal mean square
+    // slope per log-band (a k^-3 elevation spectrum), with JONSWAP's peak
+    // (gamma 3.3) on top. The peak matters more than it looks: the longest
+    // waves are the only ones a camera a few hundred metres up resolves, and
+    // without it each carried a twentieth of the slope and the sea read as
+    // glass from there. Two more shares stand for the capillaries under the
+    // shortest wave, which only ever go to the roughness.
+    float lnLamP = log(lamP);
+    float wv[WAVE_N];
+    float wsum = 2.0;
+    for (int i = 0; i < WAVE_N; i++) {
+      float d = WAVE_LNLAM0[i] - lnLamP;
+      float x2 = exp(2.0 * d);
+      float lp = d / 0.3;
+      wv[i] = exp(-1.25 * x2) * (1.0 + 2.3 * exp(-0.5 * lp * lp));
+      wsum += wv[i];
+    }
+    float share = mss / wsum;
+    float lostVar = 2.0 * share;
+    float keptVar = 0.0;
+    vec2 slope = vec2(0.0);
+    float jac = 0.0;
+    // The same crest sum over the dominant waves alone (those within a factor
+    // of three of the peak, and longer): it is THEY that break. A whitecap
+    // picked from the full sum lands on the crest of a 30 cm ripple and is a
+    // speck; on the peak waves it is a patch metres across, which is what a
+    // Beaufort 6 sea is covered in.
+    float jacP = 0.0;
+    float varPKept = 0.0;
+    float varPAll = 1e-9;
+    // Horizontal displacement of the water by the longer waves, fed into the
+    // phase of every shorter one. Chop rides on swell: a short wave's crests
+    // are pushed together on the long wave's front and pulled apart behind
+    // it. Without this the short waves are a fixed interference pattern
+    // sliding over the long ones, and from the kerb that read as a checker.
+    vec2 warp = vec2(0.0);
+    for (int i = 0; i < WAVE_N; i++) {
+      float var = share * wv[i];
+      // Above the peak there is nearly nothing; skipping it is most of the
+      // loop on a river.
+      if (wv[i] < 0.002) continue;
+      float k = WAVE_K[i];
+      vec2 R = WAVE_ROT[i];
+      vec2 D = vec2(wdir.x * R.x - wdir.y * R.y, wdir.x * R.y + wdir.y * R.x);
+      // Phase change per pixel ALONG this wave's own direction. The footprint
+      // on water at a grazing angle is long down-range and narrow across it,
+      // so a wave travelling across the view stays resolved several times
+      // further out than one travelling toward the camera. An isotropic fwidth
+      // throws that away and goes glassy at a third of the range.
+      float dph = k * max(abs(dot(D, wdx)), abs(dot(D, wdy)));
+      // Kept above eight pixels a wavelength, gone below four: the shading is
+      // not linear in the normal (Fresnel, the glint lobe), so a wave just
+      // over Nyquist still aliases once lit; at six it drew moire rings on
+      // the Chicago foreground. Faded, not cut: a hard cutoff draws a ring on
+      // the water at whatever range it fires. Under 4 cm (k > 157) the phase
+      // loses float precision a few km from the origin, so those always go to
+      // the roughness.
+      float keep = k > 157.0 ? 0.0 : smoothstep(1.57, 0.785, dph);
+      lostVar += var * (1.0 - keep * keep);
+      bool dominant = WAVE_LNLAM0[i] > lnLamP - 1.05;
+      if (dominant) varPAll += var;
+      if (keep <= 0.0) continue;
+      if (dominant) varPKept += var * keep * keep;
+      keptVar += var * keep * keep;
+      float s = sqrt(2.0 * var);
+      float th = k * dot(D, vWorld.xz + warp) - WAVE_OMEGA[i] * uTime + WAVE_PHASE[i];
+      float sk = s * keep;
+      float cth = cos(th);
+      slope += D * (sk * cth);
+      float sth = sin(th);
+      jac += sk * sth;
+      if (dominant) jacP += sk * sth;
+      // Amplitude is s / k; three times the Gerstner displacement, because
+      // at a true one the chop is moved by a few percent of its own length
+      // and the lattice survives. The amplitude follows the local spectrum,
+      // so this warp varies in space only as smoothly as the fetch does.
+      warp -= D * (3.0 * sk / k) * cth;
+    }
 
     // Water is LEVEL. The terrain normal under it is whatever the heightfield's
     // noise made of a flat plateau, so the waves are hung off vertical and only
     // blend back to the ground's own normal where the water mask fades out at a
     // shoreline.
     vec3 flatN = normalize(mix(n, vec3(0.0, 1.0, 0.0), water));
-    wn = normalize(flatN + vec3(-slope.x, 0.0, -slope.y));
+    // The Gerstner term in y (0.6 of full steepness) sharpens crests and
+    // flattens troughs, which is the trochoid profile real wind waves have and
+    // a pure sum of sines does not.
+    // Only on water the mask is sure of. The far landcover level is ~137 m a
+    // texel and along a coast its ramp gives a hillside a partial weight; a
+    // phase-exact wave field on a slope draws contour rings up it (seen on
+    // the Marin headland). The shoreline ramp of the near level is a few
+    // metres and loses nothing visible.
+    float sure = smoothstep(0.5, 0.95, water);
+    waterSure = sure;
+    slope *= sure;
+    jac *= sure;
+    wn = normalize(flatN + vec3(-slope.x, -0.6 * jac, -slope.y));
 
-    // WHERE THE FADED-OUT DETAIL GOES, and it does not go in the bin.
-    //
-    // Dropping an octave because it is sub-pixel turns distant water into
-    // polished glass: a mirror-flat surface has one tiny highlight and is dark
-    // everywhere else, so the far half of the frame would go dead exactly where
-    // real water is at its brightest. The slope VARIANCE the octave was
-    // carrying is added to the GGX roughness instead. That is the same energy
-    // spread over a wider lobe: one soft bright band instead of ten thousand
-    // aliasing points, which is what the eye sees at that range anyway.
-    //
-    // 0.06 is the variance of a central difference of this value noise, whose
-    // rms is about a quarter of its peak. 0.0016 is the floor: alpha 0.04, the
-    // long swell nothing here resolves.
-    float lost = 0.06 * wind * wind
-               * (SLOPE_A * SLOPE_A * (1.0 - keepA * keepA)
-                + SLOPE_B * SLOPE_B * (1.0 - keepB * keepB));
-    waveAlpha = clamp(sqrt(0.0016 + 2.0 * lost), 0.04, 0.42);
+    // WHERE THE FADED-OUT DETAIL GOES, and it does not go in the bin. Every
+    // wave dropped for being sub-pixel hands its slope variance to the GGX
+    // roughness: the same energy spread over a wider lobe, one soft bright
+    // band instead of ten thousand aliasing points. For a Beckmann-like lobe
+    // alpha^2 is the mean square slope. 0.0016 is the floor, alpha 0.04, the
+    // long swell nothing here models.
+    waveAlpha = clamp(sqrt(0.0016 + lostVar), 0.04, 0.42);
+    sigV = sqrt(0.5 * lostVar);
+
+    // How far up a crest this pixel is, in rms of what is resolved here.
+    crestN = jac / sqrt(max(keptVar, 1e-6));
+
+    // WHITECAPS. Coverage from Monahan's fit, W = 3.84e-6 U^3.41: 0.04% at
+    // 4 m/s, 1% at 10, 4% at 15. Tripled, because the residual foam a breaker
+    // leaves streaming behind it covers more than the breaker does. Fetch-
+    // limited too: a river does not break whatever the wind.
+    float W = min(0.30, 3.0 * 3.84e-6 * pow(U, 3.41)) * smoothstep(300.0, 3000.0, fetchM);
+    // Near: the dominant crests that are high enough, in the wave GROUPS that
+    // are breaking. Waves arrive in groups, and only the tallest few in a
+    // group break: picking crests by height alone put a whitecap on the same
+    // phase of every dominant wave, a regular lattice of white dots across
+    // the bay. The group field is a fixed 30 m noise (never scaled by the
+    // local peak wavelength, which would shear its phase the way the waves
+    // once did) drifting downwind, open over about a third of the water, so
+    // the crest threshold is the Gaussian tail holding W / 0.33 of the area
+    // (t ~ 0.77 sqrt(-2 ln p), within 0.25 of the exact quantile between
+    // 0.1% and 10%).
+    float group = smoothstep(0.50, 0.72, vnoise2((qa - vec2(U * 0.5 * uTime, 0.0)) / vec2(34.0, 22.0) + vec2(5.7, 1.3)));
+    float t = 0.77 * sqrt(-2.0 * log(clamp(W / 0.33, 1e-6, 0.5)));
+    float crestP = jacP / sqrt(max(varPKept, 1e-9));
+    float lace = vnoise2(qa / vec2(3.2, 1.6) - vec2(uTime * 0.4, 0.0)) * 0.6
+               + vnoise2(qa / 0.9 + vec2(3.1, 9.4)) * 0.4;
+    // Which crest in a group breaks is not decided by height alone (the wind
+    // gusts, the current shears), and with only the three or four dominant
+    // waves in the sum, height alone picks the same phase of each: dots on a
+    // lattice. A 7 m noise added to the crest height (sd ~0.35 against the
+    // crest's 1) jumbles which crests clear the bar without moving the bar.
+    float jumble = vnoise2(qa / vec2(7.0, 4.0) + vec2(13.1, 7.7)) - 0.5;
+    float near_ = smoothstep(t - 0.5, t + 0.3, crestP + 2.4 * jumble) * group
+                * smoothstep(0.2, 0.6, lace);
+    // Far: once the dominant crests are not resolved the foam is not either,
+    // and what a pixel sees is the coverage itself, as a brighter tint. Which
+    // applies is how much of the dominant waves' slope is still resolved.
+    float resolved = smoothstep(0.25, 0.75, keptVar / (keptVar + lostVar));
+    float resolvedP = smoothstep(0.3, 0.8, varPKept / varPAll);
+    waveRes = resolved;
+    foam = mix(W * 0.8, near_, resolvedP) * rough;
+
+    // THE SHORE. A foam line where waves arrive at a coast, sized by the waves
+    // that are arriving: none on a river, a broken line round a bay, a wide
+    // surf band on an ocean beach. It surges in and out at the peak period.
+    // The band is ~12 m and the landcover posting is 10 m, so where a pixel is
+    // wider than the band it fades out rather than crawl along the coast.
+    float surf = clamp(lamP / 6.0, 0.0, 1.0) * smoothstep(2.0, 6.0, U);
+    float surge = 3.0 * sin(omegaP * 0.5 * uTime);
+    float band = smoothstep(16.0, 4.0, shoreD + surge) * smoothstep(0.2, 0.7, lace + 0.15);
+    foam = max(foam, band * surf * smoothstep(12.0, 3.0, pxFoot) * uHasLand);
+    foam = clamp(foam, 0.0, 1.0);
   }
 
   // Wet ground gets the Blinn lobe below; open water gets its own GGX on the
@@ -571,42 +799,99 @@ void main() {
   // becomes a mirror of the sky. That angular swing is what makes water read as
   // water, and no amount of tinting a diffuse albedo reproduces it.
   if (water > 0.01) {
-    float f = pow(1.0 - clamp(dot(v, wn), 0.0, 1.0), 5.0);
+    // FRESNEL OVER THE FACETS THIS PIXEL CANNOT SEE. Where the waves are
+    // sub-pixel the pixel is still made of tilted facets, and at a grazing
+    // view the ones tilted toward the camera are the ones it sees, so the
+    // mean reflectance falls well below the smooth-surface value. This is
+    // Bruneton, Neyret and Holzschuch's fit (2010) of Fresnel averaged over a
+    // Gaussian slope distribution of rms sigV; at sigV = 0 it is Schlick
+    // exactly, so ?flatwater and resolved waves are unchanged. It is what
+    // makes a gust darker than the slick beside it from a few hundred metres
+    // up: the rough patch reflects less of the bright low sky.
+    float cosV = clamp(dot(v, wn), 0.0, 1.0);
+    float f = pow(1.0 - cosV, 5.0 * exp(-2.69 * sigV)) / (1.0 + 22.7 * pow(sigV, 1.5));
     float fres = 0.02 + 0.98 * f;
     vec3 deep = vec3(0.004, 0.016, 0.030) * (beam + ambient);
 
     vec3 skyRefl;
     vec3 glint = vec3(0.0);
+    vec3 sss = vec3(0.0);
     if (uFlatWater > 0.5) {
       skyRefl = uAmbient * 1.7
               + uSunColor * uSunIntensity * uSunSurface * sunT * 0.10
               + uMoonLight * uSunSurface * 0.10;
     } else {
+      // THE WATER'S OWN COLOUR, from the place. What comes back up out of the
+      // water body is set by what is in it: SF bay is a turbid grey-green, the
+      // Chicago river is green, Sydney harbour is a deep navy, a reef lagoon
+      // is turquoise. A constant cannot be all of those, and the satellite
+      // drape has already photographed which one this is, so the body colour
+      // is the drape's, blurred (a mip bias) so a boat or a wake in the photo
+      // does not become a stain. Less blur within a hundred metres of a coast,
+      // or the blur reaches onto land and rims every shore in land colour;
+      // that same sharpness is what lets a sandbar or a reef flat the camera
+      // photographed show through as shallows. Capped, because some captures
+      // have the sun's own glitter photographed into them.
+      // The blur radius is 0.4 of the distance to the coast, so it can never
+      // reach land, converted to a mip level through the drape's own metres
+      // per texel at this pixel.
+      vec2 tsz = vec2(textureSize(uDrape, 0));
+      float texPerPx = max(length(duvx * tsz), length(duvy * tsz));
+      float mPerTex = pxFoot / max(texPerPx, 1e-6);
+      float blurM = clamp(shoreD * 0.4, 1.0, 400.0);
+      float lodB = log2(max(blurM / mPerTex, 1.0));
+      vec3 photo = srgbToLinear(textureLod(uDrape, vUv, lodB).rgb);
+      // Wakes, sandbars at low tide and photographed glitter are all brighter
+      // than the water around them; past 0.05 linear (sRGB ~63) the photo is
+      // not water colour any more, so it is scaled back to that luminance
+      // rather than clipped per channel, which would bleach its hue.
+      float pl = dot(photo, vec3(0.2126, 0.7152, 0.0722));
+      photo *= min(1.0, 0.05 / max(pl, 1e-5));
+      // The photograph is reflectance seen from orbit, which includes the 2%
+      // of sky the surface itself reflected; 0.6 of it is what came up out of
+      // the water. Never darker than the old constant, so a drape with black
+      // water (night captures exist) cannot dig a hole.
+      vec3 body = max(photo * 0.6, vec3(0.004, 0.016, 0.030));
+      deep = body * (beam + ambient);
+
       // THE SKY ALONG THE REFLECTED RAY, from the same integral the dome and
       // the aerial perspective already use. A constant ambient cannot express
       // what a mirror actually shows: the horizon-to-zenith gradient, the warm
       // half of the sky at sunset, the bright band low down that is most of why
       // a river is legible at all.
-      //
-      // It is a SECOND atmosphere march and it is the most expensive thing in
-      // this shader, so it runs on water pixels only, at the 7 steps the aerial
-      // perspective already settled on. Measured through tools/shots.ts against
-      // the same frame with the water flat: chicago-river-kerb 12.83 -> 13.31
-      // ms mean at 39.5% water, sydney-harbour 8.25 -> 9.54 ms at 33.3% water,
-      // the wave block included. The harbour is the worst case in the pose set
-      // and it costs 1.3 ms.
       vec3 r = reflect(-v, wn);
       // A steep facet can tip the reflected ray under the horizon, where the
       // march hits the ground and returns near-black. That is a hole in the
       // water, not a reflection: what real water shows there is the back of the
       // next wave, which is lit by the sky just above the horizon.
-      r = normalize(vec3(r.x, max(r.y, 0.004), r.z));
-      vec3 refTrans;
-      skyRefl = atmosphere(atmoOrigin(max(0.0, vWorld.y)), r, 1.0e7, refTrans);
-      // The integral is driven by the sun and goes to zero after dark, so
-      // without these two terms water becomes the one black hole in a moonlit
-      // frame -- which is the failure the moonglade above exists to prevent.
-      skyRefl += uMoonLight * uSunSurface * 0.10 + uAmbient * uNight * 0.35;
+      // Masking does the same to the direction: the facets a grazing view
+      // can see face it, so on average they send the ray higher, into
+      // darker sky, by about the unresolved slope.
+      r = normalize(vec3(r.x, max(r.y, 0.004) + 0.7 * sigV, r.z));
+
+      // AND THE CITY ALONG IT. Water beside a 200 m tower mirrors the tower;
+      // a sky-only reflection paints the sky where the tower should be, which
+      // is the single most obviously wrong thing about water in a city. See
+      // render/waterssr.ts for why this marches the previous frame.
+      // Same rule as the waves: a partial-water hillside marched against
+      // itself and drew stepped contour bands down its own face.
+      vec4 ssr = waterSure > 0.01 ? waterSSR(vWorld, r, vViewDist, waveAlpha, 2.0 * sigV) : vec4(0.0);
+      ssr.a *= waterSure;
+      dbgSsr = ssr.a;
+
+      // The sky march is the most expensive thing in this shader (measured,
+      // see the git history of this block: ~1.3 ms on the harbour pose), so
+      // it is skipped where the scene reflection covers the pixel outright.
+      skyRefl = vec3(0.0);
+      if (ssr.a < 0.999) {
+        vec3 refTrans;
+        skyRefl = atmosphere(atmoOrigin(max(0.0, vWorld.y)), r, 1.0e7, refTrans);
+        // The integral is driven by the sun and goes to zero after dark, so
+        // without these two terms water becomes the one black hole in a
+        // moonlit frame.
+        skyRefl += uMoonLight * uSunSurface * 0.10 + uAmbient * uNight * 0.35;
+      }
+      skyRefl = mix(skyRefl, ssr.rgb, ssr.a);
 
       // Sun glint. This is the term that says "water" when the sun is low: a
       // glitter path is thousands of facets each catching the disc, and the
@@ -615,8 +900,36 @@ void main() {
       glint = uSunColor * uSunIntensity * uSunSurface * sunT * sunVis
                 * waterGGX(wn, v, uSunDir, waveAlpha)
             + uMoonLight * uSunSurface * waterGGX(wn, v, uMoonDir, waveAlpha);
+
+      // LIGHT THROUGH THE CREST. Looking toward a low sun, the thin top of a
+      // wave is lit from behind and glows the body colour, much brighter and
+      // more saturated than the face beneath it. It needs the sun behind the
+      // wave (view and sun on the same azimuth), a crest (where the water is
+      // thin), and a low sun (a high one goes straight down and out of sight).
+      // Where crests are not resolved the glow is their average, so it does not
+      // switch off with range; it becomes a band of colour under the glitter.
+      vec2 vh = normalize(-v.xz + 1e-5);
+      vec2 lh = normalize(uSunDir.xz + 1e-5);
+      float behind = pow(clamp(dot(vh, lh), 0.0, 1.0), 3.0);
+      float lowSun = smoothstep(0.0, 0.08, uSunDir.y) * (1.0 - smoothstep(0.35, 0.8, uSunDir.y));
+      float crest = mix(0.25, smoothstep(0.3, 2.0, crestN), waveRes);
+      // The glow is the body colour pushed toward its own hue: the scattering
+      // that made it that colour is happening through a thinner sheet.
+      // Pulled a little toward the blue-green that clear water transmits,
+      // since a turbid bay's grey is mostly what it reflects, not what it
+      // passes.
+      vec3 glowTint = mix(body / max(max(body.r, max(body.g, body.b)), 1e-4),
+                          vec3(0.25, 0.85, 0.70), 0.35);
+      sss = glowTint * uSunColor * uSunIntensity * uSunSurface * sunT * sunVis
+          * behind * lowSun * crest * 0.11;
     }
-    lit = mix(lit, mix(deep, skyRefl, fres) + glint, water);
+    vec3 surface = mix(deep, skyRefl, fres) + glint + sss * (1.0 - fres);
+
+    // Foam is a rough white scatterer lying ON the water: it takes the light
+    // the way a snowfield does and hides the reflection and the glint under it.
+    vec3 foamCol = vec3(0.78, 0.80, 0.80) * (beam + ambient);
+    surface = mix(surface, foamCol, foam);
+    lit = mix(lit, surface, water);
   }
 
   // City lights at night, keyed to how built-up the drape looks. Grey, bright
@@ -726,6 +1039,12 @@ void main() {
   //  12 landcover tree           13 landcover herbaceous (after the road veto)
   //  14 road coverage: white on a carriageway, ramping off across the verge.
   //     Black everywhere for a city with no road pack, which is most of them.
+  //  15 water scene-reflection confidence (render/waterssr.ts)
+  //  16 SSR history depth check: red |history depth - own depth| / 10 m,
+  //     green own depth / 2 km, blue history depth / 2 km. Red must be ~0
+  //     on water, or the history and the march disagree about the world.
+  //  17 red shore distance / 500 m, green foam, blue wave roughness * 2
+  //  18 foam mask, white where foam > 0.3; tools/verify-water.ts reads it
   if (uDebug > 0.5) {
     if (uDebug < 1.5)       col = albedo;
     else if (uDebug < 2.5)  col = beam;
@@ -741,7 +1060,16 @@ void main() {
               + vec3(0.1, 0.8, 0.2) * lc.b + vec3(1.0) * lc.a) * uHasLand;
     else if (uDebug < 12.5) col = vec3(canopy);
     else if (uDebug < 13.5) col = vec3(herb);
-    else col = vec3(roadCov);
+    else if (uDebug < 14.5) col = vec3(roadCov);
+    else if (uDebug < 15.5) col = vec3(dbgSsr);
+    else if (uDebug < 16.5) {
+      vec4 c0 = uSsrViewProj * vec4(vWorld, 1.0);
+      vec2 u0 = c0.xy / c0.w * 0.5 + 0.5;
+      float h0 = texelFetch(uSsrHistory, ivec2(u0 * uSsrSize), 0).a;
+      col = vec3(abs(h0 - c0.w) / 10.0, c0.w / 2000.0, h0 / 2000.0);
+    }
+    else if (uDebug < 17.5) col = vec3(shoreD / 500.0, foam, waveAlpha * 2.0);
+    else col = vec3(step(0.3, foam) * water);
   }
 
   // The ground/sun mask; see groundDebugColor in render/groundbounce.ts. Water
@@ -754,7 +1082,8 @@ void main() {
 }
 `;
 
-export interface TerrainUniforms extends SunShadowUniforms, AoUniforms, GroundBounceUniforms {
+export interface TerrainUniforms
+  extends SunShadowUniforms, AoUniforms, GroundBounceUniforms, WaterSsrUniforms {
   uDrape: THREE.IUniform<THREE.Texture | null>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -771,6 +1100,8 @@ export interface TerrainUniforms extends SunShadowUniforms, AoUniforms, GroundBo
   uLandNearExtent: THREE.IUniform<number>;
   uLandFarExtent: THREE.IUniform<number>;
   uHasLand: THREE.IUniform<number>;
+  uShoreNear: THREE.IUniform<THREE.Texture | null>;
+  uShoreFar: THREE.IUniform<THREE.Texture | null>;
   /** Scene clock in seconds; drives the wave drift. Zero in shot mode. */
   uTime: THREE.IUniform<number>;
   /** Observed 10 m wind in m/s as (east, south); sets wave steepness and drift. */
@@ -801,6 +1132,7 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     ...shadow,
     ...aoUniforms(),
     ...groundBounceUniforms(),
+    ...WATER_SSR_UNIFORMS,
     uDrape: { value: null },
     // Held at the hemispherical ambient the shader used before the probe
     // existed, so frame one shades correctly whatever happens to the probe.
@@ -818,6 +1150,8 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uLandNearExtent: { value: 1 },
     uLandFarExtent: { value: 1 },
     uHasLand: { value: 0 },
+    uShoreNear: { value: null },
+    uShoreFar: { value: null },
     uTime: { value: 0 },
     uWind: { value: new THREE.Vector2() },
     uFlatWater: { value: 0 },
