@@ -105,6 +105,16 @@ export interface SunShadowUniforms extends Record<string, THREE.IUniform> {
   uCityShadowMat: THREE.IUniform<THREE.Matrix4>;
   /** x: 1 when the map holds the city (2: use it everywhere, ?cityshadowonly), y: world metres a texel, z: depth range in metres, w: 1 / size. */
   uCityShadow: THREE.IUniform<THREE.Vector4>;
+  /**
+   * Cloud shadow: the sun's transmittance through the low and mid decks, drawn
+   * by render/composite.ts on the plane of the lowest cloud base. Null (and
+   * uCloudShadow.x 0) on a clear day.
+   */
+  uCloudShadowMap: THREE.IUniform<THREE.Texture | null>;
+  /** x0, z0 (world metres of the map's corner), 1 / extent, plane altitude. */
+  uCloudShadowRect: THREE.IUniform<THREE.Vector4>;
+  /** x: 1 when the map is live, y: the largest gain a gap may get; see cloudSunVisibility. */
+  uCloudShadow: THREE.IUniform<THREE.Vector4>;
 }
 
 /**
@@ -128,6 +138,9 @@ uniform float uShadowStrength;
 uniform sampler2D uCityShadowMap;
 uniform mat4  uCityShadowMat;
 uniform vec4  uCityShadow;
+uniform sampler2D uCloudShadowMap;
+uniform vec4  uCloudShadowRect;
+uniform vec4  uCloudShadow;
 
 // Bias constants, in units of ONE SHADOW TEXEL's world size. Expressing them
 // this way is what lets one set of numbers serve a 0.4 m/texel cascade and a
@@ -218,8 +231,40 @@ float bandVisibility(int c, vec3 worldPos, vec3 normal, vec3 sunDir) {
   return v;
 }
 
-/** Returns 0..1, how much of the sun reaches this fragment. */
-float sunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewDist) {
+/**
+ * How much sun the cloud decks let through to this point, RELATIVE TO THE
+ * BEAM THE LIGHTING MODEL ALREADY DIMMED.
+ *
+ * render/lighting.ts takes the decks out of the sun as one global factor,
+ * 1 - opacity, because that is all it knows. With a map of where the cloud
+ * actually is, the honest answer is spatial: full sun in the gaps, the deck's
+ * transmittance under a cloud. Dividing the map by its own MEAN (the top mip)
+ * turns it into exactly that redistribution while keeping the average beam
+ * the lighting model set, so nothing else in the frame has to change: a 30%
+ * cumulus sky dims the beam to 0.72, the map's mean is ~0.74, so a gap gets
+ * the dimmed beam times 1 / 0.74, which is the clear beam back, and a shadow
+ * gets about a tenth of it. Can exceed 1 for that reason. The gain
+ * is capped (uCloudShadow.y) at what undoes the low and mid decks' share of the
+ * dimming, so a gap in an overcast cannot come out brighter than a clear day.
+ */
+float cloudSunVisibility(vec3 worldPos, vec3 sunDir) {
+  if (uCloudShadow.x < 0.5) return 1.0;
+  // Along the sun ray to the plane the map was drawn on. Exact for anything
+  // under the deck, which is everything that receives this.
+  float s = (uCloudShadowRect.w - worldPos.y) / max(sunDir.y, 0.05);
+  vec2 xz = worldPos.xz + sunDir.xz * s;
+  vec2 uv = (xz - uCloudShadowRect.xy) * uCloudShadowRect.z;
+  float mean = textureLod(uCloudShadowMap, vec2(0.5), 16.0).r;
+  float t = textureLod(uCloudShadowMap, uv, 0.0).r;
+  // Past the map's edge, the mean: unshadowed relative to the beam, rather
+  // than a hard line where the map stops.
+  vec2 e = min(uv, 1.0 - uv);
+  t = mix(mean, t, smoothstep(0.0, 0.08, min(e.x, e.y)));
+  return clamp(t / max(mean, 0.02), 0.0, uCloudShadow.y);
+}
+
+/** 0..1, how much of the sun the shadow maps let reach this fragment. */
+float geometrySunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewDist) {
   if (uShadowStrength <= 0.0) return 1.0;
 
   // Past the cascades the city map answers on its own; outside the city it
@@ -256,6 +301,14 @@ float sunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewDist) {
 
   if (handoff > 0.0) vis = mix(vis, city ? cascadeVisibility(3, worldPos, normal, sunDir) : 1.0, handoff);
   return mix(1.0, vis, uShadowStrength);
+}
+
+/**
+ * How much sun reaches this fragment: the shadow maps times the cloud decks.
+ * Usually 0..1; above 1 in a gap between clouds, see cloudSunVisibility.
+ */
+float sunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewDist) {
+  return geometrySunVisibility(worldPos, normal, sunDir, viewDist) * cloudSunVisibility(worldPos, sunDir);
 }
 `;
 
@@ -427,6 +480,9 @@ export class SunShadow {
       uCityShadowMap: { value: null },
       uCityShadowMat: { value: new THREE.Matrix4() },
       uCityShadow: { value: new THREE.Vector4(0, 1, 1, 1) },
+      uCloudShadowMap: { value: null },
+      uCloudShadowRect: { value: new THREE.Vector4(0, 0, 1, 0) },
+      uCloudShadow: { value: new THREE.Vector4(0, 1, 0, 0) },
     };
   }
 

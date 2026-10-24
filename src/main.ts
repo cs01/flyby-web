@@ -341,7 +341,15 @@ async function main() {
     console.error("[flyby] vertex shader log:", gl.getShaderInfoLog(vs as WebGLShader));
     console.error("[flyby] fragment shader log:", gl.getShaderInfoLog(fs as WebGLShader));
   };
-  const composite = new Composite(renderer);
+  // The three cloud flags are tools/verify-clouds.ts's measurement frame and
+  // its two vacuity probes; see render/composite.ts.
+  const cloudQ = new URLSearchParams(location.search);
+  const composite = new Composite(renderer, {
+    tier: budget.tier,
+    debug: cloudQ.get("clouddebug") === "1",
+    uniformCoverage: cloudQ.get("cloudwm") === "0",
+    oldBase: cloudQ.get("cloudflatbase") === "0",
+  });
   const target = createSceneTarget(renderer, budget);
   // The previous frame, for the water's screen-space reflections.
   const waterHistory = new WaterHistory(renderer);
@@ -381,6 +389,7 @@ async function main() {
   // cascade uniforms are spread by reference into the terrain and building
   // materials at the moment those materials are created.
   const sunShadow = new SunShadow(budget);
+  composite.attachShadow(sunShadow.uniforms);
   // One environment probe for the whole scene: sky irradiance for every diffuse
   // surface and a prefiltered cube for the glass and the wet tarmac.
   const skyProbe = new SkyProbe();
@@ -1969,8 +1978,7 @@ async function main() {
 
     // Pass 2 + 3: clouds raymarched at half resolution against that target's
     // depth, then a full-resolution present that folds them in and tone maps.
-    composite.update(camera, wx, light, elapsed);
-    composite.uniforms.uSunSurfaceCloud.value = 0.105;
+    composite.update(camera, wx, light, elapsed, skyProbe.sh);
     composite.presentUniforms.uExposure.value = light.exposure * exposureScale;
     composite.presentUniforms.uNight.value = light.night;
     composite.brightUniforms.uExposure.value = light.exposure * exposureScale;
@@ -2067,6 +2075,9 @@ async function main() {
       },
       /** Start a fresh timing window, so warm-up frames are not in the sample. */
       resetTiming: () => { timedFrames = 0; },
+      // Moves the clouds' clock only, so tools/verify-clouds.ts can ask what
+      // one frame of cloud time does to a frame whose scene is otherwise still.
+      stepClouds: (s: number) => { composite.timeOffset += s; },
       get timed() { return timedFrames; },
       // Mean and p99, never the median.
       //
