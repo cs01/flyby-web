@@ -19,6 +19,12 @@
 // not have to be visible: a 380 m tower a kilometre behind you still lays its
 // shadow across the street in front of you, and the only way it can is if the
 // light frustum reaches far enough back along the sun direction to contain it.
+//
+// Beyond the cascades, a fourth map covers the WHOLE baked city and is
+// rendered only when the sun moves. Without it the shadows ended where the
+// cascades did, 1.4 km out on a phone and 6 km on a desktop, and from altitude
+// that read as a disc of shadowed city travelling with the aircraft over an
+// unshadowed one. See CityShadow below.
 
 import * as THREE from "three";
 import type { Budget } from "./budget";
@@ -44,6 +50,32 @@ const BACKOFF_M = 3000;
 /** How many cascades, innermost first, the `extra` casters are drawn into. */
 const EXTRA_CASTER_CASCADES = 2;
 
+/**
+ * Layer the city-wide map draws. SunShadow puts every mesh under the root it
+ * is handed onto it, so the buildings module does not have to know this map
+ * exists, and the terrain rings (camera-centred, so wrong the moment the
+ * camera moves on) and the aircraft are kept out of a map that lives for
+ * minutes.
+ */
+const CITY_SHADOW_LAYER = 3;
+
+/**
+ * Sun movement, in degrees, that re-renders the city map. The scene clock
+ * moves the sun 0.25 degrees a minute, so this is one full-city depth pass a
+ * minute. A shadow edge 4 m a texel wide moves well under a texel for a 0.25
+ * degree change except at the tips of the longest low-sun shadows.
+ */
+const CITY_RESHADOW_DEG = 0.25;
+
+/**
+ * Minimum time between two city renders, for a sun that is being DRAGGED (the
+ * time scrubber), where every frame would otherwise pay a full-city pass.
+ */
+const CITY_MIN_INTERVAL_MS = 200;
+
+/** Metres added round the city's footprint, so the PCF taps at its rim stay on the map. */
+const CITY_MARGIN_M = 100;
+
 /** Sine of the sun altitude below which shadows are off. ~1.1 degrees. */
 const SUN_MIN_Y = 0.02;
 /** Fully on by this sun altitude. ~3.4 degrees. */
@@ -68,6 +100,11 @@ export interface SunShadowUniforms extends Record<string, THREE.IUniform> {
   uCascadeDepth: THREE.IUniform<THREE.Vector3>;
   uShadowTexel: THREE.IUniform<number>;
   uShadowStrength: THREE.IUniform<number>;
+  /** The city-wide map, sampled wherever the cascades have run out. */
+  uCityShadowMap: THREE.IUniform<THREE.Texture | null>;
+  uCityShadowMat: THREE.IUniform<THREE.Matrix4>;
+  /** x: 1 when the map holds the city (2: use it everywhere, ?cityshadowonly), y: world metres a texel, z: depth range in metres, w: 1 / size. */
+  uCityShadow: THREE.IUniform<THREE.Vector4>;
 }
 
 /**
@@ -88,6 +125,9 @@ uniform vec3  uCascadeTexelWorld;
 uniform vec3  uCascadeDepth;
 uniform float uShadowTexel;
 uniform float uShadowStrength;
+uniform sampler2D uCityShadowMap;
+uniform mat4  uCityShadowMat;
+uniform vec4  uCityShadow;
 
 // Bias constants, in units of ONE SHADOW TEXEL's world size. Expressing them
 // this way is what lets one set of numbers serve a 0.4 m/texel cascade and a
@@ -104,18 +144,37 @@ const float SHADOW_SLOPE_OFFSET  = 4.5;
 const float SHADOW_DEPTH_BIAS    = 1.0;
 const float SHADOW_SLOPE_BIAS    = 3.0;
 
-/** 3x3 PCF. sp is the shadow-map coordinate in 0..1, bias in depth units. */
-float shadowPcf(int c, vec3 sp, float bias) {
+// The city map needs none of the above, because it is drawn from BACK faces
+// only (see CityShadow): what it stores along a sun ray is where the ray LEAVES
+// a building, so a sunlit roof or wall lies a whole building in front of its
+// own entry and cannot shadow itself, and the ground is not in the map at all.
+// What is left is the 16-bit depth step (0.27 m over Manhattan) and a lee
+// wall meeting the ground it shades, hence one metre.
+//
+// It matters because the normal offset is several texels and this map's
+// texels are 4 to 9 m: on flat ground under a 15 degree sun that lifted the
+// sample 41 m with a 2048 map on the reduced tier, which erased the shadow of every building lower than
+// that and cut 150 m off the rest. Measured on manhattan-high-shadow, the
+// shadowed share of the ground fell from 0.70 inside the last cascade to 0.13
+// just outside it.
+const float CITY_SHADOW_BIAS_M = 1.0;
+
+/**
+ * 3x3 PCF. sp is the shadow-map coordinate in 0..1, bias in depth units, texel
+ * the map's 1 / size. c is 0..2 for the cascades, 3 for the city map.
+ */
+float shadowPcf(int c, vec3 sp, float bias, float texel) {
   float lit = 0.0;
   for (int y = -1; y <= 1; y++) {
     for (int x = -1; x <= 1; x++) {
-      vec2 o = vec2(float(x), float(y)) * uShadowTexel;
+      vec2 o = vec2(float(x), float(y)) * texel;
       float d;
       // GLSL ES 3.0 will not index an array of samplers dynamically, so the
       // cascade choice has to be a branch.
       if (c == 0)      d = texture(uShadowMap0, sp.xy + o).r;
       else if (c == 1) d = texture(uShadowMap1, sp.xy + o).r;
-      else             d = texture(uShadowMap2, sp.xy + o).r;
+      else if (c == 2) d = texture(uShadowMap2, sp.xy + o).r;
+      else             d = texture(uCityShadowMap, sp.xy + o).r;
       lit += (sp.z - bias > d) ? 0.0 : 1.0;
     }
   }
@@ -123,30 +182,59 @@ float shadowPcf(int c, vec3 sp, float bias) {
 }
 
 float cascadeVisibility(int c, vec3 worldPos, vec3 normal, vec3 sunDir) {
-  float texelWorld = c == 0 ? uCascadeTexelWorld.x : (c == 1 ? uCascadeTexelWorld.y : uCascadeTexelWorld.z);
-  float depthRange = c == 0 ? uCascadeDepth.x     : (c == 1 ? uCascadeDepth.y     : uCascadeDepth.z);
+  float texelWorld = c == 0 ? uCascadeTexelWorld.x : (c == 1 ? uCascadeTexelWorld.y : (c == 2 ? uCascadeTexelWorld.z : uCityShadow.y));
+  float depthRange = c == 0 ? uCascadeDepth.x     : (c == 1 ? uCascadeDepth.y     : (c == 2 ? uCascadeDepth.z     : uCityShadow.z));
 
   float ndl = clamp(dot(normal, sunDir), 0.0, 1.0);
-  vec3 p = worldPos + normal * texelWorld * (SHADOW_NORMAL_OFFSET + SHADOW_SLOPE_OFFSET * (1.0 - ndl));
+  vec3 p = c == 3 ? worldPos
+         : worldPos + normal * texelWorld * (SHADOW_NORMAL_OFFSET + SHADOW_SLOPE_OFFSET * (1.0 - ndl));
 
   vec4 sc = c == 0 ? uShadowMat0 * vec4(p, 1.0)
-          : (c == 1 ? uShadowMat1 * vec4(p, 1.0) : uShadowMat2 * vec4(p, 1.0));
+          : (c == 1 ? uShadowMat1 * vec4(p, 1.0)
+          : (c == 2 ? uShadowMat2 * vec4(p, 1.0) : uCityShadowMat * vec4(p, 1.0)));
   vec3 sp = sc.xyz / sc.w * 0.5 + 0.5;
   if (sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0 || sp.y > 1.0 || sp.z > 1.0) return 1.0;
 
-  float bias = (SHADOW_DEPTH_BIAS + SHADOW_SLOPE_BIAS * (1.0 - ndl)) * texelWorld / depthRange;
-  return shadowPcf(c, sp, bias);
+  float bias = c == 3 ? CITY_SHADOW_BIAS_M / depthRange
+             : (SHADOW_DEPTH_BIAS + SHADOW_SLOPE_BIAS * (1.0 - ndl)) * texelWorld / depthRange;
+  return shadowPcf(c, sp, bias, c == 3 ? uCityShadow.w : uShadowTexel);
+}
+
+/**
+ * One cascade's answer, with the city map folded into the outermost.
+ *
+ * Cascade 2 spans 1.4 to 6 km on a 2048 map, 5 m a texel, and its normal
+ * offset lifts a ground sample about 25 m under a 15 degree sun: everything
+ * lower than that casts nothing. Measured on manhattan-higher-shadow it found
+ * shadow on 0.26 of the ground at 4.2 to 5.1 km where the city map finds 0.61,
+ * so handing over to the map at 6 km drew a ring where the shadows came BACK.
+ * The minimum keeps cascade 2's terrain and the map's buildings, and closes
+ * the same gap at the 1.4 km handover from cascade 1 (0.94 inside it, 0.11
+ * just past it before, against 0.98 and 0.30 from the map).
+ */
+float bandVisibility(int c, vec3 worldPos, vec3 normal, vec3 sunDir) {
+  float v = cascadeVisibility(c, worldPos, normal, sunDir);
+  if (c == 2 && uCityShadow.x > 0.5) v = min(v, cascadeVisibility(3, worldPos, normal, sunDir));
+  return v;
 }
 
 /** Returns 0..1, how much of the sun reaches this fragment. */
 float sunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewDist) {
   if (uShadowStrength <= 0.0) return 1.0;
-  if (viewDist >= uCascadeFar.z) return 1.0;
+
+  // Past the cascades the city map answers on its own; outside the city it
+  // reads lit, which is right, since the city is everything it holds.
+  // x above 1.5 is ?cityshadowonly, the map everywhere: tools/verify-shadow.ts
+  // measures the cascades against it.
+  bool city = uCityShadow.x > 0.5;
+  if (viewDist >= uCascadeFar.z || uCityShadow.x > 1.5) {
+    return city ? mix(1.0, cascadeVisibility(3, worldPos, normal, sunDir), uShadowStrength) : 1.0;
+  }
 
   // Shadows must not end at a hard circle round the aircraft, so the last
-  // stretch of the outermost cascade fades to unshadowed.
-  float fade = 1.0 - smoothstep(uCascadeFar.z * 0.85, uCascadeFar.z, viewDist);
-  if (fade <= 0.0) return 1.0;
+  // stretch of the outermost cascade hands over to the city map, or, where
+  // there is no city map (no baked pack, ?nocityshadow), fades to unshadowed.
+  float handoff = smoothstep(uCascadeFar.z * 0.85, uCascadeFar.z, viewDist);
 
   int c;
   float nearD;
@@ -155,7 +243,7 @@ float sunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewDist) {
   else if (viewDist < uCascadeFar.y) { c = 1; nearD = uCascadeFar.x;  farD = uCascadeFar.y; }
   else                               { c = 2; nearD = uCascadeFar.y;  farD = uCascadeFar.z; }
 
-  float vis = cascadeVisibility(c, worldPos, normal, sunDir);
+  float vis = bandVisibility(c, worldPos, normal, sunDir);
 
   // Cross-fade into the next cascade over the last 12% of this one. Without it
   // the resolution step draws a visible line straight across the city.
@@ -163,10 +251,11 @@ float sunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewDist) {
   // the previous one's) from being blended in as a stale map.
   if (c < 2 && farD < uCascadeFar.z) {
     float t = smoothstep(farD - (farD - nearD) * 0.12, farD, viewDist);
-    if (t > 0.0) vis = mix(vis, cascadeVisibility(c + 1, worldPos, normal, sunDir), t);
+    if (t > 0.0) vis = mix(vis, bandVisibility(c + 1, worldPos, normal, sunDir), t);
   }
 
-  return mix(1.0, vis, uShadowStrength * fade);
+  if (handoff > 0.0) vis = mix(vis, city ? cascadeVisibility(3, worldPos, normal, sunDir) : 1.0, handoff);
+  return mix(1.0, vis, uShadowStrength);
 }
 `;
 
@@ -202,9 +291,9 @@ export function createDepthOnlyMaterial(): THREE.RawShaderMaterial {
   });
 }
 
-function makeTarget(size: number): THREE.WebGLRenderTarget {
+function makeTarget(size: number, depthType: THREE.TextureDataType = THREE.UnsignedIntType): THREE.WebGLRenderTarget {
   const depth = new THREE.DepthTexture(size, size);
-  depth.type = THREE.UnsignedIntType;
+  depth.type = depthType;
   depth.format = THREE.DepthFormat;
   depth.minFilter = THREE.NearestFilter;
   depth.magFilter = THREE.NearestFilter;
@@ -226,7 +315,8 @@ function makeTarget(size: number): THREE.WebGLRenderTarget {
 }
 
 interface Cascade {
-  target: THREE.WebGLRenderTarget;
+  /** Null for a slot this tier never draws; see the constructor. */
+  target: THREE.WebGLRenderTarget | null;
   camera: THREE.OrthographicCamera;
   matrix: THREE.Matrix4;
   /** World metres per shadow texel for the fit last computed. */
@@ -242,14 +332,56 @@ const _up = new THREE.Vector3();
 const _basis = new THREE.Matrix4();
 const _rot = new THREE.Quaternion();
 const _invRot = new THREE.Quaternion();
+const _axis = new THREE.Vector3();
+
+/** The city's footprint as a vertical cylinder, measured once from its meshes. */
+interface CityBounds {
+  centre: THREE.Vector3;
+  radius: number;
+  halfHeight: number;
+}
+
+/**
+ * The static, city-wide shadow map.
+ *
+ * One ortho camera fitted to the whole baked city rather than to the view, so
+ * it does not move with the aircraft and only has to be redrawn when the SUN
+ * does. Its box is fitted to the city's bounding CYLINDER in light space, not
+ * to a square: under a low sun a disc of city projects to an ellipse a fifth
+ * as tall as it is wide, and a square map would spend four fifths of its
+ * texels on nothing. Fitted this way a 4096 map over Manhattan comes out near
+ * 4 m a texel on the ground in both directions.
+ */
+interface CityShadow {
+  root: THREE.Object3D;
+  bounds: CityBounds | null;
+  target: THREE.WebGLRenderTarget;
+  camera: THREE.OrthographicCamera;
+  /** Sun direction the map was last drawn for; NaN until the first draw. */
+  sun: THREE.Vector3;
+  lastMs: number;
+}
 
 export class SunShadow {
   readonly uniforms: SunShadowUniforms;
   /** Off makes update() a no-op with the maps disabled; for A/B timing. */
   enabled = true;
 
+  /**
+   * Off stops the city map being drawn or sampled, so the cascades fade to
+   * unshadowed as they did before it existed; for A/B timing from the console.
+   */
+  cityEnabled = true;
+  /** For the harness: how many times the city map has been drawn, and the CPU cost of the last draw. */
+  readonly cityStats = { renders: 0, cpuMs: 0 };
+  /** The city map everywhere and no cascades: the reference frame tools/verify-shadow.ts measures against. */
+  cityOnly = false;
+
   private cascades: Cascade[] = [];
+  private city: CityShadow | null = null;
   private depthMaterial: THREE.RawShaderMaterial;
+  /** The same depth-only shader drawing back faces only; see CITY_SHADOW_BIAS_M in the GLSL. */
+  private cityDepthMaterial: THREE.RawShaderMaterial;
   private size: number;
   private readonly budget: Budget;
 
@@ -257,12 +389,15 @@ export class SunShadow {
     this.budget = budget;
     const size = budget.shadowCascadeSize;
     this.size = size;
-    // Three slots whatever the tier renders: the shader samples three cascade
-    // maps unconditionally, so three textures have to be bound even when only
-    // two are fitted. render/budget.ts counts three when it estimates this.
+    // Three slots, but a map only for the cascades this tier can ever draw.
+    // The shader names three samplers unconditionally, and an unallocated one
+    // is bound to three's 1x1 placeholder, which is never read because a
+    // cascade past `shadowCascadeCount` is never selected. The reduced tier
+    // used to allocate its third 1024 map anyway: 5 MB of a phone's memory for
+    // a texture nothing ever drew into.
     for (let i = 0; i < 3; i++) {
       this.cascades.push({
-        target: makeTarget(size),
+        target: i < budget.shadowCascadeCount ? makeTarget(size) : null,
         camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 100),
         matrix: new THREE.Matrix4(),
         texelWorld: 1,
@@ -271,11 +406,16 @@ export class SunShadow {
     }
 
     this.depthMaterial = createDepthOnlyMaterial();
+    // Building shells are closed and wound outward (their own material culls
+    // back faces, so a reversed one would already show as a hole), which is
+    // what makes back faces a well-defined exit surface along every sun ray.
+    this.cityDepthMaterial = createDepthOnlyMaterial();
+    this.cityDepthMaterial.side = THREE.BackSide;
 
     this.uniforms = {
-      uShadowMap0: { value: this.cascades[0].target.depthTexture },
-      uShadowMap1: { value: this.cascades[1].target.depthTexture },
-      uShadowMap2: { value: this.cascades[2].target.depthTexture },
+      uShadowMap0: { value: this.cascades[0].target?.depthTexture ?? null },
+      uShadowMap1: { value: this.cascades[1].target?.depthTexture ?? null },
+      uShadowMap2: { value: this.cascades[2].target?.depthTexture ?? null },
       uShadowMat0: { value: this.cascades[0].matrix },
       uShadowMat1: { value: this.cascades[1].matrix },
       uShadowMat2: { value: this.cascades[2].matrix },
@@ -284,7 +424,126 @@ export class SunShadow {
       uCascadeDepth: { value: new THREE.Vector3(1, 1, 1) },
       uShadowTexel: { value: 1 / size },
       uShadowStrength: { value: 0 },
+      uCityShadowMap: { value: null },
+      uCityShadowMat: { value: new THREE.Matrix4() },
+      uCityShadow: { value: new THREE.Vector4(0, 1, 1, 1) },
     };
+  }
+
+  /**
+   * Hand over the city's static casters (the baked buildings' group). The map
+   * is allocated here, not in the constructor, so a place with no pack never
+   * pays for it; render/budget.ts counts it regardless, as the worst case.
+   */
+  setCityCasters(root: THREE.Object3D): void {
+    if (!this.city) {
+      const size = this.budget.cityShadowSize;
+      // 16-bit depth: see CITY_SHADOW_BYTES_PER_TEXEL in render/budget.ts.
+      const target = makeTarget(size, THREE.UnsignedShortType);
+      this.city = {
+        root,
+        bounds: null,
+        target,
+        camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 100),
+        sun: new THREE.Vector3(NaN, NaN, NaN),
+        lastMs: -Infinity,
+      };
+      this.uniforms.uCityShadowMap.value = target.depthTexture;
+      this.uniforms.uCityShadow.value.w = 1 / size;
+    }
+    this.city.root = root;
+    this.city.bounds = null;
+    this.city.sun.set(NaN, NaN, NaN);
+  }
+
+  /**
+   * Draw the city map now, whatever the sun has done. Public so the harness
+   * can time one draw in isolation; update() is what calls it in the app.
+   */
+  renderCity(renderer: THREE.WebGLRenderer, scene: THREE.Scene, sunDir: THREE.Vector3): void {
+    const city = this.city;
+    if (!city) return;
+    city.root.updateMatrixWorld(true);
+    // Every pass, not once: the layer is how the root's meshes are picked out
+    // of the main scene, and a mesh added to the group after the first draw
+    // would otherwise be silently missing from every draw after it.
+    city.root.traverse((o) => o.layers.enable(CITY_SHADOW_LAYER));
+    city.bounds ??= measureCity(city.root);
+    if (!city.bounds) return;
+
+    const t0 = performance.now();
+    this.fitCity(city, city.bounds, sunDir);
+
+    const prevTarget = renderer.getRenderTarget();
+    const prevOverride = scene.overrideMaterial;
+    const prevAutoClear = renderer.autoClear;
+    scene.overrideMaterial = this.cityDepthMaterial;
+    renderer.autoClear = false;
+    city.camera.layers.set(CITY_SHADOW_LAYER);
+    renderer.setRenderTarget(city.target);
+    renderer.clear(false, true, false);
+    renderer.render(scene, city.camera);
+    renderer.autoClear = prevAutoClear;
+    scene.overrideMaterial = prevOverride;
+    renderer.setRenderTarget(prevTarget);
+
+    city.sun.copy(sunDir);
+    city.lastMs = t0;
+    this.cityStats.renders++;
+    this.cityStats.cpuMs = performance.now() - t0;
+  }
+
+  private fitCity(city: CityShadow, b: CityBounds, sunDir: THREE.Vector3): void {
+    _up.set(0, 1, 0);
+    if (Math.abs(sunDir.y) > 0.999) _up.set(0, 0, 1);
+    _basis.lookAt(sunDir, _origin.set(0, 0, 0), _up);
+    _rot.setFromRotationMatrix(_basis);
+
+    // A cylinder's half-extent along a unit axis a: the disc contributes
+    // radius * |a projected on the ground|, the height halfHeight * |a.y|.
+    const extent = (col: number): number => {
+      _axis.setFromMatrixColumn(_basis, col);
+      return b.radius * Math.hypot(_axis.x, _axis.z) + b.halfHeight * Math.abs(_axis.y);
+    };
+    const hx = extent(0) + CITY_MARGIN_M;
+    const hy = extent(1) + CITY_MARGIN_M;
+    const hz = extent(2) + CITY_MARGIN_M;
+
+    const cam = city.camera;
+    cam.quaternion.copy(_rot);
+    cam.position.copy(b.centre).addScaledVector(sunDir, hz + 10);
+    cam.updateMatrixWorld(true);
+    cam.left = -hx;
+    cam.right = hx;
+    cam.top = hy;
+    cam.bottom = -hy;
+    cam.near = 1;
+    cam.far = 2 * hz + 20;
+    cam.updateProjectionMatrix();
+
+    const size = this.budget.cityShadowSize;
+    this.uniforms.uCityShadowMat.value.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse);
+    // The coarser of the two axes, for the world-metre figure the diagnostics
+    // and the bias constants are stated in; a low sun makes the two differ by
+    // up to 4x in light space.
+    const u = this.uniforms.uCityShadow.value;
+    u.y = (2 * Math.max(hx, hy)) / size;
+    u.z = cam.far - cam.near;
+  }
+
+  /** Redraw the city map if the sun has moved enough to show. */
+  private updateCity(renderer: THREE.WebGLRenderer, scene: THREE.Scene, sunDir: THREE.Vector3): void {
+    const city = this.city;
+    if (!city || !this.cityEnabled) {
+      this.uniforms.uCityShadow.value.x = 0;
+      return;
+    }
+    const moved = Number.isNaN(city.sun.x) ||
+      city.sun.angleTo(sunDir) > THREE.MathUtils.degToRad(CITY_RESHADOW_DEG);
+    if (moved && performance.now() - city.lastMs >= CITY_MIN_INTERVAL_MS) {
+      this.renderCity(renderer, scene, sunDir);
+    }
+    this.uniforms.uCityShadow.value.x = Number.isNaN(city.sun.x) ? 0 : this.cityOnly ? 2 : 1;
   }
 
   /**
@@ -348,7 +607,7 @@ export class SunShadow {
       // a shadow map would blanket the entire city), the clouds, the beacons
       // and the labels, without any of them having to know shadows exist.
       c.camera.layers.set(SHADOW_CASTER_LAYER);
-      renderer.setRenderTarget(c.target);
+      renderer.setRenderTarget(c.target!);
       renderer.clear(false, true, false);
       renderer.render(scene, c.camera);
       if (extra.length && i < EXTRA_CASTER_CASCADES) {
@@ -384,6 +643,8 @@ export class SunShadow {
     );
     u.uShadowTexel.value = 1 / this.size;
     u.uShadowStrength.value = strength;
+
+    this.updateCity(renderer, scene, sunDir);
   }
 
   /**
@@ -474,14 +735,43 @@ export class SunShadow {
   private setSize(size: number): void {
     if (size === this.size) return;
     this.size = size;
-    for (const c of this.cascades) c.target.setSize(size, size);
-    this.uniforms.uShadowMap0.value = this.cascades[0].target.depthTexture;
-    this.uniforms.uShadowMap1.value = this.cascades[1].target.depthTexture;
-    this.uniforms.uShadowMap2.value = this.cascades[2].target.depthTexture;
+    for (const c of this.cascades) c.target?.setSize(size, size);
+    this.uniforms.uShadowMap0.value = this.cascades[0].target?.depthTexture ?? null;
+    this.uniforms.uShadowMap1.value = this.cascades[1].target?.depthTexture ?? null;
+    this.uniforms.uShadowMap2.value = this.cascades[2].target?.depthTexture ?? null;
   }
 
   dispose(): void {
-    for (const c of this.cascades) c.target.dispose();
+    for (const c of this.cascades) c.target?.dispose();
+    this.city?.target.dispose();
     this.depthMaterial.dispose();
+    this.cityDepthMaterial.dispose();
   }
+}
+
+/**
+ * The city's footprint: the centre of its world box, the farthest any mesh's
+ * box corner reaches from that centre on the ground, and its height range.
+ * Null for a root with no geometry under it.
+ */
+function measureCity(root: THREE.Object3D): CityBounds | null {
+  const all = new THREE.Box3();
+  const boxes: THREE.Box3[] = [];
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh || !mesh.geometry) return;
+    mesh.geometry.boundingBox ?? mesh.geometry.computeBoundingBox();
+    const b = mesh.geometry.boundingBox!.clone().applyMatrix4(mesh.matrixWorld);
+    boxes.push(b);
+    all.union(b);
+  });
+  if (!boxes.length) return null;
+  const centre = all.getCenter(new THREE.Vector3());
+  let radius = 0;
+  for (const b of boxes) {
+    const dx = Math.max(Math.abs(b.min.x - centre.x), Math.abs(b.max.x - centre.x));
+    const dz = Math.max(Math.abs(b.min.z - centre.z), Math.abs(b.max.z - centre.z));
+    radius = Math.max(radius, Math.hypot(dx, dz));
+  }
+  return { centre, radius, halfHeight: (all.max.y - all.min.y) / 2 };
 }

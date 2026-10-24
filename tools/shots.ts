@@ -285,6 +285,30 @@ export const POSES: Pose[] = [
     what: "Manhattan nose-down under a low deck, for the horizon band",
   },
   {
+    // THE SHADOWED CITY, from altitude. Over the Upper East Side looking down
+    // the island with the evening sun 15 degrees up and square off the right
+    // wing, so every shadow falls across the view rather than behind its
+    // tower. 800 m up and 30 degrees nose-down puts ground in frame from 0.9 km
+    // to the horizon: both cascade edges (1.4 km on a phone, 6 km on a
+    // desktop) and the 2 to 5 km annulus tools/verify-shadow.ts measures.
+    // Before the city-wide map, shadows here ended in a circle at the last
+    // cascade and the rest of Midtown stood in full sun.
+    name: "manhattan-high-shadow",
+    city: "manhattan",
+    lat: 40.7780, lon: -73.9520, altM: 900, hdgDeg: 200, pitchDeg: -45,
+    t: D("2025-06-21T23:00:00Z"), // 19:00 EDT: sun 14.7 degrees up at 288
+    wx: CLEAR,
+    what: "Manhattan from 900 m, low evening sun, across the phone's cascade edge",
+  },
+  {
+    name: "manhattan-higher-shadow",
+    city: "manhattan",
+    lat: 40.7780, lon: -73.9520, altM: 3500, hdgDeg: 200, pitchDeg: -45,
+    t: D("2025-06-21T23:00:00Z"),
+    wx: CLEAR,
+    what: "Manhattan from 3.5 km, low evening sun, across the desktop's cascade edge",
+  },
+  {
     // THE GOLDEN GATE DECK, from the Marin side at deck height.
     //
     // The one pose where a bridge fills the frame. Every other San Francisco
@@ -651,6 +675,12 @@ interface Shot {
   /** Times the detail ring restitched before the frame was taken. */
   drapeMoves: number;
   signature: number[];
+  /**
+   * The camera that drew the frame, so a measurement can put a pixel back in
+   * the world: position, matrixWorld and projectionMatrixInverse, column-major.
+   * Null for a build from before the page exposed `window.flyby`.
+   */
+  view: { pos: number[]; world: number[]; projInv: number[] } | null;
 }
 
 function arg(name: string, fallback: string | null = null): string | null {
@@ -723,6 +753,11 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const streetClipped = await cdp.eval<number>("window.flybyShot.streetClipped ?? 0");
   const drapeMoves = await cdp.eval<number>("window.flybyShot.drapeMoves ?? 0");
   const signature = await cdp.eval<number[]>("window.flybyShot.signature(48)");
+  const view = await cdp.eval<Shot["view"]>(
+    "(() => { const c = window.flyby && window.flyby.camera; return c ? " +
+      "{ pos: c.position.toArray(), world: c.matrixWorld.elements.slice(), " +
+      "projInv: c.projectionMatrixInverse.elements.slice() } : null; })()",
+  );
 
   const bad = cdp.problems.filter((m) => FATAL.some((r) => r.test(m)));
   if (bad.length) {
@@ -737,7 +772,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   return {
     pose: p, file, frameMs, triangles, trees, shrubs, treeLods, treeTriangles, lod,
     pavementTriangles, lamps, lampsMeasured, cars, parkedCars, streetTriangles,
-    streetClipped, drapeMoves, signature,
+    streetClipped, drapeMoves, signature, view,
   };
 }
 
@@ -871,6 +906,7 @@ async function main(): Promise<void> {
         streetTriangles: s.streetTriangles,
         streetClipped: s.streetClipped,
         drapeMoves: s.drapeMoves,
+        view: s.view,
       })),
       null,
       2,

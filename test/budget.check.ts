@@ -98,6 +98,7 @@ const MB = 1024 * 1024;
     desktop.shadowCascadeCount === 3 && desktop.shadowCascadeSize === 2048,
     `${desktop.shadowCascadeCount} x ${desktop.shadowCascadeSize}`,
   );
+  check("desktop city shadow map", desktop.cityShadowSize === 4096, `${desktop.cityShadowSize}`);
   check(
     "desktop aircraft probes",
     desktop.aircraftEnvSize === 128 && desktop.aircraftShadowSize === 1024,
@@ -144,6 +145,9 @@ const MB = 1024 * 1024;
     phone.shadowCascadeCount === 2 && phone.shadowCascadeSize === 1024,
     `${phone.shadowCascadeCount} x ${phone.shadowCascadeSize}`,
   );
+  // Not much less: the phone's cascades end at 1.4 km, so this map draws most
+  // of the shadow a phone ever shows from the air.
+  check("phone city shadow map", phone.cityShadowSize === 1792, `${phone.cityShadowSize}`);
   check(
     "phone aircraft probes",
     phone.aircraftEnvSize === 64 && phone.aircraftShadowSize === 512,
@@ -167,6 +171,7 @@ const MB = 1024 * 1024;
     ["msaa", phone.msaaSamples, desktop.msaaSamples],
     ["cascade size", phone.shadowCascadeSize, desktop.shadowCascadeSize],
     ["cascade count", phone.shadowCascadeCount, desktop.shadowCascadeCount],
+    ["city shadow", phone.cityShadowSize, desktop.cityShadowSize],
     ["env probe", phone.aircraftEnvSize, desktop.aircraftEnvSize],
     ["self-shadow", phone.aircraftShadowSize, desktop.aircraftShadowSize],
     ["building tris", phone.buildingTriangleBudget, desktop.buildingTriangleBudget],
@@ -194,7 +199,7 @@ const MB = 1024 * 1024;
   const selfCompare = axes.filter(([, p]) => !(p < p)).map(([name]) => name);
   check(
     "probe: the axis sweep rejects a plan compared with itself",
-    axes.length === 8 && selfCompare.length === axes.length,
+    axes.length === 9 && selfCompare.length === axes.length,
     `${axes.length} axes, ${selfCompare.length} rejected when compared with themselves`,
   );
 }

@@ -438,6 +438,10 @@ async function main() {
   if (pack && !buildingsOff) {
     buildings = new Buildings(pack, terrain.heightAt, sunShadow.uniforms, budget);
     scene.add(buildings.group);
+    // `?nocityshadow=1` and `?cityshadowonly=1` are the probe and the reference
+    // for tools/verify-shadow.ts.
+    if (!new URLSearchParams(location.search).has("nocityshadow")) sunShadow.setCityCasters(buildings.group);
+    sunShadow.cityOnly = new URLSearchParams(location.search).has("cityshadowonly");
     console.log(
       `[flyby] buildings: ${buildings.stats.drawn} drawn, ` +
       `${buildings.stats.skippedFar} culled as small+distant, ` +

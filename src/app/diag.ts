@@ -65,6 +65,7 @@ export function showDiagnostics(canvas: HTMLCanvasElement): void {
   rows.push(line("msaa", budget.msaaSamples === 0 ? "off" : `${budget.msaaSamples}x`));
   rows.push(
     line("sun cascades", `${budget.shadowCascadeCount} x ${budget.shadowCascadeSize}`),
+    line("city shadow", `${budget.cityShadowSize}`),
   );
   rows.push(
     line("aircraft probes", `env ${budget.aircraftEnvSize}, self-shadow ${budget.aircraftShadowSize}`),

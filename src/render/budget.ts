@@ -175,8 +175,17 @@ export interface Budget {
   msaaSamples: number;
   /** Edge length of one sun shadow cascade. */
   shadowCascadeSize: number;
-  /** Cascades fitted and rendered per frame; see SHADOW_CASCADE_SLOTS. */
+  /**
+   * Cascades fitted, rendered and ALLOCATED. render/sunshadow.ts allocates a
+   * map for exactly this many and leaves the shader's other sampler slots on
+   * three's placeholder, so the estimate below counts this, not three.
+   */
   shadowCascadeCount: number;
+  /**
+   * Edge length of the city-wide static shadow map (render/sunshadow.ts), the
+   * one that takes over where the cascades run out.
+   */
+  cityShadowSize: number;
   /** Cube face size of the aircraft's environment probe. */
   aircraftEnvSize: number;
   /** Edge length of the aircraft's self-shadow map. */
@@ -248,16 +257,6 @@ const TILE_PX = 256;
  */
 const M_PER_DEG_LON = 111412;
 
-/**
- * Shadow cascade slots that are always ALLOCATED, whatever the tier renders.
- *
- * The shader samples three cascade maps unconditionally, so three textures have
- * to be bound even when only two are fitted; `shadowCascadeCount` controls how
- * many are rendered into, not how many exist. The estimate has to count what is
- * allocated, not what is drawn, or it would under-report exactly the thing it
- * exists to report.
- */
-const SHADOW_CASCADE_SLOTS = 3;
 
 // --- byte costs -------------------------------------------------------------
 //
@@ -284,6 +283,13 @@ const MIPMAP_FACTOR = 4 / 3;
 const SCENE_BYTES_PER_PIXEL = 8 + 4;
 /** Shadow cascade: 32-bit depth texture plus the R8 colour attachment three insists on. */
 const SHADOW_BYTES_PER_TEXEL = 4 + 1;
+/**
+ * City shadow map: a 16-bit depth texture plus the R8 colour attachment. 16
+ * bits rather than the cascades' 32 because its depth range is the whole city,
+ * ~18 km, so one step is 0.27 m against a bias of several metres (one texel is
+ * 4 to 8 m), and the saving is 32 MB at 4096.
+ */
+const CITY_SHADOW_BYTES_PER_TEXEL = 2 + 1;
 /** Aircraft env probe: RGBA16F, six faces, mipmapped. */
 const ENV_BYTES_PER_TEXEL = 8;
 /** Aircraft self-shadow: 32-bit depth texture plus an RGBA8 colour attachment. */
@@ -425,6 +431,9 @@ const FULL_PLAN: Plan = {
   msaaSamples: 4,
   shadowCascadeSize: 2048,
   shadowCascadeCount: 3,
+  // 4096 over Manhattan's ~17 km is 4 m a texel: a street-scale shadow seen
+  // from beyond the 6 km cascade, where a pixel already covers several metres.
+  cityShadowSize: 4096,
   aircraftEnvSize: 128,
   aircraftShadowSize: 1024,
   aoEnabled: true,
@@ -482,6 +491,12 @@ const REDUCED_PLAN: Plan = {
   // The outermost cascade draws the whole city a third time and carries the
   // least visible detail, so it is what goes first.
   shadowCascadeCount: 2,
+  // A phone's cascades end 1.4 km out, so this map draws most of the city's
+  // shadows on one. 1792 is 9.5 m a texel over Manhattan: a block's shadow,
+  // not a cornice's, which is what a phone screen resolves at that range.
+  // Not 2048 (8.3 m): that put this plan 1.7 MB over the 300 MB ceiling
+  // test/budget.check.ts holds it to on a 2560x1440 screen.
+  cityShadowSize: 1792,
   aircraftEnvSize: 64,
   aircraftShadowSize: 512,
   // AO costs a full-geometry depth prepass plus two more RGBA16F targets, on a
@@ -525,8 +540,12 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
       bytes: w * h * SCENE_BYTES_PER_PIXEL * (1 + plan.msaaSamples),
     },
     {
-      what: `shadow cascades ${SHADOW_CASCADE_SLOTS}x${plan.shadowCascadeSize}`,
-      bytes: SHADOW_CASCADE_SLOTS * plan.shadowCascadeSize ** 2 * SHADOW_BYTES_PER_TEXEL,
+      what: `shadow cascades ${plan.shadowCascadeCount}x${plan.shadowCascadeSize}`,
+      bytes: plan.shadowCascadeCount * plan.shadowCascadeSize ** 2 * SHADOW_BYTES_PER_TEXEL,
+    },
+    {
+      what: `city shadow map ${plan.cityShadowSize}`,
+      bytes: plan.cityShadowSize ** 2 * CITY_SHADOW_BYTES_PER_TEXEL,
     },
     {
       what: `aircraft env probe ${plan.aircraftEnvSize}`,
@@ -675,8 +694,23 @@ let cached: Budget | null = null;
  * classification at all.
  */
 export function deviceBudget(): Budget {
-  if (cached === null) cached = classifyDevice(describeDevice());
+  if (cached === null) {
+    const d = describeDevice();
+    const forced = forcedTier();
+    cached = forced ? { ...budgetForTier(forced, d), reasons: [`forced by ?tier=${forced}`] } : classifyDevice(d);
+  }
   return cached;
+}
+
+/**
+ * `?tier=reduced` or `?tier=full` overrides the classifier. A desktop has no
+ * other way to show what a phone draws, and the rendered-frame gates
+ * (tools/verify-shadow.ts) have to run the phone plan on this machine's GPU.
+ */
+function forcedTier(): QualityTier | null {
+  if (typeof location === "undefined") return null;
+  const t = new URLSearchParams(location.search).get("tier");
+  return t === "full" || t === "reduced" ? t : null;
 }
 
 /** Mebibytes, one decimal, for the diagnostics panel. */
