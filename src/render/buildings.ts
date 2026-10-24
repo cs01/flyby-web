@@ -43,7 +43,7 @@ import {
   packFacade,
   type FacadeParams,
 } from "./facade";
-import { assignArchetypes } from "./archetype";
+import { ARCHETYPES, assignArchetypes, wantsWaterTank } from "./archetype";
 import { FACADE_DETAIL_GLSL } from "./facadedetail.glsl";
 import { loadMaterialTextures } from "./materialtex";
 import { Mat, MAT_COUNT } from "./materials";
@@ -90,8 +90,17 @@ const MAX_CUTOFF_M = 40;
  *
  * Boxes go first, parapets second, buildings last.
  */
-const CLUTTER_M = 1200;
-const PARAPET_M = 1600;
+const CLUTTER_M = 2000;
+const PARAPET_M = 2200;
+/**
+ * Wooden water tanks go further out than the chillers: a tank is 4 m across
+ * and 8 m tall on its stand, the most recognisable thing on a New York roof,
+ * and it costs 72 triangles. Measured on the Manhattan pack: 2665 tanks inside
+ * 2.5 km, under 200k triangles, and the LOD solver still settles at k = 1.
+ */
+const TANK_M = 2500;
+/** Triangles one tank costs: four legs, a deck, ten staves and a ten-sided cone. */
+const TANK_TRIS = 72;
 
 /** Triangles a footprint costs: two per wall segment, plus the roof fan. */
 function triangleCost(vertCount: number): number {
@@ -111,6 +120,8 @@ export interface RoofExtras {
   boxes: number;
   /** One larger box for the stair and lift overrun. */
   overrun: boolean;
+  /** A wooden water tank on a steel stand; see wantsWaterTank. */
+  tank?: boolean;
 }
 
 const NO_EXTRAS: RoofExtras = { parapet: false, boxes: 0, overrun: false };
@@ -127,19 +138,25 @@ function roofExtras(
   // commercial roof. Nothing residential has one, and nothing with a pitch to
   // it could: the wall stops at the eave. Putting a chiller on a house is the
   // same mistake seen from further away.
-  if (roof !== RoofShape.Flat || kind === BuildingKind.Residential) return NO_EXTRAS;
-  if (heightM < 6 || areaM2 < 120) return NO_EXTRAS;
+  if (roof !== RoofShape.Flat) return NO_EXTRAS;
+  // A FLAT residential roof does have a parapet and a stair bulkhead: every
+  // walk-up, brownstone and two-flat in the three surveyed cities is a flat
+  // roof behind a parapet with a hatch or bulkhead on it, and keeping them off
+  // was what made the residential grid read as a field of identical lids from
+  // the air. What a home does not have is a chiller farm, so boxes stay off.
+  const home = kind === BuildingKind.Residential;
+  if (heightM < (home ? 9 : 6) || areaM2 < (home ? 70 : 120)) return NO_EXTRAS;
   const parapet = distM < PARAPET_M / k;
   if (!parapet) return NO_EXTRAS;
   if (distM >= CLUTTER_M / k) return { parapet, boxes: 0, overrun: false };
-  const boxes = Math.min(4, Math.floor(areaM2 / 900));
-  const overrun = heightM >= 22 && areaM2 >= 350;
+  const boxes = home ? (areaM2 >= 900 ? 1 : 0) : Math.min(4, Math.floor(areaM2 / 900));
+  const overrun = home ? areaM2 >= 90 : heightM >= 22 && areaM2 >= 350;
   return { parapet, boxes, overrun };
 }
 
 /** Triangles the roof extras add: the parapet's inner face, plus 10 per box. */
 function extrasCost(vertCount: number, e: RoofExtras): number {
-  return (e.parapet ? vertCount * 2 : 0) + (e.boxes + (e.overrun ? 1 : 0)) * 10;
+  return (e.parapet ? vertCount * 2 : 0) + (e.boxes + (e.overrun ? 1 : 0)) * 10 + (e.tank ? TANK_TRIS : 0);
 }
 
 /**
@@ -151,10 +168,11 @@ function extrasCost(vertCount: number, e: RoofExtras): number {
  * budget would be a number about walls and the actual triangle count would be
  * whatever the clutter happened to add.
  */
-function solveLod(pack: CityPack, triangleBudget: number): number {
+function solveLod(pack: CityPack, triangleBudget: number, tankAt: (i: number) => boolean): number {
   for (const k of [1, 1.4, 2, 3, 4.5, 7, 11, 18]) {
     let tris = 0;
-    for (const b of pack.buildings) {
+    for (let i = 0; i < pack.buildings.length; i++) {
+      const b = pack.buildings[i];
       const h = b.topM - b.baseM;
       const dist = Math.hypot(b.cx, b.cz);
       if (h < minHeightAt(dist, k)) continue;
@@ -167,6 +185,7 @@ function solveLod(pack: CityPack, triangleBudget: number): number {
       if (dist < PARAPET_M / k) {
         tris += extrasCost(n, roofExtras(dist, k, h, Math.abs(signedArea(b.ring)), b.kind, b.roof));
       }
+      if (dist < TANK_M / k && b.roof === RoofShape.Flat && tankAt(i)) tris += TANK_TRIS;
       if (tris > triangleBudget) break;
     }
     if (tris <= triangleBudget) return k;
@@ -221,6 +240,11 @@ export const PART_SHINGLE = 4;
  * for a parapet and paint it with the coping's pale grey.
  */
 export const PART_GABLE = 5;
+/**
+ * A wooden water tank and its stand. uv.y < 0 marks the steel (legs, deck),
+ * uv.y >= 0 the staves (uv = metres round, metres up) and the cone (isRoof).
+ */
+export const PART_TANK = 6;
 
 // --- What ONE lit window looks like ------------------------------------------
 //
@@ -317,6 +341,8 @@ uniform float uFlatRefl;
 // sills, cornice band or weathering, the old roof and the old night windows.
 // The vacuity probe for tools/verify-buildings.ts.
 uniform float uFlatFacade;
+// ?oneroof=1: every flat roof the same cover and colour; see the roof branch.
+uniform float uOneRoof;
 // Built-ness over the city, 0..1, from render/urbanmask.ts. The same coverage
 // grid terrain.ts lights its streets from; here it says how much of what a
 // facade reflects BELOW the horizon is other buildings rather than open ground.
@@ -477,9 +503,34 @@ void main() {
   // ascending ladder any more: the shingle test has to come first (it is the
   // highest tag but the clutter branch is the trailing else), and the gable
   // has to be pulled back out of it.
-  bool gableEnd = part > 4.5;
+  bool gableEnd = part > 4.5 && part < 5.5;
 
-  if (part > 3.5 && !gableEnd) {
+  if (part > 5.5) {
+    // --- Water tank -------------------------------------------------------
+    // Cedar staves gone silver-brown, bound with dark steel hoops every half
+    // metre or so, a tar-black lid, on a black steel stand. uv.y < 0 is the
+    // steel; isRoof marks the lid.
+    float hT = hash11(fp.seed * 41.0 + 3.0);
+    if (vUv.y < -0.5) {
+      albedo = vec3(0.035, 0.034, 0.033);
+      roughness = 0.6;
+    } else if (isRoof > 0.5) {
+      albedo = mix(vec3(0.045, 0.043, 0.04), vec3(0.09, 0.085, 0.08), hT);
+    } else {
+      vec3 wood = mix(vec3(0.20, 0.15, 0.11), vec3(0.24, 0.22, 0.20), hT);
+      float stave = vUv.x / 0.14;
+      float swd = max(fwidth(stave), 1e-3);
+      wood *= 1.0 - 0.18 * (1.0 - smoothstep(0.0, max(0.12, swd), fract(stave))) * (1.0 - clamp(swd, 0.0, 1.0));
+      wood *= 0.85 + 0.3 * hash11(floor(stave) + fp.seed * 7.0) * (1.0 - clamp(swd, 0.0, 1.0));
+      float hoopP = vUv.y / (0.45 + 0.25 * hT);
+      float hw = max(fwidth(hoopP), 1e-3);
+      float hoop = (1.0 - smoothstep(0.0, max(0.08, hw), fract(hoopP))) * (1.0 - clamp(hw * 1.6, 0.0, 1.0));
+      // Water streaks down the staves from the lid.
+      wood *= 1.0 - 0.15 * smoothstep(0.6, 0.0, vUv.y / 4.0) * vnoise(vec2(vUv.x * 3.0, 1.0));
+      albedo = mix(wood, vec3(0.04), hoop * 0.8);
+    }
+    skyOcc = 0.95;
+  } else if (part > 3.5 && !gableEnd) {
     // --- Shingle --------------------------------------------------------
     // Asphalt shingle or tile, and it is DARK: a real roof covering is
     // 0.05-0.14 linear, which is well under any wall it sits on.
@@ -487,6 +538,22 @@ void main() {
     vec3 cover = pick < 0.45 ? vec3(0.045, 0.046, 0.049)      // charcoal asphalt
                : pick < 0.80 ? vec3(0.078, 0.070, 0.060)      // weathered grey-brown
                              : vec3(0.105, 0.060, 0.044);     // faded clay tile
+    // With the archetype, the cover is the survey's: asphalt, brown asphalt,
+    // red clay tile, slate, copper verdigris or cedar shake, each at the albedo
+    // of the aged product, jittered per building.
+    int pc = int(fp.pitchCover + 0.5);
+    float pj = 0.85 + 0.3 * hash11(fp.seed * 29.0 + 5.0);
+    if (detailOn > 0.5) {
+      cover = (pc == 0 ? vec3(0.042, 0.043, 0.046)
+             : pc == 1 ? vec3(0.075, 0.058, 0.046)
+             : pc == 2 ? vec3(0.30, 0.11, 0.06)
+             : pc == 3 ? vec3(0.07, 0.075, 0.085)
+             : pc == 4 ? vec3(0.13, 0.25, 0.20)
+             :           vec3(0.12, 0.10, 0.085)) * pj;
+    }
+    // Clay tile and slate are laid in shorter courses than shingle, and tile
+    // is a barrel: a ripple across the slope every quarter metre.
+    float courseM = detailOn > 0.5 && (pc == 2 || pc == 3) ? 0.24 : 0.30;
     // Granules, on the smooth noise for the same reason the flat roof uses it:
     // from the air this is the largest surface in the frame, and a lattice of
     // flat random squares seen from above reads as pixelation.
@@ -500,7 +567,7 @@ void main() {
     // Filtered and faded exactly the way the wall's mortar course is: a 0.3 m
     // stripe is under a pixel from any height worth flying, and point-sampling
     // it would moire against the pixel grid rather than converge.
-    float cy = vUv.y / 0.30;
+    float cy = vUv.y / courseM;
     float wy = max(fwidth(cy), 1e-4);
     float courseFade = 1.0 - clamp(wy * 1.6, 0.0, 1.0);
     float course = 1.0 - smoothstep(0.0, max(0.18, wy), fract(cy));
@@ -509,6 +576,21 @@ void main() {
     float tabFade = 1.0 - clamp(wx * 1.6, 0.0, 1.0);
     float tab = 1.0 - smoothstep(0.0, max(0.10, wx), fract(cx));
     albedo *= 1.0 - 0.18 * course * courseFade - 0.08 * tab * tabFade;
+    if (detailOn > 0.5 && pc == 2) {
+      float bw = vUv.x / 0.26;
+      float bwd = max(fwidth(bw), 1e-3);
+      albedo *= 1.0 - 0.25 * (0.5 + 0.5 * cos(bw * 6.2832)) * (1.0 - clamp(bwd * 1.6, 0.0, 1.0));
+      albedo *= 0.85 + 0.3 * hash21(floor(vec2(bw, cy)) + fp.seed);
+    }
+    if (detailOn > 0.5 && pc == 4) {
+      // Standing seams every half metre, and the patina is streaky.
+      float sm = vUv.x / 0.5;
+      float smd = max(fwidth(sm), 1e-3);
+      albedo *= 1.0 + 0.25 * (1.0 - smoothstep(0.0, max(0.06, smd), fract(sm))) * (1.0 - clamp(smd * 1.6, 0.0, 1.0));
+      albedo = mix(albedo, vec3(0.10, 0.09, 0.06), 0.3 * vnoise(vec2(vUv.x * 2.0, vUv.y * 0.3)));
+    }
+    // Moss and soot in the lower courses, and lichen on slate.
+    if (detailOn > 0.5) albedo *= 1.0 - 0.15 * fp.age * smoothstep(0.55, 0.85, vnoise(vUv * 0.7 + fp.seed * 3.0));
 
     roughness = 0.92;    // shingle is matte, whatever the wall under it is
     skyOcc = 1.0;        // a pitched roof sees the whole dome
@@ -1448,33 +1530,114 @@ void main() {
     albedo *= 0.88 + 0.20 * g;
     albedo *= 1.0 - 0.14 * repatch;
 
-    // WHAT THE ROOF IS COVERED IN. The archetype names the product (tar, an
-    // aluminium coating, ballast gravel, white or black membrane) and its aged
-    // albedo; the scan, where there is one, supplies the grain. The grey above
-    // is kept as the ?flatfacade path and as the low-frequency soiling, which
-    // every cover has whatever it is.
+    // WHAT THE ROOF IS COVERED IN.
+    //
+    // From 300 m up a city IS its roofs, and every roof here was the same grey
+    // with the same grain. Now each building's cover comes from the archetype's
+    // roof survey (render/archetype.ts, ROOF_SURVEY) or from roof:material where
+    // OSM has it: black tar, aluminium-coated tar, ballast gravel, white TPO,
+    // black EPDM, sedum, or a paver deck, at its own aged albedo with a per-
+    // building jitter. On top of that: the dirt line along the parapet where
+    // water and grit collect, ponding stains, re-covered patches with seams,
+    // and per-roof features (a solar array, skylights, a deck) laid out in the
+    // roof's own frame (uv is local metres along and across, see addBuilding),
+    // so they sit INSIDE the roof. The grey above is the ?flatfacade path.
+    //
+    // ?oneroof=1 forces one cover and one colour on every roof while keeping
+    // the textures, the soiling and the features: the probe that proves the
+    // inter-roof variety the gate measures comes from the per-building choice.
     if (detailOn > 0.5) {
       int rc = int(fp.roofCover + 0.5);
       vec3 cover = fp.roofColour;
-      float soil = 0.82 + 0.36 * g;
+      if (uOneRoof > 0.5) { rc = 0; cover = vec3(0.11, 0.11, 0.105); }
+      vec2 lp = vUv;                                   // roof-local metres
+      vec2 hl = vec2(max(fp.roofHalfL, 1.0), max(fp.roofHalfW, 1.0));
+      float edgeD = min(hl.x - abs(lp.x), hl.y - abs(lp.y));   // to the box edge, m
+      float aaR = max(fwidth(lp.x), 1e-3);
+      float soil = 0.84 + 0.32 * g;
       if (rc == 2 && matOn > 0.5) {
         cover *= sampleMat(${Mat.Gravel}.0, vWorld.xz).ratio;
       } else if ((rc == 0 || rc == 1) && matOn > 0.5) {
-        // Tar and the coating over it share the scan's cracking and patching.
         vec3 tr = sampleMat(${Mat.Tar}.0, vWorld.xz).ratio;
         cover *= rc == 0 ? tr : mix(vec3(1.0), tr, 0.35);
-      } else if (rc == 3 || rc == 4) {
-        // Membrane is laid in 3 m sheets with a welded lap: a faint line every
-        // sheet, along the roof's own long axis, faded by the footprint.
-        float sh = rp.x / 3.05;
-        float sw = max(fwidth(sh), 1e-3);
-        float seam = (1.0 - smoothstep(0.0, max(0.03, sw), fract(sh))) * (1.0 - clamp(sw * 1.6, 0.0, 1.0));
-        cover *= 1.0 - 0.10 * seam;
+      } else if (rc == 6 && matOn > 0.5) {
+        cover *= sampleMat(${Mat.Precast}.0, vWorld.xz).ratio;
       }
-      // An aluminium-coated roof is never uniform: the coating is re-applied in
-      // patches and the tar shows through where it has worn.
-      if (rc == 1) cover = mix(cover, vec3(0.06), 0.35 * step(0.66, vnoise(rp * 0.21 + fp.seed * 3.0)));
-      albedo = cover * soil * (1.0 - 0.10 * repatch);
+      if (rc == 3 || rc == 4) {
+        // Membrane comes in 3 m sheets with a welded lap, run along the roof.
+        float sh = lp.y / 3.05;
+        float swd = max(fwidth(sh), 1e-3);
+        float seam = (1.0 - smoothstep(0.0, max(0.03, swd), fract(sh))) * (1.0 - clamp(swd * 1.6, 0.0, 1.0));
+        cover *= 1.0 - 0.10 * seam;
+        // Ponding: dirt dries in rings where water stood, darker on white.
+        float pond = smoothstep(0.62, 0.8, vnoise(lp * 0.13 + fp.seed * 5.0));
+        cover *= 1.0 - (rc == 3 ? 0.18 : 0.10) * pond;
+      } else if (rc == 5) {
+        // Sedum: patchy green and straw-brown, in 0.6 m trays.
+        float sed = vnoise(lp * 1.3 + fp.seed);
+        cover = mix(cover, vec3(0.11, 0.09, 0.05), 0.45 * smoothstep(0.55, 0.85, sed));
+        vec2 tray = abs(fract(lp / 0.6) - 0.5);
+        cover *= 1.0 - 0.15 * step(0.46, max(tray.x, tray.y)) * (1.0 - clamp(aaR / 0.3, 0.0, 1.0));
+      } else if (rc == 6) {
+        // Pavers: 0.6 m squares on pedestals, open joints, a few lighter ones.
+        vec2 pv = lp / 0.61;
+        vec2 jv = abs(fract(pv) - 0.5);
+        float jw = max(fwidth(pv.x), 1e-3);
+        float joint = step(0.47, max(jv.x, jv.y)) * (1.0 - clamp(jw * 1.6, 0.0, 1.0));
+        cover *= (1.0 - 0.45 * joint) * (0.9 + 0.2 * hash21(floor(pv) + fp.seed * 3.0));
+      }
+      // Coating over tar wears through in patches.
+      if (rc == 1) cover = mix(cover, vec3(0.05), 0.4 * smoothstep(0.62, 0.7, vnoise(lp * 0.2 + fp.seed * 3.0)));
+      // Re-covered sections: a rectangle of fresher or older product with a
+      // hard edge, in the roof's own frame so the edges run with the walls.
+      vec2 pc = floor(lp / vec2(4.0, 3.0) + fp.seed * 17.0);
+      float patchOn = step(0.80, hash21(pc));
+      cover *= 1.0 + patchOn * (hash21(pc + 7.1) - 0.55) * 0.25;
+      // The dirt line: grit and standing water collect against the parapet.
+      cover *= 1.0 - 0.28 * (1.0 - smoothstep(0.0, 1.3, edgeD));
+
+      // --- Features ---
+      int feat = int(fp.roofFeatures + 0.5);
+      float glassy = 0.0;
+      if ((feat & 1) != 0 && hl.x > 4.0 && hl.y > 3.0) {
+        // A solar array: rows of 1.0 x 1.7 m modules tilted south, inside a
+        // setback from the parapet, over most of the roof.
+        vec2 inA = hl - vec2(1.6, 1.4);
+        float inside = step(abs(lp.x), inA.x) * step(abs(lp.y), inA.y);
+        vec2 m = vec2(lp.x / 1.04, lp.y / 2.1);
+        vec2 mf = fract(m);
+        float mw = max(fwidth(m.x), 1e-3);
+        float cell = step(0.03, mf.x) * step(mf.x, 0.97) * step(0.08, mf.y) * step(mf.y, 0.86);
+        float panel = inside * mix(0.8 * 0.86, cell, 1.0 - clamp(mw * 1.6, 0.0, 1.0));
+        vec3 pv = vec3(0.025, 0.032, 0.055) * (1.0 + 0.6 * step(0.5, fract(lp.x * 6.0)) * (1.0 - clamp(mw * 8.0, 0.0, 1.0)));
+        cover = mix(cover, pv, panel);
+        glassy = max(glassy, panel);
+      }
+      if ((feat & 2) != 0) {
+        // Skylights and a roof hatch: one to three small glazed boxes along
+        // the roof's long axis.
+        for (int k = 0; k < 3; k++) {
+          float hk = hash21(vec2(fp.seed * 31.0 + float(k), 2.0));
+          if (k > 0 && hk < 0.5) continue;
+          vec2 c = vec2((hash21(vec2(fp.seed, float(k) + 4.0)) - 0.5) * max(hl.x - 2.0, 0.0),
+                        (hash21(vec2(fp.seed, float(k) + 8.0)) - 0.5) * max(hl.y - 1.5, 0.0));
+          vec2 sz = vec2(0.6 + 0.5 * hk, 0.5 + 0.3 * hk);
+          vec2 d = abs(lp - c) - sz;
+          float box = 1.0 - smoothstep(-aaR, aaR, max(d.x, d.y));
+          float rim = box * smoothstep(-0.12 - aaR, -0.12 + aaR, max(d.x, d.y));
+          cover = mix(cover, mix(vec3(0.06, 0.07, 0.08), vec3(0.35), rim), box);
+          glassy = max(glassy, box * (1.0 - rim));
+        }
+      }
+      if ((feat & 4) != 0 && rc != 6) {
+        // A deck on part of the roof.
+        float deck = step(lp.x, -hl.x * 0.2) * step(1.0, edgeD);
+        cover = mix(cover, vec3(0.30, 0.22, 0.15) * (0.85 + 0.3 * step(0.5, fract(lp.y / 0.14))), deck);
+      }
+      albedo = cover * soil;
+      // Panels and skylights are glass: give them the sky.
+      glassMask = glassy * 0.9;
+      roughness = mix(0.9, 0.08, glassy);
     }
   } else if (part < 2.5) {
     // --- Parapet --------------------------------------------------------
@@ -1492,6 +1655,22 @@ void main() {
     // metal, greyer and slightly glossier than the roof they stand on.
     float g = vnoise(vWorld.xz * 0.6 + fp.seed * 41.0);
     albedo = mix(vec3(0.30, 0.30, 0.31), vec3(0.46, 0.46, 0.45), g);
+    if (detailOn > 0.5) {
+      // Plant comes in a few finishes: galvanised, factory beige, white, and
+      // the bulkhead is usually the building's own brick or a tar-black box.
+      vec2 cid = floor(vWorld.xz / 3.0);
+      float f = hash21(cid + fp.seed * 9.0);
+      vec3 fin = f < 0.45 ? vec3(0.34, 0.35, 0.36) : f < 0.7 ? vec3(0.42, 0.39, 0.32)
+               : f < 0.85 ? vec3(0.55, 0.56, 0.55) : fp.colour * 0.8;
+      albedo = fin * (0.85 + 0.3 * g);
+      if (isRoof > 0.5) {
+        // Fans on top of the condensers: dark discs on a 1.2 m pitch.
+        vec2 fc = fract(vWorld.xz / 1.2) - 0.5;
+        float fw = max(fwidth(vWorld.x / 1.2), 1e-3);
+        float fan = (1.0 - smoothstep(0.32 - fw, 0.32 + fw, length(fc))) * (1.0 - clamp(fw * 2.0, 0.0, 1.0));
+        albedo *= 1.0 - 0.6 * fan * step(0.45, f) * step(f, 0.85);
+      }
+    }
     if (isRoof > 0.5) albedo *= 0.86;   // the tops streak and collect dirt
     skyOcc = 0.8;
   }
@@ -1713,6 +1892,17 @@ void main() {
     float faceCos = clamp(dot(v, normalize(vNormal)), 0.0, 1.0);
     float graze = uBuildingDebug > 1.5 ? step(faceCos, GRAZE_COS) : 1.0;
     fragColor = vec4(0.0, 0.0, facadeMarker * graze, 1.0);
+    // ?buildingDebug=3: each FLAT ROOF in one of six saturated colours keyed
+    // on its building, everything else black, so tools/verify-buildings.ts can
+    // cut a top-down frame into roofs and measure each roof's own mean colour.
+    // Six classes survive the tonemap as which channels are on; two touching
+    // roofs share a class one time in six and are then measured as one.
+    if (uBuildingDebug > 2.5) {
+      float cls = mod(floor(hash11(bidx * 0.618 + 0.5) * 6.0), 6.0);
+      vec3 c = cls < 0.5 ? vec3(1, 0, 0) : cls < 1.5 ? vec3(0, 1, 0) : cls < 2.5 ? vec3(0, 0, 1)
+             : cls < 3.5 ? vec3(1, 1, 0) : cls < 4.5 ? vec3(1, 0, 1) : vec3(0, 1, 1);
+      fragColor = vec4(c * step(0.5, part) * step(part, 1.5), 1.0);
+    }
   }
 }
 `;
@@ -1736,6 +1926,10 @@ export interface BuildingUniforms extends SunShadowUniforms, AoUniforms {
   uFlatRefl: THREE.IUniform<number>;
   /** 1 restores the pre-archetype facade; `?flatfacade=1`. */
   uFlatFacade: THREE.IUniform<number>;
+  /** 1 gives every flat roof one cover and colour; `?oneroof=1`, the roof gate's probe. */
+  uOneRoof: THREE.IUniform<number>;
+  /** 1 samples the scans without mips; `?nomip=1`, the aliasing probe. */
+  uMatNoMip: THREE.IUniform<number>;
   /** The photographed material arrays; see render/materialtex.ts. Null until loaded. */
   uMatAlbedo: THREE.IUniform<THREE.DataArrayTexture | null>;
   uMatNormal: THREE.IUniform<THREE.DataArrayTexture | null>;
@@ -1787,6 +1981,8 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uFlatGlass: { value: 0 },
     uFlatRefl: { value: 0 },
     uFlatFacade: { value: 0 },
+    uOneRoof: { value: 0 },
+    uMatNoMip: { value: 0 },
     uMatAlbedo: { value: null },
     uMatNormal: { value: null },
     uMatRH: { value: null },
@@ -1920,9 +2116,13 @@ function addRoofPlant(
     const r1 = hash3(seed, 0x900 + attempt, 3);
     const r2 = hash3(seed, 0x900 + attempt, 4);
     const r3 = hash3(seed, 0x900 + attempt, 5);
-    const hx = isOverrun ? 2.2 + 1.8 * r1 : 1.1 + 1.6 * r1;
-    const hz = isOverrun ? 2.0 + 1.8 * r2 : 1.0 + 1.5 * r2;
-    const hy = isOverrun ? 3.0 + 1.6 * r3 : 0.9 + 1.6 * r3;
+    // A walk-up's bulkhead is a stair hatch, 2.5 x 3 m; an office overrun is
+    // a lift motor room twice that. Scaled by the roof it stands on so a 7 m
+    // brownstone still gets one that fits.
+    const fit = Math.min(1, Math.min(spanX, spanZ) / 14);
+    const hx = isOverrun ? (1.2 + 3.0 * fit) * (0.6 + 0.4 * r1) : 1.1 + 1.6 * r1;
+    const hz = isOverrun ? (1.1 + 2.8 * fit) * (0.6 + 0.4 * r2) : 1.0 + 1.5 * r2;
+    const hy = isOverrun ? 2.6 + 2.0 * fit * r3 : 0.9 + 1.6 * r3;
     // Only if the whole box is inside the roof: half a chiller hanging over
     // the parapet is worse than no chiller.
     if (
@@ -1933,6 +2133,95 @@ function addRoofPlant(
     addBox(s, px, pz, hx, hz, top, top + hy, bidx, bldH);
     placed++;
   }
+}
+
+/**
+ * One planar quad, wound so its GEOMETRIC normal agrees with the shading
+ * normal given, whatever order the corners came in. The tank is built from
+ * dozens of these at arbitrary angles, and working each winding out by hand is
+ * exactly how the walls and the roofs both once shipped inside out.
+ */
+function quad(
+  s: Scratch,
+  a: readonly number[], b: readonly number[], c: readonly number[], d: readonly number[],
+  nrm: readonly number[], uvs: readonly number[], bidx: number, bldH: number, isRoof: number, part: number,
+): void {
+  const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+  const g = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+  const flip = g[0] * nrm[0] + g[1] * nrm[1] + g[2] * nrm[2] < 0;
+  const v = s.pos.length / 3;
+  for (const p of [a, b, c, d]) s.pos.push(p[0], p[1], p[2]);
+  for (let k = 0; k < 4; k++) {
+    s.nrm.push(nrm[0], nrm[1], nrm[2]);
+    s.uv.push(uvs[k * 2], uvs[k * 2 + 1]);
+    s.info.push(bidx, bldH, isRoof, part);
+  }
+  if (flip) s.idx.push(v, v + 2, v + 1, v, v + 3, v + 2);
+  else s.idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
+}
+
+/** A steel box (a leg or the deck), four sides and a lid. */
+function steelBox(s: Scratch, cx: number, cz: number, hx: number, hz: number, y0: number, y1: number, bidx: number, bldH: number): void {
+  const x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
+  const st = [0, -1, 0, -1, 0, -1, 0, -1];
+  quad(s, [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [0, 0, -1], st, bidx, bldH, 0, PART_TANK);
+  quad(s, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1], st, bidx, bldH, 0, PART_TANK);
+  quad(s, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [-1, 0, 0], st, bidx, bldH, 0, PART_TANK);
+  quad(s, [x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], [1, 0, 0], st, bidx, bldH, 0, PART_TANK);
+  quad(s, [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], [0, 1, 0], st, bidx, bldH, 1, PART_TANK);
+}
+
+/**
+ * A New York wooden water tank: cedar staves bound with steel hoops, a
+ * shallow conical lid, standing on a steel deck on four legs.
+ *
+ * Measured sizes: the common 10,000 gallon tank is about 12 ft (3.7 m) across
+ * and 12-16 ft tall, on a stand that lifts it one storey clear of the roof so
+ * gravity gives the top floors pressure. Sizes jitter per building.
+ */
+function addWaterTank(s: Scratch, b: Building, top: number, bidx: number, bldH: number, seed: number): boolean {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < b.ring.length; i += 2) {
+    minX = Math.min(minX, b.ring[i]); maxX = Math.max(maxX, b.ring[i]);
+    minZ = Math.min(minZ, b.ring[i + 1]); maxZ = Math.max(maxZ, b.ring[i + 1]);
+  }
+  const r = 1.5 + 0.6 * hash3(seed, 0xa00, 1);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    // Tanks sit toward the back or side of a roof, near the stair core; any
+    // spot the whole stand fits in will do.
+    const px = minX + (maxX - minX) * (0.2 + 0.6 * hash3(seed, 0xa10 + attempt, 1));
+    const pz = minZ + (maxZ - minZ) * (0.2 + 0.6 * hash3(seed, 0xa10 + attempt, 2));
+    const m = r + 0.4;
+    if (!insideRing(b.ring, px - m, pz - m) || !insideRing(b.ring, px + m, pz - m) ||
+        !insideRing(b.ring, px - m, pz + m) || !insideRing(b.ring, px + m, pz + m)) continue;
+    const standH = 2.6 + 1.2 * hash3(seed, 0xa00, 2);
+    const tankH = 3.6 + 1.4 * hash3(seed, 0xa00, 3);
+    const lidH = 0.6 + 0.5 * hash3(seed, 0xa00, 4);
+    const leg = r * 0.72;
+    for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      steelBox(s, px + sx * leg, pz + sz * leg, 0.11, 0.11, top, top + standH - 0.25, bidx, bldH);
+    }
+    steelBox(s, px, pz, r * 0.95, r * 0.95, top + standH - 0.25, top + standH, bidx, bldH);
+    const y0 = top + standH, y1 = y0 + tankH, y2 = y1 + lidH;
+    const N = 10;
+    for (let k = 0; k < N; k++) {
+      const a0 = (k / N) * Math.PI * 2, a1 = ((k + 1) / N) * Math.PI * 2;
+      const am = (a0 + a1) / 2;
+      const p0 = [px + Math.cos(a0) * r, pz + Math.sin(a0) * r];
+      const p1 = [px + Math.cos(a1) * r, pz + Math.sin(a1) * r];
+      const u0 = a0 * r, u1 = a1 * r;
+      quad(s, [p0[0], y0, p0[1]], [p1[0], y0, p1[1]], [p1[0], y1, p1[1]], [p0[0], y1, p0[1]],
+        [Math.cos(am), 0, Math.sin(am)], [u0, 0, u1, 0, u1, tankH, u0, tankH], bidx, bldH, 0, PART_TANK);
+      // The lid: a triangle per stave, as a quad with its two top corners
+      // meeting at the apex. Its normal leans out by the lid's rise.
+      const sl = Math.hypot(r, lidH);
+      quad(s, [p0[0], y1, p0[1]], [p1[0], y1, p1[1]], [px, y2, pz], [px, y2, pz],
+        [Math.cos(am) * lidH / sl, r / sl, Math.sin(am) * lidH / sl], [u0, 0, u1, 0, u1, 1, u0, 1], bidx, bldH, 1, PART_TANK);
+    }
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -2290,13 +2579,36 @@ export function addBuilding(
   // At the EAVE when there is a tent over it. Mostly hidden and it costs
   // nothing new, but without it any gap where a gable end meets the wall is a
   // hole you can see down into the building through.
+  // The roof's own frame: along its longest edge and across it, centred on
+  // the footprint. uv carries these local metres and the facade table carries
+  // the half extents, so the shader can lay a solar array or a deck INSIDE the
+  // roof and darken the dirt line along its parapet.
+  let ax = 1, az = 0, best = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = b.ring[j * 2] - b.ring[i * 2], dz = b.ring[j * 2 + 1] - b.ring[i * 2 + 1];
+    const l = Math.hypot(dx, dz);
+    if (l > best) { best = l; ax = dx / l; az = dz / l; }
+  }
+  let u0 = Infinity, u1 = -Infinity, w0 = Infinity, w1 = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const x = b.ring[i * 2] - b.cx, z = b.ring[i * 2 + 1] - b.cz;
+    const u = x * ax + z * az, w = -x * az + z * ax;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); w0 = Math.min(w0, w); w1 = Math.max(w1, w);
+  }
+  const uc = (u0 + u1) / 2, wc = (w0 + w1) / 2;
+  if (params) {
+    params.roofHalfL = (u1 - u0) / 2;
+    params.roofHalfW = (w1 - w0) / 2;
+  }
   const tri = triangulate(b.ring);
   if (tri.length) {
     const v0 = s.pos.length / 3;
     for (let i = 0; i < n; i++) {
       s.pos.push(b.ring[i * 2], eaveY, b.ring[i * 2 + 1]);
       s.nrm.push(0, 1, 0);
-      s.uv.push(b.ring[i * 2], b.ring[i * 2 + 1]);
+      const x = b.ring[i * 2] - b.cx, z = b.ring[i * 2 + 1] - b.cz;
+      s.uv.push(x * ax + z * az - uc, -x * az + z * ax - wc);
       s.info.push(bidx, wallH, 1, PART_ROOF);
     }
     // REVERSED against the ring's own winding, and that is not a typo.
@@ -2319,10 +2631,14 @@ export function addBuilding(
   if (pitch) {
     addTent(s, pitch, eaveY, top, base, bidx, wallH);
   } else if (extras.boxes > 0 || extras.overrun) {
+    // Plant first, tank after: a tank that lands on a chiller is caught by the
+    // tank's own inside test only against the ring, so the order just decides
+    // which of the two gets the better spot, and the stair core wins.
     // Same veto as the parapet, and for the same reason: nothing stands on a
     // slope, and the gate forces the extras on for every building.
     addRoofPlant(s, b, top, extras, bidx, wallH, seed);
   }
+  if (!pitch && extras.tank) addWaterTank(s, b, top, bidx, wallH, seed);
 }
 
 function buildMesh(s: Scratch, uniforms: BuildingUniforms): THREE.Mesh | null {
@@ -2418,6 +2734,8 @@ export interface BuildingStats {
   plantBoxes: number;
   /** Facade families in use, indexed by FacadeFamily. */
   families: number[];
+  /** Wooden water tanks placed. */
+  tanks: number;
 }
 
 export class Buildings {
@@ -2447,7 +2765,14 @@ export class Buildings {
       u.uMatMean.value = m.mean;
       u.uMatReady.value = 1;
     });
-    const lodK = solveLod(pack, budget.buildingTriangleBudget);
+    const choices = assignArchetypes(pack);
+    const tankAt = (i: number): boolean => {
+      const c = choices?.[i];
+      if (!c) return false;
+      const b = pack.buildings[i];
+      return wantsWaterTank(ARCHETYPES[c.archetype], b.topM - b.baseM, i);
+    };
+    const lodK = solveLod(pack, budget.buildingTriangleBudget, tankAt);
     const cells = new Map<string, Scratch>();
     const params: FacadeParams[] = [];
     const families: number[] = new Array(5).fill(0);
@@ -2456,10 +2781,11 @@ export class Buildings {
     let skippedFlat = 0;
     let parapets = 0;
     let plantBoxes = 0;
-    // What KIND of building each footprint is, decided over the whole pack at
+    let tanks = 0;
+    // `choices` (above, before the LOD solve, which has to cost the tanks):
+    // what KIND of building each footprint is, decided over the whole pack at
     // once because it needs the neighbourhood (district) and the party walls
     // (coherence). Null outside the surveyed cities; see render/archetype.ts.
-    const choices = assignArchetypes(pack);
 
     for (let i = 0; i < pack.buildings.length; i++) {
       const b = pack.buildings[i];
@@ -2508,7 +2834,13 @@ export class Buildings {
       params.push(fp);
       families[fp.family]++;
 
-      const extras = roofExtras(dist, lodK, h, area, b.kind, b.roof);
+      // A copy: roofExtras hands back the shared NO_EXTRAS constant, and the
+      // tank flag below must not write through it into every building after.
+      const extras = { ...roofExtras(dist, lodK, h, area, b.kind, b.roof) };
+      if (dist < TANK_M / lodK && b.roof === RoofShape.Flat && tankAt(i)) {
+        extras.tank = true;
+        tanks++;
+      }
       if (extras.parapet) parapets++;
       plantBoxes += extras.boxes + (extras.overrun ? 1 : 0);
 
@@ -2534,7 +2866,7 @@ export class Buildings {
 
     this.stats = {
       drawn, skippedFar, skippedFlat, triangles, cells: cells.size, lod: lodK,
-      parapets, plantBoxes, families,
+      parapets, plantBoxes, families, tanks,
     };
   }
 

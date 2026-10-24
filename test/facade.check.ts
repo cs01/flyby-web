@@ -569,9 +569,9 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
   let worstErr = 0;
   let checkedTiles = 0;
   const scratch = new Float32Array(FACADE_FLOATS);
-  // 1 and 4 are real tile sizes; 48 crosses no row; 49 crosses exactly one row
-  // boundary (49 * 21 = 1029 > 1024), which is the case a stride bug hides in.
-  for (const n of [1, 4, 48, 49, 171, 512, 2000]) {
+  // 1 and 4 are real tile sizes; 44 crosses no row; 45 crosses exactly one row
+  // boundary (45 * 23 = 1035 > 1024), which is the case a stride bug hides in.
+  for (const n of [1, 4, 44, 45, 171, 512, 2000]) {
     const params = [];
     for (let i = 0; i < n; i++) params.push(facadeFor(i % 7, 4 + (i % 200), i * 7 + 1));
     const { data, height } = packFacadeBytes(params);
@@ -598,7 +598,7 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
   );
 
   // VACUITY PROBE: the read must FAIL if the stride is wrong, or it is checking
-  // nothing. 86 buildings is 1806 texels, so it spans two rows and a stride of
+  // nothing. 86 buildings is 1978 texels, so it spans two rows and a stride of
   // width+1 misplaces every building after the first row.
   const params86 = [];
   for (let i = 0; i < 86; i++) params86.push(facadeFor(i % 7, 4 + i, i * 7 + 1));

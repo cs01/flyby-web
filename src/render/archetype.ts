@@ -299,7 +299,32 @@ export enum RoofCover {
   WhiteMembrane = 3,
   /** Black EPDM rubber. */
   BlackMembrane = 4,
+  /** Sedum tray green roof, post-2005 and mostly on new or civic buildings. */
+  Green = 5,
+  /** Concrete pavers on pedestals: a roof deck over the membrane. */
+  Pavers = 6,
 }
+
+/** What a PITCHED roof is covered in. The shingle branch of the shader reads it. */
+export enum PitchCover {
+  /** Three-tab or architectural asphalt shingle, charcoal to weathered grey. */
+  Asphalt = 0,
+  /** Asphalt in the brown and red-brown blends. */
+  AsphaltBrown = 1,
+  /** Red clay barrel or Spanish tile: SF's Mediterranean houses. */
+  ClayTile = 2,
+  /** Slate, blue-grey, on pre-war houses and civic roofs. */
+  Slate = 3,
+  /** Copper gone to verdigris, on steeples, domes and bay turrets. */
+  Copper = 4,
+  /** Cedar shake weathered silver-brown. */
+  Shake = 5,
+}
+
+/** Bits in the roof-feature byte. */
+export const ROOF_SOLAR = 1;
+export const ROOF_SKYLIGHTS = 2;
+export const ROOF_DECK = 4;
 
 /** A palette entry: a colour and the scan it is laid in. Picked together. */
 export interface Swatch {
@@ -358,7 +383,12 @@ export interface Archetype {
   /** Divisions across the opening for ribbon, industrial and muntin styles. */
   mullions: number;
   interior: Interior;
+  /** Flat roof covers, drawn by hash. Repeats weight the draw. See ROOF_SURVEY. */
   roofs: RoofCover[];
+  /** Pitched roof covers, when the footprint gets a tent. */
+  pitched?: PitchCover[];
+  /** Chance of a solar array on a flat roof. */
+  solar?: number;
   /** Chance of a wooden water tank, on buildings 18-75 m tall. */
   tank: number;
   /** Weathering 0..1: how much soot, streaking and base grime. */
@@ -831,6 +861,67 @@ export const ARCHETYPES: Archetype[] = [
     tank: 0, age: 0.55, shopfront: 0.3, group: 2, f0: COMMON.f0Punched, roughness: 0.72,
   },
 ];
+
+// --- the roof survey ---------------------------------------------------------------
+//
+// From altitude a city IS its roofs, so the cover of each type is surveyed as
+// carefully as its wall. Read off aerial imagery of each district (the same
+// Esri/USGS orthophoto tiles the terrain drape uses, at zoom 19):
+//
+//   * Pre-war walk-ups and apartment blocks in Manhattan and Brooklyn are
+//     roughly a third silver aluminium coating, a third black tar or EPDM, and
+//     a growing third white: NYC Local Law 21 (2011) made reflective coating
+//     the default on any re-roof, and the NYC CoolRoofs programme has coated
+//     well over ten million square feet since 2009.
+//   * Offices are gravel ballast (1960-1990) or white TPO (since), with a few
+//     sedum green roofs on newer and civic buildings.
+//   * Row houses carry decks: pavers on pedestals over the membrane.
+//   * Chicago's flats are black and silver; its Loop is gravel and white, and
+//     the city required green or reflective roofs on new construction from 2001.
+//   * San Francisco's flat roofs are tar and white, often with a deck; its
+//     pitched houses are asphalt shingle and red clay tile (the Mediterranean
+//     revival of the 1920s and 30s), and solar arrays have been common on
+//     houses since the 2008 GoSolarSF incentive.
+const T = RoofCover;
+const P = PitchCover;
+const ROOF_SURVEY: Record<string, Pick<Archetype, "roofs" | "pitched" | "solar">> = {
+  "nyc-walkup": { roofs: [T.Silver, T.Silver, T.Tar, T.BlackMembrane, T.WhiteMembrane, T.WhiteMembrane, T.Pavers], solar: 0.04 },
+  "nyc-brownstone": { roofs: [T.Tar, T.Silver, T.BlackMembrane, T.WhiteMembrane, T.Pavers, T.Pavers], pitched: [P.Slate, P.Asphalt], solar: 0.08 },
+  "nyc-prewar-apt": { roofs: [T.Silver, T.Silver, T.Tar, T.BlackMembrane, T.WhiteMembrane, T.Pavers], solar: 0.02 },
+  "nyc-loft": { roofs: [T.Tar, T.Silver, T.BlackMembrane, T.WhiteMembrane, T.Pavers, T.Green, T.Tar, T.Silver, T.BlackMembrane, T.WhiteMembrane, T.Pavers, T.Tar, T.Silver, T.BlackMembrane, T.WhiteMembrane, T.Pavers], solar: 0.04 },
+  "nyc-deco-tower": { roofs: [T.Tar, T.Gravel, T.BlackMembrane], solar: 0 },
+  "nyc-prewar-office": { roofs: [T.Tar, T.Gravel, T.Silver, T.WhiteMembrane, T.BlackMembrane], solar: 0 },
+  "nyc-intl-slab": { roofs: [T.Gravel, T.Gravel, T.BlackMembrane, T.WhiteMembrane], solar: 0 },
+  "nyc-white-brick": { roofs: [T.Tar, T.BlackMembrane, T.Silver, T.WhiteMembrane], solar: 0.02 },
+  "nyc-projects": { roofs: [T.Tar, T.BlackMembrane, T.WhiteMembrane, T.Silver], solar: 0.03 },
+  "nyc-house": { roofs: [T.Tar, T.BlackMembrane, T.Silver], pitched: [P.Asphalt, P.Asphalt, P.AsphaltBrown, P.Slate], solar: 0.06 },
+  "sf-victorian": { roofs: [T.Tar, T.Tar, T.WhiteMembrane, T.Silver, T.Pavers], pitched: [P.Asphalt, P.AsphaltBrown, P.Slate, P.Shake], solar: 0.10 },
+  "sf-edwardian": { roofs: [T.Tar, T.WhiteMembrane, T.Silver, T.Pavers, T.BlackMembrane], pitched: [P.Asphalt, P.AsphaltBrown], solar: 0.10 },
+  "sf-stucco-apt": { roofs: [T.Tar, T.WhiteMembrane, T.WhiteMembrane, T.Gravel, T.Pavers], pitched: [P.ClayTile, P.Asphalt], solar: 0.06 },
+  "sf-marina": { roofs: [T.Tar, T.WhiteMembrane, T.Pavers, T.BlackMembrane], pitched: [P.ClayTile, P.ClayTile, P.Asphalt], solar: 0.12 },
+  "sf-postwar-apt": { roofs: [T.Tar, T.WhiteMembrane, T.Gravel, T.BlackMembrane], pitched: [P.Asphalt], solar: 0.06 },
+  "sf-house": { roofs: [T.Tar, T.WhiteMembrane], pitched: [P.Asphalt, P.Asphalt, P.ClayTile, P.ClayTile, P.AsphaltBrown, P.Shake], solar: 0.18 },
+  "sf-downtown-prewar": { roofs: [T.Tar, T.Gravel, T.WhiteMembrane, T.BlackMembrane], solar: 0.02 },
+  "sf-soma-warehouse": { roofs: [T.Tar, T.Gravel, T.WhiteMembrane, T.WhiteMembrane, T.Green, T.Tar, T.Gravel, T.WhiteMembrane, T.WhiteMembrane, T.Tar, T.Gravel, T.WhiteMembrane, T.WhiteMembrane], solar: 0.12 },
+  "chi-school": { roofs: [T.Tar, T.Gravel, T.WhiteMembrane, T.BlackMembrane], solar: 0 },
+  "chi-mies": { roofs: [T.Gravel, T.BlackMembrane, T.WhiteMembrane], solar: 0 },
+  "chi-deco": { roofs: [T.Tar, T.Gravel, T.Green, T.Tar, T.Gravel, T.Tar, T.Gravel], pitched: [P.Copper], solar: 0 },
+  "chi-concrete": { roofs: [T.Gravel, T.BlackMembrane, T.WhiteMembrane], solar: 0.02 },
+  "chi-courtyard": { roofs: [T.Tar, T.Silver, T.BlackMembrane, T.WhiteMembrane], solar: 0.03 },
+  "chi-two-flat": { roofs: [T.Tar, T.Silver, T.BlackMembrane, T.WhiteMembrane], pitched: [P.Asphalt, P.Slate], solar: 0.04 },
+  "chi-cottage": { roofs: [T.Tar, T.BlackMembrane], pitched: [P.Asphalt, P.Asphalt, P.AsphaltBrown, P.Slate], solar: 0.05 },
+  "us-glass-tower": { roofs: [T.Gravel, T.WhiteMembrane, T.WhiteMembrane, T.Green, T.BlackMembrane, T.Gravel, T.WhiteMembrane, T.WhiteMembrane, T.BlackMembrane, T.Gravel, T.WhiteMembrane, T.WhiteMembrane, T.BlackMembrane], solar: 0.02 },
+  "us-midrise-office": { roofs: [T.Gravel, T.WhiteMembrane, T.BlackMembrane, T.Green, T.Gravel, T.WhiteMembrane, T.BlackMembrane, T.Gravel, T.WhiteMembrane, T.BlackMembrane], solar: 0.06 },
+  "us-residential-tower": { roofs: [T.WhiteMembrane, T.Gravel, T.Pavers, T.Green, T.WhiteMembrane, T.Gravel, T.Pavers, T.WhiteMembrane, T.Gravel, T.Pavers], solar: 0.03 },
+  "us-warehouse": { roofs: [T.WhiteMembrane, T.WhiteMembrane, T.BlackMembrane, T.Gravel, T.Tar], solar: 0.14 },
+  "us-retail": { roofs: [T.Tar, T.WhiteMembrane, T.WhiteMembrane, T.BlackMembrane, T.Gravel], solar: 0.08 },
+  "us-civic": { roofs: [T.Tar, T.Gravel, T.BlackMembrane, T.Green, T.Tar, T.Gravel, T.BlackMembrane, T.Tar, T.Gravel, T.BlackMembrane], pitched: [P.Slate, P.Copper, P.Asphalt], solar: 0.04 },
+};
+for (const a of ARCHETYPES) {
+  const r = ROOF_SURVEY[a.id];
+  if (!r) throw new Error(`archetype ${a.id} has no roof survey`);
+  Object.assign(a, r);
+}
 
 export const ARCHETYPE_COUNT = ARCHETYPES.length;
 

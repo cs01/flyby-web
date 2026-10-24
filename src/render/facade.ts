@@ -29,7 +29,10 @@
 // rectangle, glass fraction, the occupancy probabilities themselves) is
 // computed HERE, once per building, and the shader only reads it.
 
-import { ARCHETYPES, Interior, RoofCover, WindowStyle, type Archetype, type ArchetypeChoice } from "./archetype";
+import {
+  ARCHETYPES, Interior, PitchCover, RoofCover, ROOF_DECK, ROOF_SKYLIGHTS, ROOF_SOLAR, WindowStyle,
+  type Archetype, type ArchetypeChoice,
+} from "./archetype";
 import { Mat } from "./materials";
 
 // --- deterministic hashing --------------------------------------------------
@@ -433,6 +436,18 @@ export interface FacadeParams {
   roofColour: [number, number, number];
   glassTint: [number, number, number];
   roofCover: RoofCover;
+  /** What a pitched roof on this building is covered in. */
+  pitchCover: PitchCover;
+  /** ROOF_SOLAR | ROOF_SKYLIGHTS | ROOF_DECK. */
+  roofFeatures: number;
+  /**
+   * Half extents of the roof along its own long axis and across it, metres,
+   * capped at 31. Written by addBuilding, which is where the footprint is; the
+   * roof's uv carries the matching local coordinates, so the shader can lay
+   * an array of panels INSIDE the roof rather than across its edge.
+   */
+  roofHalfL: number;
+  roofHalfW: number;
   windowStyle: WindowStyle;
   /** Divisions across an opening, for the styles that have them. */
   mullions: number;
@@ -448,13 +463,36 @@ export interface FacadeParams {
 /** Roof covering albedo, linear, as an aged sample of each product. */
 const ROOF_COLOUR: Record<RoofCover, [number, number, number]> = {
   // Built-up tar and black EPDM measure 0.04-0.06; aluminium roof coating is
-  // sold at 0.5-0.6 reflectance and weathers to about 0.4; a new white TPO is
-  // 0.75-0.8 and a city-aged one 0.55-0.65; ballast gravel is the scan's own.
+  // sold at 0.5-0.6 reflectance and weathers to 0.3-0.4 under city grime; a
+  // new white TPO is 0.75-0.8 and three years of soot take it to about 0.5
+  // (LBNL's aged-reflectance data for urban roofs); ballast is the scan's own.
   [RoofCover.Tar]: [0.040, 0.040, 0.042],
-  [RoofCover.Silver]: [0.40, 0.41, 0.42],
+  [RoofCover.Silver]: [0.32, 0.33, 0.34],
   [RoofCover.Gravel]: [0.21, 0.20, 0.18],
-  [RoofCover.WhiteMembrane]: [0.60, 0.61, 0.60],
+  [RoofCover.WhiteMembrane]: [0.50, 0.51, 0.50],
   [RoofCover.BlackMembrane]: [0.050, 0.050, 0.055],
+  // Sedum is a dark olive mat, 0.10-0.15 in summer; concrete pavers are the
+  // precast scan's own grey, lighter than the membrane they sit on.
+  [RoofCover.Green]: [0.075, 0.105, 0.045],
+  [RoofCover.Pavers]: [0.33, 0.31, 0.28],
+};
+
+/** roof:material values as covers. Evidence beats the survey where it exists. */
+const ROOF_TAG: Record<string, { flat?: RoofCover; pitch?: PitchCover }> = {
+  tar_paper: { flat: RoofCover.Tar, pitch: PitchCover.Asphalt },
+  asphalt: { flat: RoofCover.Tar, pitch: PitchCover.Asphalt },
+  roofing_felt: { flat: RoofCover.BlackMembrane },
+  gravel: { flat: RoofCover.Gravel },
+  concrete: { flat: RoofCover.Pavers },
+  grass: { flat: RoofCover.Green },
+  plants: { flat: RoofCover.Green },
+  metal: { flat: RoofCover.Silver, pitch: PitchCover.Copper },
+  copper: { pitch: PitchCover.Copper },
+  roof_tiles: { pitch: PitchCover.ClayTile },
+  tile: { pitch: PitchCover.ClayTile },
+  slate: { pitch: PitchCover.Slate },
+  wood: { pitch: PitchCover.Shake },
+  eternit: { pitch: PitchCover.Slate },
 };
 
 /**
@@ -485,7 +523,7 @@ const FAMILY_SURFACE: Record<FacadeFamily, { wall: Mat; base: Mat; window: Windo
  * a zero storey height and rendered NaN-black. A plain 8-bit texture is the
  * format a photograph uses and nothing anywhere refuses to sample it.
  */
-export const FACADE_TEXELS = 8;
+export const FACADE_TEXELS = 9;
 export const FACADE_FLOATS = FACADE_TEXELS * 4;
 /** RGBA8 texels per building: two bytes per value. */
 export const FACADE_BYTE_TEXELS = FACADE_FLOATS / 2;
@@ -689,7 +727,7 @@ export function facadeFor(
     coreSlot,
     group,
     seed: (seed % 4096) / 4096,
-    ...surfaceFor(arch, family, house, seed, swatch?.m ?? null, choice?.tags?.roofColour),
+    ...surfaceFor(arch, family, house, seed, swatch?.m ?? null, choice?.tags?.roofColour, choice?.tags?.roofMaterial, heightM),
   };
 }
 
@@ -710,14 +748,25 @@ function surfaceFor(
   seed: number,
   wall: Mat | null,
   roofTag: [number, number, number] | undefined,
+  roofMat: string | undefined,
+  heightM: number,
 ): Pick<FacadeParams, "archetype" | "wallLayer" | "baseLayer" | "trim" | "frameColour" | "roofColour" |
-  "glassTint" | "roofCover" | "windowStyle" | "mullions" | "interior" | "age" | "frameM" | "corniceM" | "sillM"> {
+  "glassTint" | "roofCover" | "pitchCover" | "roofFeatures" | "roofHalfL" | "roofHalfW" | "windowStyle" | "mullions" |
+  "interior" | "age" | "frameM" | "corniceM" | "sillM"> {
   const jitter = (c: [number, number, number], amp: number, salt: number): [number, number, number] => {
     const k = 1 + amp * (h1(seed, salt) - 0.5);
     return [clamp01(c[0] * k), clamp01(c[1] * k), clamp01(c[2] * k)];
   };
+  const tag = roofMat ? ROOF_TAG[roofMat] : undefined;
+  // Roof features: a solar array by the survey's odds, skylights on low-rise
+  // homes (stair and light wells on row houses and walk-ups), and decks where
+  // the cover IS pavers.
+  const features = (solar: number, homes: boolean, low: boolean): number =>
+    (h1(seed, 0x78) < solar ? ROOF_SOLAR : 0) |
+    (homes && low && h1(seed, 0x79) < 0.55 ? ROOF_SKYLIGHTS : 0);
   if (arch) {
-    const roofCover = pick(arch.roofs, seed, 0x71);
+    const roofCover = tag?.flat ?? pick(arch.roofs, seed, 0x71);
+    const pitchCover = tag?.pitch ?? pick(arch.pitched ?? [PitchCover.Asphalt, PitchCover.Asphalt, PitchCover.AsphaltBrown], seed, 0x7a);
     const wallLayer = wall ?? arch.palette[0].m;
     // The plinth: granite under an office, limestone under a masonry block, and
     // the wall itself carried down on anything timber or rendered.
@@ -733,6 +782,11 @@ function surfaceFor(
       roofColour: roofTag ?? jitter(ROOF_COLOUR[roofCover], 0.3, 0x75),
       glassTint: arch.glass,
       roofCover,
+      pitchCover,
+      roofFeatures: features(arch.solar ?? 0, arch.interior === Interior.Apartment, heightM < 30)
+        | (roofCover === RoofCover.Pavers ? ROOF_DECK : 0),
+      roofHalfL: 0,
+      roofHalfW: 0,
       windowStyle: arch.window,
       mullions: arch.mullions,
       interior: arch.interior,
@@ -746,8 +800,9 @@ function surfaceFor(
   // A house in the brick or render family is clad in lap siding: the shader
   // already drew it as siding from the house flag, and the scan follows.
   const wallLayer = house && (family === FacadeFamily.Brick || family === FacadeFamily.Stucco) ? Mat.Siding : fs.wall;
-  const roofCover = house ? RoofCover.Tar
-    : pick([RoofCover.Tar, RoofCover.Gravel, RoofCover.BlackMembrane, RoofCover.WhiteMembrane], seed, 0x71);
+  const roofCover = tag?.flat ?? (house ? RoofCover.Tar
+    : pick([RoofCover.Tar, RoofCover.Gravel, RoofCover.BlackMembrane, RoofCover.WhiteMembrane, RoofCover.Silver], seed, 0x71));
+  const pitchCover = tag?.pitch ?? pick([PitchCover.Asphalt, PitchCover.Asphalt, PitchCover.AsphaltBrown, PitchCover.ClayTile, PitchCover.Slate], seed, 0x7a);
   return {
     archetype: -1,
     wallLayer,
@@ -757,6 +812,10 @@ function surfaceFor(
     roofColour: roofTag ?? jitter(ROOF_COLOUR[roofCover], 0.3, 0x75),
     glassTint: [0.02, 0.03, 0.04],
     roofCover,
+    pitchCover,
+    roofFeatures: features(house ? 0.06 : 0.04, fs.interior === Interior.Apartment, heightM < 30),
+    roofHalfL: 0,
+    roofHalfW: 0,
     windowStyle: house ? WindowStyle.Sash : fs.window,
     mullions: family === FacadeFamily.Concrete ? 1 : 1,
     interior: house ? Interior.Apartment : fs.interior,
@@ -902,6 +961,8 @@ export function packFacade(p: FacadeParams, out: Float32Array, i: number): void 
   // so a debug view can colour by type without a second table. +1 so the
   // five-family path's -1 survives an unsigned encoding.
   out[o++] = p.corniceM;  out[o++] = p.sillM;   out[o++] = p.frameM;    out[o++] = p.archetype + 1;
+  // The ninth: the roof's own half extents, for laying features inside it.
+  out[o++] = Math.min(31, p.roofHalfL); out[o++] = Math.min(31, p.roofHalfW); out[o++] = 0; out[o++] = 0;
 }
 
 /** sqrt-encode a linear 0..1 colour channel into a byte. See FACADE_RAW_TEXELS. */
@@ -918,12 +979,13 @@ export function packFacadeRaw(p: FacadeParams, out: Uint8Array, off: number): vo
   };
   c(p.trim, 0);        out[off + 3] = p.wallLayer;
   c(p.frameColour, 4); out[off + 7] = p.baseLayer;
-  c(p.roofColour, 8);  out[off + 11] = p.roofCover;
+  // Flat cover in the low nibble, pitched cover in the high one.
+  c(p.roofColour, 8);  out[off + 11] = p.roofCover | (p.pitchCover << 4);
   c(p.glassTint, 12);  out[off + 15] = p.windowStyle;
   out[off + 16] = p.mullions;
   out[off + 17] = p.interior;
   out[off + 18] = Math.round(clamp01(p.age) * 255);
-  out[off + 19] = 0;
+  out[off + 19] = p.roofFeatures;
 }
 
 // --- the GLSL half ----------------------------------------------------------
@@ -978,6 +1040,10 @@ struct Facade {
   float wallLayer;
   float baseLayer;
   float roofCover;
+  float pitchCover;
+  float roofFeatures;
+  float roofHalfL;
+  float roofHalfW;
   float windowStyle;
   float mullions;
   float interior;
@@ -1023,6 +1089,7 @@ Facade readFacade(float bidx) {
   vec4 f = facadeTexel(bidx, 5.0);
   vec4 g = facadeTexel(bidx, 6.0);
   vec4 h = facadeTexel(bidx, 7.0);
+  vec4 i9 = facadeTexel(bidx, 8.0);
   vec4 r0 = facadeRaw(bidx, 0.0);
   vec4 r1 = facadeRaw(bidx, 1.0);
   vec4 r2 = facadeRaw(bidx, 2.0);
@@ -1041,9 +1108,11 @@ Facade readFacade(float bidx) {
   // sqrt-encoded colours: square on the way out.
   vec3 t0 = r0.rgb / 255.0; p.trim = t0 * t0;          p.wallLayer = r0.a;
   vec3 t1 = r1.rgb / 255.0; p.frameColour = t1 * t1;   p.baseLayer = r1.a;
-  vec3 t2 = r2.rgb / 255.0; p.roofColour = t2 * t2;    p.roofCover = r2.a;
+  vec3 t2 = r2.rgb / 255.0; p.roofColour = t2 * t2;
+  p.pitchCover = floor(r2.a / 16.0);  p.roofCover = r2.a - p.pitchCover * 16.0;
+  p.roofHalfL = i9.x; p.roofHalfW = i9.y;
   vec3 t3 = r3.rgb / 255.0; p.glassTint = t3 * t3;     p.windowStyle = r3.a;
-  p.mullions = r4.x;  p.interior = r4.y;  p.age = r4.z / 255.0;
+  p.mullions = r4.x;  p.interior = r4.y;  p.age = r4.z / 255.0;  p.roofFeatures = r4.w;
 
   // A DEAD TABLE MUST DEGRADE, NOT BREAK.
   //
@@ -1087,7 +1156,8 @@ Facade readFacade(float bidx) {
     p.corniceM = 0.0; p.sillM = 0.0; p.frameM = 0.06; p.archetype = -1.0;
     p.trim = vec3(0.4); p.frameColour = vec3(0.3); p.roofColour = vec3(0.1);
     p.glassTint = vec3(0.03); p.wallLayer = fb2 > 0.82 ? 12.0 : 0.0; p.baseLayer = 13.0;
-    p.roofCover = 0.0; p.windowStyle = fb2 > 0.82 ? 3.0 : 0.0; p.mullions = 1.0;
+    p.roofCover = 0.0; p.pitchCover = 0.0; p.roofFeatures = 0.0; p.roofHalfL = 0.0; p.roofHalfW = 0.0;
+    p.windowStyle = fb2 > 0.82 ? 3.0 : 0.0; p.mullions = 1.0;
     p.interior = 1.0; p.age = 0.3;
   }
 

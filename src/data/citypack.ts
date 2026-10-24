@@ -56,6 +56,8 @@ export interface BuildingTags {
   colour?: [number, number, number];
   /** roof:colour, linear rgb. */
   roofColour?: [number, number, number];
+  /** roof:material, lower case: tar_paper, gravel, concrete, metal, copper, roof_tiles, slate, grass... */
+  roofMaterial?: string;
   /** start_date's year. */
   year?: number;
   /** building:levels. */

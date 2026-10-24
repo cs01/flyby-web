@@ -219,6 +219,8 @@ export function materialTags(tags: Record<string, string>): BuildingTags | null 
   if (colour) out.colour = colour;
   const roofColour = parseOsmColour(tags["roof:colour"]);
   if (roofColour) out.roofColour = roofColour;
+  const roofMaterial = (tags["roof:material"] ?? "").trim().toLowerCase();
+  if (roofMaterial) out.roofMaterial = roofMaterial;
   const year = /(\d{4})/.exec(tags["start_date"] ?? tags["construction_date"] ?? "");
   if (year) {
     const y = Number(year[1]);

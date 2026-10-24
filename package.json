@@ -44,7 +44,8 @@
     "water": "bun tools/verify-water.ts",
     "glass": "bun tools/verify-glass.ts",
     "bounce": "bun tools/verify-street.ts",
-    "ground": "bun tools/verify-ground.ts"
+    "ground": "bun tools/verify-ground.ts",
+    "buildings": "bun tools/verify-buildings.ts"
   },
   "dependencies": {
     "three": "^0.180.0"

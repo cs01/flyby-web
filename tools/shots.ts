@@ -336,6 +336,26 @@ export const POSES: Pose[] = [
     what: "Midtown Manhattan at night from over Chelsea",
   },
   {
+    // STRAIGHT DOWN ON CHELSEA, from 420 m. From altitude Manhattan is mostly
+    // roofs, and the owner's report was that they all looked identical. This
+    // is the frame tools/verify-buildings.ts measures inter-roof variety on.
+    name: "manhattan-topdown",
+    city: "manhattan",
+    lat: 40.7425, lon: -73.9985, altM: 420, hdgDeg: 29, pitchDeg: -85,
+    t: D("2025-06-21T15:30:00Z"), // 11:30 EDT
+    wx: CLEAR,
+    what: "Chelsea roofs from straight above",
+  },
+  {
+    // The same over Pacific Heights: row houses, flats, the odd pitched roof.
+    name: "sf-topdown",
+    city: "sf",
+    lat: 37.7905, lon: -122.4320, altM: 520, hdgDeg: 0, pitchDeg: -85,
+    t: D("2025-06-21T18:30:00Z"), // 11:30 PDT
+    wx: CLEAR,
+    what: "Pacific Heights roofs from straight above",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is
@@ -504,11 +524,17 @@ export const POSES: Pose[] = [
 
 /** Extra query parameters appended to every pose, e.g. `--query terrainDebug=3`. */
 let extraQuery = "";
+/**
+ * `--nudge <m>` moves every camera this many metres east. Two frames a fraction
+ * of a metre apart differ only where the image is not band-limited, which is
+ * what shimmer IS; tools/verify-buildings.ts measures that difference.
+ */
+let nudgeM = 0;
 
 function url(base: string, p: Pose): string {
   const q = new URLSearchParams({
     ...(p.at ? { at: p.at } : { city: p.city }),
-    cam: `${p.lat},${p.lon},${p.altM},${p.hdgDeg},${p.pitchDeg}`,
+    cam: `${p.lat},${p.lon + nudgeM / (111320 * Math.cos((p.lat * Math.PI) / 180))},${p.altM},${p.hdgDeg},${p.pitchDeg}`,
     t: String(p.t),
     wx: p.wx,
     scale: "1",
@@ -647,6 +673,7 @@ async function main(): Promise<void> {
   const profileDir = arg("profile", "/tmp/flyby-shots-profile")!;
   const repeat = has("repeat");
   extraQuery = arg("query", "") ?? "";
+  nudgeM = Number(arg("nudge", "0"));
 
   mkdirSync(outDir, { recursive: true });
   const poses = only ? POSES.filter((p) => only.split(",").includes(p.name)) : POSES;

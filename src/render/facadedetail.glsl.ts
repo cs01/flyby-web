@@ -24,6 +24,10 @@ uniform vec3 uMatMean[${MAT_COUNT}];
 uniform float uMatReady;
 // 1 on the reduced tier: one tiling sample instead of up to three.
 uniform float uMatCheap;
+// ?nomip=1: sample every scan at its full resolution whatever the distance.
+// The aliasing probe for tools/verify-buildings.ts: a brick course point-
+// sampled from 400 m is a moire, and the gate must see it.
+uniform float uMatNoMip;
 
 const float MAT_CONTRAST[${MAT_COUNT}] = float[${MAT_COUNT}](${CONTRAST});
 
@@ -89,7 +93,7 @@ MatSample sampleMat(float layer, vec2 posM) {
   // Image rows run down and walls run up, so y is flipped: the scan's own
   // "up" (OpenGL normal convention) is then the wall's up.
   vec2 uv = vec2(posM.x * info.x, -posM.y * info.y);
-  vec2 dx = dFdx(uv), dy = dFdy(uv);
+  vec2 dx = dFdx(uv) * (1.0 - uMatNoMip), dy = dFdy(uv) * (1.0 - uMatNoMip);
   vec3 a = vec3(0.0);
   vec4 nr = vec4(0.0);
   float wsq = 1.0;

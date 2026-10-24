@@ -675,7 +675,16 @@ let cached: Budget | null = null;
  * classification at all.
  */
 export function deviceBudget(): Budget {
-  if (cached === null) cached = classifyDevice(describeDevice());
+  if (cached === null) {
+    // `?tier=reduced` in a dev build: lets the screenshot harness measure the
+    // phone path's frame time and pixels on a desktop. Stripped from a
+    // production build with the rest of import.meta.env.DEV.
+    const forced = import.meta.env?.DEV && typeof location !== "undefined"
+      ? new URLSearchParams(location.search).get("tier") : null;
+    cached = forced === "reduced" || forced === "full"
+      ? budgetForTier(forced, describeDevice())
+      : classifyDevice(describeDevice());
+  }
   return cached;
 }
 

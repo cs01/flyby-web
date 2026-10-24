@@ -50,7 +50,7 @@ for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
   // faces of every plant box are new windings, they are exactly the kind of
   // thing that comes out inside-out, and backface culling would hide it from
   // anyone not standing in precisely the wrong place.
-  const extras: RoofExtras = { parapet: true, boxes: 3, overrun: true };
+  const extras: RoofExtras = { parapet: true, boxes: 3, overrun: true, tank: true };
   for (const [i, b] of pack.buildings.slice(0, 3000).entries()) {
     addBuilding(s, b, 0, i, extras, facadeFor(b.kind, b.topM - b.baseM, i));
   }
