@@ -62,8 +62,9 @@ import type { StreetLampUniforms } from "./render/streetlamps";
 import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { WaterHistory } from "./render/waterssr";
-import { Foliage, TREE_LOD_TRIANGLES } from "./render/trees";
+import { Foliage, SHRUB_FOLIAGE, TREE_LOD_TRIANGLES } from "./render/trees";
 import { buildLandMaskRGBA, waterLevelM } from "./data/landmask";
+import { buildShrubMaskRGBA, placeShrubs, shrubFieldExtentM, type ShrubField } from "./data/shrubs";
 import { CompositeRoadIndex, FootprintMask, RoadIndex, treeRoadClearanceM } from "./data/trees";
 import { LiveVegetation } from "./data/osmveg";
 import { bakedCityCoverage, LiveWorld, LIVE_EXTENT_M } from "./app/live";
@@ -491,6 +492,12 @@ async function main() {
   // The canopy. Declared here so setAo below can reach it; it cannot be BUILT
   // until the landcover pack has arrived, which happens after the road pack.
   let foliage: Foliage | null = null;
+  // The understorey: shrub mounds from the shrubland class, drawn by the same
+  // instanced canopy code with its own lattice and ranges.
+  let shrubs: Foliage | null = null;
+  // Both of the above once built, for the frame loop to walk without
+  // allocating a list per frame.
+  const canopies: Foliage[] = [];
 
   // The street: lamps, moving traffic and parked cars. Declared here for the
   // same reason the canopy is -- setAo below has to reach them -- and built
@@ -524,6 +531,7 @@ async function main() {
     for (const u of buildingUniformSets) ao.apply(u, strength);
     for (const u of roadUniformSets) ao.apply(u, strength);
     if (foliage) ao.apply(foliage.uniforms, strength);
+    if (shrubs) ao.apply(shrubs.uniforms, strength);
     if (lamps) ao.apply(lamps.uniforms, strength);
     if (traffic) ao.apply(traffic.uniforms, strength);
     if (parkedCars) ao.apply(parkedCars.uniforms, strength);
@@ -797,6 +805,7 @@ async function main() {
     const indexMs = performance.now() - t0;
     foliage.update(0, 0);
     scene.add(foliage.group);
+    canopies.push(foliage);
     const fs = foliage.stats;
     console.log(
       `[flyby] trees: ${fs.count} instances in ${fs.tiles} tiles ` +
@@ -806,6 +815,42 @@ async function main() {
       `${pack ? "footprints excluded" : "no building pack"}, ` +
       `${indexMs.toFixed(0)} ms index + ${fs.rebuildMs.toFixed(0)} ms place` +
       `${fs.clipped ? " (CLIPPED to the instance budget)" : ""}`,
+    );
+  }
+
+  // Shrubs, from the shrubland class the GPU mask folds into "herbaceous". The
+  // far level is handed over too: shrubland is mostly OUTSIDE cities, and the
+  // Marin headlands the Golden Gate pose looks at are past the near level's
+  // 6 km. Off with `?noshrubs`, which is how their frame cost is measured.
+  if (landPack && !new URLSearchParams(location.search).has("noshrubs")) {
+    const t0 = performance.now();
+    const nearL = landPack.levels[0];
+    const farL = landPack.levels[1] ?? null;
+    const field: ShrubField = {
+      near: { rgba: buildShrubMaskRGBA(nearL), n: nearL.n, extentM: nearL.extentM },
+      far: farL ? { rgba: buildShrubMaskRGBA(farL, false), n: farL.n, extentM: farL.extentM } : null,
+      heightAt: terrain.heightAt,
+      roads: treeRoads,
+      footprints: treeFootprints,
+    };
+    shrubs = new Foliage(
+      {
+        extentM: shrubFieldExtentM(field),
+        place: (x0, z0, x1, z1) => placeShrubs(field, x0, z0, x1, z1),
+      },
+      sunShadow.uniforms,
+      budget.tier === "reduced",
+      SHRUB_FOLIAGE,
+    );
+    shrubs.update(0, 0);
+    scene.add(shrubs.group);
+    canopies.push(shrubs);
+    const ss = shrubs.stats;
+    console.log(
+      `[flyby] shrubs: ${ss.count} instances (lod ${ss.lodCounts.join("/")}), ` +
+      `${(ss.triangles / 1000).toFixed(0)}k triangles, ` +
+      `${(performance.now() - t0).toFixed(0)} ms` +
+      `${ss.clipped ? " (CLIPPED to the instance budget)" : ""}`,
     );
   }
 
@@ -841,6 +886,7 @@ async function main() {
       );
       foliage.update(0, 0);
       scene.add(foliage.group);
+      canopies.push(foliage);
     }
     const endpoint = new URLSearchParams(location.search).get("overpass");
     live = new LiveWorld({
@@ -1647,12 +1693,12 @@ async function main() {
       u.uniforms.uClassTraffic.value.set(classTraffic);
     }
 
-    if (foliage) {
-      // Rebuilt only when the camera has moved far enough for a tree's level of
-      // detail to be stale; see render/trees.ts.
-      foliage.update(camera.position.x, camera.position.z);
-      foliage.setWind(wx.windSpeed, wx.windDir);
-      const f = foliage.uniforms;
+    for (const fol of canopies) {
+      // Rebuilt only when the camera has moved far enough for an instance's
+      // level of detail to be stale; see render/trees.ts.
+      fol.update(camera.position.x, camera.position.z);
+      fol.setWind(wx.windSpeed, wx.windDir);
+      const f = fol.uniforms;
       // The animation clock, which `?shot` holds at zero: a canopy that swayed
       // on wall-clock phase would make two runs of the same URL differ.
       f.uTime.value = elapsed;
@@ -1710,6 +1756,7 @@ async function main() {
     // of that cost with the least to show for it.
     const shadowCasters = [
       ...(foliage ? [foliage.depthScene] : []),
+      ...(shrubs ? [shrubs.depthScene] : []),
       ...(traffic ? [traffic.depthScene] : []),
       ...(parkedCars ? [parkedCars.depthScene] : []),
     ];
@@ -1940,6 +1987,7 @@ async function main() {
         return (
           (buildings ? buildings.stats.triangles : 0) +
           (foliage ? foliage.stats.triangles : 0) +
+          (shrubs ? shrubs.stats.triangles : 0) +
           (live ? live.stats.triangles : 0) +
           (lamps ? lamps.stats.triangles : 0) +
           (traffic ? traffic.stats.triangles : 0) +
@@ -1960,6 +2008,7 @@ async function main() {
           : null;
       },
       get trees() { return foliage ? foliage.stats.count : 0; },
+      get shrubs() { return shrubs ? shrubs.stats.count : 0; },
       /** Instances at each level of detail, and their triangles. The frame
        *  budget for the canopy is decided here, so the harness can see it. */
       get treeLods() { return foliage ? foliage.stats.lodCounts : []; },

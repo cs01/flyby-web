@@ -512,6 +512,7 @@ interface Shot {
   frameMs: { mean: number; p99: number };
   triangles: number;
   trees: number;
+  shrubs: number;
   treeLods: number[];
   treeTriangles: number;
   lod: number;
@@ -585,6 +586,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const frameMs = await cdp.eval<{ mean: number; p99: number }>("window.flybyShot.frameMs()");
   const triangles = await cdp.eval<number>("window.flybyShot.triangles");
   const trees = await cdp.eval<number>("window.flybyShot.trees ?? 0");
+  const shrubs = await cdp.eval<number>("window.flybyShot.shrubs ?? 0");
   const treeLods = await cdp.eval<number[]>("window.flybyShot.treeLods ?? []");
   const treeTriangles = await cdp.eval<number>("window.flybyShot.treeTriangles ?? 0");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
@@ -609,7 +611,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   writeFileSync(file, png);
 
   return {
-    pose: p, file, frameMs, triangles, trees, treeLods, treeTriangles, lod,
+    pose: p, file, frameMs, triangles, trees, shrubs, treeLods, treeTriangles, lod,
     pavementTriangles, lamps, lampsMeasured, cars, parkedCars, streetTriangles,
     streetClipped, drapeMoves, signature,
   };
@@ -697,6 +699,7 @@ async function main(): Promise<void> {
         `${(s.triangles / 1000).toFixed(0)}k tris  lod ${s.lod}  drape ${s.drapeMoves}  ` +
         `pave ${(s.pavementTriangles / 1000).toFixed(0)}k  ` +
         `trees ${s.trees} (${s.treeLods.join("/")}) ${(s.treeTriangles / 1000).toFixed(0)}k tris  ` +
+        `shrubs ${s.shrubs}  ` +
         `street ${s.lamps} lamps (${s.lampsMeasured} surveyed) ${s.cars} moving ` +
         `${s.parkedCars} parked ${(s.streetTriangles / 1000).toFixed(0)}k tris` +
         (s.streetClipped ? `  CLIPPED ${s.streetClipped}` : ""),
@@ -732,6 +735,7 @@ async function main(): Promise<void> {
         frameMs: s.frameMs,
         triangles: s.triangles,
         trees: s.trees,
+        shrubs: s.shrubs,
         treeLods: s.treeLods,
         treeTriangles: s.treeTriangles,
         lod: s.lod,

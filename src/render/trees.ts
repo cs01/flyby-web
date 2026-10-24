@@ -62,6 +62,7 @@ import {
   type TreeField,
   type TreeInstance,
 } from "../data/trees";
+import { SHRUB_SPACING_M } from "../data/shrubs";
 
 /** Where the field ends, in metres from the camera. */
 const FIELD_RADIUS_M = 2200;
@@ -243,7 +244,12 @@ const DEPTH_FRAG = /* glsl */ `precision highp float;
 out vec4 c;
 void main() { c = vec4(1.0); }`;
 
-const FRAG = /* glsl */ `
+/**
+ * The beauty fragment shader for one field, with the field's leaf scale and
+ * tint baked in as literals: each field is its own material anyway, and a
+ * literal lets the compiler fold them away for the trees, where both are 1.
+ */
+const fragFor = (o: FoliageOptions): string => /* glsl */ `
 precision highp float;
 in vec3 vNormal;
 in vec3 vWorld;
@@ -267,6 +273,13 @@ uniform float uSunSurface;
 uniform vec3  uMoonDir;
 uniform vec3  uMoonLight;
 uniform float uNight;
+// Leaf-cluster frequency multiplier: 1 for a tree, higher for a shrub, whose
+// whole crown is the size of one of a tree's leaf clusters.
+const float LEAF_SCALE = ${o.leafScale.toFixed(4)};
+// Multiplies the leaf colour: 1 for a tree. Chaparral is a dusty grey olive,
+// darker than the sunlit grass between it, and on the tree's ramp it came out
+// a lighter, yellower green than the ground: sprinkles on the hill.
+const vec3 LEAF_TINT = vec3(${o.leafTint.map((v) => v.toFixed(4)).join(", ")});
 uniform vec3  uNightGlow;
 
 /** How far the leaf-cluster noise is allowed to tilt the shading normal. */
@@ -330,11 +343,11 @@ void main() {
   // and the detail would only alias. There is no temporal antialiasing to hide
   // shimmer, so anything at this scale has to converge with distance rather
   // than be filtered later.
-  float near = smoothstep(430.0, 140.0, vViewDist);
+  float near = smoothstep(430.0, 140.0, vViewDist * LEAF_SCALE);
   float fine = 0.5;
   if (crown > 0.5 && near > 0.0) {
-    vec4 a = vnoise3d(vWorld * 0.62);
-    vec4 b = vnoise3d(vWorld * 2.35);
+    vec4 a = vnoise3d(vWorld * (0.62 * LEAF_SCALE));
+    vec4 b = vnoise3d(vWorld * (2.35 * LEAF_SCALE));
     fine = a.x * 0.62 + b.x * 0.38;
     // Leaf clusters as a NORMAL perturbation rather than as a colour. Foliage
     // is thousands of small surfaces at random orientations; a crown with one
@@ -371,7 +384,7 @@ void main() {
   // pulled toward olive.
   leaf = mix(leaf, vec3(0.105, 0.086, 0.026), smoothstep(0.93, 1.0, vTint));
   vec3 bark = vec3(0.038, 0.028, 0.020) * (0.7 + 0.6 * shade);
-  vec3 albedo = mix(bark, leaf, crown);
+  vec3 albedo = mix(bark, leaf * LEAF_TINT, crown);
 
   // Depth into the canopy, as occlusion. A crown's underside sees almost no
   // sky and this is far cheaper than asking the screen-space pass to resolve
@@ -441,6 +454,63 @@ export interface FoliageStats {
   clipped: boolean;
 }
 
+/**
+ * The numbers that make a field a canopy or an understorey. Everything else --
+ * the mesh, the shaders, the wind, the tiling, the LOD walk -- is shared, so a
+ * shrub sways, shades and fades exactly as a tree does.
+ */
+export interface FoliageOptions {
+  /** Where the field ends, metres from the camera. */
+  radiusM: number;
+  mobileRadiusM: number;
+  /** Where instances stop being drawn into the shadow cascades. */
+  shadowFadeM: number;
+  /** Lattice pitch of the placement, for the instance budget. */
+  spacingM: number;
+  /** Far edge of each level of detail, nearest first, before the mobile scale. */
+  lodFarM: readonly number[];
+  /** Leaf-cluster frequency multiplier in the fragment shader. */
+  leafScale: number;
+  /** Leaf colour multiplier, linear RGB. */
+  leafTint: readonly [number, number, number];
+}
+
+export const TREE_FOLIAGE: FoliageOptions = {
+  radiusM: FIELD_RADIUS_M,
+  mobileRadiusM: MOBILE_FIELD_RADIUS_M,
+  shadowFadeM: SHADOW_FADE_M,
+  spacingM: TREE_SPACING_M,
+  lodFarM: TREE_LODS.map((l) => l.farM),
+  leafScale: 1,
+  leafTint: [1, 1, 1],
+};
+
+/**
+ * The understorey. A shrub is a couple of metres across, so it is gone into
+ * the ground texture well inside a kilometre: past 700 m one is under two
+ * pixels, and the instance count grows with the square of the radius. Shadows
+ * stop at 260 m, where the inner cascade's texel is already the size of the
+ * shrub. The levels are pulled in by the same ratio as the radius.
+ */
+export const SHRUB_FOLIAGE: FoliageOptions = {
+  radiusM: 700,
+  mobileRadiusM: 350,
+  shadowFadeM: 260,
+  spacingM: SHRUB_SPACING_M,
+  lodFarM: [45, 140, Infinity],
+  // A 1.5 m shrub at the tree's 1.6 m cluster period is one smooth bulge,
+  // which is the cushion look; at 3x it has a dozen clusters across it.
+  leafScale: 3,
+  leafTint: [0.72, 0.70, 0.86],
+};
+
+/** Anything that can plant a tile; a TreeField plants trees. */
+export interface FoliageSource {
+  /** Half-width of the data the placement reads; nothing is planted past it. */
+  extentM: number;
+  place(x0: number, z0: number, x1: number, z1: number): TreeInstance[];
+}
+
 const _key = (tx: number, tz: number): string => `${tx},${tz}`;
 const fract = (x: number): number => x - Math.floor(x);
 
@@ -477,7 +547,8 @@ export class Foliage {
     clipped: false,
   };
 
-  private readonly field: TreeField;
+  private readonly source: FoliageSource;
+  private readonly spacingM: number;
   private readonly buckets: Bucket[] = [];
   private readonly lodFarM: number[];
   private readonly tiles = new Map<string, TreeInstance[]>();
@@ -490,16 +561,24 @@ export class Foliage {
   private packedX = 0;
   private packedZ = 0;
 
-  constructor(field: TreeField, shadow: SunShadowUniforms, mobile: boolean) {
-    this.field = field;
-    this.radiusM = mobile ? MOBILE_FIELD_RADIUS_M : FIELD_RADIUS_M;
+  constructor(
+    field: TreeField | FoliageSource,
+    shadow: SunShadowUniforms,
+    mobile: boolean,
+    opts: FoliageOptions = TREE_FOLIAGE,
+  ) {
+    this.source = "place" in field
+      ? field
+      : { extentM: field.mask.extentM, place: (x0, z0, x1, z1) => placeTrees(field, x0, z0, x1, z1) };
+    this.spacingM = opts.spacingM;
+    this.radiusM = mobile ? opts.mobileRadiusM : opts.radiusM;
     // Never plant outside the mask: sampleMaskBilinear clamps to the edge
     // texel, so a field that ran past the pack would extrude the coverage of
     // its border all the way to the horizon.
-    this.extentM = field.mask.extentM;
+    this.extentM = this.source.extentM;
 
     const lodScale = mobile ? MOBILE_LOD_SCALE : 1;
-    this.lodFarM = TREE_LODS.map((l) => Math.min(l.farM * lodScale, this.radiusM));
+    this.lodFarM = opts.lodFarM.map((f) => Math.min(f * lodScale, this.radiusM));
 
     this.uniforms = {
       ...shadow,
@@ -525,7 +604,7 @@ export class Foliage {
 
     const beauty = new THREE.RawShaderMaterial({
       vertexShader: VERT,
-      fragmentShader: FRAG,
+      fragmentShader: fragFor(opts),
       uniforms: this.uniforms,
       glslVersion: THREE.GLSL3,
       side: THREE.FrontSide,
@@ -541,7 +620,7 @@ export class Foliage {
     // the picture changes.
     const depthUniforms = {
       ...this.uniforms,
-      uFade: { value: new THREE.Vector2(SHADOW_FADE_M * 0.8, SHADOW_FADE_M) },
+      uFade: { value: new THREE.Vector2(opts.shadowFadeM * 0.8, opts.shadowFadeM) },
     };
     const depthMat = new THREE.RawShaderMaterial({
       vertexShader: DEPTH_VERT,
@@ -601,7 +680,7 @@ export class Foliage {
     const inner = lod === 0 ? 0 : this.lodFarM[lod - 1];
     const outer = Math.min(this.lodFarM[lod], this.radiusM);
     const area = Math.PI * Math.max(0, outer * outer - inner * inner);
-    return Math.max(64, Math.ceil((area / (TREE_SPACING_M * TREE_SPACING_M)) * CAPACITY_HEADROOM));
+    return Math.max(64, Math.ceil((area / (this.spacingM * this.spacingM)) * CAPACITY_HEADROOM));
   }
 
   /**
@@ -666,7 +745,7 @@ export class Foliage {
     for (const w of wanted) {
       let tile = this.tiles.get(w.key);
       if (!tile) {
-        tile = placeTrees(this.field, w.x, w.z, w.x + TREE_TILE_M, w.z + TREE_TILE_M);
+        tile = this.source.place(w.x, w.z, w.x + TREE_TILE_M, w.z + TREE_TILE_M);
         this.tiles.set(w.key, tile);
       }
       keep.add(w.key);
