@@ -1132,6 +1132,27 @@ float facadeLit(Facade p, float col, float floorIdx, float heightFade) {
   return step(fHash(p.seed + col * 0.131, 91.1, floorIdx), p.pCell);
 }
 
+// The same rule with the LAST gate averaged: whether this window's core
+// stripe, floor and tenancy are lit, times the chance its own coin comes up.
+// This is what a pixel that spans several windows of one tenancy should show,
+// and it is the middle level of the far field: a lit floor is a stripe long
+// after its windows are under a pixel. Its mean over the facade is exactly
+// facadeMeanOccupancy, because only the per-cell coin was replaced by its mean.
+float facadeLitBlock(Facade p, float col, float floorIdx, float heightFade) {
+  if (p.house < 0.5) {
+    float coreIdx = floor(col / p.coreW);
+    if (abs(mod(coreIdx, p.corePeriod) - p.coreSlot) < 0.5) {
+      return step(fHash(p.seed, 7.13, coreIdx), p.pCore);
+    }
+  }
+  if (fHash(p.seed, 51.7, floorIdx) > p.pFloor * heightFade) return 0.0;
+  float tb = floor(col / p.tenantW);
+  float th = floor(floorIdx / p.tenantH);
+  float hourF = facadeHourFactor(p.group);
+  if (fHash(p.seed + tb * 0.977, 71.4, th) > p.pTenant * hourF) return 0.0;
+  return p.pCell;
+}
+
 // The closed form of the same thing, for the far field. See meanOccupancy().
 float facadeMeanOccupancy(Facade p, float heightFade) {
   float coreFrac = p.house > 0.5 ? 0.0 : 1.0 / p.corePeriod;
