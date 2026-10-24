@@ -67,6 +67,8 @@ export interface Pose {
    * capture an empty field and report it as the live path working.
    */
   waitFor?: { expr: string; timeoutMs: number; why: string };
+  /** Extra query parameters for this pose alone, e.g. a traffic fixture. */
+  query?: string;
 }
 
 const D = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
@@ -89,6 +91,19 @@ export const POSES: Pose[] = [
     t: D("2025-06-21T15:00:00Z"), // 11:00 EDT: high sun, one wall lit one not
     wx: CLEAR,
     what: "Manhattan in the 7th Ave canyon, late morning",
+  },
+  {
+    name: "manhattan-hudson-traffic",
+    city: "manhattan",
+    // Over the Hudson off Midtown at 1,450 ft, the helicopter corridor, with
+    // a Bell 407 tour 90 m ahead and the skyline behind it. The traffic is
+    // test/fixtures/traffic-nyc.json (the live feed on 2026-10-24) replayed
+    // at its own timestamp, so the aircraft are as fixed as the buildings.
+    lat: 40.75862, lon: -74.01031, altM: 452, hdgDeg: 66, pitchDeg: -1,
+    t: D("2025-06-21T15:00:00Z"),
+    wx: CLEAR,
+    what: "Manhattan with live traffic replayed over the Hudson",
+    query: "traffic=traffic-nyc",
   },
   {
     name: "chicago-loop-night",
@@ -626,7 +641,7 @@ function url(base: string, p: Pose): string {
     // are left alone: they cannot change a pixel, and blocking them would be
     // one more way the harness stops resembling the app.
   });
-  return `${base}/?${q.toString()}${extraQuery ? "&" + extraQuery : ""}`;
+  return `${base}/?${q.toString()}${p.query ? "&" + p.query : ""}${extraQuery ? "&" + extraQuery : ""}`;
 }
 
 interface Shot {

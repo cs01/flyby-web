@@ -68,6 +68,10 @@ export class AirTrafficLayer {
     o.scene.add(this.render.group);
 
     if (this.available && fixture && fixture !== "live") {
+      // Frozen before the fetch lands, not after: in between, the first frame
+      // would otherwise poll the live feed and mix real aircraft into the
+      // replay.
+      this.frozenAt = 0;
       void fetch(`/test/fixtures/${encodeURIComponent(fixture)}.json`)
         .then((r) => r.json())
         .then((j) => {
@@ -137,6 +141,7 @@ export class AirTrafficLayer {
       this.tags.update(camera, [], () => ({ lat: 0, lon: 0 }));
       return;
     }
+    if (this.frozenAt === 0) return; // fixture still loading
     const now = this.frozenAt ?? Date.now();
     if (this.frozenAt === null && document.visibilityState === "visible" && now - this.lastPoll >= POLL_MS) {
       this.lastPoll = now;
