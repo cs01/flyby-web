@@ -374,6 +374,14 @@ export class AirTraffic {
       .catch(() => {});
   }
 
+  /** Wingspan in metres for what `t` is drawn as, for the spotting range. */
+  spanFor(t: Track): number {
+    const kind: Kind = t.info.cat.startsWith("C") ? "vehicle" : familyFor(t.info.type, t.info.cat);
+    const f = this.families.get(kind);
+    if (f && f !== "loading" && f !== "failed") return f.info.span;
+    return this.manifest?.[kind]?.span ?? (kind === "pa28" ? 10 : kind === "heli" ? 10.7 : kind === "cl60" ? 20 : 34);
+  }
+
   private grow(n: number): void {
     this.cap = n;
     this.dotPos = new Float32Array(n * 3);

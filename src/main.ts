@@ -102,6 +102,7 @@ import { Autopilot } from "./sim/autopilot";
 import { EasyStick } from "./sim/easystick";
 import { fetchNearby, searchNamedPlaces } from "./data/nearby";
 import { AirTrafficLayer } from "./app/airtraffic";
+import { SpotGame } from "./app/spotgame";
 import { AIRPORTS, airportById, spotPose } from "./data/airports";
 import { haversine } from "./geo";
 
@@ -1116,6 +1117,8 @@ async function main() {
   const layers = new Layers(ui);
   const airTraffic = new AirTrafficLayer({ scene, ui, model, origin, groundAt: terrain.heightAt, shotMode });
   const drawSize = new THREE.Vector2();
+  // Plane spotting over the live traffic; see app/spotgame.ts.
+  const spotGame = new SpotGame(ui, airTraffic, () => city.name);
 
   /**
    * Hover the drone beside the runway in use at an airport and watch.
@@ -1725,6 +1728,12 @@ async function main() {
 
     renderer.getDrawingBufferSize(drawSize);
     airTraffic.update(camera, drawSize.y, dt, light.night, layers.traffic, droneActive ? drone.position : carActive ? undefined : ac.position);
+    {
+      const me = carActive && car ? car.position : droneActive ? drone.position : ac.position;
+      const hdg = carActive && car ? car.headingDeg : droneActive ? drone.yawDeg : ac.headingDeg;
+      spotGame.update(camera, dt, { x: me.x, y: me.y, z: me.z, headingDeg: hdg }, layers.traffic);
+      minimap.setTraffic(layers.traffic ? spotGame.near : []);
+    }
 
     const camAlt = camera.position.y;
     sky.update(solar, wx, camAlt, elapsed);

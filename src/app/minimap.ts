@@ -36,6 +36,8 @@ export class Minimap {
   /** Footprint centroids, [x, z, halfSpan] triples, in world metres. */
   private buildings = new Float32Array(0);
   private places: PlaceRow[] = [];
+  /** Live aircraft near enough for this map's 1.4 km, and the spotting target. */
+  private traffic: { x: number; z: number; headingDeg: number; target: boolean }[] = [];
 
   private lastDraw = 0;
   private visible = true;
@@ -87,6 +89,10 @@ export class Minimap {
 
   setPlaces(rows: PlaceRow[]): void {
     this.places = rows;
+  }
+
+  setTraffic(t: { x: number; z: number; headingDeg: number; target: boolean }[]): void {
+    this.traffic = t;
   }
 
   setVisible(v: boolean): void {
@@ -153,6 +159,27 @@ export class Minimap {
       g.beginPath();
       g.arc(px, py, 3.2, 0, Math.PI * 2);
       g.fill();
+    }
+    // Live traffic close enough to be on this map: a chevron along its track.
+    for (const t of this.traffic) {
+      const dx = t.x - acX;
+      const dz = t.z - acZ;
+      if (Math.hypot(dx, dz) > RANGE_M) continue;
+      const px = c + (dx * cos - dz * sin) * scale;
+      const py = c + (dx * sin + dz * cos) * scale;
+      const a = ((t.headingDeg - headingDeg) * Math.PI) / 180;
+      g.save();
+      g.translate(px, py);
+      g.rotate(a);
+      g.fillStyle = t.target ? "#ffd166" : "rgba(242, 246, 250, 0.9)";
+      g.beginPath();
+      g.moveTo(0, -7);
+      g.lineTo(5, 5);
+      g.lineTo(0, 2);
+      g.lineTo(-5, 5);
+      g.closePath();
+      g.fill();
+      g.restore();
     }
     g.restore();
 
