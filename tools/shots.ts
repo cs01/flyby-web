@@ -408,7 +408,8 @@ export const POSES: Pose[] = [
   {
     name: "bridge-chicago-dusable-near",
     city: "chicago",
-    lat: 41.88885, lon: -87.62077, altM: 80, hdgDeg: 270, pitchDeg: -14.0,
+    // Chicago's river is at 177 m above sea level, and altM is AMSL.
+    lat: 41.88885, lon: -87.62077, altM: 257, hdgDeg: 270, pitchDeg: -14.0,
     t: D("2025-06-21T14:00:00Z"), // 09:00 CDT: the morning sun straight down the river from the lake
     wx: CLEAR,
     what: "the DuSable (Michigan Avenue) bridge from 300 m east: bascule leaves and bridge houses",
@@ -416,7 +417,7 @@ export const POSES: Pose[] = [
   {
     name: "bridge-chicago-river-far",
     city: "chicago",
-    lat: 41.89266, lon: -87.60566, altM: 200, hdgDeg: 255, pitchDeg: -5.6,
+    lat: 41.88850, lon: -87.60010, altM: 330, hdgDeg: 270, pitchDeg: -4.5,
     t: D("2025-06-21T14:00:00Z"), // 09:00 CDT: the morning sun straight down the river from the lake
     wx: CLEAR,
     what: "the main stem of the Chicago River from 2 km: the run of bascule bridges",

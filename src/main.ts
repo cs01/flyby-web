@@ -35,6 +35,15 @@ import { Drone, DRONE_RADIUS } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { buildRoadGraph, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
+import {
+  densifyLandmarkWays,
+  landmarkDeckPin,
+  landmarkSuppresses,
+  landmarksFor,
+  promoteLandmarkApproaches,
+  snapLandmarkAxes,
+} from "./data/landmarks";
+import { Bridges } from "./render/bridges";
 import { DetailRing } from "./render/detailring";
 import { CityCollision } from "./sim/citycollision";
 import { Input } from "./sim/input";
@@ -405,6 +414,16 @@ async function main() {
   // JSON, already in the cache from the start screen.
   const bakedPromise = bakedCityCoverage();
   const pack = await loadCityPack(city.id);
+  // The landmark bridges, hand-built in render/bridgemesh.ts. The OSM parts
+  // they replace (the Golden Gate's tower legs are ten building:parts) go
+  // before anything sees the pack: the renderer, the collider and the tree
+  // mask all have to agree that the tower is the bridge's and not a building.
+  const landmarks = landmarksFor(city.id, origin);
+  if (pack && landmarks.length) {
+    const before = pack.buildings.length;
+    pack.buildings = pack.buildings.filter((b) => !landmarkSuppresses(landmarks, b));
+    console.log(`[flyby] landmarks: ${landmarks.length} bridges, ${before - pack.buildings.length} OSM parts replaced`);
+  }
   let buildings: Buildings | null = null;
   // The rooftops as a height field, so the aeroplane has a floor over a city
   // rather than only over the ground under it.
@@ -447,11 +466,23 @@ async function main() {
   // still flies, its streets are just whatever the satellite drape shows.
   const roadPack = await roadPromise;
   let roads: Roads | null = null;
+  let bridges: Bridges | null = null;
   // Where every bridge deck is, solved ONCE. Both the ribbon below and the car
   // further down read it, which is the whole reason it is not solved inside
   // either of them; see data/bridgedeck.ts.
+  // A landmark's own ways are reshaped first (see data/landmarks.ts): the
+  // stretch of Yerba Buena approach that is mapped as plain road is promoted
+  // to the bridge it is on, and every way on a landmark is densified so its
+  // deck can follow a vertical curve. Before the decks, the graph and the
+  // ribbon, so all three see the same ways.
+  if (roadPack && landmarks.length) {
+    snapLandmarkAxes(landmarks, roadPack.roads);
+    const promoted = promoteLandmarkApproaches(roadPack.roads, landmarks);
+    const added = densifyLandmarkWays(roadPack.roads, landmarks);
+    console.log(`[flyby] landmark ways: ${promoted} promoted to bridge, ${added} vertices added`);
+  }
   const bridgeDecks = roadPack
-    ? buildBridgeDecks(roadPack.roads, terrain.heightAt, roadPack.radiusM)
+    ? buildBridgeDecks(roadPack.roads, terrain.heightAt, roadPack.radiusM, landmarkDeckPin(landmarks))
     : null;
   if (bridgeDecks) {
     const bs = bridgeDecks.stats;
@@ -472,6 +503,15 @@ async function main() {
       `${rs.bridges} bridges, ${rs.triangles} triangles in ${rs.meshes} meshes, ` +
       `lod ${rs.lod}, ${rs.buildMs.toFixed(0)} ms`,
     );
+    if (landmarks.length) {
+      bridges = new Bridges(landmarks, roadPack, bridgeDecks!.deck, terrain.heightAt, sunShadow.uniforms);
+      scene.add(bridges.group);
+      const b = bridges.stats;
+      console.log(
+        `[flyby] bridges: ${b.bridges} landmarks, ${b.triangles} triangles ` +
+        `(${b.nearTriangles} near only), ${b.buildMs.toFixed(0)} ms`,
+      );
+    }
   } else {
     console.warn(`[flyby] no road pack for ${city.id}; run: bun tools/bake-roads.ts --city ${city.id}`);
   }
@@ -525,6 +565,8 @@ async function main() {
   // once; the one uniform only the cars have, the animation clock, is set
   // beside it.
   const streetUniformSets: StreetLampUniforms[] = [];
+  // The bridges light like street furniture and take the same per-frame feed.
+  if (bridges) streetUniformSets.push(bridges.uniforms);
 
   /**
    * Point every surface material at this frame's occlusion buffer.
@@ -542,6 +584,7 @@ async function main() {
     if (lamps) ao.apply(lamps.uniforms, strength);
     if (traffic) ao.apply(traffic.uniforms, strength);
     if (parkedCars) ao.apply(parkedCars.uniforms, strength);
+    if (bridges) ao.apply(bridges.uniforms, strength);
   };
 
   // Where the city actually is, for night lighting. A place with no pack gets
@@ -1223,6 +1266,7 @@ async function main() {
 
   const clock = new THREE.Clock();
   let elapsed = 0;
+  const bridgeBufferSize = new THREE.Vector2();
 
   // The traffic model's half of the clock, pushed into the car shaders below.
   //
@@ -1698,6 +1742,7 @@ async function main() {
     lamps?.update(camera.position.x, camera.position.z);
     traffic?.update(camera.position.x, camera.position.z);
     parkedCars?.update(camera.position.x, camera.position.z);
+    bridges?.update(camera, renderer.getDrawingBufferSize(bridgeBufferSize).y, elapsed);
     for (const u of streetUniformSets) {
       u.uCameraPos.value.copy(camera.position);
       u.uSH.value = skyProbe.sh;

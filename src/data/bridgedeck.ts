@@ -103,6 +103,25 @@ export interface Deck {
   y: Float32Array;
 }
 
+/**
+ * A surveyed deck height that outranks the solve, or null where there is none.
+ *
+ * WHY A SOLVE IS NOT ENOUGH FOR A LANDMARK. The solve interpolates between
+ * abutments, which is right for a flyover and wrong for a suspension bridge:
+ * the Golden Gate roadway is 75 m over the strait at the towers (227 m towers,
+ * 152 m above the road) whatever the ground at its ends, and the Bay Bridge
+ * west span came out at 12.5 to 15.7 m, a straight line from Yerba Buena's
+ * DEM shoulder to SoMa, with its lower deck crossing OVER its upper one. A pin
+ * is a joint whose height is known. Pinned joints are held exactly; everything
+ * else in the chain is still interpolated, now between the abutments AND the
+ * edge of the pinned run, so the approaches ramp from the surveyed span down to
+ * the street they actually meet.
+ *
+ * `road` is passed so a double-deck bridge can put its two levels at two
+ * heights over the same plan position.
+ */
+export type DeckPin = (x: number, z: number, road: Road) => number | null;
+
 export interface BridgeDeckStats {
   bridgeWays: number;
   chains: number;
@@ -118,6 +137,8 @@ export interface BridgeDeckStats {
   orphanChainsDraped: number;
   /** The longest single chain, in metres. */
   longestChainM: number;
+  /** Joints held at a surveyed landmark height. */
+  pinnedJoints: number;
   buildMs: number;
 }
 
@@ -210,6 +231,7 @@ export function buildBridgeDecks(
   roads: readonly Road[],
   groundAt: (x: number, z: number) => number,
   packRadiusM?: number,
+  pin?: DeckPin,
 ): BridgeDecks {
   const t0 = Date.now();
   const deck: (Deck | null)[] = new Array(roads.length).fill(null);
@@ -220,7 +242,7 @@ export function buildBridgeDecks(
   }
   const empty = (): BridgeDecks => ({
     deck,
-    stats: { bridgeWays: bridgeIdx.length, chains: 0, abutments: 0, orphanChains: 0, orphanChainsLifted: 0, orphanChainsDraped: 0, longestChainM: 0, buildMs: Date.now() - t0 },
+    stats: { bridgeWays: bridgeIdx.length, chains: 0, abutments: 0, orphanChains: 0, orphanChainsLifted: 0, orphanChainsDraped: 0, longestChainM: 0, pinnedJoints: 0, buildMs: Date.now() - t0 },
   });
   if (bridgeIdx.length === 0) return empty();
 
@@ -270,9 +292,16 @@ export function buildBridgeDecks(
   //
   // Its two ends, plus every interior vertex something else touches. Those are
   // the points where the deck is pinned, and between them it is a straight run.
+  //
+  // A PINNED vertex is a breakpoint too, and every vertex inside a landmark is
+  // pinned: that is what lets a ribbon follow a suspension deck's vertical
+  // curve instead of a chord between its two ends.
   const bpJoint: number[][] = [];
   const bpS: number[][] = [];
   const bpDrives: boolean[] = [];
+  /** Height of each pinned joint. The first way to claim a joint sets it, so
+   *  a joint shared by two ways is one height and cannot become a step. */
+  const pinY = new Map<number, number>();
   for (const i of bridgeIdx) {
     bpDrives.push(isDriveable(roads[i]));
     const p = roads[i].pts;
@@ -284,7 +313,15 @@ export function buildBridgeDecks(
       if (v > 0) arc += Math.hypot(p[v * 2] - p[(v - 1) * 2], p[v * 2 + 1] - p[(v - 1) * 2 + 1]);
       const id = joints.find(p[v * 2], p[v * 2 + 1], false);
       const isEnd = v === 0 || v === n - 1;
-      if (id >= 0 && (isEnd || shared[id])) {
+      let pinned = false;
+      if (id >= 0 && pin) {
+        const y = pin(p[v * 2], p[v * 2 + 1], roads[i]);
+        if (y !== null) {
+          pinned = true;
+          if (!pinY.has(id)) pinY.set(id, y);
+        }
+      }
+      if (id >= 0 && (isEnd || shared[id] || pinned)) {
         // A repeated joint at the same arc length carries no span.
         if (ss.length === 0 || arc - ss[ss.length - 1] > 1e-3) { js.push(id); ss.push(arc); }
       }
@@ -346,10 +383,19 @@ export function buildBridgeDecks(
     // A chain with any motor traffic on it is held up by roads only; a pure
     // footbridge may be held up by paths.
     const carries = nodes.some((n) => jointDrives.has(n));
-    const sources = carries
-      ? nodes.filter((n) => roadTouch[n])
-      : nodes.filter((n) => roadTouch[n] || pathTouch[n]);
-    abutments += sources.length;
+    const abut = carries
+      ? nodes.filter((n) => roadTouch[n] && !pinY.has(n))
+      : nodes.filter((n) => (roadTouch[n] || pathTouch[n]) && !pinY.has(n));
+    abutments += abut.length;
+    // Pinned joints are held where they are. Only the EDGE of a pinned run is a
+    // source for the rest of the chain: an interior pin is shadowed by the
+    // edge in front of it, and leaving it out keeps a 2.7 km span from adding a
+    // few hundred Dijkstra runs to the load.
+    const pinnedHere = nodes.filter((n) => pinY.has(n));
+    for (const n of pinnedHere) jointY.set(n, pinY.get(n)!);
+    const pinEdges = pinnedHere.filter((n) => (incident.get(n) ?? []).some(({ other }) => !pinY.has(other)));
+    const sources = [...abut, ...pinEdges];
+    if (sources.length === 0 && pinnedHere.length > 0) continue;
     if (sources.length === 0) {
       // A chain nothing ordinary reaches. There is nothing to interpolate
       // BETWEEN, so the question is only which of two wrong answers is less
@@ -387,7 +433,7 @@ export function buildBridgeDecks(
     const dists: Float64Array[] = [];
     const heights: number[] = [];
     for (const src of sources) {
-      heights.push(groundAt(joints.x[src], joints.z[src]) + ROAD_LIFT_M);
+      heights.push(pinY.get(src) ?? groundAt(joints.x[src], joints.z[src]) + ROAD_LIFT_M);
       const d = new Float64Array(nodes.length).fill(Infinity);
       d[index.get(src)!] = 0;
       const done = new Uint8Array(nodes.length);
@@ -408,6 +454,7 @@ export function buildBridgeDecks(
     }
 
     for (let k = 0; k < nodes.length; k++) {
+      if (pinY.has(nodes[k])) continue;
       let wsum = 0;
       let hsum = 0;
       let exact = -1;
@@ -453,6 +500,7 @@ export function buildBridgeDecks(
       orphanChainsLifted,
       orphanChainsDraped,
       longestChainM,
+      pinnedJoints: pinY.size,
       buildMs: Date.now() - t0,
     },
   };

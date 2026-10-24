@@ -37,6 +37,20 @@ import { buildRoadGraph, isDriveable, type RoadEdge } from "../src/data/roadgrap
 import { ORPHAN_EDGE_MARGIN_M, buildBridgeDecks, deckYAt } from "../src/data/bridgedeck";
 import { Origin } from "../src/geo";
 import { addTraffic, type StreetWorld, type TrafficInstance } from "../src/data/streetfurniture";
+import {
+  axisOf,
+  densifyLandmarkWays,
+  landmarkDeckPin,
+  landmarkOwnsRoad,
+  landmarkSuppresses,
+  landmarksFor,
+  placeLandmark,
+  profileY,
+  promoteLandmarkApproaches,
+  type Landmark,
+} from "../src/data/landmarks";
+import { buildBridgeMesh, deckSampler, type BridgeMesh } from "../src/render/bridgemesh";
+import { parseCityPack } from "../src/data/citypack";
 
 declare const process: { exit(code?: number): never };
 
@@ -480,6 +494,267 @@ function carsOffDeck(
     then.samples > 1000 && then.over === 0,
     `groundY + roadLiftM puts ${then.over} of ${then.samples} off, worst ${then.worst.toFixed(1)} m`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// The landmark bridges: render/bridgemesh.ts built against data/landmarks.ts.
+//
+// WHAT A SCREENSHOT CANNOT SETTLE, again. A frame shows a red bridge. It does
+// not show that the tower is 227 m and not 200, that the cable hangs 1:9 and
+// not 1:5, that the deck clears the water by the published 67 m, or that the
+// steel stands on the road the cars are driving rather than 30 m beside it.
+// Every bound below is the published figure as a literal (sources on the
+// spec), and every assertion has a probe that breaks the thing measured.
+// ---------------------------------------------------------------------------
+
+interface Built {
+  l: Landmark;
+  mesh: BridgeMesh;
+  roads: RoadPack["roads"];
+  decks: ReturnType<typeof buildBridgeDecks>;
+}
+
+function buildCity(id: string, groundAt: (x: number, z: number) => number, pin = true): Built[] {
+  const pk = load(id);
+  const o = new Origin(pk.lat0, pk.lon0);
+  const ls = landmarksFor(id, o);
+  promoteLandmarkApproaches(pk.roads, ls);
+  densifyLandmarkWays(pk.roads, ls);
+  const d = buildBridgeDecks(pk.roads, groundAt, pk.radiusM, pin ? landmarkDeckPin(ls) : undefined);
+  return ls.map((l) => ({
+    l,
+    mesh: buildBridgeMesh(l, { groundAt, deck: deckSampler(l, pk, d.deck) }),
+    roads: pk.roads,
+    decks: d,
+  }));
+}
+
+/** Water everywhere: the landmark checks are about the structure, and a
+ *  flat sea at 0 m is the ground every published clearance is measured to. */
+const sea = (): number => 0;
+const sf = buildCity("sf", sea);
+const ny = buildCity("manhattan", sea);
+const byId = new Map<string, Built>([...sf, ...ny].map((b) => [b.l.spec.id, b]));
+const get = (id: string): Built => byId.get(id)!;
+
+{
+  // Tower heights, as published.
+  const want: [string, number][] = [["goldengate", 227], ["baywest", 160], ["sas", 160], ["brooklyn", 84.3], ["manhattanbr", 102], ["williamsburg", 102]];
+  let worst = 0;
+  let detail = "";
+  for (const [id, h] of want) {
+    for (const top of get(id).mesh.stats.towerTopsM) {
+      const e = Math.abs(top - h);
+      if (e > worst) { worst = e; detail = `${id} ${top.toFixed(1)} vs ${h}`; }
+    }
+  }
+  check("every landmark tower is its published height", worst <= 1.0, `worst ${worst.toFixed(2)} m${detail ? ` (${detail})` : ""}`);
+  probe("tower height", Math.abs(200 - 227) <= 1.0, "a 200 m Golden Gate tower is 27 m short");
+}
+
+{
+  // Main spans, tower to tower, measured between the surveyed OSM nodes.
+  const want: [string, number][] = [["goldengate", 1280], ["brooklyn", 486.3], ["manhattanbr", 448], ["williamsburg", 488]];
+  let worst = 0;
+  let detail = "";
+  for (const [id, span] of want) {
+    const e = Math.abs(get(id).l.lengthM - span);
+    if (e > worst) { worst = e; detail = `${id} ${get(id).l.lengthM.toFixed(1)} vs ${span}`; }
+  }
+  check("main spans match the published spans", worst <= 10, `worst ${worst.toFixed(1)} m (${detail})`);
+  // The Bay Bridge's two spans are placed from W2/W6 and the centre
+  // anchorage, so check the inner towers it derives against OSM's W3 and W5.
+  const bw = get("baywest");
+  const o = new Origin(load("sf").lat0, load("sf").lon0);
+  const w3 = o.toWorld(37.79559, -122.3808);
+  const w5 = o.toWorld(37.80079, -122.37508);
+  const tw = bw.mesh.stats.towers;
+  const e3 = Math.hypot(tw[1].x - w3.x, tw[1].z - w3.z);
+  const e5 = Math.hypot(tw[2].x - w5.x, tw[2].z - w5.z);
+  check("bay bridge inner towers sit on OSM's W3 and W5", Math.max(e3, e5) <= 15, `W3 ${e3.toFixed(1)} m, W5 ${e5.toFixed(1)} m off`);
+  probe("span", Math.abs(get("goldengate").l.lengthM * 0.9 - 1280) <= 10, "a span 10 % short is caught");
+}
+
+{
+  // Cable sag over span. Published: Golden Gate 143/1280 = 1:8.95, Bay Bridge
+  // west ~1:9.5, the New York suspension bridges 1:9 to 1:12.5.
+  const lo = 1 / 13;
+  const hi = 1 / 8.5;
+  let bad = 0;
+  let n = 0;
+  const seen: string[] = [];
+  for (const b of [...sf, ...ny]) {
+    if (b.l.spec.family === "queensboro" || b.l.spec.family === "bascule" || b.l.spec.family === "skyway") continue;
+    for (const r of b.mesh.stats.sagRatios) {
+      n++;
+      if (r < lo || r > hi) bad++;
+      seen.push(`${b.l.spec.id} 1:${(1 / r).toFixed(1)}`);
+    }
+  }
+  check("main cables hang between 1:8.5 and 1:13", n >= 7 && bad === 0, seen.join(", "));
+  probe("sag", 1 / 5 >= lo && 1 / 5 <= hi, "a 1:5 cable is caught");
+  // And the cable comes down to just over the deck at mid-span, which is what
+  // a stiffened suspension bridge looks like: not into it, not far above it.
+  let worst = 0;
+  for (const id of ["goldengate", "baywest", "manhattanbr", "williamsburg"]) {
+    const s2 = get(id).mesh.stats;
+    for (let k = 0; k < s2.cableLowM.length; k++) worst = Math.max(worst, Math.abs(s2.cableLowM[k] - s2.midDeckM[k] - 6));
+  }
+  check("main cable bottoms out 0 to 12 m over the mid-span deck", worst <= 6, `worst ${worst.toFixed(1)} m from 6 m`);
+}
+
+{
+  // Clearance: the deck less its own structure clears the published height.
+  const want: [string, number, number][] = [["goldengate", 67, 7.6], ["brooklyn", 41, 2], ["manhattanbr", 41, 7.3], ["williamsburg", 41, 4]];
+  let worst = Infinity;
+  let detail = "";
+  for (const [id, clear, structure] of want) {
+    const c = get(id).mesh.stats.midDeckM[0] - structure;
+    if (c - clear < worst) { worst = c - clear; detail = `${id} ${c.toFixed(1)} vs ${clear}`; }
+  }
+  check("every landmark deck clears its published clearance", worst >= -1, `tightest ${worst.toFixed(1)} m (${detail})`);
+  // The unpinned solve: a straight line between the abutments.
+  const flat = buildCity("sf", (x, z) => (Math.hypot(x - gg.x, z - gg.z) < 900 ? 0 : 27), false);
+  const ggFlat = flat.find((b) => b.l.spec.id === "goldengate")!;
+  probe("clearance", ggFlat.mesh.stats.midDeckM[0] - 7.6 >= 67 - 1, `the abutment solve puts the Golden Gate deck at ${ggFlat.mesh.stats.midDeckM[0].toFixed(1)} m`);
+}
+
+{
+  // Placement: every tower stands on the road it carries, measured to the
+  // nearest of its OWN bridge ways, not to the axis it was built on.
+  function offRoad(b: Built, dx = 0): number {
+    let worst = 0;
+    const ways = b.roads.filter((r) => (r.flags & ROAD_BRIDGE) !== 0 && landmarkOwnsRoad(b.l, r));
+    for (const t of b.mesh.stats.towers) {
+      let best = Infinity;
+      for (const r of ways) {
+        for (let k = 2; k < r.pts.length; k += 2) {
+          const ax = r.pts[k - 2], az = r.pts[k - 1], bx = r.pts[k], bz = r.pts[k + 1];
+          const ddx = bx - ax, ddz = bz - az;
+          const l2 = ddx * ddx + ddz * ddz;
+          const u = l2 > 0 ? Math.max(0, Math.min(1, ((t.x + dx - ax) * ddx + (t.z - az) * ddz) / l2)) : 0;
+          best = Math.min(best, Math.hypot(ax + ddx * u - t.x - dx, az + ddz * u - t.z));
+        }
+      }
+      worst = Math.max(worst, best);
+    }
+    return worst;
+  }
+  let worst = 0;
+  let detail = "";
+  for (const b of [...sf, ...ny]) {
+    if (b.l.spec.family === "skyway") continue;
+    const w = offRoad(b);
+    if (w > worst) { worst = w; detail = b.l.spec.id; }
+  }
+  check("every landmark tower stands within 15 m of its own road", worst <= 15, `worst ${worst.toFixed(1)} m (${detail})`);
+  probe("placement", offRoad(get("goldengate"), 60) <= 15, `the Golden Gate moved 60 m east is ${offRoad(get("goldengate"), 60).toFixed(0)} m off its road`);
+}
+
+{
+  // The pin is the deck: inside the zone the ribbon's deck IS the profile.
+  const b = get("goldengate");
+  let worst = 0;
+  let n = 0;
+  for (let i = 0; i < b.roads.length; i++) {
+    const r = b.roads[i];
+    const d = b.decks.deck[i];
+    if (!d || !landmarkOwnsRoad(b.l, r)) continue;
+    let s2 = 0;
+    for (let k = 0; k < r.pts.length; k += 2) {
+      if (k) s2 += Math.hypot(r.pts[k] - r.pts[k - 2], r.pts[k + 1] - r.pts[k - 1]);
+      const a = axisOf(b.l, r.pts[k], r.pts[k + 1]);
+      if (a.t < 0 || a.t > b.l.lengthM) continue;
+      worst = Math.max(worst, Math.abs(deckYAt(d, s2) - profileY(b.l.spec, a.t)));
+      n++;
+    }
+  }
+  check("the golden gate ribbon is the surveyed deck over the main span", n > 200 && worst < 0.05, `worst ${worst.toFixed(3)} m over ${n} vertices`);
+  const flat = buildCity("sf", sea, false).find((x) => x.l.spec.id === "goldengate")!;
+  let worstOld = 0;
+  for (let i = 0; i < flat.roads.length; i++) {
+    const r = flat.roads[i];
+    const d = flat.decks.deck[i];
+    if (!d || !landmarkOwnsRoad(flat.l, r)) continue;
+    let s2 = 0;
+    for (let k = 0; k < r.pts.length; k += 2) {
+      if (k) s2 += Math.hypot(r.pts[k] - r.pts[k - 2], r.pts[k + 1] - r.pts[k - 1]);
+      const a = axisOf(flat.l, r.pts[k], r.pts[k + 1]);
+      if (a.t < 0 || a.t > flat.l.lengthM) continue;
+      worstOld = Math.max(worstOld, Math.abs(deckYAt(d, s2) - profileY(flat.l.spec, a.t)));
+    }
+  }
+  probe("pin", worstOld < 0.05, `the abutment solve misses it by ${worstOld.toFixed(1)} m`);
+}
+
+{
+  // With the pins in, still no junction is a step, and cars still ride the
+  // deck: the pinned decks have a breakpoint at every vertex, which is
+  // exactly what tests the traffic splitter. Over the sea, so the Bay Bridge
+  // approaches drop to 0.35 m in SoMa, the steepest the real DEM can make it.
+  const pk = load("sf");
+  const ls = landmarksFor("sf", new Origin(pk.lat0, pk.lon0));
+  promoteLandmarkApproaches(pk.roads, ls);
+  densifyLandmarkWays(pk.roads, ls);
+  const d = buildBridgeDecks(pk.roads, sea, pk.radiusM, landmarkDeckPin(ls));
+  const g = buildRoadGraph(pk.roads);
+  const yAt = (e: RoadEdge, node: number): number => {
+    if ((e.flags & ROAD_BRIDGE) === 0) return 0 + roadLiftM(e.flags, e.layer);
+    const dk = d.deck[e.wayIndex];
+    return dk ? deckYAt(dk, e.startS + (e.a === node ? 0 : e.lengthM)) : roadLiftM(e.flags, e.layer);
+  };
+  let steps = 0;
+  let worst = 0;
+  for (let n = 0; n < g.nodeCount; n++) {
+    const inc = new Set<number>();
+    for (const h of g.out[n]) inc.add(h.edge);
+    for (const h of g.into[n]) inc.add(h.edge);
+    if (inc.size < 2) continue;
+    const es = [...inc].map((i) => g.edges[i]);
+    if (!es.some((e) => (e.flags & ROAD_BRIDGE) !== 0)) continue;
+    const ys = es.map((e) => yAt(e, n));
+    const dd = Math.max(...ys) - Math.min(...ys);
+    if (dd > 0.25) steps++;
+    worst = Math.max(worst, dd);
+  }
+  check("no bridge junction is a step with the landmark pins in", steps === 0 && worst < 0.1, `${steps} steps, worst ${worst.toFixed(2)} m, ${d.stats.pinnedJoints} pinned joints`);
+  const cars = carsOffDeck(pk.roads, d, { groundY: sea, deckOf: (i) => d.deck[i], occupied: null, onCarriageway: null, nearestMeasuredLamp: null }, 0.3);
+  check("every car on a pinned landmark deck is on the deck", cars.samples > 1000 && cars.over === 0, `${cars.over} of ${cars.samples} over 0.3 m, worst ${cars.worst.toFixed(3)} m`);
+  const old = carsOffDeck(pk.roads, d, { groundY: sea, deckOf: null, occupied: null, onCarriageway: null, nearestMeasuredLamp: null }, 0.3);
+  probe("car off pinned deck", old.samples > 1000 && old.over === 0, `terrain plus lift puts ${old.over} off, worst ${old.worst.toFixed(1)} m`);
+}
+
+{
+  // The OSM tower legs are replaced, and nothing else near them is.
+  const b = readFileSync("public/cities/sf.city");
+  const cp = parseCityPack(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer);
+  const ls = landmarksFor("sf", new Origin(cp.lat0, cp.lon0));
+  // Measured: the Golden Gate is 24 parts a tower (legs in five tiers, the
+  // struts, the saddles), the Bay Bridge's four towers and its centre
+  // anchorage one each, the SAS tower one. Fort Point, 9 m tall under the
+  // south arch, must survive: a corridor rule that took everything in the
+  // strip deleted it.
+  const gone = cp.buildings.filter((x) => landmarkSuppresses(ls, x));
+  const groundLow = gone.filter((x) => x.baseM <= 0 && x.topM - x.baseM < 30).length;
+  const o = new Origin(cp.lat0, cp.lon0);
+  const fort = o.toWorld(37.81067, -122.47702);
+  const fortGone = gone.some((x) => Math.hypot(x.cx - fort.x, x.cz - fort.z) < 60);
+  check(
+    "the landmark towers' OSM parts are replaced, Fort Point is not",
+    gone.length >= 44 && gone.length <= 60 && groundLow === 0 && !fortGone,
+    `${gone.length} suppressed, ${groundLow} low ground-level, Fort Point ${fortGone ? "GONE" : "kept"}`,
+  );
+  const moved = ls.map((l) => placeLandmark({ ...l.spec, a: [l.spec.a[0] + 0.01, l.spec.a[1]], b: [l.spec.b[0] + 0.01, l.spec.b[1]] }, o));
+  const goneMoved = cp.buildings.filter((x) => landmarkSuppresses(moved, x)).length;
+  probe("suppression", goneMoved >= 44 && goneMoved <= 60, `a zone 1.1 km off suppresses ${goneMoved}`);
+  const everything = cp.buildings.filter((x) => ls.some((l) => {
+    const z = l.spec.suppress;
+    if (!z) return false;
+    const a = axisOf(l, x.cx, x.cz);
+    return a.t >= z[0] && a.t <= z[1] && Math.abs(a.s) <= l.spec.halfWidthM + 6;
+  }));
+  const fortByCorridor = everything.some((x) => Math.hypot(x.cx - fort.x, x.cz - fort.z) < 60);
+  probe("fort point", !fortByCorridor, "the whole-corridor rule takes Fort Point");
 }
 
 function wayLength(pts: Float32Array): number {
