@@ -62,7 +62,7 @@ function fresh(alt = 400, hdg = 0): Aircraft {
 
   const slow = fresh();
   fly(slow, { throttle: -1 }, 25, air(0));
-  between("closed throttle airspeed", slow.airspeed, 16, 26, "m/s");
+  between("closed throttle airspeed", slow.airspeed, 30, 40, "m/s");
   check("slow flight still flies", slow.position.y > 380, `${slow.position.y.toFixed(0)} m`);
 }
 

@@ -95,7 +95,9 @@ export interface AircraftConfig {
 export const MACH1 = 343;
 
 export const DEFAULT_CONFIG: AircraftConfig = {
-  minSpeed: 22,
+  // 70 kt. At 22 m/s (43 kt) the bottom of the touch slider was a stall a
+  // thumb could reach by accident, and nothing about sightseeing wants it.
+  minSpeed: 36,
   // Where the lever sits on load (DEFAULT_THROTTLE), about 195 kt. 120 kt was
   // the truthful Cessna cruise and read as crawling over a 10 km city.
   cruiseSpeed: 100,

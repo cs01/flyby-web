@@ -1505,8 +1505,19 @@ async function main() {
     // The shot camera never draws it at all: a fixed-pose screenshot is about
     // the city, and an aeroplane parked in the middle of it would be the most
     // prominent thing that changed between two otherwise identical frames.
+    //
+    // The blend fraction alone was not enough. The rig writes the blended
+    // position back into its own spring every frame, so a held blend compounds:
+    // at a nominal 0.2 the camera already sat in the cabin with the airframe
+    // drawn round it (the owner's phone, low over SF, showed struts and wheels
+    // sliced across the frame). So the camera's real distance decides too: the
+    // airframe's envelope is about 6 m from the datum at the tail and the
+    // wingtips, and a lens inside it must never see the shell.
+    const insideAirframe = camera.position.distanceTo(ac.position) < 6.5;
     model.group.visible =
-      !shotCam && (droneActive || carActive || (chase.mode !== "cockpit" && chase.cockpitBlend < 0.45));
+      !shotCam &&
+      (droneActive || carActive ||
+        (chase.mode !== "cockpit" && chase.cockpitBlend < 0.45 && !insideAirframe));
     // Zeroed control surfaces while droning. W and A are the drone's now, and
     // a parked aeroplane waggling its ailerons at them looks haunted.
     const parked = droneActive || carActive;
