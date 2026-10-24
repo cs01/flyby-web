@@ -14,10 +14,26 @@ import * as THREE from "three";
 
 const STEPS = [1.0, 0.85, 0.72, 0.6, 0.5, 0.4];
 
-/** Frame time we aim to stay under, milliseconds. */
-const TARGET_MS = 20;
-/** Only scale back up when there is real headroom, or it will hunt. */
-const COMFORTABLE_MS = 12;
+/**
+ * Frame time we aim to stay under, and the headroom needed before scaling back
+ * up (or it will hunt), milliseconds, per tier.
+ *
+ * The reduced tier aims at 30 fps, not 50. A mid-range Android GPU never makes
+ * 20 ms on this renderer at any scale worth looking at, so chasing it walked
+ * the scale to the bottom step: 0.4 of a 1.5 ratio is 0.6 device pixels per CSS
+ * pixel, about 250 px across a phone, and the owner's phone showed a picture
+ * made of visible blocks. A steady 30 at a readable resolution beats a blurry
+ * frame that still misses 50.
+ */
+const TARGET_MS = { full: 20, reduced: 34 };
+const COMFORTABLE_MS = { full: 12, reduced: 22 };
+
+/**
+ * Lowest drawing-buffer pixels per CSS pixel the controller may choose. Below
+ * one, the scene is upscaled and every edge turns into a staircase, which reads
+ * far worse than the frame time it buys.
+ */
+const MIN_DEVICE_PER_CSS = 1.0;
 
 export class AdaptiveQuality {
   private index = 0;
@@ -30,8 +46,18 @@ export class AdaptiveQuality {
   /** Base pixel ratio before scaling. */
   readonly baseRatio: number;
 
-  constructor(renderer: THREE.WebGLRenderer) {
+  private readonly targetMs: number;
+  private readonly comfortableMs: number;
+  /** Deepest index into STEPS that keeps MIN_DEVICE_PER_CSS. */
+  private readonly lowest: number;
+
+  constructor(renderer: THREE.WebGLRenderer, tier: "full" | "reduced" = "full") {
     this.baseRatio = renderer.getPixelRatio();
+    this.targetMs = TARGET_MS[tier];
+    this.comfortableMs = COMFORTABLE_MS[tier];
+    let lowest = 0;
+    while (lowest + 1 < STEPS.length && this.baseRatio * STEPS[lowest + 1] >= MIN_DEVICE_PER_CSS - 1e-6) lowest++;
+    this.lowest = lowest;
   }
 
   get scale(): number {
@@ -62,10 +88,10 @@ export class AdaptiveQuality {
       return false;
     }
 
-    if (smoothedMs > TARGET_MS) {
+    if (smoothedMs > this.targetMs) {
       this.slowFrames++;
       this.fastFrames = 0;
-    } else if (smoothedMs < COMFORTABLE_MS) {
+    } else if (smoothedMs < this.comfortableMs) {
       this.fastFrames++;
       this.slowFrames = 0;
     } else {
@@ -75,7 +101,7 @@ export class AdaptiveQuality {
 
     // Drop quickly (30 frames of being slow is already unpleasant), recover
     // slowly (180 frames), because a wrong step up costs another stutter.
-    if (this.slowFrames > 30 && this.index < STEPS.length - 1) {
+    if (this.slowFrames > 30 && this.index < this.lowest) {
       this.index++;
       this.slowFrames = 0;
       this.cooldown = 1.5;

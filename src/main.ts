@@ -330,7 +330,7 @@ async function main() {
   // Screen-space sky occlusion. Runs before the main pass, because the surface
   // shaders read its result rather than the composite doing so; see render/ao.ts.
   const ao = new AoPass(renderer);
-  const quality = new AdaptiveQuality(renderer);
+  const quality = new AdaptiveQuality(renderer, budget.tier);
 
   const resizeTargets = () => {
     const s2 = renderer.getDrawingBufferSize(new THREE.Vector2());
@@ -588,7 +588,9 @@ async function main() {
   // reflection alone. It is the vacuity probe for the reflection assertion in
   // tools/verify-water.ts, which needs the waves and everything else exactly
   // as they are and only the mirrored skyline gone.
-  waterHistory.enabled = !gateFlag("nossr");
+  // Off on the reduced tier: the history copy and the march cost a phone more
+  // than the reflection is worth at its resolution.
+  waterHistory.enabled = !gateFlag("nossr") && budget.tier !== "reduced";
 
   // `?flatglass=1` restores the facade this repo had before the window reveal:
   // glazing exactly in the plane of the wall, with no parallax and no shadow
