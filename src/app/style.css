@@ -1246,8 +1246,11 @@ html, body {
   accent-color: #66d4ff;
   touch-action: none;
 }
+/* Half the height it first shipped at, and see-through: at 220 px opaque it
+   covered a quarter of the right side of a phone, the owner's main view. */
 @media (pointer: coarse) {
-  .throttle input { height: 220px; }
+  .throttle input { height: 120px; }
+  .throttle { background: rgba(10, 16, 24, 0.35); padding: 6px 4px; }
 }
 /* With the hud on, the touch buttons own the right edge; the lever steps in. */
 @media (pointer: coarse) {
