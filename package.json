@@ -48,7 +48,8 @@
     "bounce": "bun tools/verify-street.ts",
     "ground": "bun tools/verify-ground.ts",
     "shadow": "bun tools/verify-shadow.ts",
-    "buildings": "bun tools/verify-buildings.ts"
+    "buildings": "bun tools/verify-buildings.ts",
+    "clouds": "bun tools/verify-clouds.ts --profile /tmp/flyby-clouds-profile"
   },
   "dependencies": {
     "three": "^0.180.0"

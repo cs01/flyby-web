@@ -683,7 +683,80 @@ export const POSES: Pose[] = [
       why: "the live OSM scheduler to run dry",
     },
   },
+  ...cloudPoses(),
 ];
+
+/**
+ * The sky poses: each cloud regime over Manhattan and San Francisco, plus the
+ * four frames tools/verify-clouds.ts measures. Every deck is pinned with
+ * `?wx=`, so these are pictures of a cloud model and not of today's weather.
+ */
+function cloudPoses(): Pose[] {
+  const none = "mid:0:3800:5000,high:0:8500:9400,precip:0";
+  const cumulus = `low:0.3:1400:2300,${none}`;
+  const out: Pose[] = [];
+  const sites = [
+    {
+      city: "manhattan",
+      morning: { lat: 40.7040, lon: -74.0170, hdg: 10, t: D("2025-06-21T12:30:00Z") }, // 08:30 EDT
+      golden: { lat: 40.7600, lon: -73.9700, hdg: 290, t: D("2025-06-21T23:45:00Z") }, // 19:45 EDT, sun ~6 deg up at 297
+      noon: { lat: 40.7000, lon: -74.0200, hdg: 30, t: D("2025-06-21T17:00:00Z") },
+    },
+    {
+      city: "sf",
+      morning: { lat: 37.8000, lon: -122.4650, hdg: 110, t: D("2025-06-21T15:30:00Z") }, // 08:30 PDT, toward the sun
+      golden: { lat: 37.7900, lon: -122.4000, hdg: 285, t: D("2025-06-22T02:50:00Z") }, // 19:50 PDT
+      noon: { lat: 37.7600, lon: -122.4200, hdg: 0, t: D("2025-06-21T19:30:00Z") },
+    },
+  ];
+  for (const s of sites) {
+    const c = s.city;
+    out.push(
+      {
+        name: `clouds-${c}-cumulus-morning`, city: c,
+        lat: s.morning.lat, lon: s.morning.lon, altM: 500, hdgDeg: s.morning.hdg, pitchDeg: 8,
+        t: s.morning.t, wx: cumulus, what: `${c}: fair-weather cumulus, morning`,
+      },
+      {
+        name: `clouds-${c}-cumulus-golden`, city: c,
+        lat: s.golden.lat, lon: s.golden.lon, altM: 450, hdgDeg: s.golden.hdg, pitchDeg: 5,
+        t: s.golden.t, wx: cumulus, what: `${c}: fair-weather cumulus, golden hour into the sun`,
+      },
+      {
+        name: `clouds-${c}-stratocumulus`, city: c,
+        lat: s.noon.lat, lon: s.noon.lon, altM: 400, hdgDeg: s.noon.hdg, pitchDeg: 6,
+        t: s.noon.t, wx: `low:0.7:1000:1900,${none}`, what: `${c}: broken stratocumulus`,
+      },
+      {
+        name: `clouds-${c}-overcast`, city: c,
+        lat: s.noon.lat, lon: s.noon.lon, altM: 380, hdgDeg: s.noon.hdg, pitchDeg: 4,
+        t: s.noon.t, wx: `low:0.97:750:2100,${none}`, what: `${c}: overcast stratus deck`,
+      },
+      {
+        name: `clouds-${c}-incloud`, city: c,
+        lat: s.noon.lat, lon: s.noon.lon, altM: 1450, hdgDeg: s.noon.hdg, pitchDeg: 0,
+        t: s.noon.t, wx: `low:0.85:1000:2000,${none}`, what: `${c}: flying inside the low deck`,
+      },
+    );
+  }
+  // The gate frames. Midtown at 13:00 EDT, sun high, so the measurements are
+  // about the cloud field and not about a sunset.
+  const gate = { city: "manhattan", lat: 40.7580, lon: -73.9855, t: D("2025-06-21T17:00:00Z") };
+  out.push(
+    { ...gate, name: "clouds-gate-up30", altM: 600, hdgDeg: 0, pitchDeg: 30, wx: cumulus,
+      what: "gate: fair-weather cumulus at 30 degrees up, for clustering" },
+    { ...gate, name: "clouds-gate-cover20", altM: 600, hdgDeg: 0, pitchDeg: 30,
+      wx: `low:0.2:1400:2300,${none}`, what: "gate: 20% low cover" },
+    { ...gate, name: "clouds-gate-cover80", altM: 600, hdgDeg: 0, pitchDeg: 30,
+      wx: `low:0.8:1400:2300,${none}`, what: "gate: 80% low cover" },
+    { ...gate, name: "clouds-manhattan-cumulus-shadows", altM: 1000, hdgDeg: 20, pitchDeg: -35,
+      wx: `low:0.4:1400:2300,${none}`, what: "cumulus shadows across Midtown" },
+    { ...gate, name: "clouds-gate-side", altM: 500, hdgDeg: 0, pitchDeg: 20,
+      wx: `low:0.4:1400:2300,${none}`,
+      what: "gate: cumulus bases side-on, for the flat base" },
+  );
+  return out;
+}
 
 /** Extra query parameters appended to every pose, e.g. `--query terrainDebug=3`. */
 let extraQuery = "";
@@ -693,6 +766,8 @@ let extraQuery = "";
  * what shimmer IS; tools/verify-buildings.ts measures that difference.
  */
 let nudgeM = 0;
+/** Seconds of cloud time to step through after each capture; see capture(). */
+let stepClouds: number[] = [];
 
 function url(base: string, p: Pose): string {
   const q = new URLSearchParams({
@@ -833,6 +908,19 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const file = `${outDir}/${p.name}${tag}.png`;
   writeFileSync(file, png);
 
+  // `--step-clouds 0.0167,10`: after the main capture, advance the clouds'
+  // clock by each amount in turn (cumulatively) and capture again as
+  // NAME-step0.png, NAME-step1.png. tools/verify-clouds.ts's temporal claim.
+  for (let k = 0; k < stepClouds.length; k++) {
+    await cdp.eval(`window.flybyShot.stepClouds(${stepClouds[k]})`);
+    const at = await cdp.eval<number>("window.flybyShot.frames");
+    // Eight frames: two turns of the four-frame march rotation, so every
+    // half-res pixel has been re-marched at the new time.
+    await cdp.waitFor(`window.flybyShot.frames > ${at + 8}`, 60_000, `${p.name} step ${k}`);
+    const u = await cdp.eval<string>("window.flybyShot.capture()");
+    writeFileSync(`${outDir}/${p.name}${tag}-step${k}.png`, Buffer.from(u.slice(u.indexOf(",") + 1), "base64"));
+  }
+
   return {
     pose: p, file, frameMs, triangles, trees, shrubs, treeLods, treeTriangles, lod,
     pavementTriangles, lamps, lampsMeasured, cars, parkedCars, streetTriangles,
@@ -856,6 +944,7 @@ async function main(): Promise<void> {
   const repeat = has("repeat");
   extraQuery = arg("query", "") ?? "";
   nudgeM = Number(arg("nudge", "0"));
+  stepClouds = (arg("step-clouds", "") ?? "").split(",").filter(Boolean).map(Number);
 
   mkdirSync(outDir, { recursive: true });
   const poses = only ? POSES.filter((p) => only.split(",").includes(p.name)) : POSES;
