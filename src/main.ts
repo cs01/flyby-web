@@ -635,6 +635,16 @@ async function main() {
   // mask and beauty frame occlude alike and agree pixel for pixel.
   const groundDebug = gateNum("groundDebug");
 
+  // `?nodetail=1`, `?detailtint=1` and `?detailalias=1` are the three probes
+  // tools/verify-ground.ts runs against the ground detail layer: the drape
+  // alone, the layer tinted so it no longer averages back to the photograph,
+  // and the layer with its band limits removed. See uDetailMode in
+  // render/terrain.ts.
+  const detailMode = gateFlag("nodetail") ? 0
+    : gateFlag("detailtint") ? 2
+    : gateFlag("detailalias") ? 3
+    : 1;
+
   // Where the far landcover level meets a cliff, the DEM decides; it needs to
   // know what height the water is at to do that. See uWaterLevel.
   const waterLevel = landPack
@@ -642,6 +652,7 @@ async function main() {
     : 0;
 
   for (const u of terrain.uniforms) {
+    u.uDetailMode.value = detailMode;
     u.uWaterLevel.value = waterLevel;
     u.uUrban.value = urban.texture;
     u.uUrbanExtent.value = urban.extent;

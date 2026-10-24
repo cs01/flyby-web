@@ -29,6 +29,7 @@ import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 // every other number the device tier decides.
 import { CITY_RINGS, type TerrainRing } from "./budget";
 import { WATER_SSR_GLSL, WATER_SSR_UNIFORMS, type WaterSsrUniforms } from "./waterssr";
+import { GROUND_DETAIL_GLSL } from "./grounddetail";
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -129,6 +130,7 @@ ${SH_GLSL}
 ${AO_GLSL}
 ${WATER_SSR_GLSL}
 ${waveTableGlsl()}
+${GROUND_DETAIL_GLSL}
 
 uniform sampler2D uDrape;
 uniform vec3  uCameraPos;
@@ -170,6 +172,12 @@ uniform vec2 uWind;
 // no glint. It exists so tools/verify-water.ts can run the OLD behaviour in the
 // SAME binary and prove its assertions can fail.
 uniform float uFlatWater;
+// The ground detail layer (render/grounddetail.ts). 1 is the shipped layer and
+// everything else exists for tools/verify-ground.ts: 0 is the drape alone
+// (?nodetail=1), 2 tints the layer so it no longer averages back to the
+// photograph (?detailtint=1), 3 keeps every octave whatever the pixel and
+// drape footprints say (?detailalias=1).
+uniform float uDetailMode;
 // Height of the water surface the DEM reports, metres; see waterLevelM in
 // data/landmask.ts. 0 for a coast, 176 for Chicago's lakefront.
 uniform float uWaterLevel;
@@ -221,7 +229,19 @@ float waterGGX(vec3 nrm, vec3 v, vec3 l, float alpha) {
 
 void main() {
   vec3 albedo = srgbToLinear(texture(uDrape, vUv).rgb);
+  vec3 drape0 = albedo;
   vec3 n = normalize(vNormal);
+  vec3 nGeo = n;
+
+  // Footprints, in uniform control flow: inside a branch that varies from
+  // pixel to pixel the derivatives are undefined, and on the GPUs where that
+  // bites the detail and the waves go to static along every branch edge.
+  vec2 wdx = dFdx(vWorld.xz);
+  vec2 wdy = dFdy(vWorld.xz);
+  float pxFoot = max(length(wdx), length(wdy)) + 1e-4;
+  float pxFoot3 = max(length(dFdx(vWorld)), length(dFdy(vWorld))) + 1e-4;
+  vec2 duvx = dFdx(vUv);
+  vec2 duvy = dFdy(vUv);
 
   // Landcover, sampled once and used by both the water term and the night
   // lighting. Near level inside its own extent, far level outside, crossfaded
@@ -247,6 +267,22 @@ void main() {
   float cliff = smoothstep(uWaterLevel + 2.0, uWaterLevel + 6.0, vWorld.y)
               * smoothstep(0.995, 0.98, normalize(vNormal).y);
   float lcWater = lc.r * (1.0 - cliff * lcFar);
+  // And a beach is the opposite case: flat and low, so the cliff rule keeps
+  // the far level's 137 m ramp across it, and Ocean Beach came out as a fog
+  // of half-water a hundred metres wide. Inside that ramp, on ground within a
+  // few metres of the water surface, the photograph decides: warm and bright
+  // is sand, anything else (dark water, white surf, grey foam) is water.
+  float inRamp = smoothstep(0.0, 0.05, lc.r) * smoothstep(1.0, 0.95, lc.r) * lcFar;
+  if (inRamp > 0.0) {
+    float pl = dot(drape0, vec3(0.2126, 0.7152, 0.0722));
+    // Warm means red over blue by 4 to 10% of the brightness: surf is
+    // bright too, but neutral, and an absolute margin let it through.
+    float photoLand = smoothstep(0.05, 0.10, pl)
+                    * smoothstep(0.04, 0.10, (drape0.r - drape0.b) / max(pl, 1e-3));
+    float lowGround = smoothstep(uWaterLevel + 6.0, uWaterLevel + 2.0, vWorld.y);
+    float edge = mix(lcWater, (1.0 - photoLand) * (1.0 - cliff), lowGround);
+    lcWater = mix(lcWater, edge, inRamp);
+  }
   float lcBuilt = lc.g;
   // Roads, which the landcover cannot see. WorldCover is a 10 m posting and a
   // suburban street plus its verges is one texel of it, classified by whatever
@@ -373,7 +409,16 @@ void main() {
       float shade = clamp(lum / 0.16, 0.45, 1.7);
       grass *= shade;
 
-      albedo = mix(albedo, grass, herb * min(0.88, 0.52 * grassFar + 0.36 * grassNear));
+      // Only where the photograph looks like vegetation at all. WorldCover is
+      // 10 m a texel and calls the paved corner of a junction "grass" when the
+      // verge beside it dominates; the photograph at 0.47 m shows it grey. A
+      // grey texel (chroma under ~8% of its brightest channel) keeps its own
+      // colour, and the lime that replaced it under a raking view was the
+      // brightest thing on sf-street once the drape was the right way up.
+      float dMax = max(drape0.r, max(drape0.g, drape0.b));
+      float dChroma = (dMax - min(drape0.r, min(drape0.g, drape0.b))) / max(dMax, 1e-3);
+      float vegLike = smoothstep(0.08, 0.20, dChroma);
+      albedo = mix(albedo, grass, herb * vegLike * min(0.88, 0.52 * grassFar + 0.36 * grassNear));
 
       // And it has to catch the light like grass, not like tarmac painted
       // green. The normal wobble is small on purpose: at 9 cm a strong one is
@@ -414,6 +459,227 @@ void main() {
     }
   }
 
+  // --- THE GROUND'S OWN SURFACE -------------------------------------------
+  //
+  // Band-limited detail under the photograph; see render/grounddetail.ts for
+  // the band and why the mean is unchanged. This block decides only WHICH
+  // material a pixel is and how strongly each of the three signals shows in
+  // it. Measured on marin-headlands, where the drape is the 7.5 m z14 ring
+  // seen from 100-300 m: the ground there had no structure under ~20 m at all.
+  float detailLen = 1.0;
+  if (uDetailMode > 0.5) {
+    // Debug 20 is answered here and returns, rather than carrying three debug
+    // floats down to the ladder at the end: they would be live across the
+    // wave loop, the shader's peak register pressure, and every terrain pixel
+    // in the frame pays for that whether it is water or not.
+    float dbgRock = 0.0;
+    vec2 tszD = vec2(textureSize(uDrape, 0));
+    float texPerPxD = max(length(duvx * tszD), length(duvy * tszD));
+    // Drape metres per texel, horizontal.
+    float texM = pxFoot / max(texPerPxD, 1e-6);
+    // On a slope a texel is stretched along the fall line by 1 / cos(slope).
+    float texSide = texM / max(nGeo.y, 0.2);
+
+    // Land, from the measured mask where there is one and from elevation
+    // where there is not; detail on water would be drawn under the waves.
+    float wet0 = uHasLand > 0.5 ? clamp(lcWater, 0.0, 1.0) : smoothstep(3.5, 0.4, vWorld.y);
+    float land = 1.0 - wet0;
+
+    // The photograph decides green against dry. WorldCover puts shrub, grass
+    // and crop in one channel and has no season; a June hillside in it is the
+    // same class as a March one. 5x the green excess over luminance, so a lawn
+    // (excess ~0.25) is fully green and straw (excess ~0) is fully dry.
+    float l0 = dot(drape0, vec3(0.2126, 0.7152, 0.0722));
+    float greenness = clamp((drape0.g - max(drape0.r, drape0.b)) / max(l0, 0.01) * 5.0, 0.0, 1.0);
+    float noPack = 1.0 - uHasLand;
+    float bare = clamp(1.0 - lc.r - lc.g - lc.b - lc.a, 0.0, 1.0) * uHasLand
+               + noPack * (1.0 - greenness) * 0.5;
+    float wGrass = herb * greenness + noPack * greenness;
+    float wDry = herb * (1.0 - greenness);
+    float wLitter = canopy;
+    float wBuilt = lcBuilt * uHasLand + noPack * (1.0 - greenness) * 0.5;
+
+    // Rock where it is too steep for soil to stay: 32 degrees in, 47 full.
+    // Lower than the angle of repose on purpose: the mesh is 30 to 60 m a
+    // vertex and averages every sea cliff it crosses down by 10 to 20 degrees.
+    // Forest and buildings keep their own material on a slope; a wooded
+    // ravine is still forest floor and a road cut in a city is a wall.
+    float steep = smoothstep(0.85, 0.68, nGeo.y);
+    float wRock = steep * (1.0 - 0.8 * canopy) * (1.0 - lcBuilt * uHasLand);
+    // Bare ground breaks into outcrop well before that.
+    wRock = max(wRock, bare * smoothstep(0.93, 0.78, nGeo.y));
+
+    // The COLOUR octaves are limited by the geometric mean of the pixel's two
+    // axes, not the longer one. At a grazing view the footprint is several
+    // times longer down-range than across, and the longer axis threw away
+    // every octave the cross-range direction resolves: the Marin headland a
+    // kilometre off the Golden Gate pose kept only its 16 m octave. The slope
+    // keeps the longer axis; see detailBands. The aliasing this costs is
+    // bounded by tools/verify-ground.ts from 1,100 m.
+    float pxAniso = sqrt(length(wdx) * length(wdy)) + 1e-4;
+    DetailBands t = detailBands(vWorld.xz, pxAniso, pxFoot, texM, uDetailMode);
+
+    // The photograph on a cliff is a smear down the fall line: the drape is
+    // projected from straight above, so a 53 degree face stretches each texel
+    // by 1.7. Where rock is resolved the stretched photo is swapped for its
+    // own ~8 m average, which keeps the colour and drops the streaks, and the
+    // rock pattern supplies the structure. Resolved means a stretched texel
+    // covers more than a couple of pixels; past that the swap is invisible
+    // and is skipped, so the far field is untouched.
+    float rockAmt = uDetailMode > 2.5 ? 1.0 : smoothstep(1.0, 2.5, texSide / pxFoot3);
+    // And grass and scrub break into outcrop in patches from ~22 degrees:
+    // the Marin and Twin Peaks slopes are grass over rock that shows through
+    // where the soil is thin, which is on the convex, coarse-noise highs. The
+    // patches are part of the band, so they come and go with the detail.
+    float outcrop = smoothstep(0.93, 0.80, nGeo.y)
+                  * smoothstep(0.12, 0.30, t.c.x + 0.5 * t.m.x) * t.amt;
+    wRock = max(wRock, (wDry + 0.5 * wGrass) * outcrop);
+    wRock *= rockAmt;
+
+    // A beach is bare or dry ground within ~20 m of water. Four taps of the
+    // near mask at +-22 m. Past the near level the mask is 137 m a texel, so
+    // the taps go out to +-150 m and two more pieces of evidence are needed
+    // before that coarse "near water" is believed: the ground must be within
+    // 8 m of the water surface, and the photograph must look like sand
+    // (bright, red over blue). Every SF beach is past the near level: Ocean
+    // Beach is 8.8 km from the scene centre and Baker Beach 6.5.
+    float shore = 0.0;
+    float l0s = dot(drape0, vec3(0.2126, 0.7152, 0.0722));
+    if (uHasLand > 0.5 && bare + wDry + wGrass > 0.02) {
+      vec2 sx = vec2(22.0 / (2.0 * uLandNearExtent), 0.0);
+      float wn = max(max(texture(uLandNear, lcUvN + sx).r, texture(uLandNear, lcUvN - sx).r),
+                     max(texture(uLandNear, lcUvN + sx.yx).r, texture(uLandNear, lcUvN - sx.yx).r));
+      vec2 fx = vec2(150.0 / (2.0 * uLandFarExtent), 0.0);
+      float wf = max(max(texture(uLandFar, lcUvF + fx).r, texture(uLandFar, lcUvF - fx).r),
+                     max(texture(uLandFar, lcUvF + fx.yx).r, texture(uLandFar, lcUvF - fx.yx).r));
+      float sandLook = smoothstep(0.10, 0.22, l0s) * smoothstep(0.0, 0.03, drape0.r - drape0.b);
+      float low = smoothstep(uWaterLevel + 8.0, uWaterLevel + 3.0, vWorld.y);
+      shore = mix(smoothstep(0.1, 0.6, wn) * (bare + wDry > 0.02 ? 1.0 : 0.0),
+                  smoothstep(0.1, 0.5, wf) * sandLook * low, lcFar);
+    }
+    float wSand = (bare + 0.5 * wDry + 0.5 * wGrass * lcFar) * shore * smoothstep(0.85, 0.95, nGeo.y);
+    bare *= 1.0 - shore;
+    wDry *= 1.0 - 0.5 * shore;
+    wGrass *= 1.0 - 0.5 * shore * lcFar;
+
+    // Rock takes its share from everything under it.
+    float keepR = 1.0 - wRock;
+    wGrass *= keepR; wDry *= keepR; wLitter *= keepR; wBuilt *= keepR; bare *= keepR; wSand *= keepR;
+    wRock *= land; wGrass *= land; wDry *= land; wLitter *= land; wBuilt *= land; bare *= land; wSand *= land;
+
+
+    if (t.amt > 0.0 || wRock > 0.01) {
+      vec3 F = t.f, M = t.m, C = t.c;
+      // Each material: an albedo factor around 1 and a slope, both linear in
+      // the zero-mean signals, so each averages to the photograph.
+      float aGrass = 0.50 * F.x + 0.35 * M.x + 0.15 * C.x;
+      // Slopes are gentle on vegetation: grass scatters light through a
+      // volume of blades rather than off one bumpy surface, and a stronger
+      // tilt read as hard-packed ridges under the 18:30 Emerald Hills sun.
+      vec2 sGrass = 0.25 * F.yz + 0.10 * M.yz;
+      // Dry grass and chaparral: straw with darker, greener shrub patches a
+      // few metres across. The patch mask is symmetric about zero (a
+      // smoothstep centred on a zero-mean field), so it darkens the patches by
+      // exactly what it lightens the straw between them.
+      float patch_ = smoothstep(-0.06, 0.06, M.x + 0.6 * C.x) - 0.5;
+      float aDry = 0.35 * F.x + 0.25 * M.x + 0.15 * C.x;
+      vec2 sDry = 0.25 * F.yz + 0.15 * M.yz + 0.10 * C.yz;
+      float aSoil = 0.35 * F.x + 0.30 * M.x + 0.15 * C.x;
+      vec2 sSoil = 0.30 * F.yz + 0.20 * M.yz + 0.12 * C.yz;
+      float aLitter = 0.40 * F.x + 0.35 * M.x;
+      vec2 sLitter = 0.25 * F.yz + 0.15 * M.yz;
+      float aBuilt = 0.12 * F.x + 0.06 * M.x;
+      vec2 sBuilt = 0.06 * F.yz;
+      float aSand = 0.12 * F.x + 0.10 * M.x;
+      vec2 sSand = 0.12 * F.yz + 0.08 * M.yz;
+      // Wind ripples on the dry sand, ~0.7 m and only where they have pixels.
+      float ripW = uDetailMode > 2.5 ? 1.0 : smoothstep(2.0, 4.0, 0.7 / pxFoot);
+      float rph = (dot(vWorld.xz, vec2(0.83, 0.56)) + 1.6 * M.x) * (6.2832 / 0.7);
+      sSand += vec2(0.83, 0.56) * cos(rph) * 0.18 * ripW;
+
+      float a = wGrass * aGrass + wDry * aDry + bare * aSoil + wLitter * aLitter
+              + wBuilt * aBuilt + wSand * aSand;
+      vec2 sl = wGrass * sGrass + wDry * sDry + bare * sSoil + wLitter * sLitter
+              + wBuilt * sBuilt + wSand * sSand;
+      vec3 delta = -vec3(sl.x, 0.0, sl.y);
+
+      albedo *= clamp(1.0 + a, 0.3, 1.8);
+      // Shrub patches, darker and greener than the straw: zero-mean per channel.
+      // A lawn or a grazed slope gets a quarter of it, the tussocks and the
+      // greener damp hollows any unmown grass has.
+      albedo *= 1.0 - (wDry + 0.25 * wGrass) * patch_ * vec3(0.50, 0.34, 0.56) * smoothstep(0.0, 0.5, t.amt);
+      // Grass hue, yellow-green to blue-green, off the fine gradient: the
+      // gradient is uncorrelated with the value, so this is a second signal
+      // for free.
+      albedo.g *= 1.0 + wGrass * 0.30 * F.y;
+      albedo.r *= 1.0 - wGrass * 0.20 * F.y;
+
+      // The wet strip at the waterline: sand the swash reaches is darker.
+      // The mask's own 10 m shoreline ramp is the strip.
+      albedo *= 1.0 - 0.35 * wSand * smoothstep(0.02, 0.4, lc.r) * smoothstep(0.0, 0.5, t.amt);
+
+      if (wRock > 0.01) {
+        // TRIPLANAR on the faces, two planes rather than three: the side
+        // plane the face turns most toward, and the top. A face at 45 degrees
+        // to both side planes blends the same field projected two ways, which
+        // nothing here can tell from one.
+        vec3 tw = pow(abs(nGeo), vec3(4.0));
+        tw /= tw.x + tw.y + tw.z;
+        float texR = max(texSide, 8.0);
+        bool xFace = abs(nGeo.x) > abs(nGeo.z);
+        float sideW = 1.0 - tw.y;
+        // Vertical joints: the side plane is squashed 0.6 in y, so a feature
+        // is taller than it is wide.
+        vec3 bs = detailRock(xFace ? vec2(vWorld.z, vWorld.y * 0.6) : vec2(vWorld.x, vWorld.y * 0.6),
+                             pxFoot3, texR, uDetailMode);
+        vec3 bt = detailRock(vWorld.xz, pxFoot3, texR, uDetailMode);
+        float rv = sideW * bs.x + tw.y * bt.x;
+        vec3 sideDelta = xFace ? vec3(0.0, 0.6 * bs.z, bs.y) : vec3(bs.y, 0.6 * bs.z, 0.0);
+        vec3 rDelta = -(sideW * sideDelta + tw.y * vec3(bt.y, 0.0, bt.z));
+
+        // STRATA: bedding planes, 1.5 to 3.5 m a layer, warped by the coarse
+        // signal so they wander like real beds rather than ruling the cliff.
+        // Each bed has its own tone; the base of each is undercut, which is
+        // the dark line and the small ledge above it that read as layered
+        // rock from a distance. Faded out under five pixels a bed.
+        float warp = rv;
+        float sy = vWorld.y / 2.4 + 1.2 * warp;
+        float bed = floor(sy);
+        float fb = sy - bed;
+        float strW = smoothstep(2.0, 5.0, 2.4 / pxFoot3);
+        if (uDetailMode > 2.5) strW = 1.0;
+        float bedTone = (hash21(vec2(bed, 7.31)) - 0.5) * 0.30;
+        float under = smoothstep(0.16, 0.0, fb) - 0.08;
+        rv += strW * (bedTone - 0.45 * under);
+        rDelta += strW * vec3(0.0, 0.35 * smoothstep(0.0, 0.16, fb) * smoothstep(0.30, 0.16, fb), 0.0) * sideW;
+
+        // The photograph's own ~8 m average, desaturated a little: rock is
+        // greyer than the vegetation the same blurred texel also holds.
+        float lodR = log2(max(8.0 / max(texM, 1e-3), 1.0));
+        vec3 base = srgbToLinear(textureLod(uDrape, vUv, lodR).rgb);
+        float bl = dot(base, vec3(0.2126, 0.7152, 0.0722));
+        base = mix(vec3(bl), base, 0.80);
+        vec3 rock = base * clamp(1.0 + rv, 0.3, 1.8);
+        albedo = mix(albedo, rock, wRock);
+        delta = mix(delta, rDelta, wRock);
+        dbgRock = wRock;
+      }
+      if (uDebug > 19.5) { fragColor = vec4(t.amt, dbgRock, wSand, 1.0); return; }
+
+      if (uDetailMode > 1.5 && uDetailMode < 2.5) {
+        albedo *= mix(vec3(1.0), vec3(1.25, 1.0, 0.8), max(t.amt, wRock));
+      }
+
+      // The unnormalised sum is kept: dot(n0 + delta, l) has exactly the mean
+      // of dot(n0, l) when delta is zero-mean, while the normalised one is
+      // darker by about |delta|^2 / 2. The direct term multiplies it back.
+      vec3 nd = n + delta;
+      detailLen = length(nd);
+      n = nd / detailLen;
+    }
+    if (uDebug > 19.5) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  }
+
   // Snow settles on flat ground and slides off anything steep. The slope test
   // is what keeps a snowy city from looking like it was dipped in paint.
   float flat_ = smoothstep(0.55, 0.85, n.y);
@@ -437,7 +703,7 @@ void main() {
   nightGrey = mix(0.30, nightGrey, 0.40);
   albedo = mix(albedo, mix(vec3(nightGrey), albedo, 0.12), uNight);
 
-  float ndl = max(0.0, dot(n, uSunDir));
+  float ndl = max(0.0, dot(n, uSunDir)) * detailLen;
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
   // uSunIntensity is the scale the ATMOSPHERE integral wants: it gets multiplied
   // by scattering coefficients of order 1e-5, so it is ~16 and that is correct
@@ -560,14 +826,8 @@ void main() {
   float dbgSsr = 0.0;
   float fetchM = 1e4;
   float lamP = 1.0;
-  // Derivatives OUTSIDE the branch: inside non-uniform control flow they are
-  // undefined, and on the GPUs where that bites the waves go to static along
-  // the water's edge, exactly where the branch changes from pixel to pixel.
-  vec2 wdx = dFdx(vWorld.xz);
-  vec2 wdy = dFdy(vWorld.xz);
-  float pxFoot = max(length(wdx), length(wdy)) + 1e-4;
-  vec2 duvx = dFdx(vUv);
-  vec2 duvy = dFdy(vUv);
+  // wdx, wdy, pxFoot and the uv derivatives are taken at the top of main,
+  // outside every branch, for the reason given there.
   if (water > 0.01 && uFlatWater < 0.5) {
     // Fetch, from the distance to the nearest coast. The fetch that matters is
     // the upwind one, which one distance cannot give; four times the nearest
@@ -1059,6 +1319,10 @@ void main() {
   //     on water, or the history and the march disagree about the world.
   //  17 red shore distance / 500 m, green foam, blue wave roughness * 2
   //  18 foam mask, white where foam > 0.3; tools/verify-water.ts reads it
+  //  19 land mask, white where the terrain is drawn as ground rather than
+  //     water; tools/verify-ground.ts reads it
+  //  20 ground detail: red how much of the octave band is in, green rock,
+  //     blue sand (render/grounddetail.ts)
   if (uDebug > 0.5) {
     if (uDebug < 1.5)       col = albedo;
     else if (uDebug < 2.5)  col = beam;
@@ -1083,7 +1347,11 @@ void main() {
       col = vec3(abs(h0 - c0.w) / 10.0, c0.w / 2000.0, h0 / 2000.0);
     }
     else if (uDebug < 17.5) col = vec3(shoreD / 500.0, foam, waveAlpha * 2.0);
-    else col = vec3(step(0.3, foam) * water);
+    else if (uDebug < 18.5) col = vec3(step(0.3, foam) * water);
+    else if (uDebug < 19.5) col = vec3(1.0 - step(0.5, water));
+    // 20 returns from the detail block above; reaching here means the layer
+    // is off (?nodetail), which is black.
+    else col = vec3(0.0);
   }
 
   // The ground/sun mask; see groundDebugColor in render/groundbounce.ts. Water
@@ -1122,6 +1390,8 @@ export interface TerrainUniforms
   uWind: THREE.IUniform<THREE.Vector2>;
   /** 1 restores the pre-wave flat water, for the vacuity probe in tools/verify-water.ts. */
   uFlatWater: THREE.IUniform<number>;
+  /** 1 the shipped ground detail; 0, 2 and 3 are tools/verify-ground.ts probes. */
+  uDetailMode: THREE.IUniform<number>;
   uWaterLevel: THREE.IUniform<number>;
   uRoadMask: THREE.IUniform<THREE.Texture | null>;
   uRoadMaskExtent: THREE.IUniform<number>;
@@ -1170,6 +1440,7 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uTime: { value: 0 },
     uWind: { value: new THREE.Vector2() },
     uFlatWater: { value: 0 },
+    uDetailMode: { value: 1 },
     uWaterLevel: { value: 0 },
     uRoadMask: { value: null },
     uRoadMaskExtent: { value: 1 },

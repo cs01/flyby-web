@@ -433,6 +433,19 @@ export const POSES: Pose[] = [
     what: "the Marin Headlands from just over the ridge",
   },
   {
+    // OCEAN BEACH TO LANDS END, from 60 m off the surf line looking north
+    // along the sand to the Cliff House and the cliffs behind it: the one
+    // frame in the set with a beach and a sea cliff in it. Both are past the
+    // near landcover level (8.8 km from the scene centre), which is the case
+    // the far-level shore and cliff rules in render/terrain.ts exist for.
+    name: "sf-ocean-beach",
+    city: "sf",
+    lat: 37.7640, lon: -122.5150, altM: 60, hdgDeg: 12, pitchDeg: -8,
+    t: D("2025-06-21T22:00:00Z"), // 15:00 PDT, sun over the sea
+    wx: CLEAR,
+    what: "Ocean Beach and the Lands End cliffs from just off the surf",
+  },
+  {
     // Mount Fuji, from the north with the cone filling the frame.
     //
     // A terrain pose, deliberately: every other pose in this set is a city, so
