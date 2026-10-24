@@ -1161,3 +1161,35 @@ html, body {
   border: 1.5px solid rgba(255, 255, 255, 0.34);
   background: rgba(255, 255, 255, 0.10);
 }
+
+/* --- Clean view ---------------------------------------------------------
+   Everything but the way back, the credits, the switch and a live stick goes.
+   Hidden by a parent class rather than per panel, so a panel added later is
+   clean by default instead of the next thing cluttering a phone. */
+.hud-toggle { display: none; }
+@media (pointer: coarse) {
+  .hud-toggle {
+    display: block;
+    position: absolute;
+    /* Mid-height on the left edge: the one spot no panel claims in either
+       mode, so the switch never moves under the thumb. */
+    top: 50%;
+    left: calc(8px + env(safe-area-inset-left));
+    transform: translateY(-50%);
+    padding: 8px 11px;
+    border: 1px solid var(--rule);
+    border-radius: 8px;
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    color: var(--dim);
+    font: inherit;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    z-index: 5;
+  }
+}
+#ui.clean > :not(.back):not(.attrib):not(.hud-toggle):not(.touch) { display: none !important; }
+#ui.clean .touch-btns,
+#ui.clean .touch-home { display: none !important; }

@@ -100,6 +100,28 @@ export class Hud {
     back.href = q ? `?${q}` : location.pathname;
     root.append(back);
 
+    // On a phone every panel, gauge and button together covered half the
+    // picture, and the owner's verdict was "too cluttered". So a touch device
+    // starts CLEAN: only the way back, the credits and this one switch. The
+    // choice is remembered, because someone who wants the gauges wants them
+    // every flight.
+    const toggle = document.createElement("button");
+    toggle.className = "hud-toggle";
+    toggle.textContent = "hud";
+    const KEY = "flyby.hudClean";
+    let clean = isTouchDevice();
+    try {
+      const saved = localStorage.getItem(KEY);
+      if (saved !== null) clean = saved === "1";
+    } catch { /* storage blocked: fall back to the device default */ }
+    root.classList.toggle("clean", clean);
+    toggle.addEventListener("click", () => {
+      clean = !root.classList.contains("clean");
+      root.classList.toggle("clean", clean);
+      try { localStorage.setItem(KEY, clean ? "1" : "0"); } catch { /* not persisted */ }
+    });
+    root.append(toggle);
+
     // Two attributions, one shown at a time by the stylesheet. Every source is
     // still named in the short one -- what goes is the plumbing (which tile
     // service, which licence), not the credit. Spelled out in full it wraps to
