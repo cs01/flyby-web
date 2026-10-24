@@ -527,7 +527,16 @@ export function cityAt(lat: number, lon: number): City {
  */
 export const FULL_DATA_CITY_IDS = ["chicago", "emeraldhills", "manhattan", "sf"];
 
-export const LISTED_CITIES: City[] = CITIES.filter((c) => FULL_DATA_CITY_IDS.includes(c.id));
+/**
+ * Full-data places kept off the menu. Redwood City's pack exists for the
+ * canopy and suburb poses in tools/shots.ts, but as a destination next to
+ * three skylines it read as a random pick; "Where I am" covers a suburb better.
+ */
+const UNLISTED_CITY_IDS = ["emeraldhills"];
+
+export const LISTED_CITIES: City[] = CITIES.filter(
+  (c) => FULL_DATA_CITY_IDS.includes(c.id) && !UNLISTED_CITY_IDS.includes(c.id),
+);
 
 export function cityById(id: string): City | undefined {
   return CITIES.find((c) => c.id === id);
