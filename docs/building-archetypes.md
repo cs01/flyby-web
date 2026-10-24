@@ -64,3 +64,15 @@ nothing on the wall was ever photographed.
   reduced tiers.
 - Side-by-side frames against reference photos of the same street, judged
   by the owner.
+
+## The number: a Turing test for buildings
+
+The owner's framing: pass the Turing test for buildings. Make that literal.
+Pair each fixed-pose render with a real photo of a similar street (same city,
+same kind of block, similar light), crop both to the same framing, and ask a
+blind judge (a vision model given only the two images, order randomised) which
+one is the photograph. The score is the fraction of pairs where the judge
+picks wrong or says it cannot tell. 0% today; 50% is indistinguishable. Run it
+per archetype so the number points at which buildings give the game away, and
+keep the judge's stated reason, because "the windows have no depth" is the
+work list.
