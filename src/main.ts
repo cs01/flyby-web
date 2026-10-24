@@ -84,6 +84,7 @@ import { streetSign } from "./data/streetsign";
 import { Layers } from "./app/layers";
 import { Places, type PlaceRow } from "./app/places";
 import { Autopilot } from "./sim/autopilot";
+import { EasyStick } from "./sim/easystick";
 import { fetchNearby, searchNamedPlaces } from "./data/nearby";
 
 function chooseCity(): City | null {
@@ -1039,6 +1040,9 @@ async function main() {
   // only read is a list of things you now have to find by hand at a hundred
   // knots over a city you have never seen from the air.
   const autopilot = new Autopilot();
+  // Before the autopilot in the chain, so a place picked from the list still
+  // flies itself once the thumb is off and the stick has eased back.
+  const easyStick = new EasyStick();
   /**
    * Put the aircraft half a mile off a place, pointed at it.
    *
@@ -1297,8 +1301,9 @@ async function main() {
     }
 
     const sampled = input.sample(dt);
+    const eased = easyStick.update(sampled, input.easyFinger, ac.rollDeg, dt);
     const axes = autopilot.update(
-      sampled,
+      eased,
       ac.position,
       ac.headingDeg,
       ac.rollDeg,
@@ -1927,6 +1932,18 @@ async function main() {
     flybyShot: {
       get frames() { return shotFrames; },
       capture: () => canvas.toDataURL("image/png"),
+      // What the aeroplane is doing, for a harness that drives the controls
+      // and has to say what came of it. On a phone in clean view no
+      // instrument on the page shows bank or vertical speed.
+      get flight() {
+        return {
+          rollDeg: ac.rollDeg,
+          verticalSpeed: ac.verticalSpeed,
+          bankCommandDeg: easyStick.bankCommandDeg,
+          easyEngaged: easyStick.engaged,
+          altitude: ac.position.y,
+        };
+      },
       // A coarse numeric fingerprint of the frame. Two PNGs that differ by one
       // bit are "not identical" and nothing more; this is what lets the harness
       // say HOW different two runs were without shipping a PNG decoder.

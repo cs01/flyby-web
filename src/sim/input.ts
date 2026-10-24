@@ -10,7 +10,8 @@
 // known time (0.14 s here) and releases faster than it engages, which is what
 // makes the aircraft feel bolted to the stick.
 
-import { TouchControls, hasTouch, expo, rateLimit } from "./touch";
+import { TouchControls, hasTouch, expo, rateLimit, touchSchemeFromUrl } from "./touch";
+import type { Finger } from "./easystick";
 import type { DroneInput } from "./drone";
 import type { CarInput } from "./car";
 
@@ -118,7 +119,9 @@ export class Input {
   };
 
   constructor(target: HTMLElement, ui?: HTMLElement) {
-    if (ui && hasTouch()) this.touch = new TouchControls(target, ui);
+    if (ui && hasTouch()) {
+      this.touch = new TouchControls(target, ui, touchSchemeFromUrl(location.search));
+    }
 
     addEventListener("keydown", (e) => {
       if (e.repeat) {
@@ -243,7 +246,17 @@ export class Input {
    * later and cannot tell it from a hand on the stick.
    */
   get manualStick(): boolean {
+    // A thumb down on the easy stick counts even when it is centred: it is
+    // holding wings level on purpose, and an autopilot that took over then
+    // would be turning against a hand that is on the controls.
+    if (this.touch?.easy && this.touch.active) return true;
     return Math.abs(this.target.roll) > 0.02 || Math.abs(this.target.yaw) > 0.02;
+  }
+
+  /** The easy scheme's thumb, for sim/easystick.ts; null when that scheme is
+   *  not the one in use. */
+  get easyFinger(): Finger | null {
+    return this.touch?.easy ? this.touch.finger : null;
   }
 
   /** Smoothed axes for this frame. */
@@ -318,7 +331,9 @@ export class Input {
       // A touched axis WINS over the keyboard rather than summing with it. A
       // phone with a bluetooth keyboard is the only case where both are live,
       // and there the thumb is the more recent intent.
-      if (touch.active) {
+      // The easy scheme writes the aeroplane's axes after this, from the bank
+      // it can see and this cannot.
+      if (touch.active && !touch.easy) {
         t.roll = touch.axes.roll;
         t.lift = touch.axes.lift;
         t.throttle = touch.axes.throttle;
@@ -407,8 +422,10 @@ export class Input {
       // The virtual stick means the same things it does in the aeroplane:
       // move with the left thumb, turn and climb with the right.
       t.forward = touch.axes.throttle;
-      t.strafe = touch.axes.roll;
-      t.yaw = touch.axes.yaw;
+      // One thumb has one sideways axis, and turning is what it is for;
+      // strafing without a way to turn would leave the drone on a rail.
+      t.strafe = touch.easy ? 0 : touch.axes.roll;
+      t.yaw = touch.easy ? touch.axes.roll : touch.axes.yaw;
       t.lift = touch.axes.lift;
     }
     if (touch?.boost) t.boost = 1;

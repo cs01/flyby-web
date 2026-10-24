@@ -63,6 +63,10 @@ g.matchMedia = () => ({ matches: false });
 g.navigator = g.navigator ?? { maxTouchPoints: 0 };
 
 const { TouchControls, STICK_RADIUS, THROTTLE_RADIUS, expo, rateLimit, STICK_PUSH_S } = await import("../src/sim/touch");
+const { EasyStick, EASY_RADIUS } = await import("../src/sim/easystick");
+const { Aircraft } = await import("../src/sim/aircraft");
+type EasyStick = InstanceType<typeof EasyStick>;
+type Aircraft = InstanceType<typeof Aircraft>;
 
 const results: { name: string; ok: boolean; detail: string }[] = [];
 function check(name: string, ok: boolean, detail: string): void {
@@ -71,10 +75,13 @@ function check(name: string, ok: boolean, detail: string): void {
 function near(name: string, v: number, want: number, tol = 1e-6): void {
   check(name, Math.abs(v - want) <= tol, `${v.toFixed(4)} (want ${want})`);
 }
+function between(name: string, v: number, lo: number, hi: number, unit: string): void {
+  check(name, v >= lo && hi >= v, `${v.toFixed(3)} ${unit} (want ${lo}..${hi})`);
+}
 
 const surface = new FakeElement("canvas");
 const ui = new FakeElement("div");
-const tc = new TouchControls(surface as unknown as HTMLElement, ui as unknown as HTMLElement);
+const tc = new TouchControls(surface as unknown as HTMLElement, ui as unknown as HTMLElement, "sticks");
 
 /** A pointer event as the browser would deliver it. */
 const ev = (pointerId: number, clientX: number, clientY: number) =>
@@ -279,6 +286,144 @@ check("look back releases", !tc.lookBack, `${tc.lookBack}`);
     if (Math.abs(c) < 0.2) sawCentreish = true;
   }
   check("reversing passes through centre", sawCentreish, `ended at ${c.toFixed(3)}`);
+}
+
+// --- The one-thumb easy scheme ----------------------------------------------
+//
+// The default on a phone. The DOM half first: one stick anywhere below the
+// clock band, nothing drawn until a thumb is down, relative to where it landed.
+{
+  const s2 = new FakeElement("canvas");
+  const ui2 = new FakeElement("div");
+  const ez = new TouchControls(s2 as unknown as HTMLElement, ui2 as unknown as HTMLElement, "easy");
+  const d = (id: number, x: number, y: number) => s2.fire("pointerdown", ev(id, x, y));
+  const m = (id: number, x: number, y: number) => s2.fire("pointermove", ev(id, x, y));
+  const u = (id: number, x: number, y: number) => s2.fire("pointerup", ev(id, x, y));
+  const root = ui2.children[0];
+  check("easy draws no permanent home rings",
+    !root.children.some((c) => c.className.startsWith("touch-home")),
+    root.children.map((c) => c.className).join(" "));
+  d(1, 100, 100);
+  check("easy: the top band is still the clock's", !ez.finger.held, `held=${ez.finger.held}`);
+  for (const fn of winListeners.get("blur") ?? []) fn({});
+  // The RIGHT half, which the two-stick scheme gives to the throttle.
+  d(2, 330, 700);
+  check("easy: a thumb on the right half is the flight stick", ez.finger.held, `held=${ez.finger.held}`);
+  near("easy: no deflection on touch-down", Math.hypot(ez.finger.x, ez.finger.y), 0);
+  m(2, 330 + EASY_RADIUS / 2, 700 - EASY_RADIUS);
+  near("easy: sideways is relative to the landing point", ez.finger.x, 0.5);
+  near("easy: up is negative y, as the pointer reports it", ez.finger.y, -1);
+  check("easy: exactly one ring under the thumb",
+    root.children.filter((c) => c.className.startsWith("touch-ring")).length === 1, "");
+  d(3, 60, 600);
+  m(3, 0, 600);
+  near("easy: a second finger cannot drive it", ez.finger.x, 0.5);
+  u(2, 330, 700);
+  check("easy: release lets go", !ez.finger.held && !ez.active, `held=${ez.finger.held}`);
+}
+
+// The closed-loop half: the stick flying the real flight model. Bounds are
+// measured literals, and each one has a probe beside it that must FAIL it, run
+// against the scheme or the knob the bound exists to rule out.
+{
+  const step = 1 / 60;
+  type Drive = (t: number) => { held: boolean; x: number; y: number };
+  /** Fly `seconds` and return the bank and vertical speed every frame. */
+  function flyEasy(stick: EasyStick, drive: Drive, seconds: number, a = new Aircraft()) {
+    if (a.position.y === 0) a.reset(0, 600, 0, 0);
+    const bank: number[] = [];
+    const vs: number[] = [];
+    for (let i = 0; i < Math.round(seconds / step); i++) {
+      const axes = { throttle: 0, roll: 0, yaw: 0, lift: 0, boost: 0 };
+      stick.update(axes, drive(i * step), a.rollDeg, step);
+      a.update(axes, step, 0);
+      bank.push(a.rollDeg);
+      vs.push(a.verticalSpeed);
+    }
+    return { bank, vs, a };
+  }
+  const held = (x: number, y = 0) => () => ({ held: true, x, y });
+  const off = () => ({ held: false, x: 0, y: 0 });
+
+  // Release from a full-deflection turn.
+  function release(stick: EasyStick) {
+    const ac = flyEasy(stick, held(1), 4).a;
+    const from = ac.rollDeg;
+    const { bank } = flyEasy(stick, off, 4, ac);
+    const level = bank.findIndex((b, i) => bank.slice(i).every((v) => Math.abs(v) < 1));
+    const overshoot = Math.max(0, -Math.min(...bank));
+    return { from, levelS: level < 0 ? Infinity : level * step, overshoot };
+  }
+  const rel = release(new EasyStick());
+  between("easy: full deflection banks to the limit", rel.from, 44, 45.5, "deg");
+  between("easy: release is wings level (<1 deg) within 0.6 s", rel.levelS, 0, 0.6, "s");
+  between("easy: and does not overshoot past level by 0.2 deg", rel.overshoot, 0, 0.2, "deg");
+  // Probes. The two-stick release (roll axis to zero, model self-levelling)
+  // is what the time bound is for; a bang-bang bank loop is what the
+  // overshoot bound is for.
+  {
+    const ac = new Aircraft();
+    ac.reset(0, 600, 0, 0);
+    for (let i = 0; i < 240; i++) ac.update({ throttle: 0, roll: 1, yaw: 0, lift: 0, boost: 0 }, step, 0);
+    let frames = 0;
+    while (Math.abs(ac.rollDeg) >= 1 && frames < 600) {
+      ac.update({ throttle: 0, roll: 0, yaw: 0, lift: 0, boost: 0 }, step, 0);
+      frames++;
+    }
+    check("probe: the two-stick release FAILS the 0.6 s bound", frames * step > 0.6,
+      `${(frames * step).toFixed(2)} s`);
+  }
+  const bang = release(new EasyStick({ authorityDeg: 0.5 }));
+  check("probe: a bang-bang bank loop FAILS the overshoot bound", bang.overshoot > 0.2,
+    `${bang.overshoot.toFixed(2)} deg`);
+
+  // A held half deflection holds a bank. Expo puts half travel at 0.39 of
+  // the limit, 17.4 deg, rather than at exactly half.
+  const half = flyEasy(new EasyStick(), held(0.5), 6).bank;
+  const steady = half[half.length - 1];
+  between("easy: a held half deflection is a steady bank", steady, 15, 20, "deg");
+  check("easy: and it is steady (<0.1 deg drift over the last 2 s)",
+    Math.abs(steady - half[half.length - 120]) < 0.1,
+    `${(steady - half[half.length - 120]).toFixed(3)} deg`);
+  {
+    // Probe: the same thumb on the two-stick ROLL RATE axis winds on bank
+    // until the model's limit stops it.
+    const ac = new Aircraft();
+    ac.reset(0, 600, 0, 0);
+    for (let i = 0; i < 360; i++) ac.update({ throttle: 0, roll: expo(0.5), yaw: 0, lift: 0, boost: 0 }, step, 0);
+    check("probe: a rate command FAILS the steady-bank bound", ac.rollDeg > 20,
+      `${ac.rollDeg.toFixed(1)} deg`);
+  }
+
+  // A one-frame 10 px spike, each way, on top of a held half deflection: the
+  // "not jerky" claim, about the finger the digitiser actually reports.
+  function jitter(mk: () => EasyStick): number {
+    let worst = 0;
+    for (const sign of [1, -1]) {
+      const stick = mk();
+      const base = flyEasy(stick, held(0.5), 4);
+      const steadyBank = base.a.rollDeg;
+      let frame = 0;
+      const { bank } = flyEasy(stick, () => {
+        const spike = frame++ === 0 ? (sign * 10) / EASY_RADIUS : 0;
+        return { held: true, x: 0.5 + spike, y: 0 };
+      }, 1, base.a);
+      worst = Math.max(worst, ...bank.map((b) => Math.abs(b - steadyBank)));
+    }
+    return worst;
+  }
+  const jit = jitter(() => new EasyStick());
+  between("easy: a 1-frame 10 px jitter moves the bank < 0.45 deg", jit, 0, 0.45, "deg");
+  const rawJit = jitter(() => new EasyStick({ filter: false }));
+  check("probe: the unfiltered thumb FAILS the jitter bound", rawJit > 0.45,
+    `${rawJit.toFixed(3)} deg`);
+
+  // Finger up climbs, and letting go holds the height it got to.
+  const climb = flyEasy(new EasyStick(), held(0, -0.6), 3);
+  check("easy: finger up is a climb", climb.vs[climb.vs.length - 1] > 5,
+    `${climb.vs[climb.vs.length - 1].toFixed(1)} m/s`);
+  const after = flyEasy(new EasyStick(), off, 2, climb.a).vs;
+  between("easy: release levels off (|vs| after 2 s)", Math.abs(after[after.length - 1]), 0, 0.5, "m/s");
 }
 
 let failed = 0;

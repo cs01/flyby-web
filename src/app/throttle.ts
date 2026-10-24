@@ -1,6 +1,6 @@
 // The throttle as a thing you can see and drag.
 //
-// W/S already move the lever, and the right-hand touch zone does too, but
+// W/S already move the lever, and the two-stick scheme's right thumb does too, but
 // neither shows where the lever IS, and with the lever now reaching Mach 1
 // "how fast am I going and how much is left" is the question. A slider on the
 // right edge answers both and is the one control a phone in clean view keeps.

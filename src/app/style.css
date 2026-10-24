@@ -876,6 +876,26 @@ html, body {
 }
 
 .touch-ring.right { width: 116px; height: 116px; margin: -58px 0 0 -58px; }
+/* The one-thumb stick: one small faint ring where the thumb LANDED, which is
+   the zero the deflection is measured from, and only while it is down. It is
+   smaller than the 90 px travel on purpose; it marks the centre, it is not a
+   gauge, and a full-size ring under a phone thumb is a quarter of the screen. */
+.touch-ring.easy {
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  border-color: rgba(242, 246, 250, 0.22);
+  background: none;
+}
+.touch-ring.easy.in { opacity: 0.8; }
+.touch-ring.easy::before, .touch-ring.easy::after { display: none; }
+.touch-ring.easy .touch-knob {
+  width: 28px;
+  height: 28px;
+  border-color: rgba(102, 212, 255, 0.45);
+  background: rgba(102, 212, 255, 0.10);
+  box-shadow: none;
+}
 .touch-ring.in { opacity: 1; }
 
 /* The axes the stick actually commands, drawn as a faint cross so the first

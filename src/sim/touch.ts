@@ -16,6 +16,15 @@
 //
 // Everything above this file sees the same -1..1 axes a keyboard produces, so
 // the flight model has no idea a phone is involved.
+//
+// That is the TWO-STICK scheme, now behind `?sticks=2`. The default is the
+// one-thumb EASY scheme: one stick anywhere below the clock band, no throttle
+// zone (the slider on the right edge is the throttle), and the thumb's
+// deflection goes to sim/easystick.ts as an attitude command rather than onto
+// the roll-rate axis. This file only reports where the thumb is; the
+// filtering needs the frame time and the bank, and lives with them.
+
+import { EASY_RADIUS, type Finger } from "./easystick";
 
 /**
  * Where the finger must travel for full deflection, in CSS pixels.
@@ -72,6 +81,13 @@ export function expo(v: number, amount = ROLL_EXPO): number {
  */
 const TOP_DEAD_BAND = 0.26;
 
+export type TouchScheme = "easy" | "sticks";
+
+/** `?sticks=2` keeps the two-thumb scheme for anyone who learned it. */
+export function touchSchemeFromUrl(search: string): TouchScheme {
+  return new URLSearchParams(search).get("sticks") === "2" ? "sticks" : "easy";
+}
+
 export interface TouchAxes {
   roll: number;
   lift: number;
@@ -104,6 +120,10 @@ export class TouchControls {
   readonly axes: TouchAxes = { roll: 0, lift: 0, throttle: 0, yaw: 0 };
   /** Latched by the boost button; read every frame. */
   boost = false;
+  readonly easy: boolean;
+  /** The easy scheme's thumb, raw and unfiltered. Unused by the two-stick
+      scheme. */
+  readonly finger: Finger = { held: false, x: 0, y: 0 };
 
   private root: HTMLDivElement;
   private left: Stick | null = null;
@@ -112,7 +132,8 @@ export class TouchControls {
   private carPresses = 0;
   private lookBackHeld = false;
 
-  constructor(surface: HTMLElement, ui: HTMLElement) {
+  constructor(surface: HTMLElement, ui: HTMLElement, scheme: TouchScheme = "easy") {
+    this.easy = scheme === "easy";
     this.root = document.createElement("div");
     this.root.className = "touch";
     ui.append(this.root);
@@ -128,15 +149,26 @@ export class TouchControls {
     // fighting the screen. These are drawn faint, they are not the input (the
     // whole zone is), and they fade out while that zone's stick is live so two
     // rings are never on screen at once.
-    this.homeLeft = this.home("left");
-    this.homeRight = this.home("right");
-    this.root.append(this.homeLeft, this.homeRight);
+    //
+    // Not in the easy scheme: there the whole lower screen is one stick, so
+    // there is no "about here" to point at, and the owner asked for nothing
+    // permanent on a phone in clean view.
+    if (!this.easy) {
+      this.homeLeft = this.home("left");
+      this.homeRight = this.home("right");
+      this.root.append(this.homeLeft, this.homeRight);
+    }
 
+    // Only the canvas is listened to, and the slider, the hud switch and the
+    // way back are siblings of it in #ui rather than children, so a press on
+    // any of them never arrives here and cannot spawn a stick.
     surface.addEventListener("pointerdown", (e) => {
       if (e.pointerType !== "touch") return;
       const r = surface.getBoundingClientRect();
       if (e.clientY < r.top + r.height * TOP_DEAD_BAND) return;
-      const side = e.clientX < r.left + r.width / 2 ? "left" : "right";
+      // One thumb: everything is the left (flight) stick, whichever side it
+      // landed on.
+      const side = this.easy || e.clientX < r.left + r.width / 2 ? "left" : "right";
       if (side === "left" && this.left) return;
       if (side === "right" && this.right) return;
       // Capture on the surface, not on the ring: the ring is drawn under the
@@ -172,6 +204,8 @@ export class TouchControls {
     // flies off on its own while nobody is looking at it.
     addEventListener("blur", () => {
       for (const s of [this.left, this.right]) if (s) this.despawn(s);
+      // Nothing for the easy filter to do about it here: with the thumb
+      // reported up it eases back to centre on its own.
       this.left = null;
       this.right = null;
       this.recompute();
@@ -247,7 +281,7 @@ export class TouchControls {
 
   private spawn(pointerId: number, x: number, y: number, side: "left" | "right"): Stick {
     const ring = document.createElement("div");
-    ring.className = `touch-ring ${side}`;
+    ring.className = `touch-ring ${this.easy ? "easy" : side}`;
     ring.style.left = `${x}px`;
     ring.style.top = `${y}px`;
     const knob = document.createElement("div");
@@ -258,12 +292,12 @@ export class TouchControls {
     // it look like it was there before the finger was.
     requestAnimationFrame(() => ring.classList.add("in"));
     (side === "left" ? this.homeLeft : this.homeRight)?.classList.add("busy");
-    const radius = side === "left" ? STICK_RADIUS : THROTTLE_RADIUS;
+    const radius = this.easy ? EASY_RADIUS : side === "left" ? STICK_RADIUS : THROTTLE_RADIUS;
     return { pointerId, originX: x, originY: y, x: 0, y: 0, radius, ring, knob };
   }
 
   private despawn(s: Stick): void {
-    const home = s.radius === STICK_RADIUS ? this.homeLeft : this.homeRight;
+    const home = s === this.left ? this.homeLeft : this.homeRight;
     home?.classList.remove("busy");
     s.ring.classList.remove("in");
     setTimeout(() => s.ring.remove(), 200);
@@ -288,6 +322,21 @@ export class TouchControls {
     const a = this.axes;
     const l = this.left ?? { x: 0, y: 0 };
     const r = this.right ?? { x: 0, y: 0 };
+    this.active = this.left !== null || this.right !== null;
+    if (this.easy) {
+      this.finger.held = this.left !== null;
+      this.finger.x = l.x;
+      this.finger.y = l.y;
+      // The aeroplane reads `finger` through the easy stick. These axes are
+      // for the drone and the car, which have their own smoothing: one thumb
+      // steers and its up/down is the pedal, so neither is left without a
+      // way to move forward.
+      a.roll = expo(l.x);
+      a.throttle = -l.y;
+      a.lift = 0;
+      a.yaw = 0;
+      return;
+    }
     // Expo on the two axes a thumb SWIPES rather than holds. Lift and throttle
     // are pushed to a position and left there, and softening those would just
     // make them feel slack.
@@ -300,7 +349,6 @@ export class TouchControls {
     a.lift = -l.y;
     a.throttle = -r.y;
     a.yaw = expo(r.x);
-    this.active = this.left !== null || this.right !== null;
   }
 }
 
