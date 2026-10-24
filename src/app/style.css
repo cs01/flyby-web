@@ -1210,7 +1210,7 @@ html, body {
     z-index: 5;
   }
 }
-#ui.clean > :not(.back):not(.attrib):not(.hud-toggle):not(.touch):not(.throttle) { display: none !important; }
+#ui.clean > :not(.back):not(.attrib):not(.hud-toggle):not(.touch):not(.throttle):not(.modebar) { display: none !important; }
 #ui.clean .touch-btns,
 #ui.clean .touch-home { display: none !important; }
 
@@ -1255,4 +1255,45 @@ html, body {
 /* With the hud on, the touch buttons own the right edge; the lever steps in. */
 @media (pointer: coarse) {
   #ui:not(.clean) .throttle { right: calc(64px + env(safe-area-inset-right)); }
+}
+
+/* --- Machine picker ----------------------------------------------------- */
+.modebar {
+  position: absolute;
+  left: 50%;
+  bottom: calc(26px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: rgba(10, 16, 24, 0.45);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  z-index: 5;
+}
+.modebar button {
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.modebar button.on { background: rgba(102, 212, 255, 0.22); color: var(--ink); }
+/* With the hud on, the bottom edge belongs to Fly To and the minimap; the
+   picker stacks under the hud switch on the left instead. */
+@media (pointer: coarse) {
+  #ui:not(.clean) .modebar {
+    left: calc(8px + env(safe-area-inset-left));
+    bottom: auto;
+    top: calc(50% + 30px);
+    transform: none;
+    flex-direction: column;
+  }
 }

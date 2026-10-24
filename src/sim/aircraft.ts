@@ -94,6 +94,9 @@ export interface AircraftConfig {
 /** Sea-level speed of sound, m/s: the top of the lever, at the owner's ask. */
 export const MACH1 = 343;
 
+/** sin(25 deg): the path angle full stick holds once speed makes it steeper than climbRate. */
+const MAX_PATH_SIN = Math.sin(25 * Math.PI / 180);
+
 export const DEFAULT_CONFIG: AircraftConfig = {
   // 70 kt. At 22 m/s (43 kt) the bottom of the touch slider was a stall a
   // thumb could reach by accident, and nothing about sightseeing wants it.
@@ -338,7 +341,12 @@ export class Aircraft {
     const climbAuthority = this.densityRatio * THREE.MathUtils.clamp(this.airspeed / c.cruiseSpeed, 0.35, 1.0);
     // Capped at 1, not 1.2: with the lever reaching Mach 1 a fast pass would
     // otherwise out-climb the commanded rate it is meant to be limited by.
-    const wantClimb = THREE.MathUtils.clamp(input.lift, -1, 1) * c.climbRate * climbAuthority;
+    // Fast, a fixed 45 m/s is no dive at all: at Mach 0.86 full stick down was
+    // an 8 degree slope, and the owner reported "can't go down". So the rate
+    // grows with speed to hold a usable path angle, 25 degrees at full stick.
+    // Below about 106 m/s the fixed rate is the larger and nothing changes.
+    const rate = Math.max(c.climbRate * climbAuthority, this.airspeed * MAX_PATH_SIN);
+    const wantClimb = THREE.MathUtils.clamp(input.lift, -1, 1) * rate;
     this.climb += (wantClimb - this.climb) * (1 - Math.pow(0.02, dt));
 
     // The nose follows the flight path, plus a little extra so a climb LOOKS

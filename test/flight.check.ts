@@ -124,8 +124,17 @@ function fresh(alt = 400, hdg = 0): Aircraft {
 // --- Climb and descent ----------------------------------------------------
 {
   const up = fresh();
-  fly(up, { lift: 1, throttle: 1 }, 10, air(0));
+  fly(up, { lift: 1 }, 10, air(0));
   between("climb rate", up.verticalSpeed, 5, DEFAULT_CONFIG.climbRate + 0.5, "m/s");
+
+  // Fast, the rate scales so full stick still holds a usable slope; it must
+  // not exceed that slope, and it must not collapse back to a fixed rate
+  // (8 degrees at Mach 0.86, the "can't go down" report).
+  const dive = fresh(3000);
+  fly(dive, { throttle: 1 }, 20, air(0));
+  fly(dive, { lift: -1 }, 4, air(0));
+  const diveDeg = Math.asin(-dive.verticalSpeed / dive.airspeed) * 180 / Math.PI;
+  between("full-stick dive angle at speed", diveDeg, 20, 26, "deg");
   check("climb gains height", up.position.y - 400 > 45, `${(up.position.y - 400).toFixed(0)} m in 10 s`);
 
   const down = fresh(900);

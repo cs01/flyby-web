@@ -21,6 +21,7 @@ import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, cityAt, DEFAULT_CITY, type City } from "./cities";
 import { ThrottleSlider } from "./app/throttle";
+import { ModeBar } from "./app/modebar";
 import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
@@ -926,6 +927,7 @@ async function main() {
   const hud = new Hud(ui);
   hud.setWeather(wx, 0);
   const throttleSlider = new ThrottleSlider(ui);
+  const modeBar = new ModeBar(ui);
 
   /**
    * What the panel says about where the city came from.
@@ -1259,6 +1261,19 @@ async function main() {
     if (!shotMode) elapsed += dt;
 
     // --- Which machine is flying ------------------------------------------
+    // A tap on the picker is turned into the same toggles V and G raise, so
+    // there is one code path for every way of switching.
+    {
+      const want = modeBar.take();
+      const now = carActive ? "car" : droneActive ? "drone" : "plane";
+      if (want && want !== now) {
+        if (want === "plane") {
+          if (droneActive) input.droneToggled++;
+          if (carActive) input.carToggled++;
+        } else if (want === "drone") input.droneToggled++;
+        else input.carToggled++;
+      }
+    }
     if (input.droneToggled > 0) {
       input.droneToggled = 0;
       droneActive = !droneActive;
@@ -1831,6 +1846,7 @@ async function main() {
       const lever = throttleSlider.take();
       if (lever !== null) ac.throttle = lever;
       throttleSlider.update(ac.throttle, ac.airspeed, !droneActive && !carActive && !shotMode);
+      modeBar.update(carActive ? "car" : droneActive ? "drone" : "plane", !shotMode);
     }
     if (!droneActive && !carActive) {
       osd.update({
