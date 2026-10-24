@@ -35,13 +35,15 @@ import {
   FACADE_FLOATS,
   FACADE_GLSL,
   HOUSE_OPEN_FRAC,
-  FACADE_BYTE_TEXELS,
+  FACADE_STRIDE,
   encodeFacadeValue,
+  packFacadeRaw,
   facadeFor,
   hash3,
   packFacade,
   type FacadeParams,
 } from "./facade";
+import { assignArchetypes } from "./archetype";
 import {
   BuildingKind,
   RoofShape,
@@ -2082,18 +2084,20 @@ export const FACADE_TEX_WIDTH = 1024;
  * (a tile with four buildings in it) are only ever exercised in the field.
  */
 export function packFacadeBytes(params: FacadeParams[]): { data: Uint8Array; height: number } {
-  const texels = params.length * FACADE_BYTE_TEXELS;
+  const texels = params.length * FACADE_STRIDE;
   const height = Math.max(1, Math.ceil(texels / FACADE_TEX_WIDTH));
   const data = new Uint8Array(FACADE_TEX_WIDTH * height * 4);
   const scratch = new Float32Array(FACADE_FLOATS);
   for (let i = 0; i < params.length; i++) {
     packFacade(params[i], scratch, 0);
+    const base = i * FACADE_STRIDE * 4;
     for (let v = 0; v < FACADE_FLOATS; v++) {
       const [lo, hi] = encodeFacadeValue(scratch[v]);
-      const byteIndex = (i * FACADE_FLOATS + v) * 2;
-      data[byteIndex] = lo;
-      data[byteIndex + 1] = hi;
+      data[base + v * 2] = lo;
+      data[base + v * 2 + 1] = hi;
     }
+    // The byte block follows the pairs; see FACADE_RAW_TEXELS.
+    packFacadeRaw(params[i], data, base + FACADE_FLOATS * 2);
   }
   return { data, height };
 }
@@ -2156,6 +2160,10 @@ export class Buildings {
     let skippedFlat = 0;
     let parapets = 0;
     let plantBoxes = 0;
+    // What KIND of building each footprint is, decided over the whole pack at
+    // once because it needs the neighbourhood (district) and the party walls
+    // (coherence). Null outside the surveyed cities; see render/archetype.ts.
+    const choices = assignArchetypes(pack);
 
     for (let i = 0; i < pack.buildings.length; i++) {
       const b = pack.buildings[i];
@@ -2199,7 +2207,7 @@ export class Buildings {
 
       // The seed is the building's index in the pack, so a facade is stable
       // across runs and traceable back to one record.
-      const fp = facadeFor(b.kind, h, i);
+      const fp = facadeFor(b.kind, h, i, choices?.[i]);
       const bidx = params.length;
       params.push(fp);
       families[fp.family]++;

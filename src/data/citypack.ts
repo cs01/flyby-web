@@ -43,6 +43,25 @@ export enum RoofShape {
   Tapered = 4,
 }
 
+/**
+ * The OSM evidence about what a building is made of, when a record carries it.
+ * Only the live path has it (a baked pack stores geometry and kind, nothing
+ * else), and even there most records have none: of 1627 buildings in a Chelsea
+ * query, 77 carried building:material. render/archetype.ts reads it.
+ */
+export interface BuildingTags {
+  /** building:material, lower case: brick, stone, glass, concrete, wood, plaster, metal... */
+  material?: string;
+  /** building:colour, as linear rgb already parsed. */
+  colour?: [number, number, number];
+  /** roof:colour, linear rgb. */
+  roofColour?: [number, number, number];
+  /** start_date's year. */
+  year?: number;
+  /** building:levels. */
+  levels?: number;
+}
+
 export interface Building {
   cx: number;
   cz: number;
@@ -52,6 +71,7 @@ export interface Building {
   roof: RoofShape;
   /** Ring vertices in local ENU metres, absolute (centroid already added). */
   ring: Float32Array;
+  tags?: BuildingTags;
 }
 
 export interface CityPack {
@@ -81,6 +101,8 @@ export interface PackedBuilding {
   /** i16 units of VERT_SCALE metres, offsets from the centroid. */
   dx: Int16Array;
   dz: Int16Array;
+  /** Not written to a pack file: the live path carries it straight through. */
+  tags?: BuildingTags;
 }
 
 /**
@@ -154,6 +176,7 @@ export function unpackBuildings(packed: readonly PackedBuilding[]): Building[] {
       kind: p.kind,
       roof: p.roof,
       ring,
+      ...(p.tags ? { tags: p.tags } : {}),
     };
   }
   return out;

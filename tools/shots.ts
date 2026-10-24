@@ -321,6 +321,21 @@ export const POSES: Pose[] = [
     what: "Chicago LaSalle Street canyon from the kerb, late morning",
   },
   {
+    // MIDTOWN AT NIGHT, from over Chelsea looking north-east at the Empire
+    // State and the towers around Herald Square.
+    //
+    // The owner's report was that Manhattan at night is "grey blocks with
+    // almost no lit windows", and no pose in this set could see it: the two
+    // night poses are both Chicago. tools/verify-buildings.ts floors the lit
+    // window fraction on this frame.
+    name: "manhattan-night",
+    city: "manhattan",
+    lat: 40.7440, lon: -74.0010, altM: 230, hdgDeg: 48, pitchDeg: -7,
+    t: D("2025-06-22T02:30:00Z"), // 22:30 EDT: dark, and the city still awake
+    wx: CLEAR,
+    what: "Midtown Manhattan at night from over Chelsea",
+  },
+  {
     name: "chicago-loop-day",
     city: "chicago",
     // The same Loop as the night pose, in daylight: the pair isolates what is

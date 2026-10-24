@@ -29,6 +29,9 @@
 // rectangle, glass fraction, the occupancy probabilities themselves) is
 // computed HERE, once per building, and the shader only reads it.
 
+import { ARCHETYPES, Interior, RoofCover, WindowStyle, type Archetype, type ArchetypeChoice } from "./archetype";
+import { Mat } from "./materials";
+
 // --- deterministic hashing --------------------------------------------------
 
 /**
@@ -417,7 +420,55 @@ export interface FacadeParams {
   group: number;
   /** Kept for the shader's own noise, and so a facade is traceable to a seed. */
   seed: number;
+
+  // --- what the wall is made of (render/archetype.ts, render/materials.ts) ---
+  /** Index into ARCHETYPES, or -1 for the five-family path. */
+  archetype: number;
+  /** Material layer of the wall, and of the plinth under the ground storey. */
+  wallLayer: Mat;
+  baseLayer: Mat;
+  /** Sill, lintel and cornice stone; sash paint; roof covering; glazing tint. Linear. */
+  trim: [number, number, number];
+  frameColour: [number, number, number];
+  roofColour: [number, number, number];
+  glassTint: [number, number, number];
+  roofCover: RoofCover;
+  windowStyle: WindowStyle;
+  /** Divisions across an opening, for the styles that have them. */
+  mullions: number;
+  interior: Interior;
+  /** Weathering, 0..1. */
+  age: number;
+  /** Frame face width, projecting cornice depth and sill band height, metres. */
+  frameM: number;
+  corniceM: number;
+  sillM: number;
 }
+
+/** Roof covering albedo, linear, as an aged sample of each product. */
+const ROOF_COLOUR: Record<RoofCover, [number, number, number]> = {
+  // Built-up tar and black EPDM measure 0.04-0.06; aluminium roof coating is
+  // sold at 0.5-0.6 reflectance and weathers to about 0.4; a new white TPO is
+  // 0.75-0.8 and a city-aged one 0.55-0.65; ballast gravel is the scan's own.
+  [RoofCover.Tar]: [0.040, 0.040, 0.042],
+  [RoofCover.Silver]: [0.40, 0.41, 0.42],
+  [RoofCover.Gravel]: [0.21, 0.20, 0.18],
+  [RoofCover.WhiteMembrane]: [0.60, 0.61, 0.60],
+  [RoofCover.BlackMembrane]: [0.050, 0.050, 0.055],
+};
+
+/**
+ * What the five-family path is built from, now that every wall has a scan. A
+ * city with no survey still gets photographed brick and render: the family
+ * names the scan and the sash, and the palette stays the family's own.
+ */
+const FAMILY_SURFACE: Record<FacadeFamily, { wall: Mat; base: Mat; window: WindowStyle; interior: Interior; frame: [number, number, number] }> = {
+  [FacadeFamily.Glass]: { wall: Mat.MetalPanel, base: Mat.Granite, window: WindowStyle.Curtain, interior: Interior.Office, frame: [0.25, 0.27, 0.28] },
+  [FacadeFamily.Brick]: { wall: Mat.RedBrick, base: Mat.Limestone, window: WindowStyle.Sash, interior: Interior.Apartment, frame: [0.62, 0.61, 0.58] },
+  [FacadeFamily.Stucco]: { wall: Mat.Stucco, base: Mat.Stucco, window: WindowStyle.Casement, interior: Interior.Apartment, frame: [0.62, 0.61, 0.58] },
+  [FacadeFamily.Concrete]: { wall: Mat.Precast, base: Mat.Granite, window: WindowStyle.Ribbon, interior: Interior.Office, frame: [0.30, 0.31, 0.31] },
+  [FacadeFamily.Stone]: { wall: Mat.Limestone, base: Mat.Granite, window: WindowStyle.Sash, interior: Interior.Office, frame: [0.05, 0.05, 0.05] },
+};
 
 /** Numbers per building written into the parameter texture (6 RGBA texels). */
 /**
@@ -434,10 +485,21 @@ export interface FacadeParams {
  * a zero storey height and rendered NaN-black. A plain 8-bit texture is the
  * format a photograph uses and nothing anywhere refuses to sample it.
  */
-export const FACADE_TEXELS = 7;
+export const FACADE_TEXELS = 8;
 export const FACADE_FLOATS = FACADE_TEXELS * 4;
 /** RGBA8 texels per building: two bytes per value. */
 export const FACADE_BYTE_TEXELS = FACADE_FLOATS / 2;
+/**
+ * RGBA8 texels per building of plain BYTES, after the 16-bit pairs.
+ *
+ * Colours and small integers do not need sixteen bits, and twenty of them as
+ * pairs would be ten more fetches per pixel. A colour goes in as sqrt(linear)
+ * so the dark end, where tar roofs and black steel live, keeps its precision.
+ */
+export const FACADE_RAW_TEXELS = 5;
+/** Texels one building occupies in the table. */
+export const FACADE_STRIDE = FACADE_BYTE_TEXELS + FACADE_RAW_TEXELS;
+export const FACADE_RAW_BYTES = FACADE_RAW_TEXELS * 4;
 
 /**
  * Fixed-point range. Every value this table stores was measured to lie in
@@ -463,33 +525,64 @@ export function decodeFacadeValue(lo: number, hi: number): number {
  * seed. Pure and total: the same three inputs always give the same answer, on
  * any machine, which is what makes two screenshot runs comparable.
  */
-export function facadeFor(kind: number, heightM: number, seed: number): FacadeParams {
-  const family = pickFamily(kind, heightM, seed);
-  const s = FAMILY[family];
+export function facadeFor(
+  kind: number,
+  heightM: number,
+  seed: number,
+  choice?: ArchetypeChoice | null,
+): FacadeParams {
+  const arch: Archetype | null = choice ? ARCHETYPES[choice.archetype] : null;
+  const family: FacadeFamily = arch ? (arch.family as FacadeFamily) : pickFamily(kind, heightM, seed);
+  // An archetype carries its own measured spec; the family table is the
+  // fallback for a city with no survey.
+  const s: FamilySpec = arch
+    ? {
+        lo: [0, 0, 0], hi: [0, 0, 0], storeyM: arch.storeyM, columnM: arch.columnM, win: arch.win,
+        glass: arch.glassFrac, roughness: arch.roughness, f0: arch.f0, relief: arch.relief, parapetM: arch.parapetM,
+      }
+    : FAMILY[family];
 
   // Is this a house? osmbuildings.ts now recovers Residential from footprint
   // geometry and neighbour density, so most of a suburb arrives tagged, and a
-  // suburb is the case the family specs were never measured on.
-  const house = kind === 1 && heightM <= HOUSE_MAX_M ? 1 : 0;
+  // suburb is the case the family specs were never measured on. With a survey,
+  // the archetype says it: a Victorian row house is Residential and under 11 m
+  // and is NOT a detached house, and a sparse house elevation on it was wrong.
+  const house = arch
+    ? (arch.house && heightM <= HOUSE_MAX_M ? 1 : 0)
+    : (kind === 1 && heightM <= HOUSE_MAX_M ? 1 : 0);
 
   // Colour: a point on the family's range, then a small per-building shift so
-  // two brick buildings side by side are not the same brick.
+  // two brick buildings side by side are not the same brick. With a survey, a
+  // swatch from the archetype's palette, which also names the scan it is laid
+  // in, so a walk-up painted grey is painted brick and not grey brick.
   const t = h1(seed, 0x21);
   const jr = h1(seed, 0x31) - 0.5;
   const jg = h1(seed, 0x32) - 0.5;
   const jb = h1(seed, 0x33) - 0.5;
   const tone = 1 + 0.14 * (h1(seed, 0x34) - 0.5);
-  const colour: [number, number, number] = [
-    clamp01(lerp(s.lo[0], s.hi[0], t) * tone + 0.035 * jr),
-    clamp01(lerp(s.lo[1], s.hi[1], t) * tone + 0.035 * jg),
-    clamp01(lerp(s.lo[2], s.hi[2], t) * tone + 0.035 * jb),
+  const swatch = arch ? arch.palette[Math.floor(t * arch.palette.length) % arch.palette.length] : null;
+  const base3: [number, number, number] = swatch
+    ? swatch.c
+    : [lerp(s.lo[0], s.hi[0], t), lerp(s.lo[1], s.hi[1], t), lerp(s.lo[2], s.hi[2], t)];
+  // Chroma jitter is proportional on a swatch: 0.035 absolute is nothing on a
+  // pale render and a hue shift on a 0.03 black steel frame.
+  const jAmp = swatch ? 0.06 : 0;
+  const colour: [number, number, number] = choice?.tags?.colour ?? [
+    clamp01(base3[0] * tone * (1 + jAmp * jr) + (swatch ? 0 : 0.035 * jr)),
+    clamp01(base3[1] * tone * (1 + jAmp * jg) + (swatch ? 0 : 0.035 * jg)),
+    clamp01(base3[2] * tone * (1 + jAmp * jb) + (swatch ? 0 : 0.035 * jb)),
   ];
 
   // Storey and column pitch vary by a few per cent per building. Real blocks
   // do, and a grid that is identical across a street is the single most
   // obvious tell that a city is procedural.
-  const storeyM = (house ? HOUSE.storeyM : s.storeyM)
-    * (1 + (house ? HOUSE.storeyJitter : 0.10) * (h1(seed, 0x41) - 0.5));
+  // building:levels, where a mapper counted them, beats any survey: it is this
+  // building's own storey height. Bounded so a levels count that includes a
+  // basement or a roof storey cannot produce a 1.8 m or a 7 m floor.
+  const levels = choice?.tags?.levels;
+  const storeyM = levels && levels >= 2 && !house
+    ? Math.min(4.6, Math.max(2.6, heightM / levels))
+    : (house ? HOUSE.storeyM : s.storeyM) * (1 + (house ? HOUSE.storeyJitter : 0.10) * (h1(seed, 0x41) - 0.5));
   const columnM = (house ? HOUSE.columnM : s.columnM)
     * (1 + (house ? HOUSE.columnJitter : 0.18) * (h1(seed, 0x42) - 0.5));
 
@@ -533,14 +626,16 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
   const corePeriod = CORE_PERIOD_MIN + Math.floor(h1(seed, 0x58) * (CORE_PERIOD_MAX - CORE_PERIOD_MIN + 1));
   const coreSlot = Math.floor(h1(seed, 0x59) * CORE_PERIOD_MAX) % corePeriod;
 
-  const group = occupancyGroup(family, kind, heightM);
+  const group = arch
+    ? (arch.group ?? (arch.interior === Interior.Office ? 1 : 0))
+    : occupancyGroup(family, kind, heightM);
   const office = group === 1;
 
   // How shop-like the ground floor is. Kind carries most of it and height
   // carries the rest: a retail unit is a shopfront, a warehouse is a roller
   // shutter, and the base of any tall building in a city centre is let to
   // somebody who wants a window on the street whatever the tag says.
-  const shopBias = SHOPFRONT_BY_KIND[kind] ?? SHOPFRONT_BY_KIND[0];
+  const shopBias = arch ? arch.shopfront : (SHOPFRONT_BY_KIND[kind] ?? SHOPFRONT_BY_KIND[0]);
   const shopfront = clamp01(
     shopBias * (0.55 + 0.9 * h1(seed, 0x61)) + 0.35 * Math.min(1, Math.max(0, (heightM - 10) / 40)),
   );
@@ -594,6 +689,81 @@ export function facadeFor(kind: number, heightM: number, seed: number): FacadePa
     coreSlot,
     group,
     seed: (seed % 4096) / 4096,
+    ...surfaceFor(arch, family, house, seed, swatch?.m ?? null, choice?.tags?.roofColour),
+  };
+}
+
+/** Pick one of a list by a hash. */
+function pick<T>(list: readonly T[], seed: number, salt: number): T {
+  return list[Math.floor(h1(seed, salt) * list.length) % list.length];
+}
+
+/**
+ * The material half of a facade: which scans, which trim and sash, which roof.
+ * Split out of facadeFor because it is the half the five-family path also has
+ * to answer now, from the family alone.
+ */
+function surfaceFor(
+  arch: Archetype | null,
+  family: FacadeFamily,
+  house: number,
+  seed: number,
+  wall: Mat | null,
+  roofTag: [number, number, number] | undefined,
+): Pick<FacadeParams, "archetype" | "wallLayer" | "baseLayer" | "trim" | "frameColour" | "roofColour" |
+  "glassTint" | "roofCover" | "windowStyle" | "mullions" | "interior" | "age" | "frameM" | "corniceM" | "sillM"> {
+  const jitter = (c: [number, number, number], amp: number, salt: number): [number, number, number] => {
+    const k = 1 + amp * (h1(seed, salt) - 0.5);
+    return [clamp01(c[0] * k), clamp01(c[1] * k), clamp01(c[2] * k)];
+  };
+  if (arch) {
+    const roofCover = pick(arch.roofs, seed, 0x71);
+    const wallLayer = wall ?? arch.palette[0].m;
+    // The plinth: granite under an office, limestone under a masonry block, and
+    // the wall itself carried down on anything timber or rendered.
+    const baseLayer = arch.interior === Interior.Office ? Mat.Granite
+      : wallLayer === Mat.Siding || wallLayer === Mat.Stucco || house ? wallLayer
+      : Mat.Limestone;
+    return {
+      archetype: ARCHETYPES.indexOf(arch),
+      wallLayer,
+      baseLayer,
+      trim: jitter(pick(arch.trim, seed, 0x72), 0.12, 0x73),
+      frameColour: pick(arch.frame, seed, 0x74),
+      roofColour: roofTag ?? jitter(ROOF_COLOUR[roofCover], 0.3, 0x75),
+      glassTint: arch.glass,
+      roofCover,
+      windowStyle: arch.window,
+      mullions: arch.mullions,
+      interior: arch.interior,
+      age: clamp01(arch.age * (0.75 + 0.5 * h1(seed, 0x76))),
+      frameM: arch.frameM,
+      corniceM: arch.corniceM * (0.8 + 0.4 * h1(seed, 0x77)),
+      sillM: arch.sillM,
+    };
+  }
+  const fs = FAMILY_SURFACE[family];
+  // A house in the brick or render family is clad in lap siding: the shader
+  // already drew it as siding from the house flag, and the scan follows.
+  const wallLayer = house && (family === FacadeFamily.Brick || family === FacadeFamily.Stucco) ? Mat.Siding : fs.wall;
+  const roofCover = house ? RoofCover.Tar
+    : pick([RoofCover.Tar, RoofCover.Gravel, RoofCover.BlackMembrane, RoofCover.WhiteMembrane], seed, 0x71);
+  return {
+    archetype: -1,
+    wallLayer,
+    baseLayer: house ? wallLayer : fs.base,
+    trim: jitter([0.42, 0.41, 0.39], 0.2, 0x73),
+    frameColour: fs.frame,
+    roofColour: roofTag ?? jitter(ROOF_COLOUR[roofCover], 0.3, 0x75),
+    glassTint: [0.02, 0.03, 0.04],
+    roofCover,
+    windowStyle: house ? WindowStyle.Sash : fs.window,
+    mullions: family === FacadeFamily.Concrete ? 1 : 1,
+    interior: house ? Interior.Apartment : fs.interior,
+    age: 0.4 * h1(seed, 0x76),
+    frameM: family === FacadeFamily.Glass ? 0.05 : 0.07,
+    corniceM: 0,
+    sillM: family === FacadeFamily.Stone || family === FacadeFamily.Brick ? 0.1 : 0,
   };
 }
 
@@ -728,6 +898,32 @@ export function packFacade(p: FacadeParams, out: Float32Array, i: number): void 
   // component is written anyway: the gate fills the buffer with NaN first, so
   // a slot nobody writes now fails rather than reading as a silent zero.
   out[o++] = p.house;     out[o++] = p.f0;
+  // The eighth texel: the relief the archetype adds, and which archetype it is,
+  // so a debug view can colour by type without a second table. +1 so the
+  // five-family path's -1 survives an unsigned encoding.
+  out[o++] = p.corniceM;  out[o++] = p.sillM;   out[o++] = p.frameM;    out[o++] = p.archetype + 1;
+}
+
+/** sqrt-encode a linear 0..1 colour channel into a byte. See FACADE_RAW_TEXELS. */
+export function encodeColourByte(v: number): number {
+  return Math.round(Math.sqrt(clamp01(v)) * 255);
+}
+
+/** Write one building's raw-byte block: FACADE_RAW_BYTES bytes at `off`. */
+export function packFacadeRaw(p: FacadeParams, out: Uint8Array, off: number): void {
+  const c = (rgb: [number, number, number], at: number): void => {
+    out[off + at] = encodeColourByte(rgb[0]);
+    out[off + at + 1] = encodeColourByte(rgb[1]);
+    out[off + at + 2] = encodeColourByte(rgb[2]);
+  };
+  c(p.trim, 0);        out[off + 3] = p.wallLayer;
+  c(p.frameColour, 4); out[off + 7] = p.baseLayer;
+  c(p.roofColour, 8);  out[off + 11] = p.roofCover;
+  c(p.glassTint, 12);  out[off + 15] = p.windowStyle;
+  out[off + 16] = p.mullions;
+  out[off + 17] = p.interior;
+  out[off + 18] = Math.round(clamp01(p.age) * 255);
+  out[off + 19] = 0;
 }
 
 // --- the GLSL half ----------------------------------------------------------
@@ -771,13 +967,28 @@ struct Facade {
   float groundStoreyM;
   float shopfront;
   float house;
+  float corniceM;
+  float sillM;
+  float frameM;
+  float archetype;
+  vec3  trim;
+  vec3  frameColour;
+  vec3  roofColour;
+  vec3  glassTint;
+  float wallLayer;
+  float baseLayer;
+  float roofCover;
+  float windowStyle;
+  float mullions;
+  float interior;
+  float age;
 };
 
 // One RGBA8 texel is two 16-bit values: (r,g) is the first, (b,a) the second.
 // texture() returns 0..1, so a byte is that times 255, and rounding matters
 // because 0.5/255 of drift in the high byte is 128 counts of the value.
 vec2 facadePair(float bidx, float k) {
-  float t = bidx * ${FACADE_BYTE_TEXELS}.0 + k;
+  float t = bidx * ${FACADE_STRIDE}.0 + k;
   float y = floor(t / uFacadeWidth);
   vec4 e = texelFetch(uFacade, ivec2(int(t - y * uFacadeWidth), int(y)), 0);
   float lo0 = floor(e.r * 255.0 + 0.5);
@@ -796,6 +1007,13 @@ vec4 facadeTexel(float bidx, float k) {
   return vec4(ab.x, ab.y, cd.x, cd.y);
 }
 
+// The raw-byte texels after the pairs: one byte per value, 0..255.
+vec4 facadeRaw(float bidx, float k) {
+  float t = bidx * ${FACADE_STRIDE}.0 + ${FACADE_BYTE_TEXELS}.0 + k;
+  float y = floor(t / uFacadeWidth);
+  return floor(texelFetch(uFacade, ivec2(int(t - y * uFacadeWidth), int(y)), 0) * 255.0 + 0.5);
+}
+
 Facade readFacade(float bidx) {
   vec4 a = facadeTexel(bidx, 0.0);
   vec4 b = facadeTexel(bidx, 1.0);
@@ -804,6 +1022,12 @@ Facade readFacade(float bidx) {
   vec4 e = facadeTexel(bidx, 4.0);
   vec4 f = facadeTexel(bidx, 5.0);
   vec4 g = facadeTexel(bidx, 6.0);
+  vec4 h = facadeTexel(bidx, 7.0);
+  vec4 r0 = facadeRaw(bidx, 0.0);
+  vec4 r1 = facadeRaw(bidx, 1.0);
+  vec4 r2 = facadeRaw(bidx, 2.0);
+  vec4 r3 = facadeRaw(bidx, 3.0);
+  vec4 r4 = facadeRaw(bidx, 4.0);
   Facade p;
   p.colour = a.rgb;   p.roughness = a.w;
   p.storeyM = b.x;    p.columnM = b.y;  p.glassFrac = b.z;  p.seed = b.w;
@@ -813,6 +1037,13 @@ Facade readFacade(float bidx) {
   p.coreSlot = f.x;   p.group = floor(f.y / 8.0);  p.family = f.y - p.group * 8.0;
   p.relief = f.z;     p.parapetM = f.w;
   p.groundStoreyM = g.x;  p.shopfront = g.y;  p.house = g.z;  p.f0 = g.w;
+  p.corniceM = h.x;   p.sillM = h.y;    p.frameM = h.z;     p.archetype = h.w - 1.0;
+  // sqrt-encoded colours: square on the way out.
+  vec3 t0 = r0.rgb / 255.0; p.trim = t0 * t0;          p.wallLayer = r0.a;
+  vec3 t1 = r1.rgb / 255.0; p.frameColour = t1 * t1;   p.baseLayer = r1.a;
+  vec3 t2 = r2.rgb / 255.0; p.roofColour = t2 * t2;    p.roofCover = r2.a;
+  vec3 t3 = r3.rgb / 255.0; p.glassTint = t3 * t3;     p.windowStyle = r3.a;
+  p.mullions = r4.x;  p.interior = r4.y;  p.age = r4.z / 255.0;
 
   // A DEAD TABLE MUST DEGRADE, NOT BREAK.
   //
@@ -853,6 +1084,11 @@ Facade readFacade(float bidx) {
     p.group = 1.0; p.family = fb2 > 0.82 ? 0.0 : 1.0;
     p.groundStoreyM = 4.0; p.shopfront = 0.45; p.house = 0.0;
     p.f0 = fb2 > 0.82 ? 0.22 : 0.05;
+    p.corniceM = 0.0; p.sillM = 0.0; p.frameM = 0.06; p.archetype = -1.0;
+    p.trim = vec3(0.4); p.frameColour = vec3(0.3); p.roofColour = vec3(0.1);
+    p.glassTint = vec3(0.03); p.wallLayer = fb2 > 0.82 ? 12.0 : 0.0; p.baseLayer = 13.0;
+    p.roofCover = 0.0; p.windowStyle = fb2 > 0.82 ? 3.0 : 0.0; p.mullions = 1.0;
+    p.interior = 1.0; p.age = 0.3;
   }
 
   // Belt and braces: clamp every divisor at the point of use anyway, so a
