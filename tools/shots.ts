@@ -600,6 +600,14 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
     `${p.name} detail drape`,
   );
 
+  // The photographed building materials load after the city does; a frame
+  // taken before they land is a different picture. Absent on a build from
+  // before they existed, so `!(... > 0)` rather than `=== 0`.
+  await cdp.waitFor("!(window.__flybyMaterialsPending > 0)", 120_000, `${p.name} building materials`);
+  // Then a few frames for the upload and mip generation to reach the screen.
+  await cdp.eval("window.flybyShot.resetTiming()");
+  await cdp.waitFor("window.flybyShot.timed > 10", 60_000, `${p.name} materials on screen`);
+
   // A live-fetched pose additionally waits on its own condition: streamed
   // tiles arrive over the network, so there is nothing to photograph until the
   // scheduler says the ground is populated.

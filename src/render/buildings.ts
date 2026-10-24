@@ -1110,6 +1110,49 @@ void main() {
             * glassMask * (1.0 - uNight);
     }
 
+    // --- THE FIRE ESCAPE ------------------------------------------------------
+    //
+    // The single most New York thing on a walk-up front: a black steel stack of
+    // balconies two windows wide, a railing on each, and a stair zig-zagging
+    // down between them. Drawn in the wall plane (it stands a metre off it,
+    // under a pixel of parallax from anywhere but the pavement opposite), on
+    // the faces a hash of the wall's orientation picks, so a building has it on
+    // one or two elevations and not round all four.
+    float fireEsc = 0.0;
+    if (detailOn > 0.5 && mod(floor(fp.roofFeatures / 8.0), 2.0) > 0.5 && floorIdx >= 0.0 && capped > 0.5) {
+      float face = floor((atan(n.z, n.x) + 3.14159) / 6.28318 * 8.0);
+      float faceOn = step(hash11(face * 7.3 + fp.seed * 91.0), 0.45);
+      float period = 3.0 + floor(hash11(fp.seed * 13.0 + face) * 3.0);
+      float slot = floor(hash11(fp.seed * 17.0 + face * 3.0) * (period - 1.0));
+      float bay = floor(colIdx / period);
+      float ex = vUv.x - (bay * period + slot) * fp.columnM;      // metres into the escape
+      float span = 2.0 * fp.columnM;
+      float inEsc = step(0.0, ex) * step(ex, span) * faceOn;
+      float fy = (vUv.y - groundH) - floorIdx * fp.storeyM;       // metres above this floor
+      float aa = max(fwidth(vUv.y), 1e-3);
+      float platform = smoothstep(-aa, aa, fy) * smoothstep(0.10 + aa, 0.10 - aa, fy);
+      float rail = smoothstep(0.92 - aa, 0.92 + aa, fy) * smoothstep(0.98 + aa, 0.98 - aa, fy);
+      float bw = max(fwidth(ex / 0.12), 1e-3);
+      float baluster = mix(0.22, step(fract(ex / 0.12), 0.22), 1.0 - clamp(bw * 1.2, 0.0, 1.0))
+                     * step(0.10, fy) * step(fy, 0.92);
+      // The stair: a stringer from one platform up to the next, alternating
+      // direction floor by floor.
+      float dir = mod(floorIdx, 2.0) < 0.5 ? 1.0 : -1.0;
+      float sx = dir > 0.0 ? ex - 0.25 : span - 0.25 - ex;
+      float run = span - 0.9;
+      float stair = 1.0 - smoothstep(0.05 + aa * 2.0, 0.09 + aa * 2.0, abs(fy - sx * fp.storeyM / run))
+                  * 1.0;
+      stair *= step(0.0, sx) * step(sx, run);
+      float steel = max(max(platform, rail), max(baluster, stair));
+      fireEsc = inEsc * steel * mix(0.6, 1.0, detailY);
+      // The grating's shadow under each platform, when the sun is on the wall.
+      float under = smoothstep(-0.45, -0.05, fy - fp.storeyM) * step(fy - fp.storeyM, 0.0);
+      revealShade *= 1.0 - 0.5 * inEsc * under * step(0.02, dot(uSunDir, n));
+      albedo = mix(albedo, vec3(0.028, 0.028, 0.030), fireEsc);
+      glassMask *= 1.0 - fireEsc;
+      seeIn *= 1.0 - fireEsc;
+    }
+
     // --- SILLS AND LINTELS ---------------------------------------------------
     //
     // A punched opening in masonry has a stone sill under it and a stone or
@@ -1480,7 +1523,7 @@ void main() {
       // timber floor, a red curtain. Half strength, renormalised to luminance
       // so it moves hue and not the mean.
       vec3 roomTint = mix(vec3(1.0), roomC / max(roomLum, 1e-3) * 0.6 + 0.4, 0.5 * detailOn * detailN);
-      emissive += warm * roomTint * gain * lit * uNight * 0.09;
+      emissive += warm * roomTint * gain * lit * uNight * 0.09 * (1.0 - fireEsc);
 
       // Shopfronts. A lit shop window is far brighter than a flat above it and
       // it is at eye height, so it carries the night street the way the lit

@@ -325,6 +325,8 @@ export enum PitchCover {
 export const ROOF_SOLAR = 1;
 export const ROOF_SKYLIGHTS = 2;
 export const ROOF_DECK = 4;
+/** Not a roof feature, but it rides the same byte: a fire escape on the front. */
+export const FIRE_ESCAPE = 8;
 
 /** A palette entry: a colour and the scan it is laid in. Picked together. */
 export interface Swatch {
@@ -389,6 +391,8 @@ export interface Archetype {
   pitched?: PitchCover[];
   /** Chance of a solar array on a flat roof. */
   solar?: number;
+  /** Chance of a steel fire escape on the street front. */
+  fireEscape?: number;
   /** Chance of a wooden water tank, on buildings 18-75 m tall. */
   tank: number;
   /** Weathering 0..1: how much soot, streaking and base grime. */
@@ -429,9 +433,11 @@ const BRONZE = lin(62, 52, 40);
 const ALUMINIUM = lin(150, 152, 150);
 const CLEAR_GLASS = lin(40, 50, 56);
 
-// Wall swatches, in sRGB as sampled from street photographs in daylight shade
-// (no direct sun on the sample, so they are close to albedo rather than to a
-// lit pixel). See docs/building-archetypes.md for the sources.
+// Wall swatches, written in sRGB as a daylight-shade reading of each material
+// (no direct sun, so close to albedo rather than a lit pixel). They come from
+// the survey of each type and were checked against reference photographs, not
+// sampled pixel by pixel from a photo set; docs/building-archetypes.md says
+// which were measured and which are still open.
 const NYC_RED_BRICK = [
   sw(Mat.OldBrick, 128, 62, 46), sw(Mat.OldBrick, 112, 58, 46), sw(Mat.RedBrick, 140, 72, 52),
   sw(Mat.RedBrick, 118, 66, 52), sw(Mat.BrownBrick, 104, 70, 58), sw(Mat.OldBrick, 96, 52, 42),
@@ -453,7 +459,10 @@ const CONCRETE = [sw(Mat.Precast, 160, 158, 150), sw(Mat.Precast, 140, 138, 132)
 // carry: pale yellows, blues, greys, sage, salmon and whites, with the odd dark
 // slate. Not the tourist-postcard saturation; most of a real row is muted.
 const SF_PAINT = [
-  sw(Mat.Siding, 224, 206, 150), sw(Mat.Siding, 168, 190, 204), sw(Mat.Siding, 222, 220, 210),
+  // 206,186,140 and 84,104,96: a yellow and a green front on Pacific Heights,
+  // measured off a CC BY photo in overcast shade and lifted out of the shade.
+  sw(Mat.Siding, 206, 186, 140), sw(Mat.Siding, 168, 190, 204), sw(Mat.Siding, 222, 220, 210),
+  sw(Mat.Siding, 84, 104, 96),
   sw(Mat.Siding, 176, 188, 160), sw(Mat.Siding, 214, 168, 150), sw(Mat.Siding, 128, 146, 168),
   sw(Mat.Siding, 196, 188, 172), sw(Mat.Siding, 96, 108, 100), sw(Mat.Siding, 212, 196, 170),
   sw(Mat.Siding, 186, 150, 160),
@@ -501,6 +510,9 @@ export const ARCHETYPES: Archetype[] = [
     relief: 0.8, parapetM: 0.9, corniceM: 0.75, sillM: 0.14, window: WindowStyle.Sash, frameM: 0.07, mullions: 1,
     interior: Interior.Apartment, roofs: [RoofCover.Silver, RoofCover.Silver, RoofCover.Tar, RoofCover.BlackMembrane],
     tank: 0.35, age: 0.85, shopfront: 0.55, f0: COMMON.f0Punched, roughness: 0.86,
+    // The 1901 Tenement House Act required one on every walk-up front without
+    // a fireproof stair, and most of them are still there.
+    fireEscape: 0.8,
   },
   {
     id: "nyc-brownstone", name: "brownstone or brick row house", region: Region.NYC, family: 4, era: [1850, 1900],
@@ -532,6 +544,7 @@ export const ARCHETYPES: Archetype[] = [
     relief: 0.7, parapetM: 1.1, corniceM: 0.5, sillM: 0.12, window: WindowStyle.SashMuntin, frameM: 0.07, mullions: 3,
     interior: Interior.Apartment, roofs: [RoofCover.Silver, RoofCover.Tar, RoofCover.BlackMembrane],
     tank: 0.65, age: 0.6, shopfront: 0.35, f0: COMMON.f0Punched, roughness: 0.84,
+    fireEscape: 0.3,
   },
   {
     id: "nyc-loft", name: "cast-iron or masonry loft", region: Region.NYC, family: 4, era: [1860, 1925],
@@ -552,6 +565,7 @@ export const ARCHETYPES: Archetype[] = [
     relief: 0.8, parapetM: 0.9, corniceM: 0.85, sillM: 0.10, window: WindowStyle.Sash, frameM: 0.09, mullions: 1,
     interior: Interior.Loft, roofs: [RoofCover.Tar, RoofCover.Silver, RoofCover.BlackMembrane],
     tank: 0.6, age: 0.75, shopfront: 0.85, f0: COMMON.f0Punched, roughness: 0.78,
+    fireEscape: 0.6,
   },
   {
     id: "nyc-deco-tower", name: "Art Deco setback tower", region: Region.NYC, family: 4, era: [1924, 1940],
@@ -648,6 +662,7 @@ export const ARCHETYPES: Archetype[] = [
     relief: 0.65, parapetM: 0.8, corniceM: 0.5, sillM: 0.08, window: WindowStyle.Bay, frameM: 0.08, mullions: 1,
     interior: Interior.Apartment, roofs: [RoofCover.Tar, RoofCover.Silver],
     tank: 0, age: 0.3, shopfront: 0.25, f0: COMMON.f0Punched, roughness: 0.8,
+    fireEscape: 0.25,
   },
   {
     id: "sf-stucco-apt", name: "1920s stucco apartment block", region: Region.SF, family: 2, era: [1920, 1940],

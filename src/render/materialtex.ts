@@ -71,6 +71,12 @@ export function loadMaterialTextures(reduced: boolean, anisotropy: number): Prom
   const res = reduced ? MAT_RES_REDUCED : MAT_RES_FULL;
   let p = loads.get(res);
   if (p) return p;
+  // The screenshot harness waits on this before it captures: a frame taken
+  // before the strips arrive is the flat facade, and two frames of one pose
+  // that straddle the arrival differ everywhere there is a building, which
+  // every before/after gate in tools/ would read as a regression.
+  const g = globalThis as { __flybyMaterialsPending?: number };
+  g.__flybyMaterialsPending = (g.__flybyMaterialsPending ?? 0) + 1;
   p = (async (): Promise<MaterialTextures | null> => {
     try {
       const base = `${import.meta.env.BASE_URL}materials/`;
@@ -92,6 +98,8 @@ export function loadMaterialTextures(reduced: boolean, anisotropy: number): Prom
     } catch (err) {
       console.warn("building materials unavailable, facades stay flat:", err);
       return null;
+    } finally {
+      g.__flybyMaterialsPending = (g.__flybyMaterialsPending ?? 1) - 1;
     }
   })();
   loads.set(res, p);

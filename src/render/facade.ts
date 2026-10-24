@@ -30,7 +30,7 @@
 // computed HERE, once per building, and the shader only reads it.
 
 import {
-  ARCHETYPES, Interior, PitchCover, RoofCover, ROOF_DECK, ROOF_SKYLIGHTS, ROOF_SOLAR, WindowStyle,
+  ARCHETYPES, FIRE_ESCAPE, Interior, PitchCover, RoofCover, ROOF_DECK, ROOF_SKYLIGHTS, ROOF_SOLAR, WindowStyle,
   type Archetype, type ArchetypeChoice,
 } from "./archetype";
 import { Mat } from "./materials";
@@ -784,7 +784,8 @@ function surfaceFor(
       roofCover,
       pitchCover,
       roofFeatures: features(arch.solar ?? 0, arch.interior === Interior.Apartment, heightM < 30)
-        | (roofCover === RoofCover.Pavers ? ROOF_DECK : 0),
+        | (roofCover === RoofCover.Pavers ? ROOF_DECK : 0)
+        | (heightM >= 9 && heightM <= 40 && h1(seed, 0x7b) < (arch.fireEscape ?? 0) ? FIRE_ESCAPE : 0),
       roofHalfL: 0,
       roofHalfW: 0,
       windowStyle: arch.window,
