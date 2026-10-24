@@ -36,6 +36,7 @@ import {
 import { buildRoadGraph, isDriveable, type RoadEdge } from "../src/data/roadgraph";
 import { ORPHAN_EDGE_MARGIN_M, buildBridgeDecks, deckYAt } from "../src/data/bridgedeck";
 import { Origin } from "../src/geo";
+import { addTraffic, type StreetWorld, type TrafficInstance } from "../src/data/streetfurniture";
 
 declare const process: { exit(code?: number): never };
 
@@ -386,6 +387,98 @@ function stepsAt(y: (e: RoadEdge, n: number) => number): { steps: number; joins:
     "orphan split",
     then.stats.orphanChains > 50 && then.stats.orphanChainsDraped > then.stats.orphanChainsLifted,
     `the old rule lifted all ${then.stats.orphanChains} of them`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A car on a bridge drives ON the deck.
+//
+// THE ONE THE OWNER FOUND, over the Bay Bridge: "the cars are not actually on
+// the road, they're above". data/streetfurniture.ts placed traffic at
+// groundY + roadLiftM long after the ribbon had moved to the solved deck, so
+// the two disagreed by however far the deck was from terrain-plus-a-constant.
+// Over the real DEM that was 7184 of 7422 car samples more than 0.3 m off, the
+// worst 65 m: the west span is one 3.2 km way with three vertices, its run ends
+// were at YBI hill height and at SoMa street height, and every car between was
+// a straight line through the air above a deck it never touched.
+//
+// Measured where the CAR is, not where the run ends are: each car's straight
+// line is sampled along its length and compared with the deck at that point's
+// arc length along its way, so a run that cuts the corner of a bent deck fails
+// here too and not only a run with wrong ends.
+// ---------------------------------------------------------------------------
+
+/** Arc length along the polyline of the point on it nearest (x, z). */
+function arcAt(pts: Float32Array, x: number, z: number): number {
+  let best = Infinity;
+  let bestS = 0;
+  let acc = 0;
+  for (let k = 2; k < pts.length; k += 2) {
+    const ax = pts[k - 2], az = pts[k - 1], bx = pts[k], bz = pts[k + 1];
+    const l2 = (bx - ax) ** 2 + (bz - az) ** 2;
+    const l = Math.sqrt(l2);
+    const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * (bx - ax) + (z - az) * (bz - az)) / l2)) : 0;
+    const d = Math.hypot(ax + t * (bx - ax) - x, az + t * (bz - az) - z);
+    if (d < best) { best = d; bestS = acc + t * l; }
+    acc += l;
+  }
+  return bestS;
+}
+
+function carsOffDeck(
+  roads: RoadPack["roads"],
+  decksOf: ReturnType<typeof buildBridgeDecks>,
+  world: StreetWorld,
+  boundM: number,
+): { samples: number; over: number; worst: number } {
+  let samples = 0;
+  let over = 0;
+  let worst = 0;
+  for (let i = 0; i < roads.length; i++) {
+    const r = roads[i];
+    if ((r.flags & ROAD_BRIDGE) === 0) continue;
+    const d = decksOf.deck[i];
+    if (!d) continue;
+    const cars: TrafficInstance[] = [];
+    addTraffic(cars, r, i, world);
+    for (const c of cars) {
+      for (const q of [0, 0.25, 0.5, 0.75, 1]) {
+        const x = c.x0 + (c.x1 - c.x0) * q;
+        const z = c.z0 + (c.z1 - c.z0) * q;
+        const y = c.y0 + (c.y1 - c.y0) * q;
+        const e = Math.abs(y - deckYAt(d, arcAt(r.pts, x, z)));
+        samples++;
+        if (e > boundM) over++;
+        if (e > worst) worst = e;
+      }
+    }
+  }
+  return { samples, over, worst };
+}
+
+{
+  const world: StreetWorld = {
+    groundY: ground,
+    deckOf: (i) => decks.deck[i],
+    occupied: null,
+    onCarriageway: null,
+    nearestMeasuredLamp: null,
+  };
+  // 0.3 m: a road wheel is 0.33 m in radius, so this is a car visibly sitting
+  // in or over the tarmac rather than on it.
+  const BOUND_M = 0.3;
+  const now = carsOffDeck(pack.roads, decks, world, BOUND_M);
+  check(
+    "every car on a bridge is on the deck",
+    now.samples > 1000 && now.over === 0,
+    `${now.over} of ${now.samples} car samples over ${BOUND_M} m off, worst ${now.worst.toFixed(3)} m`,
+  );
+  // The old placement: terrain plus the fixed bridge lift, no deck at all.
+  const then = carsOffDeck(pack.roads, decks, { ...world, deckOf: null }, BOUND_M);
+  probe(
+    "car off deck",
+    then.samples > 1000 && then.over === 0,
+    `groundY + roadLiftM puts ${then.over} of ${then.samples} off, worst ${then.worst.toFixed(1)} m`,
   );
 }
 

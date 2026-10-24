@@ -43,11 +43,13 @@ import {
   roadLiftM,
   roadWidthM,
   RoadClass,
+  ROAD_BRIDGE,
   ROAD_ONEWAY,
   ROAD_TUNNEL,
   type Road,
 } from "./roadpack";
 import { KERB_HEIGHT_M } from "./pavement";
+import { deckYAt, type Deck } from "./bridgedeck";
 
 // --- tiling -----------------------------------------------------------------
 
@@ -273,6 +275,37 @@ export interface StreetWorld {
   /** The nearest surveyed street lamp within `maxM`, or null. Null for the
    *  whole callback means this city has no .street pack. */
   nearestMeasuredLamp: ((x: number, z: number, maxM: number) => Point | null) | null;
+  /**
+   * The solved bridge deck of road `roadIndex`, or null where it has none.
+   *
+   * A bridge is NOT terrain plus a lift. data/bridgedeck.ts solves it abutment
+   * to abutment, and render/roads.ts draws exactly that, so anything standing
+   * on a bridge has to read the same answer or it stands on a different
+   * surface: over the Bay Bridge the old groundY + roadLiftM put cars 27 m
+   * above the drawn deck at the Yerba Buena end and under the bay in the
+   * middle. Optional because a world with no bridges has nothing to say.
+   */
+  deckOf?: ((roadIndex: number) => Deck | null) | null;
+}
+
+/**
+ * Height of the carriageway of road `r` at arc length `u` along it, where
+ * (x, z) is that point.
+ *
+ * THE one answer for street furniture, and the same answer the ribbon draws:
+ * the solved deck on a bridge, terrain plus the road lift everywhere else.
+ */
+export function carriagewayY(
+  world: StreetWorld,
+  r: Road,
+  roadIndex: number,
+  x: number,
+  z: number,
+  u: number,
+): number {
+  const deck = (r.flags & ROAD_BRIDGE) !== 0 && world.deckOf ? world.deckOf(roadIndex) : null;
+  if (deck) return deckYAt(deck, u);
+  return world.groundY(x, z) + roadLiftM(r.flags, r.layer);
 }
 
 export interface Point {
@@ -430,7 +463,7 @@ export function addLamps(
     const az = -nz * side;
     out.push({
       x: cx,
-      y: world.groundY(cx, cz2) + roadLiftM(r.flags, r.layer) + KERB_HEIGHT_M,
+      y: carriagewayY(world, r, roadIndex, cx, cz2, u) + KERB_HEIGHT_M,
       z: cz2,
       // instanceToWorld maps local +x to (cos yaw, -sin yaw); see instanced.ts.
       yaw: Math.atan2(-az, ax),
@@ -473,6 +506,10 @@ export interface StraightRun {
   /** Unit direction from (x0,z0) to (x1,z1). */
   dirX: number;
   dirZ: number;
+  /** The way's vertex indices the run starts and ends on, so a consumer can
+   *  reach the way's own arc length at either end. */
+  i0: number;
+  i1: number;
 }
 
 /** Runs shorter than this carry no traffic worth drawing. */
@@ -530,7 +567,7 @@ export function straightRuns(
     const z1 = pts[b * 2 + 1];
     const len = Math.hypot(x1 - x0, z1 - z0);
     if (len >= minLengthM) {
-      out.push({ x0, z0, x1, z1, lengthM: len, dirX: (x1 - x0) / len, dirZ: (z1 - z0) / len });
+      out.push({ x0, z0, x1, z1, lengthM: len, dirX: (x1 - x0) / len, dirZ: (z1 - z0) / len, i0: a, i1: b });
     }
   };
 
@@ -731,6 +768,76 @@ export function hash1(n: number): number {
   return s - Math.floor(s);
 }
 
+/** One straight stretch a car drives, with the carriageway height at each end. */
+interface RunPiece {
+  x0: number;
+  z0: number;
+  y0: number;
+  x1: number;
+  z1: number;
+  y1: number;
+  lengthM: number;
+}
+
+/**
+ * How far a car may leave a bridge deck between the two ends of its piece, in
+ * metres.
+ *
+ * A car is a straight line in the shader, `mix(y0, y1, s)`, and the deck is
+ * piecewise linear between its breakpoints. A run that spans a breakpoint
+ * would cut the corner of the deck, so a bridge run is split wherever the deck
+ * bends more than this from the chord. 5 cm is far under the 0.33 m wheel
+ * radius that makes a car read as floating or buried.
+ */
+const DECK_PIECE_TOL_M = 0.05;
+
+function plainPiece(run: StraightRun, world: StreetWorld, r: Road): RunPiece {
+  const lift = roadLiftM(r.flags, r.layer);
+  return {
+    x0: run.x0, z0: run.z0, y0: world.groundY(run.x0, run.z0) + lift,
+    x1: run.x1, z1: run.z1, y1: world.groundY(run.x1, run.z1) + lift,
+    lengthM: run.lengthM,
+  };
+}
+
+/**
+ * A bridge run split at the deck's bends, each piece's ends ON the deck.
+ *
+ * The ends are the way's own vertices, so a piece's height is the deck at that
+ * vertex's arc length, which is exactly the height render/roads.ts gives the
+ * ribbon there. Greedy: extend while every vertex in between is within
+ * DECK_PIECE_TOL_M of the chord, which leaves a straight deck as one piece.
+ */
+function deckPieces(pts: Float32Array, arc: Float64Array, deck: Deck, run: StraightRun): RunPiece[] {
+  const out: RunPiece[] = [];
+  const piece = (a: number, b: number): void => {
+    const x0 = pts[a * 2], z0 = pts[a * 2 + 1], x1 = pts[b * 2], z1 = pts[b * 2 + 1];
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    if (len < 1e-3) return;
+    out.push({ x0, z0, y0: deckYAt(deck, arc[a]), x1, z1, y1: deckYAt(deck, arc[b]), lengthM: len });
+  };
+  let a = run.i0;
+  while (a < run.i1) {
+    let b = a + 1;
+    while (b < run.i1) {
+      const c = b + 1;
+      const ya = deckYAt(deck, arc[a]);
+      const span = arc[c] - arc[a];
+      const yc = deckYAt(deck, arc[c]);
+      let ok = span > 1e-6;
+      for (let k = a + 1; ok && k < c; k++) {
+        const lerp = ya + (yc - ya) * ((arc[k] - arc[a]) / span);
+        if (Math.abs(deckYAt(deck, arc[k]) - lerp) > DECK_PIECE_TOL_M) ok = false;
+      }
+      if (!ok) break;
+      b = c;
+    }
+    piece(a, b);
+    a = b;
+  }
+  return out;
+}
+
 /**
  * Populate one way with moving traffic.
  *
@@ -758,8 +865,10 @@ export function addTraffic(
   // roadLiftM above the ground under it, so a vehicle placed at groundY sits
   // 0.35 m BELOW the tarmac it is supposed to be standing on -- and a road
   // wheel is 0.33 m in radius, which is why every car in every city was buried
-  // to its axles and looked like it was wading. One constant, two readers.
-  const lift = roadLiftM(r.flags, r.layer);
+  // to its axles and looked like it was wading. On a bridge the carriageway is
+  // not the terrain at all but the solved deck; see carriagewayY.
+  const deck = (r.flags & ROAD_BRIDGE) !== 0 && world.deckOf ? world.deckOf(roadIndex) : null;
+  const arc = deck ? arcLengths(r.pts) : null;
 
   const oneway = (r.flags & ROAD_ONEWAY) !== 0;
   const runs = runsFor(r);
@@ -771,6 +880,7 @@ export function addTraffic(
     // The ribbon's v=0 side; the same normal the lamps use.
     const nx = run.dirZ;
     const nz = -run.dirX;
+    const pieces = deck && arc ? deckPieces(r.pts, arc, deck, run) : [plainPiece(run, world, r)];
     for (let dir = 0; dir < (oneway ? 1 : 2); dir++) {
       // Right-hand traffic: travelling in the way's own direction puts the car
       // on the v=1 side of the centreline, and travelling against it puts the
@@ -783,37 +893,41 @@ export function addTraffic(
         const offset = lanes[li] * sideSign;
         const ox = nx * offset;
         const oz = nz * offset;
-        const ax = (forward ? run.x0 : run.x1) + ox;
-        const az = (forward ? run.z0 : run.z1) + oz;
-        const bx = (forward ? run.x1 : run.x0) + ox;
-        const bz = (forward ? run.z1 : run.z0) + oz;
-        // Cars on this lane of this run, from its length and the class density.
-        const want = (run.lengthM / 1000) * perKm;
-        // The fractional part becomes a probability rather than a rounding, or
-        // every residential street in the city would carry exactly zero cars.
-        seed = seed + 1;
-        const n = Math.floor(want) + (hash1(seed * 1.7) < want - Math.floor(want) ? 1 : 0);
-        for (let c = 0; c < n; c++) {
+        for (const pc of pieces) {
+          const ax = (forward ? pc.x0 : pc.x1) + ox;
+          const az = (forward ? pc.z0 : pc.z1) + oz;
+          const bx = (forward ? pc.x1 : pc.x0) + ox;
+          const bz = (forward ? pc.z1 : pc.z0) + oz;
+          const ay = forward ? pc.y0 : pc.y1;
+          const by = forward ? pc.y1 : pc.y0;
+          // Cars on this lane of this piece, from its length and the class density.
+          const want = (pc.lengthM / 1000) * perKm;
+          // The fractional part becomes a probability rather than a rounding, or
+          // every residential street in the city would carry exactly zero cars.
           seed = seed + 1;
-          const h = hash1(seed * 3.1);
-          out.push({
-            x0: ax,
-            y0: world.groundY(ax, az) + lift,
-            z0: az,
-            x1: bx,
-            y1: world.groundY(bx, bz) + lift,
-            z1: bz,
-            // Spread evenly and then jittered, so a lane is a stream with gaps
-            // in it rather than a comb.
-            phase: (c + 0.35 * h) / Math.max(1, n),
-            speedMs: speed * (0.82 + 0.36 * hash1(seed * 5.3)),
-            archetype: hash1(seed * 9.7),
-            tint: hash1(seed * 11.3),
-            rank: hash1(seed * 13.9),
-            cls: r.cls,
-            road: roadIndex,
-          });
-          placed++;
+          const n = Math.floor(want) + (hash1(seed * 1.7) < want - Math.floor(want) ? 1 : 0);
+          for (let c = 0; c < n; c++) {
+            seed = seed + 1;
+            const h = hash1(seed * 3.1);
+            out.push({
+              x0: ax,
+              y0: ay,
+              z0: az,
+              x1: bx,
+              y1: by,
+              z1: bz,
+              // Spread evenly and then jittered, so a lane is a stream with gaps
+              // in it rather than a comb.
+              phase: (c + 0.35 * h) / Math.max(1, n),
+              speedMs: speed * (0.82 + 0.36 * hash1(seed * 5.3)),
+              archetype: hash1(seed * 9.7),
+              tint: hash1(seed * 11.3),
+              rank: hash1(seed * 13.9),
+              cls: r.cls,
+              road: roadIndex,
+            });
+            placed++;
+          }
         }
       }
     }

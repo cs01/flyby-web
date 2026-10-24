@@ -298,6 +298,129 @@ export const POSES: Pose[] = [
     wx: CLEAR,
     what: "the Golden Gate broadside, deck and towers in one frame",
   },
+  // THE LANDMARK BRIDGES, one near pose (300 m off, 80 m up) and one far pose
+  // (2 km) each, so render/bridges.ts can be judged at the range that shows
+  // suspenders and railings and at the range that shows only towers and cables.
+  {
+    name: "bridge-gg-near",
+    city: "sf",
+    lat: 37.81676, lon: -122.48160, altM: 80, hdgDeg: 85, pitchDeg: -1.0,
+    t: D("2025-06-21T23:00:00Z"), // 16:00 PDT: the westerly sun on the bay faces
+    wx: CLEAR,
+    what: "the Golden Gate south of mid-span from 300 m on the ocean side, at deck height: suspenders, truss, railings",
+  },
+  {
+    name: "bridge-gg-far",
+    city: "sf",
+    lat: 37.81361, lon: -122.49997, altM: 160, hdgDeg: 70, pitchDeg: -2.0,
+    t: D("2025-06-21T23:00:00Z"), // 16:00 PDT: the westerly sun on the bay faces
+    wx: CLEAR,
+    what: "the Golden Gate from 2 km out on the ocean side: both towers, the cables, the deck",
+  },
+  {
+    name: "bridge-gg-night",
+    city: "sf",
+    lat: 37.81361, lon: -122.49997, altM: 160, hdgDeg: 70, pitchDeg: -2.0,
+    t: D("2025-06-22T05:30:00Z"), // 22:30 PDT
+    wx: CLEAR,
+    what: "the Golden Gate at night: aviation lights on the towers, the deck lit",
+  },
+  {
+    name: "bridge-baywest-near",
+    city: "sf",
+    lat: 37.80270, lon: -122.37749, altM: 80, hdgDeg: 135, pitchDeg: -1.0,
+    t: D("2025-06-21T23:00:00Z"), // 16:00 PDT: the westerly sun on the bay faces
+    wx: CLEAR,
+    what: "the Bay Bridge west span at tower W5 from 300 m: double deck, cables, bracing",
+  },
+  {
+    name: "bridge-baywest-far",
+    city: "sf",
+    lat: 37.80975, lon: -122.39530, altM: 160, hdgDeg: 130, pitchDeg: -2.3,
+    t: D("2025-06-21T23:00:00Z"), // 16:00 PDT: the westerly sun on the bay faces
+    wx: CLEAR,
+    what: "the Bay Bridge west span from 2 km: both suspension spans and the centre anchorage",
+  },
+  {
+    name: "bridge-sas-near",
+    city: "sf",
+    lat: 37.81761, lon: -122.36022, altM: 80, hdgDeg: 150, pitchDeg: -1.9,
+    t: D("2025-06-21T23:00:00Z"), // 16:00 PDT: the westerly sun on the bay faces
+    wx: CLEAR,
+    what: "the Bay Bridge self-anchored span from 300 m: the white tower and the single cable",
+  },
+  {
+    name: "bridge-sas-far",
+    city: "sf",
+    lat: 37.82978, lon: -122.36964, altM: 160, hdgDeg: 140, pitchDeg: -2.6,
+    t: D("2025-06-21T23:00:00Z"), // 16:00 PDT: the westerly sun on the bay faces
+    wx: CLEAR,
+    what: "the Bay Bridge east span from 2 km: Yerba Buena, the SAS tower and the skyway",
+  },
+  {
+    name: "bridge-brooklyn-near",
+    city: "manhattan",
+    lat: 40.70388, lon: -73.99898, altM: 80, hdgDeg: 48, pitchDeg: -7.6,
+    t: D("2025-06-21T21:00:00Z"), // 17:00 EDT
+    wx: CLEAR,
+    what: "the Brooklyn Bridge from 300 m: granite towers, cables and the stay web",
+  },
+  {
+    name: "bridge-brooklyn-far",
+    city: "manhattan",
+    lat: 40.69096, lon: -74.00995, altM: 160, hdgDeg: 35, pitchDeg: -3.4,
+    t: D("2025-06-21T21:00:00Z"), // 17:00 EDT
+    wx: CLEAR,
+    what: "the Brooklyn and Manhattan bridges from 2 km down the East River",
+  },
+  {
+    name: "bridge-manhattanbr-near",
+    city: "manhattan",
+    lat: 40.70605, lon: -73.99381, altM: 80, hdgDeg: 70, pitchDeg: -6.7,
+    t: D("2025-06-21T21:00:00Z"), // 17:00 EDT
+    wx: CLEAR,
+    what: "the Manhattan Bridge from 300 m: steel towers and the two decks",
+  },
+  {
+    name: "bridge-williamsburg-near",
+    city: "manhattan",
+    lat: 40.71108, lon: -73.97347, altM: 80, hdgDeg: 22, pitchDeg: -6.7,
+    t: D("2025-06-21T21:00:00Z"), // 17:00 EDT
+    wx: CLEAR,
+    what: "the Williamsburg Bridge from 300 m: lattice towers and the truss",
+  },
+  {
+    name: "bridge-queensboro-near",
+    city: "manhattan",
+    lat: 40.75450, lon: -73.95622, altM: 80, hdgDeg: 30, pitchDeg: -6.7,
+    t: D("2025-06-21T21:00:00Z"), // 17:00 EDT
+    wx: CLEAR,
+    what: "the Queensboro Bridge from 300 m: the cantilever truss over Roosevelt Island",
+  },
+  {
+    name: "bridge-queensboro-far",
+    city: "manhattan",
+    lat: 40.74211, lon: -73.96806, altM: 160, hdgDeg: 35, pitchDeg: -3.3,
+    t: D("2025-06-21T21:00:00Z"), // 17:00 EDT
+    wx: CLEAR,
+    what: "the Queensboro Bridge from 2 km up the East River",
+  },
+  {
+    name: "bridge-chicago-dusable-near",
+    city: "chicago",
+    lat: 41.88885, lon: -87.62077, altM: 80, hdgDeg: 270, pitchDeg: -14.0,
+    t: D("2025-06-21T14:00:00Z"), // 09:00 CDT: the morning sun straight down the river from the lake
+    wx: CLEAR,
+    what: "the DuSable (Michigan Avenue) bridge from 300 m east: bascule leaves and bridge houses",
+  },
+  {
+    name: "bridge-chicago-river-far",
+    city: "chicago",
+    lat: 41.89266, lon: -87.60566, altM: 200, hdgDeg: 255, pitchDeg: -5.6,
+    t: D("2025-06-21T14:00:00Z"), // 09:00 CDT: the morning sun straight down the river from the lake
+    wx: CLEAR,
+    what: "the main stem of the Chicago River from 2 km: the run of bascule bridges",
+  },
   {
     name: "chicago-lasalle-kerb",
     city: "chicago",

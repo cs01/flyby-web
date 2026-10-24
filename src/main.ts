@@ -761,6 +761,9 @@ async function main() {
 
     const streetWorld: StreetWorld = {
       groundY: terrain.heightAt,
+      // The same solved decks the ribbon is drawn from, so a car on a bridge
+      // stands on the bridge it can be seen on.
+      deckOf: (i) => bridgeDecks?.deck[i] ?? null,
       occupied: pack ? (x, z) => treeFootprints.occupied(x, z) : null,
       onCarriageway: (x, z, except) => carriageways.blockedExcept(x, z, except),
       nearestMeasuredLamp: lampIndex
