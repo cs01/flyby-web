@@ -184,6 +184,12 @@ out vec3 vNormal;
 out vec3 vWorld;
 out vec2 vUv;
 out vec4 vInfo;
+// The building index rides a FLAT varying. Interpolated, a constant 150000 is
+// not guaranteed to arrive as 150000: an Android GPU delivered it a few counts
+// off, differently per pixel, and since it addresses the facade table every
+// pixel read some neighbour's record. Manhattan rendered as speckle in other
+// buildings' colours.
+flat out float vBidx;
 out float vViewDist;
 
 void main() {
@@ -191,6 +197,7 @@ void main() {
   vWorld = position;
   vUv = uv;
   vInfo = info;
+  vBidx = info.x;
   vViewDist = length(position - uCameraPos);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
@@ -264,6 +271,7 @@ in vec3 vNormal;
 in vec3 vWorld;
 in vec2 vUv;
 in vec4 vInfo;
+flat in float vBidx;
 in float vViewDist;
 out vec4 fragColor;
 
@@ -393,7 +401,7 @@ vec3 parapetColour(Facade p) {
 }
 
 void main() {
-  float bidx  = vInfo.x;
+  float bidx  = vBidx;
   float bldH  = vInfo.y;
   float isRoof = vInfo.z;
   float part  = vInfo.w;
