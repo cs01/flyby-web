@@ -205,6 +205,9 @@ async function shoot(outDir: string, query: string, port: number, dbg: number, p
     "--debug-port", String(dbg),
   ];
   if (query) args.push("--query", query);
+  // See tools/verify-ground.ts: a profile of one's own on a shared GPU.
+  const profile = arg("profile", "");
+  if (profile) args.push("--profile", profile);
   const p = Bun.spawn(["bun", ...args], {
     cwd: new URL("..", import.meta.url).pathname,
     stdout: "inherit",

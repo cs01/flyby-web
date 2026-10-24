@@ -105,6 +105,10 @@ const BLOCK = 32;
 async function shoot(outDir: string, query: string, port: number, dbg: number, poses: string[]): Promise<void> {
   const args = ["tools/shots.ts", "--only", poses.join(","), "--out", outDir, "--port", String(port), "--debug-port", String(dbg)];
   if (query) args.push("--query", query);
+  // Forwarded so two agents sharing a GPU can each run this gate with their
+  // own Chrome profile; the default one is a single lock for the machine.
+  const profile = arg("profile", "");
+  if (profile) args.push("--profile", profile);
   const p = Bun.spawn(["bun", ...args], {
     cwd: new URL("..", import.meta.url).pathname,
     stdout: "inherit",

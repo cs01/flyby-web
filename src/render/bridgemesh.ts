@@ -1295,7 +1295,12 @@ function bascule(l: Landmark, ctx: BuildContext, far: MeshBuilder, near: MeshBui
   near.set(steel, 0.3);
   for (const sg of [-1, 1]) {
     const s = sg * hw;
-    const depth = (t: number): number => 2.4 + 2.6 * Math.pow(Math.abs(t - mid) / half, 2);
+    // The fascia deepens toward the trunnions, but never into the river: on
+    // SRTM the Loop's streets stand barely a metre over the water it draws,
+    // and a 5 m girder hung from that dams the river from bank to bank, which
+    // also blanked the skyline's reflection in tools/verify-water.ts.
+    const water = Math.min(ctx.groundAt(w.x, w.z), deckAt(mid) - 1.6);
+    const depth = (t: number): number => Math.max(0.6, Math.min(2.4 + 2.6 * Math.pow(Math.abs(t - mid) / half, 2), deckAt(t) - water - 1.0));
     for (let t = t0; t < t1; t += 4) {
       const ta = t;
       const tb = Math.min(t1, t + 4);
@@ -1323,8 +1328,26 @@ function bascule(l: Landmark, ctx: BuildContext, far: MeshBuilder, near: MeshBui
   const corners: [number, number][] = sp.houses >= 4
     ? [[t0, -1], [t0, 1], [t1, -1], [t1, 1]]
     : [[t0, -1], [t1, 1]];
+  // The river, as the lowest ground under the span: a house stands on the
+  // bank, so each one walks out from its trunnion until the ground is a metre
+  // over that. Placed at a fixed 5 m past the trunnion instead, the tender
+  // houses of the narrower crossings stood in the water and walled off the
+  // far bank (the skyline reflection in tools/verify-water.ts fell from 0.20
+  // to 0.14 over the Wabash crossing).
+  let river = Infinity;
+  for (let t = t0; t <= t1; t += 4) {
+    const p = worldAt(l, t, 0);
+    river = Math.min(river, ctx.groundAt(p.x, p.z));
+  }
   for (const [t, sg] of corners) {
-    const ta = t + (t < mid ? -5 : 5);
+    const out = t < mid ? -1 : 1;
+    let ta = t + out * 5;
+    for (let k = 0; k < 15; k++) {
+      const p = worldAt(l, ta, sg * (hw + 5));
+      if (ctx.groundAt(p.x, p.z) >= river + 1) break;
+      ta += out * 2;
+    }
+    ta += out * 4;
     const ww = worldAt(l, ta, sg * (hw + 5));
     const g = ctx.groundAt(ww.x, ww.z) - 6;
     const h = sp.houses >= 4 ? 16 : 7;
