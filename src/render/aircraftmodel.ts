@@ -261,7 +261,7 @@ export interface AircraftUniforms extends Record<string, THREE.IUniform> {
 }
 
 /** How a part is painted. Everything the classifier decides ends up here. */
-interface Surface {
+export interface Surface {
   color: number;
   roughness: number;
   metalness: number;
@@ -649,6 +649,16 @@ export class AircraftModel {
     );
     if (axis === "x") at.x = (bb.min.x + bb.max.x) / 2;
     return hinge(mesh, axis, at);
+  }
+
+  /**
+   * A material lit exactly like the airframe, for other small machines (the
+   * drone) that fly in the same light and should not look pasted in.
+   */
+  plainMaterial(s: Surface): THREE.RawShaderMaterial {
+    const m = this.makeMaterial({ ...s, useMap: false }, []);
+    this.materials.push(m);
+    return m;
   }
 
   private makeMaterial(s: Surface, source: THREE.Material | THREE.Material[]): THREE.RawShaderMaterial {

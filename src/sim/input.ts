@@ -61,6 +61,12 @@ function freshDrone(): DroneInput {
   };
 }
 
+/** Lever 0..0.6 is throttle 0..1; 0.6..1 is boost 0..1 on top of it. */
+export function splitLever(lever: number): [number, number] {
+  const l = Math.max(0, Math.min(1, lever));
+  return [Math.min(1, l / 0.6), Math.max(0, (l - 0.6) / 0.4)];
+}
+
 export class Input {
   private keys = new Set<string>();
   private axes: Axes = { throttle: 0, roll: 0, yaw: 0, lift: 0, boost: 0 };
@@ -70,6 +76,14 @@ export class Input {
   private dragX = 0;
   private dragY = 0;
   private dragging = false;
+
+  /**
+   * The car's and the drone's cruise lever, 0..1, set by the on-screen slider.
+   * Only the one-thumb touch scheme reads it: there the thumb steers, and a
+   * pedal you have to hold with the same thumb was the owner's "car has no
+   * way to propel on mobile". 0.6 is full normal speed; above it is boost.
+   */
+  groundLever = 0.45;
 
   /** Set when the view should swing round for a look; not a control input. */
   lookBack = false;
@@ -428,6 +442,14 @@ export class Input {
       t.yaw = touch.easy ? touch.axes.roll : touch.axes.yaw;
       t.lift = touch.axes.lift;
     }
+    if (touch?.easy) {
+      // The slider flies it forward; the thumb turns it and, up or down,
+      // climbs or sinks.
+      const [fwd, boost] = splitLever(this.groundLever);
+      t.forward = fwd;
+      if (boost > t.boost) t.boost = boost;
+      if (touch.active) t.lift = touch.axes.throttle;
+    }
     if (touch?.boost) t.boost = 1;
 
     const a = this.droneCurrent;
@@ -467,6 +489,14 @@ export class Input {
       // one is the pedals.
       t.steer = touch.axes.roll;
       t.throttle = touch.axes.throttle;
+    }
+    if (touch?.easy) {
+      // Cruise control from the slider; a thumb pulled well down still brakes
+      // and backs up, because a dead end needs a way out.
+      const [fwd, boost] = splitLever(this.groundLever);
+      const pulled = touch.active && touch.axes.throttle < -0.5;
+      t.throttle = pulled ? touch.axes.throttle : fwd;
+      t.boost = pulled ? 0 : Math.max(t.boost, boost);
     }
     if (touch?.boost) t.boost = 1;
 

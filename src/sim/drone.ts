@@ -301,6 +301,15 @@ export class Drone {
     this.noseDeg += (wantNose - this.noseDeg) * follow;
   }
 
+  /**
+   * Orientation of the AIRFRAME: heading and the lean it flies with, but not
+   * the look pitch, which belongs to the gimbal and not to the body.
+   */
+  bodyOrientation(out: THREE.Quaternion): THREE.Quaternion {
+    _euler.set(this.noseDeg * DEG, -this.yawDeg * DEG, -this.rollDeg * DEG, "YXZ");
+    return out.setFromEuler(_euler);
+  }
+
   /** Orientation for the camera: look angle plus the cosmetic lean. */
   orientation(out: THREE.Quaternion): THREE.Quaternion {
     // Negated roll: the camera looks down -z, and a positive rotation about +z

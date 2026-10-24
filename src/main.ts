@@ -22,6 +22,11 @@ import { Origin } from "./geo";
 import { CITIES, cityById, cityAt, DEFAULT_CITY, type City } from "./cities";
 import { ThrottleSlider } from "./app/throttle";
 import { ModeBar } from "./app/modebar";
+import { DroneModel } from "./render/dronemodel";
+
+const DEG2RAD = Math.PI / 180;
+const _droneLook = new THREE.Euler();
+const _droneOffset = new THREE.Vector3();
 import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
@@ -1030,6 +1035,8 @@ async function main() {
 
   const model = new AircraftModel(budget);
   scene.add(model.group);
+  const droneModel = new DroneModel(model);
+  scene.add(droneModel.group);
 
   const osd = new Osd(ui);
   const streetSignHud = new StreetSignHud(ui);
@@ -1445,11 +1452,21 @@ async function main() {
       camera.up.set(0, 1, 0);
       car.orientation(camera.quaternion);
     } else if (droneActive) {
-      // Driven straight off the drone, with no rig, no lag and no look-at: the
-      // camera IS the machine, and the lean it has is the lean it flew.
-      camera.position.copy(drone.position);
       camera.up.set(0, 1, 0);
-      drone.orientation(camera.quaternion);
+      if (chase.mode === "cockpit") {
+        // FPV: the camera IS the machine, and the lean it has is the lean it
+        // flew. One CAM tap away from the default.
+        camera.position.copy(drone.position);
+        drone.orientation(camera.quaternion);
+      } else {
+        // The default: a chase shot of the airframe, so the drone is a thing
+        // you can see. Rigid to the look (yaw and pitch), not the lean, so
+        // the machine visibly banks and noses into its moves in frame.
+        _droneLook.set((drone.pitchDeg - 10) * DEG2RAD, -drone.yawDeg * DEG2RAD, 0, "YXZ");
+        camera.quaternion.setFromEuler(_droneLook);
+        _droneOffset.set(0, 1.1, 4.5).applyQuaternion(camera.quaternion);
+        camera.position.copy(drone.position).add(_droneOffset);
+      }
     } else {
       chase.update(camera, ac, dt, input.lookBack, terrain.heightAt(camera.position.x, camera.position.z));
     }
@@ -1507,6 +1524,12 @@ async function main() {
     }
     camera.updateMatrixWorld();
 
+    droneModel.group.visible = droneActive && chase.mode !== "cockpit" && !shotCam;
+    if (droneModel.group.visible) {
+      droneModel.group.position.copy(drone.position);
+      drone.bodyOrientation(droneModel.group.quaternion);
+      droneModel.update(dt, shotMode);
+    }
     model.group.position.copy(ac.position);
     model.group.quaternion.copy(ac.quaternion);
     // In the cockpit view the camera is INSIDE the aeroplane, so drawing it
@@ -1806,7 +1829,13 @@ async function main() {
     // the main frame would be reading the wrong pixel of the wrong picture.
     // Off for that pass, back on for this one.
     setAo(0);
+    // The drone samples the same environment probe this pass renders into,
+    // so it must not be in the scene while the probe is drawn (Chrome logged
+    // a framebuffer feedback loop every frame).
+    const droneShown = droneModel.group.visible;
+    droneModel.group.visible = false;
     model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
+    droneModel.group.visible = droneShown;
     sky.syncCamera(camera);
     ao.render(renderer, scene, camera, shadowCasters);
     setAo(1);
@@ -1843,9 +1872,22 @@ async function main() {
         : null,
     );
     {
+      // One slider, three machines: the aeroplane's throttle, or the car's
+      // and the drone's cruise speed, which is what lets a phone thumb do
+      // nothing but steer in them.
+      const ground = droneActive || carActive;
       const lever = throttleSlider.take();
-      if (lever !== null) ac.throttle = lever;
-      throttleSlider.update(ac.throttle, ac.airspeed, !droneActive && !carActive && !shotMode);
+      if (lever !== null) {
+        if (ground) input.groundLever = lever;
+        else ac.throttle = lever;
+      }
+      const groundSpeed = carActive && car ? car.speed : drone.speed;
+      throttleSlider.update(
+        ground ? input.groundLever : ac.throttle,
+        ground ? groundSpeed : ac.airspeed,
+        !shotMode,
+        ground,
+      );
       modeBar.update(carActive ? "car" : droneActive ? "drone" : "plane", !shotMode);
     }
     if (!droneActive && !carActive) {

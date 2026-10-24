@@ -6,6 +6,7 @@
 // right edge answers both and is the one control a phone in clean view keeps.
 
 import { MACH1 } from "../sim/aircraft";
+import { getUnits } from "./units";
 
 export class ThrottleSlider {
   private root: HTMLDivElement;
@@ -44,12 +45,22 @@ export class ThrottleSlider {
     return p;
   }
 
-  update(lever: number, airspeed: number, visible: boolean): void {
+  /**
+   * `ground` is the car or the drone: the slider is their cruise speed, and
+   * a road speed reads in mph or km/h, not knots.
+   */
+  update(lever: number, speedMs: number, visible: boolean, ground = false): void {
     this.root.style.display = visible ? "" : "none";
     // Do not fight the thumb: while dragging, the slider is the source.
     if (!this.dragging) this.input.value = String(Math.round(lever * 1000));
-    const kt = airspeed * 1.943844;
-    const mach = airspeed / MACH1;
+    if (ground) {
+      const metric = getUnits() === "metric";
+      const v = Math.abs(speedMs) * (metric ? 3.6 : 2.236936);
+      this.readout.textContent = `${Math.round(v)} ${metric ? "km/h" : "mph"}`;
+      return;
+    }
+    const kt = speedMs * 1.943844;
+    const mach = speedMs / MACH1;
     this.readout.textContent = mach >= 0.5 ? `M ${mach.toFixed(2)}` : `${Math.round(kt)} kt`;
   }
 }

@@ -106,6 +106,13 @@ const MAX_SLIP_DEG = 16;
 
 /** How far from the camera a road may be and still be worth getting into. */
 export const CAR_ENTRY_SEARCH_M = 400;
+/**
+ * Second, wider search when nothing is that close. A tap on CAR from a drone
+ * 600 m over the bay found nothing within 400 m and did nothing, which on a
+ * phone reads as a broken button. Wider means a hop to the nearest street.
+ * One-off on a tap, so the ring scan's cost does not matter.
+ */
+const CAR_ENTRY_FAR_M = 6000;
 
 /**
  * Degrees of extra "turn" that one step DOWN the road class costs at a junction.
@@ -296,7 +303,7 @@ export class Car {
    * Get in, at the nearest road to `position`, pointing the way `headingDeg`
    * was already pointing and carrying whatever of `velocity` the road can use.
    *
-   * Returns false when there is no road within CAR_ENTRY_SEARCH_M, which is the
+   * Returns false when there is no road within CAR_ENTRY_FAR_M, which is the
    * caller's cue to say so rather than to drop a car into the sea.
    */
   enterFrom(
@@ -305,7 +312,9 @@ export class Car {
     velocity: THREE.Vector3,
     heightAt: (x: number, z: number) => number,
   ): boolean {
-    const hit = this.index.nearestSegment(position.x, position.z, CAR_ENTRY_SEARCH_M);
+    const hit =
+      this.index.nearestSegment(position.x, position.z, CAR_ENTRY_SEARCH_M) ??
+      this.index.nearestSegment(position.x, position.z, CAR_ENTRY_FAR_M);
     if (!hit) return false;
 
     const edge = this.graph.edges[hit.road];
