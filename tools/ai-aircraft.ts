@@ -68,7 +68,7 @@ interface Family {
   /** Texture file name inside Textures/<livery>/. */
   tex: string;
   liveries: string[];
-  /** Upstream author, from the family's -main.xml or model header. */
+  /** Upstream author, from the family's <author> in fgdata. */
   author: string;
   /** SGI .rgb textures are converted to png on fetch. */
   rgb?: boolean;
@@ -87,29 +87,29 @@ const FAMILIES: Family[] = [
     liveries: ["Default", "Delta", "American", "JetBlue", "AlaskaAirlines", "Hawaiian"] },
   { id: "b738", dir: "738", model: "737-800.ac", tex: "738-tex.png", author: "Brett Harrison",
     liveries: ["Default", "Delta", "UnitedAirlines", "AmericanAirlines", "AlaskaAirlines", "Westjet", "CopaAirlines"] },
-  { id: "b789", dir: "787", model: "789.ac", tex: "789-tex.png", author: "Brett Harrison",
+  { id: "b789", dir: "787", model: "789.ac", tex: "789-tex.png", author: "Ian (Yves) Tolosa",
     liveries: ["Default", "UnitedAirlines", "American", "BritishAirways", "VirginAtlantic"] },
-  { id: "b77w", dir: "777", model: "77W.ac", tex: "77W-tex.png", author: "Brett Harrison",
+  { id: "b77w", dir: "777", model: "77W.ac", tex: "77W-tex.png", author: "Ian (Yves) Tolosa",
     liveries: ["Default", "UnitedAirlines", "American", "BritishAirways", "AirFrance", "Emirates"] },
-  { id: "a333", dir: "A333", model: "A333.ac", tex: "A333-tex.png", author: "Brett Harrison",
+  { id: "a333", dir: "A333", model: "A333.ac", tex: "A333-tex.png", author: "Innis Cunningham, Brett Harrison",
     liveries: ["Default", "Delta", "AerLingus", "Turkish"] },
-  { id: "a359", dir: "A350", model: "359.ac", tex: "359-tex.png", author: "Brett Harrison",
+  { id: "a359", dir: "A350", model: "359.ac", tex: "359-tex.png", author: "Ian (Yves) Tolosa",
     liveries: ["Default", "Delta", "Lufthansa", "Qatar"] },
-  { id: "b763", dir: "767", model: "763.ac", tex: "763-tex.png", author: "Brett Harrison",
+  { id: "b763", dir: "767", model: "763.ac", tex: "763-tex.png", author: "Ian (Yves) Tolosa",
     liveries: ["Default", "Delta", "UnitedAirlines"] },
-  { id: "b752", dir: "757", model: "757-200.ac", tex: "757-200-tex.png", author: "Brett Harrison",
+  { id: "b752", dir: "757", model: "757-200.ac", tex: "757-200-tex.png", author: "unknown, modified by Brett Harrison",
     liveries: ["Default", "Delta", "UnitedAirlines", "American", "FedEx", "UPS"] },
-  { id: "e175", dir: "E70", model: "ERJ175.ac", tex: "ERJ175-tex.png", author: "Brett Harrison",
+  { id: "e175", dir: "E70", model: "ERJ175.ac", tex: "ERJ175-tex.png", author: "Ian (Yves) Tolosa",
     liveries: ["Default", "Delta", "United", "American", "AlaskaAirlines"] },
-  { id: "crj7", dir: "CR7", model: "CR7.ac", tex: "CR7-tex.png", author: "Brett Harrison",
+  { id: "crj7", dir: "CR7", model: "CR7.ac", tex: "CR7-tex.png", author: "Ian (Yves) Tolosa",
     liveries: ["Default", "American", "Delta", "United"] },
   { id: "e145", dir: "ERJ145", model: "ERJ-145.ac", tex: "145-map.png", author: "Brett Harrison",
     liveries: ["Default", "United", "AmericanEagle"] },
-  { id: "dh8d", dir: "DH4", model: "DH4.ac", tex: "DH4-tex.png", author: "Brett Harrison",
+  { id: "dh8d", dir: "DH4", model: "DH4.ac", tex: "DH4-tex.png", author: "Ian Tolosa",
     liveries: ["Default", "AlaskaAirlines"] },
-  { id: "pa28", dir: "pa-28", model: "pa-28.ac", tex: "28-fus.png", author: "FlightGear contributors",
+  { id: "pa28", dir: "pa-28", model: "pa-28.ac", tex: "28-fus.png", author: "David Megginson, Brett Harrison",
     liveries: ["Default"] },
-  { id: "cl60", dir: "Bombardier-Challenger", model: "chal604.ac", tex: "chal604.rgb", author: "FlightGear contributors",
+  { id: "cl60", dir: "Bombardier-Challenger", model: "chal604.ac", tex: "chal604.rgb", author: "Chuck Dome, Innis Cunningham",
     liveries: ["Default"], rgb: true },
 ];
 

@@ -42,23 +42,23 @@ Every `traffic/*.glb` and `traffic/*.webp` is derived from the FlightGear
 - Pinned commit: `624f6be5f09ac5b1727d4e03c17c8f327aaa41fc`
 - Licence: **GPL-2.0**
 
-| family | upstream model | author (from the model's `-main.xml`) | liveries (upstream `Textures/` dir -> file code) |
+| family | upstream model | author (from the model's `<author>` in fgdata) | liveries (upstream `Textures/` dir -> file code) |
 |---|---|---|---|
 | `a320` | `A320/Models/A320.ac` | Brett Harrison | Default, Delta (DAL), UnitedAirlines (UAL), American (AAL), JetBlue (JBU), AlaskaAirlines (ASA), AirCanada (ACA), BritishAirways (BAW) |
 | `a321` | `A321/Models/A321.ac` | Brett Harrison | Default, Delta, American, JetBlue, AlaskaAirlines, Hawaiian (HAL) |
 | `b738` | `738/Models/737-800.ac` | Brett Harrison | Default, Delta, UnitedAirlines, AmericanAirlines, AlaskaAirlines, Westjet (WJA), CopaAirlines (CMP) |
-| `b789` | `787/Models/789.ac` | Brett Harrison | Default, UnitedAirlines, American, BritishAirways, VirginAtlantic (VIR) |
-| `b77w` | `777/Models/77W.ac` | Brett Harrison | Default, UnitedAirlines, American, BritishAirways, AirFrance (AFR), Emirates (UAE) |
-| `a333` | `A333/Models/A333.ac` | Brett Harrison | Default, Delta, AerLingus (EIN), Turkish (THY) |
-| `a359` | `A350/Models/359.ac` | Brett Harrison | Default, Delta, Lufthansa (DLH), Qatar (QTR) |
-| `b763` | `767/Models/763.ac` | Brett Harrison | Default, Delta, UnitedAirlines |
-| `b752` | `757/Models/757-200.ac` | Brett Harrison | Default, Delta, UnitedAirlines, American, FedEx (FDX), UPS (UPS) |
-| `e175` | `E70/Models/ERJ175.ac` | Brett Harrison | Default, Delta, United, American, AlaskaAirlines |
-| `crj7` | `CR7/Models/CR7.ac` | Brett Harrison | Default, American, Delta, United |
+| `b789` | `787/Models/789.ac` | Ian (Yves) Tolosa | Default, UnitedAirlines, American, BritishAirways, VirginAtlantic (VIR) |
+| `b77w` | `777/Models/77W.ac` | Ian (Yves) Tolosa | Default, UnitedAirlines, American, BritishAirways, AirFrance (AFR), Emirates (UAE) |
+| `a333` | `A333/Models/A333.ac` | Innis Cunningham (model), Brett Harrison (UV map, liveries) | Default, Delta, AerLingus (EIN), Turkish (THY) |
+| `a359` | `A350/Models/359.ac` | Ian (Yves) Tolosa | Default, Delta, Lufthansa (DLH), Qatar (QTR) |
+| `b763` | `767/Models/763.ac` | Ian (Yves) Tolosa | Default, Delta, UnitedAirlines |
+| `b752` | `757/Models/757-200.ac` | unknown, modified by Brett Harrison | Default, Delta, UnitedAirlines, American, FedEx (FDX), UPS (UPS) |
+| `e175` | `E70/Models/ERJ175.ac` | Ian (Yves) Tolosa | Default, Delta, United, American, AlaskaAirlines |
+| `crj7` | `CR7/Models/CR7.ac` | Ian (Yves) Tolosa | Default, American, Delta, United |
 | `e145` | `ERJ145/Models/ERJ-145.ac` | Brett Harrison | Default, United, AmericanEagle (AAL) |
-| `dh8d` | `DH4/Models/DH4.ac` | Brett Harrison | Default, AlaskaAirlines |
-| `pa28` | `pa-28/Models/pa-28.ac` | FlightGear contributors | Default |
-| `cl60` | `Bombardier-Challenger/Models/chal604.ac` | FlightGear contributors | Default |
+| `dh8d` | `DH4/Models/DH4.ac` | Ian Tolosa | Default, AlaskaAirlines |
+| `pa28` | `pa-28/Models/pa-28.ac` | David Megginson, modified for AI use by Brett Harrison | Default |
+| `cl60` | `Bombardier-Challenger/Models/chal604.ac` | Chuck Dome, Innis Cunningham | Default |
 
 The helicopter and the airport service van are built from primitives in
 `src/render/airtraffic.ts` and are not derived from anything.
