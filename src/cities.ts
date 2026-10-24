@@ -519,6 +519,16 @@ export function cityAt(lat: number, lon: number): City {
   };
 }
 
+/**
+ * The places the menu lists: every one has a baked building pack, a road pack
+ * and a land pack, so none of them falls back to the live Overpass path or a
+ * guessed ground. The rest of CITIES stays reachable by `?city=` deep link.
+ * tools/verify-packs.ts fails if this drifts from what public/cities holds.
+ */
+export const FULL_DATA_CITY_IDS = ["chicago", "emeraldhills", "manhattan", "sf"];
+
+export const LISTED_CITIES: City[] = CITIES.filter((c) => FULL_DATA_CITY_IDS.includes(c.id));
+
 export function cityById(id: string): City | undefined {
   return CITIES.find((c) => c.id === id);
 }

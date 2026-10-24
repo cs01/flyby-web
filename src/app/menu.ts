@@ -7,7 +7,7 @@
 // and answers with an array, so twenty-four cities are one round trip rather
 // than twenty-four.
 
-import { CITIES, CONTINENTS, type City } from "../cities";
+import { LISTED_CITIES as CITIES, CONTINENTS, type City } from "../cities";
 import { fetchJson, TTL_WEATHER, TTL_STATIC } from "../data/cache";
 import { searchPlaces, type SearchHit } from "../data/place";
 import { getUnits, setUnits, formatTemp } from "./units";

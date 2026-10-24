@@ -11,6 +11,7 @@
 import { buildingIsNeedle, isNeedle, parseCityPack } from "../src/data/citypack";
 import { signedArea } from "../src/render/earcut";
 import { readdirSync } from "node:fs";
+import { CITIES, FULL_DATA_CITY_IDS } from "../src/cities";
 
 const dir = new URL("../public/cities/", import.meta.url).pathname;
 const files = readdirSync(dir).filter((f) => f.endsWith(".city")).sort();
@@ -133,6 +134,25 @@ try {
 } catch {
   console.log("FAIL index.json missing or unreadable -- run: bun tools/city-index.ts");
   failed++;
+}
+
+// The menu lists only cities with all three packs. A hand-kept list is fine
+// as long as this keeps it honest in both directions.
+{
+  const has = (ext: string) =>
+    new Set(readdirSync(dir).filter((f) => f.endsWith(ext)).map((f) => f.slice(0, -ext.length)));
+  const city = has(".city"), roads = has(".roads"), land = has(".land");
+  const full = [...good].filter((id) => city.has(id) && roads.has(id) && land.has(id)).sort();
+  const listed = [...FULL_DATA_CITY_IDS].sort();
+  if (full.join() !== listed.join()) {
+    console.log(`FAIL FULL_DATA_CITY_IDS is [${listed}] but packs on disk give [${full}]`);
+    failed++;
+  }
+  const unknown = listed.filter((id) => !CITIES.some((c) => c.id === id));
+  if (unknown.length) {
+    console.log(`FAIL FULL_DATA_CITY_IDS names ${unknown.join(", ")} with no CITIES entry`);
+    failed++;
+  }
 }
 
 console.log(failed ? `\n${failed} problem(s) across ${files.length} packs` : `\nall ${files.length} packs ok, index.json agrees`);
