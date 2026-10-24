@@ -58,7 +58,7 @@ function fresh(alt = 400, hdg = 0): Aircraft {
 {
   const fast = fresh();
   fly(fast, { throttle: 1 }, 25, air(0));
-  between("full throttle airspeed", fast.airspeed, 55, 65, "m/s");
+  between("full throttle airspeed", fast.airspeed, 315, 350, "m/s");
 
   const slow = fresh();
   fly(slow, { throttle: -1 }, 25, air(0));
@@ -219,7 +219,7 @@ function fresh(alt = 400, hdg = 0): Aircraft {
   );
   check(
     "airspeed stays inside the envelope",
-    a.airspeed > 5 && a.airspeed < DEFAULT_CONFIG.boostSpeed * 1.25,
+    a.airspeed > 5 && a.airspeed < DEFAULT_CONFIG.maxSpeed * 1.1,
     `${a.airspeed.toFixed(1)} m/s`,
   );
 }

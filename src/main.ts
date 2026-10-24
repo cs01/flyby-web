@@ -20,6 +20,7 @@ import { showDiagnostics, watchForFailures } from "./app/diag";
 import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, cityAt, DEFAULT_CITY, type City } from "./cities";
+import { ThrottleSlider } from "./app/throttle";
 import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
@@ -854,6 +855,7 @@ async function main() {
 
   const hud = new Hud(ui);
   hud.setWeather(wx, 0);
+  const throttleSlider = new ThrottleSlider(ui);
 
   /**
    * What the panel says about where the city came from.
@@ -1739,6 +1741,11 @@ async function main() {
         ? { speedMs: drone.speed, aglM: drone.position.y - groundUnderDrone }
         : null,
     );
+    {
+      const lever = throttleSlider.take();
+      if (lever !== null) ac.throttle = lever;
+      throttleSlider.update(ac.throttle, ac.airspeed, !droneActive && !carActive && !shotMode);
+    }
     if (!droneActive && !carActive) {
       osd.update({
         pitchDeg: ac.pitchDeg,

@@ -1190,6 +1190,46 @@ html, body {
     z-index: 5;
   }
 }
-#ui.clean > :not(.back):not(.attrib):not(.hud-toggle):not(.touch) { display: none !important; }
+#ui.clean > :not(.back):not(.attrib):not(.hud-toggle):not(.touch):not(.throttle) { display: none !important; }
 #ui.clean .touch-btns,
 #ui.clean .touch-home { display: none !important; }
+
+/* --- Throttle slider ---------------------------------------------------- */
+.throttle {
+  position: absolute;
+  right: calc(10px + env(safe-area-inset-right));
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--ink);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  z-index: 5;
+}
+.throttle-readout { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; }
+.throttle-cap { color: var(--dim); text-transform: uppercase; font-size: 10px; }
+.throttle input {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 34px;
+  height: 180px;
+  margin: 0;
+  accent-color: #66d4ff;
+  touch-action: none;
+}
+@media (pointer: coarse) {
+  .throttle input { height: 220px; }
+}
+/* With the hud on, the touch buttons own the right edge; the lever steps in. */
+@media (pointer: coarse) {
+  #ui:not(.clean) .throttle { right: calc(64px + env(safe-area-inset-right)); }
+}

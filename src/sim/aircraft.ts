@@ -59,6 +59,8 @@ export interface AircraftConfig {
   cruiseSpeed: number;
   /** With boost held. */
   boostSpeed: number;
+  /** Metres per second with the lever fully open. */
+  maxSpeed: number;
   /** Degrees per second of roll at full stick. */
   rollRate: number;
   /** Degrees of bank at full stick, and with boost held. */
@@ -89,9 +91,15 @@ export interface AircraftConfig {
   speedTau: number;
 }
 
+/** Sea-level speed of sound, m/s: the top of the lever, at the owner's ask. */
+export const MACH1 = 343;
+
 export const DEFAULT_CONFIG: AircraftConfig = {
   minSpeed: 22,
-  cruiseSpeed: 62,
+  // Where the lever sits on load (DEFAULT_THROTTLE), about 195 kt. 120 kt was
+  // the truthful Cessna cruise and read as crawling over a 10 km city.
+  cruiseSpeed: 100,
+  maxSpeed: MACH1,
   // 134 m/s is 300 mph, which is not a thing a high-wing light single does.
   // It is a thing this one does, because the alternative to a turbo button
   // that actually goes somewhere is a turbo button nobody presses twice. The
@@ -112,12 +120,29 @@ export const EASY_CONFIG: AircraftConfig = {
   ...DEFAULT_CONFIG,
   cruiseSpeed: 46,
   boostSpeed: 90,
+  maxSpeed: 180,
   rollRate: 85,
   maxBank: 38,
   boostBank: 48,
   climbRate: 22,
   turnGain: 2.0,
 };
+
+/**
+ * The lever maps to speed SQUARED, not linearly. Linear over 22..343 m/s put
+ * the whole of normal sightseeing (60 to 120 m/s) in the bottom fifth of the
+ * travel, so a touch slider was all-or-nothing; squared, the middle of the
+ * lever is cruise and the last third is the run to Mach 1.
+ */
+export function leverSpeed(c: AircraftConfig, lever: number): number {
+  const l = THREE.MathUtils.clamp(lever, 0, 1);
+  return c.minSpeed + (c.maxSpeed - c.minSpeed) * l * l;
+}
+
+/** The lever position that commands cruiseSpeed. */
+export const DEFAULT_THROTTLE = Math.sqrt(
+  (DEFAULT_CONFIG.cruiseSpeed - DEFAULT_CONFIG.minSpeed) / (DEFAULT_CONFIG.maxSpeed - DEFAULT_CONFIG.minSpeed),
+);
 
 export class Aircraft {
   readonly position = new THREE.Vector3();
@@ -130,7 +155,7 @@ export class Aircraft {
   /** Speed through the AIR along the nose, m/s. What the physics see. */
   airspeed: number;
   /** 0..1 throttle lever, which commands a speed rather than a power. */
-  throttle = 0.72;
+  throttle = DEFAULT_THROTTLE;
 
   private bank = 0;
   private pitchAngle = 0;
@@ -154,7 +179,7 @@ export class Aircraft {
 
   constructor(config: AircraftConfig = DEFAULT_CONFIG) {
     this.config = { ...config };
-    this.airspeed = config.cruiseSpeed * 0.8;
+    this.airspeed = config.cruiseSpeed;
   }
 
   /**
@@ -195,7 +220,7 @@ export class Aircraft {
     this.bank = 0;
     this.pitchAngle = 0;
     this.climb = 0;
-    this.airspeed = this.config.cruiseSpeed * 0.85;
+    this.airspeed = this.config.cruiseSpeed;
     this.velocity.set(0, 0, 0);
     this.syncQuaternion();
   }
@@ -277,8 +302,10 @@ export class Aircraft {
       0,
       1,
     );
-    const top = THREE.MathUtils.lerp(c.cruiseSpeed, c.boostSpeed, boost);
-    const wantSpeed = THREE.MathUtils.lerp(c.minSpeed, top, this.throttle) * this.densityRatio;
+    // Boost still jumps to its sprint speed, but never slows a lever that is
+    // already set faster than that.
+    const lever = leverSpeed(c, this.throttle);
+    const wantSpeed = Math.max(lever, THREE.MathUtils.lerp(lever, c.boostSpeed, boost)) * this.densityRatio;
 
     // --- Attitude ---------------------------------------------------------
     const bankLimit = THREE.MathUtils.lerp(c.maxBank, c.boostBank, boost) * DEG;
@@ -306,7 +333,9 @@ export class Aircraft {
     // rather than freezing the nose wherever it was left. Climb performance
     // falls with density and with speed: a slow aeroplane on a hot day is a
     // mushy one, and that is a real and legible effect.
-    const climbAuthority = this.densityRatio * THREE.MathUtils.clamp(this.airspeed / c.cruiseSpeed, 0.35, 1.2);
+    const climbAuthority = this.densityRatio * THREE.MathUtils.clamp(this.airspeed / c.cruiseSpeed, 0.35, 1.0);
+    // Capped at 1, not 1.2: with the lever reaching Mach 1 a fast pass would
+    // otherwise out-climb the commanded rate it is meant to be limited by.
     const wantClimb = THREE.MathUtils.clamp(input.lift, -1, 1) * c.climbRate * climbAuthority;
     this.climb += (wantClimb - this.climb) * (1 - Math.pow(0.02, dt));
 
@@ -331,7 +360,7 @@ export class Aircraft {
     // whatever the throttle asked for.
     const gravityTerm = (-this.climb / Math.max(this.airspeed, 12)) * G * 1.15;
     this.airspeed += ((wantSpeed - this.airspeed) / c.speedTau + gravityTerm) * dt;
-    this.airspeed = THREE.MathUtils.clamp(this.airspeed, c.minSpeed * 0.6, c.boostSpeed * 1.2);
+    this.airspeed = THREE.MathUtils.clamp(this.airspeed, c.minSpeed * 0.6, Math.max(c.boostSpeed, c.maxSpeed) * 1.05);
 
     // --- Turbulence -------------------------------------------------------
     // Gusts are the difference between the reported wind and the reported gust.
