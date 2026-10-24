@@ -1,0 +1,427 @@
+{
+ "a320": {
+  "liveries": [
+   "default",
+   "DAL",
+   "UAL",
+   "AAL",
+   "JBU",
+   "ASA",
+   "ACA",
+   "BAW"
+  ],
+  "span": 33.85,
+  "length": 37.62,
+  "wheelY": -0.01,
+  "bellyY": 0.71,
+  "wingtip": [
+   16.92,
+   4.97,
+   3.57
+  ],
+  "tail": [
+   0.04,
+   5.05,
+   18.81
+  ],
+  "fin": [
+   0,
+   11.78,
+   15.91
+  ],
+  "triangles": 3346
+ },
+ "a321": {
+  "liveries": [
+   "default",
+   "DAL",
+   "AAL",
+   "JBU",
+   "ASA",
+   "HAL"
+  ],
+  "span": 33.85,
+  "length": 44.52,
+  "wheelY": -0.01,
+  "bellyY": 0.71,
+  "wingtip": [
+   16.92,
+   4.03,
+   4.16
+  ],
+  "tail": [
+   0.04,
+   5.05,
+   22.26
+  ],
+  "fin": [
+   0,
+   11.78,
+   19.36
+  ],
+  "triangles": 3942
+ },
+ "b738": {
+  "liveries": [
+   "default",
+   "DAL",
+   "UAL",
+   "AAL",
+   "ASA",
+   "WJA",
+   "CMP"
+  ],
+  "span": 36.89,
+  "length": 39.38,
+  "wheelY": -0.02,
+  "bellyY": 0.65,
+  "wingtip": [
+   18.45,
+   6.68,
+   6.6
+  ],
+  "tail": [
+   0,
+   12.37,
+   19.37
+  ],
+  "fin": [
+   -0.02,
+   12.37,
+   19.37
+  ],
+  "triangles": 3648
+ },
+ "b789": {
+  "liveries": [
+   "default",
+   "UAL",
+   "AAL",
+   "BAW",
+   "VIR"
+  ],
+  "span": 60.04,
+  "length": 62.65,
+  "wheelY": -0.08,
+  "bellyY": 0.81,
+  "wingtip": [
+   30.02,
+   7.6,
+   12
+  ],
+  "tail": [
+   -0.21,
+   5.9,
+   30.52
+  ],
+  "fin": [
+   0,
+   16.48,
+   29.86
+  ],
+  "triangles": 9225
+ },
+ "b77w": {
+  "liveries": [
+   "default",
+   "UAL",
+   "AAL",
+   "BAW",
+   "AFR",
+   "UAE"
+  ],
+  "span": 64.8,
+  "length": 73.86,
+  "wheelY": -0.04,
+  "bellyY": 0.86,
+  "wingtip": [
+   32.4,
+   7.66,
+   12.01
+  ],
+  "tail": [
+   0,
+   18.22,
+   36.08
+  ],
+  "fin": [
+   0,
+   18.22,
+   34.94
+  ],
+  "triangles": 6830
+ },
+ "a333": {
+  "liveries": [
+   "default",
+   "DAL",
+   "EIN",
+   "THY"
+  ],
+  "span": 59.32,
+  "length": 64.27,
+  "wheelY": -0.04,
+  "bellyY": 1.38,
+  "wingtip": [
+   29.66,
+   8.07,
+   8.29
+  ],
+  "tail": [
+   0,
+   17.67,
+   32.13
+  ],
+  "fin": [
+   0,
+   17.67,
+   29.34
+  ],
+  "triangles": 3724
+ },
+ "a359": {
+  "liveries": [
+   "default",
+   "DAL",
+   "DLH",
+   "QTR"
+  ],
+  "span": 64.63,
+  "length": 66.77,
+  "wheelY": -0.03,
+  "bellyY": 0.69,
+  "wingtip": [
+   32.32,
+   9.05,
+   12.24
+  ],
+  "tail": [
+   0,
+   16.82,
+   33.09
+  ],
+  "fin": [
+   0,
+   16.82,
+   31.63
+  ],
+  "triangles": 9134
+ },
+ "b763": {
+  "liveries": [
+   "default",
+   "DAL",
+   "UAL"
+  ],
+  "span": 47.98,
+  "length": 54.88,
+  "wheelY": -0.05,
+  "bellyY": 1.02,
+  "wingtip": [
+   23.99,
+   5.62,
+   5.93
+  ],
+  "tail": [
+   0,
+   15.75,
+   27.44
+  ],
+  "fin": [
+   0,
+   15.75,
+   27.44
+  ],
+  "triangles": 10066
+ },
+ "b752": {
+  "liveries": [
+   "default",
+   "DAL",
+   "UAL",
+   "AAL",
+   "FDX",
+   "UPS"
+  ],
+  "span": 39.96,
+  "length": 47.23,
+  "wheelY": -0.05,
+  "bellyY": 0.54,
+  "wingtip": [
+   19.98,
+   6.91,
+   6.05
+  ],
+  "tail": [
+   0,
+   12.96,
+   23.62
+  ],
+  "fin": [
+   0,
+   13.02,
+   21.36
+  ],
+  "triangles": 2837
+ },
+ "e175": {
+  "liveries": [
+   "default",
+   "DAL",
+   "UAL",
+   "AAL",
+   "ASA"
+  ],
+  "span": 25.92,
+  "length": 31.63,
+  "wheelY": -0.1,
+  "bellyY": 0.62,
+  "wingtip": [
+   12.96,
+   4.59,
+   3.44
+  ],
+  "tail": [
+   -0.17,
+   4.21,
+   15.82
+  ],
+  "fin": [
+   0,
+   9.91,
+   14.27
+  ],
+  "triangles": 6639
+ },
+ "crj7": {
+  "liveries": [
+   "default",
+   "AAL",
+   "DAL",
+   "UAL"
+  ],
+  "span": 23.23,
+  "length": 32.55,
+  "wheelY": -0.06,
+  "bellyY": 1.01,
+  "wingtip": [
+   11.61,
+   3.15,
+   4.51
+  ],
+  "tail": [
+   -0.02,
+   6.52,
+   15.57
+  ],
+  "fin": [
+   0,
+   7.12,
+   13.2
+  ],
+  "triangles": 9005
+ },
+ "e145": {
+  "liveries": [
+   "default",
+   "UAL",
+   "AAL"
+  ],
+  "span": 20.04,
+  "length": 29.86,
+  "wheelY": -0.01,
+  "bellyY": 0.88,
+  "wingtip": [
+   10.02,
+   2.05,
+   3.44
+  ],
+  "tail": [
+   0,
+   6.52,
+   14.93
+  ],
+  "fin": [
+   0,
+   6.72,
+   12.85
+  ],
+  "triangles": 3884
+ },
+ "dh8d": {
+  "liveries": [
+   "default",
+   "ASA"
+  ],
+  "span": 28.43,
+  "length": 33.04,
+  "wheelY": -0.01,
+  "bellyY": 0.92,
+  "wingtip": [
+   14.21,
+   3.95,
+   -0.4
+  ],
+  "tail": [
+   0,
+   7.55,
+   16.52
+  ],
+  "fin": [
+   0.12,
+   7.94,
+   13.41
+  ],
+  "triangles": 5463
+ },
+ "pa28": {
+  "liveries": [
+   "default"
+  ],
+  "span": 10.33,
+  "length": 6.97,
+  "wheelY": 0.33,
+  "bellyY": -0.01,
+  "wingtip": [
+   5.17,
+   1.15,
+   -0.33
+  ],
+  "tail": [
+   0,
+   2.76,
+   3.46
+  ],
+  "fin": [
+   0,
+   2.76,
+   3.46
+  ],
+  "triangles": 1947
+ },
+ "cl60": {
+  "liveries": [
+   "default"
+  ],
+  "span": 19.82,
+  "length": 21.62,
+  "wheelY": -1.35,
+  "bellyY": -0.75,
+  "wingtip": [
+   9.91,
+   1.38,
+   2.71
+  ],
+  "tail": [
+   0,
+   4.98,
+   10.23
+  ],
+  "fin": [
+   0,
+   5.18,
+   7.82
+  ],
+  "triangles": 3960
+ }
+}

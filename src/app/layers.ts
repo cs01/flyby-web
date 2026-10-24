@@ -13,6 +13,7 @@ export interface LayerState {
   landmarks: boolean;
   instruments: boolean;
   weather: boolean;
+  traffic: boolean;
 }
 
 const KEY = "flyby.layers";
@@ -21,12 +22,14 @@ const DEFAULTS: LayerState = {
   landmarks: true,
   instruments: true,
   weather: true,
+  traffic: true,
 };
 
 const ROWS: [keyof LayerState, string][] = [
   ["landmarks", "Landmarks"],
   ["instruments", "Instruments"],
   ["weather", "Weather"],
+  ["traffic", "Live traffic"],
 ];
 
 function load(): LayerState {
@@ -81,5 +84,8 @@ export class Layers {
   }
   get weather(): boolean {
     return this.state.weather;
+  }
+  get traffic(): boolean {
+    return this.state.traffic;
   }
 }

@@ -48,17 +48,39 @@ uniform mat4 modelMatrix;
 uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
 uniform mat3 normalMatrix;
+#ifdef INSTANCED
+// The live-traffic airliners: one draw per model and livery, each aircraft an
+// instance. Their transforms are rotation and translation only, like every
+// node in the Cessna, so mat3 of the product is still a correct normal matrix.
+in mat4 instanceMatrix;
+uniform mat4 viewMatrix;
+#endif
+#ifdef VCOLOR
+// AC3D material rgb per vertex, alpha 0 where the part is untextured.
+in vec4 color;
+out vec4 vColor;
+#endif
 out vec3 vWorldPos;
 out vec3 vWorldNormal;
 out vec2 vUv;
 void main() {
+#ifdef INSTANCED
+  mat4 m = modelMatrix * instanceMatrix;
+  vec4 wp = m * vec4(position, 1.0);
+  vWorldNormal = normalize(mat3(m) * normal);
+  gl_Position = projectionMatrix * viewMatrix * wp;
+#else
   vec4 wp = modelMatrix * vec4(position, 1.0);
-  vWorldPos = wp.xyz;
   // World-space normal. mat3(modelMatrix) is correct here because every node in
   // this model carries rotation and translation only -- no non-uniform scale.
   vWorldNormal = normalize(mat3(modelMatrix) * normal);
-  vUv = uv;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+#endif
+  vWorldPos = wp.xyz;
+#ifdef VCOLOR
+  vColor = color;
+#endif
+  vUv = uv;
 }
 `;
 
@@ -70,6 +92,9 @@ ${SH_GLSL}
 in vec3 vWorldPos;
 in vec3 vWorldNormal;
 in vec2 vUv;
+#ifdef VCOLOR
+in vec4 vColor;
+#endif
 out vec4 fragColor;
 
 uniform vec3  uSunDir;
@@ -155,6 +180,12 @@ float sunVisibility() {
 void main() {
   vec3 base = uBaseColor;
   float alpha = uOpacity;
+#ifdef VCOLOR
+  // Untextured parts (alpha 0) are their material colour alone; textured ones
+  // take the livery, tinted by the material as AC3D does.
+  base *= srgbToLinear(vColor.rgb);
+  if (uMapMode > 0.5) base *= mix(vec3(1.0), srgbToLinear(texture(uMap, vUv).rgb), vColor.a);
+#else
   if (uMapMode > 0.5) {
     vec4 t = texture(uMap, vUv);
     // Explicit decode. three.js injects no colour-space conversion into a
@@ -162,6 +193,7 @@ void main() {
     if (uMapMode < 1.5) base *= srgbToLinear(t.rgb);
     alpha *= t.a;
   }
+#endif
 
   vec3 N = normalize(vWorldNormal);
   vec3 V = normalize(uCameraPos - vWorldPos);
@@ -657,6 +689,26 @@ export class AircraftModel {
    */
   plainMaterial(s: Surface): THREE.RawShaderMaterial {
     const m = this.makeMaterial({ ...s, useMap: false }, []);
+    this.materials.push(m);
+    return m;
+  }
+
+  /**
+   * The same shader for an InstancedMesh with per-vertex AC3D colours: the
+   * live-traffic airliners (render/airtraffic.ts). Lit by the same sun, moon,
+   * sky and environment probe as the Cessna so the two read as one scene. The
+   * self-shadow is off: that map is a 14 m box round the Cessna, and sampling
+   * it from an airliner a mile away would only ever find the Cessna's shadow.
+   *
+   * `map` may be null and set later through `uMap`/`uMapMode`, so a livery
+   * still in flight draws the plain white airframe instead of nothing.
+   */
+  trafficMaterial(map: THREE.Texture | null): THREE.RawShaderMaterial {
+    const m = this.makeMaterial({ ...PAINT, roughness: 0.32, useMap: false }, []);
+    m.defines = { INSTANCED: 1, VCOLOR: 1 };
+    m.uniforms.uShadowStrength = { value: 0 };
+    m.uniforms.uMap.value = map;
+    m.uniforms.uMapMode.value = map ? 1 : 0;
     this.materials.push(m);
     return m;
   }

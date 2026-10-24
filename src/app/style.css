@@ -450,6 +450,7 @@ html, body {
    An overlay that must stay click-through belongs in THIS list, not in its own
    rule -- its own rule cannot win. */
 #ui > .labels,
+#ui > .ttags,
 #ui > .osd,
 #ui > .attrib { pointer-events: none; }
 
@@ -490,6 +491,75 @@ html, body {
 
 .label.done { opacity: 0.45; }
 .label.done i { color: var(--dim); }
+
+/* --- Live traffic tags ----------------------------------------------------
+   A tag over each nearby aircraft. Positioned by transform from
+   app/traffictags.ts; the overlay is click-through (see the `#ui > .labels`
+   list above) and above the touch layer (z 5) so a tap on a tag reaches the
+   tag, while a thumb anywhere else still reaches the stick. */
+.ttags { position: absolute; inset: 0; z-index: 6; overflow: hidden; }
+.ttag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  margin-top: -10px;
+  padding: 2px 7px 3px;
+  border-left: 2px solid var(--accent);
+  border-radius: 3px;
+  background: rgba(6, 10, 16, 0.55);
+  font-size: 10px;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  will-change: transform;
+}
+/* The pointer down to the aircraft: a game's "this one" tick. */
+.ttag::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -8px;
+  width: 1px;
+  height: 8px;
+  background: var(--accent);
+  opacity: 0.7;
+}
+.ttag .l1 b { font-weight: 600; color: var(--ink); letter-spacing: 0.02em; }
+.ttag .l1 span { margin-left: 5px; color: var(--accent); }
+.ttag .l2 { color: var(--ink); }
+.ttag .l3 { color: var(--dim); font-size: 9px; }
+.ttag.sel { background: rgba(12, 20, 32, 0.9); border-left-color: #ffd166; }
+.ttag-card {
+  top: 92px;
+  right: 14px;
+  width: 260px;
+  z-index: 7;
+  pointer-events: auto;
+}
+.ttag-card h2 { margin-right: 24px; }
+.ttag-card .ttag-air { color: var(--accent); font-size: 12px; }
+.ttag-card .ttag-route { margin: 4px 0; font-size: 12px; }
+.ttag-card .ttag-rows { color: var(--dim); font-size: 11px; line-height: 1.4; }
+.ttag-card .ttag-photo img { display: block; width: 100%; margin-top: 8px; border-radius: 6px; }
+.ttag-card .ttag-photo small { display: block; color: var(--dim); font-size: 9px; margin-top: 2px; }
+.ttag-card .ttag-photo a { color: inherit; text-decoration: none; }
+.ttag-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  border: 0;
+  background: none;
+  color: var(--dim);
+  font-size: 18px;
+  cursor: pointer;
+}
+@media (max-width: 640px) {
+  .ttag-card { top: auto; bottom: calc(150px + env(safe-area-inset-bottom)); left: 50%; right: auto; transform: translateX(-50%); width: min(300px, 86vw); }
+  .ttag-card .ttag-photo img { max-height: 110px; object-fit: cover; }
+}
 
 /* --- The street sign ------------------------------------------------------ */
 
@@ -1210,7 +1280,7 @@ html, body {
     z-index: 5;
   }
 }
-#ui.clean > :not(.back):not(.attrib):not(.hud-toggle):not(.touch):not(.throttle):not(.modebar) { display: none !important; }
+#ui.clean > :not(.back):not(.attrib):not(.hud-toggle):not(.touch):not(.throttle):not(.modebar):not(.ttags):not(.ttag-card) { display: none !important; }
 #ui.clean .touch-btns,
 #ui.clean .touch-home { display: none !important; }
 

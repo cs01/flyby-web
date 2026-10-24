@@ -7,6 +7,7 @@
 // and answers with an array, so twenty-four cities are one round trip rather
 // than twenty-four.
 
+import { AIRPORTS } from "../data/airports";
 import { LISTED_CITIES as CITIES, CONTINENTS, type City } from "../cities";
 import { fetchJson, TTL_WEATHER, TTL_STATIC } from "../data/cache";
 import { searchPlaces, type SearchHit } from "../data/place";
@@ -288,6 +289,31 @@ export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon
     sec.innerHTML = `<h2>${key}</h2><div class="grid"></div>`;
     sections.append(sec);
     gridFor.set(key, sec.querySelector(".grid") as HTMLElement);
+  }
+
+  // Airports, last: a drone beside the runway in use with the real traffic
+  // taxiing and taking off in front of it. Anchors for the same reason the
+  // city cards are, and not part of `cards`, which the weather painter
+  // indexes in step with CITIES.
+  {
+    const sec = document.createElement("section");
+    sec.className = "menu-section";
+    sec.innerHTML = `<h2>Airport spotting</h2><div class="grid"></div>`;
+    sections.append(sec);
+    const grid = sec.querySelector(".grid") as HTMLElement;
+    for (const a of AIRPORTS) {
+      const el = document.createElement("a");
+      el.className = "card";
+      const params = new URLSearchParams(location.search);
+      params.delete("city");
+      params.delete("at");
+      params.set("spot", a.id);
+      el.href = `?${params.toString()}`;
+      el.innerHTML = `
+        <div class="card-top"><span class="city">${a.icao.slice(1)} ${a.name}</span></div>
+        <div class="card-bot"><span class="country">${a.city} \u00b7 live traffic</span></div>`;
+      grid.append(el);
+    }
   }
 
   const cards = CITIES.map((c) => {
