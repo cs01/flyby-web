@@ -695,11 +695,14 @@ function cloudPoses(): Pose[] {
   out.push(
     { ...gate, name: "clouds-gate-up30", altM: 600, hdgDeg: 0, pitchDeg: 30, wx: cumulus,
       what: "gate: fair-weather cumulus at 30 degrees up, for clustering" },
-    { ...gate, name: "clouds-gate-cover20", altM: 600, hdgDeg: 90, pitchDeg: 45,
+    { ...gate, name: "clouds-gate-cover20", altM: 600, hdgDeg: 0, pitchDeg: 30,
       wx: `low:0.2:1400:2300,${none}`, what: "gate: 20% low cover" },
-    { ...gate, name: "clouds-gate-cover80", altM: 600, hdgDeg: 90, pitchDeg: 45,
+    { ...gate, name: "clouds-gate-cover80", altM: 600, hdgDeg: 0, pitchDeg: 30,
       wx: `low:0.8:1400:2300,${none}`, what: "gate: 80% low cover" },
-    { ...gate, name: "clouds-gate-side", altM: 500, hdgDeg: 0, pitchDeg: 3, wx: cumulus,
+    { ...gate, name: "clouds-manhattan-cumulus-shadows", altM: 1000, hdgDeg: 20, pitchDeg: -35,
+      wx: `low:0.4:1400:2300,${none}`, what: "cumulus shadows across Midtown" },
+    { ...gate, name: "clouds-gate-side", altM: 500, hdgDeg: 0, pitchDeg: 20,
+      wx: `low:0.4:1400:2300,${none}`,
       what: "gate: cumulus bases side-on, for the flat base" },
   );
   return out;
@@ -707,6 +710,8 @@ function cloudPoses(): Pose[] {
 
 /** Extra query parameters appended to every pose, e.g. `--query terrainDebug=3`. */
 let extraQuery = "";
+/** Seconds of cloud time to step through after each capture; see capture(). */
+let stepClouds: number[] = [];
 
 function url(base: string, p: Pose): string {
   const q = new URLSearchParams({
@@ -839,6 +844,19 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const file = `${outDir}/${p.name}${tag}.png`;
   writeFileSync(file, png);
 
+  // `--step-clouds 0.0167,10`: after the main capture, advance the clouds'
+  // clock by each amount in turn (cumulatively) and capture again as
+  // NAME-step0.png, NAME-step1.png. tools/verify-clouds.ts's temporal claim.
+  for (let k = 0; k < stepClouds.length; k++) {
+    await cdp.eval(`window.flybyShot.stepClouds(${stepClouds[k]})`);
+    const at = await cdp.eval<number>("window.flybyShot.frames");
+    // Eight frames: two turns of the four-frame march rotation, so every
+    // half-res pixel has been re-marched at the new time.
+    await cdp.waitFor(`window.flybyShot.frames > ${at + 8}`, 60_000, `${p.name} step ${k}`);
+    const u = await cdp.eval<string>("window.flybyShot.capture()");
+    writeFileSync(`${outDir}/${p.name}${tag}-step${k}.png`, Buffer.from(u.slice(u.indexOf(",") + 1), "base64"));
+  }
+
   return {
     pose: p, file, frameMs, triangles, trees, shrubs, treeLods, treeTriangles, lod,
     pavementTriangles, lamps, lampsMeasured, cars, parkedCars, streetTriangles,
@@ -861,6 +879,7 @@ async function main(): Promise<void> {
   const profileDir = arg("profile", "/tmp/flyby-shots-profile")!;
   const repeat = has("repeat");
   extraQuery = arg("query", "") ?? "";
+  stepClouds = (arg("step-clouds", "") ?? "").split(",").filter(Boolean).map(Number);
 
   mkdirSync(outDir, { recursive: true });
   const poses = only ? POSES.filter((p) => only.split(",").includes(p.name)) : POSES;

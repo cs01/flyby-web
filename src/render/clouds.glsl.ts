@@ -72,15 +72,24 @@ float perlinWorley(vec3 p) {
  * Stratus: a 15% ramp, which the shape noise then turns into an undulating
  * base, and a top that stays near the deck's.
  */
-float deckProfile(float h, float type, float s) {
+// Split in two on purpose. The TOP shape is what the noise erodes against,
+// so it decides the silhouette; the BASE ramp multiplies the density after
+// the erosion, so the bottom is a surface and not a fade. When the base ramp
+// went through the threshold too, the density at the base was so thin that
+// the ray had climbed 250 m into the cloud before it was 20% opaque, and the
+// eye reads that as a soft, ragged, wandering bottom.
+float deckBase(float h, float type) {
+  if (uCloudFlags.y < 0.5) return 1.0;
+  return smoothstep(0.0, mix(0.15, 0.035, type), h);
+}
+float deckTop(float h, float type, float s) {
   if (uCloudFlags.y < 0.5) {
     // The pre-weather-map profile, kept only as tools/verify-clouds.ts's probe.
     return smoothstep(0.0, 0.2, h) * smoothstep(1.0, 0.6, h);
   }
-  float baseRamp = mix(0.15, 0.035, type);
   float hTop = mix(mix(0.75, 1.0, s), mix(0.22, 1.0, sqrt(s)), type);
   float topSoft = mix(0.3, 0.5, type) * hTop;
-  return smoothstep(0.0, baseRamp, h) * smoothstep(hTop, hTop - topSoft, h);
+  return smoothstep(hTop, hTop - topSoft, h);
 }
 
 /**
@@ -107,12 +116,14 @@ float deckDensity(vec3 p, vec4 deck, bool isMid, float lod, bool cheap) {
   float type = sat(deck.w + (wm.g - 0.5) * 0.5);
   // Strength of the cell this point is in: 0 at its edge, 1 at the strongest
   // cell on the map. The map is equalised, so a threshold at 1 - cover covers
-  // that fraction of it. The 1.25 is erosion's share on a cumulus: the noise
-  // eats the edge of every cell, and without it a 30% sky measured nearer
-  // 20%. A stratiform sheet barely erodes, and at 1.25 a 70% deck had no
-  // breaks left in it.
+  // that fraction of it. The 1.7 is erosion's share on a cumulus: the noise
+  // eats the outer part of every cell, and at 1.25 a 20% deck measured 9%
+  // of the sky from 30 degrees up to the horizon (tools/verify-clouds.ts),
+  // where perspective should if anything make it read MORE covered. A
+  // stratiform sheet barely erodes, and with the cumulus factor a 70% deck
+  // had no breaks left in it.
   float m = isMid ? wm.a : wm.r;
-  float cov = min(1.0, cover * mix(1.0, 1.25, deck.w));
+  float cov = min(1.0, cover * mix(1.0, 1.7, deck.w));
   float s = uCloudFlags.x > 0.5 ? sat((m - (1.0 - cov)) / max(cov, 0.05)) : 1.0;
   if (s <= 0.0) return 0.0;
 
@@ -131,7 +142,7 @@ float deckDensity(vec3 p, vec4 deck, bool isMid, float lod, bool cheap) {
   float h = (p.y - base) / max(top - base, 1.0);
   if (h < 0.0 || h > 1.0) return 0.0;
 
-  float prof = deckProfile(h, type, s);
+  float prof = deckTop(h, type, s);
   if (prof <= 0.0) return 0.0;
 
   // The shape noise rides the same wind, boils slowly upward (0.8 m/s through
@@ -139,7 +150,9 @@ float deckDensity(vec3 p, vec4 deck, bool isMid, float lod, bool cheap) {
   // and is warped by the map's own low channels so its 2.4 km repeat never
   // lines up across a whole deck. That repeat at a grazing angle is what drew
   // the fan of streaks toward the vanishing point.
-  vec3 q = vec3(xz.x, p.y - uTime * 0.8, xz.y);
+  // Vertically stretched by 1/0.6: billows taller than wide, which is how
+  // convection builds them.
+  vec3 q = vec3(xz.x, (p.y - uTime * 0.8) * 0.6, xz.y);
   q.xz += (wm.gb - 0.5) * 900.0;
   float shape = perlinWorley(q * (isMid ? SHAPE_SCALE_MID : SHAPE_SCALE_LOW));
 
@@ -148,9 +161,14 @@ float deckDensity(vec3 p, vec4 deck, bool isMid, float lod, bool cheap) {
   // envelope made its own smooth outline the cloud's, and the sky filled
   // with pillows. A stratiform deck saturates fast instead: it is a sheet
   // with breaks, not a field of cells.
-  float env = uCloudFlags.x > 0.5 ? prof * sat(s * mix(4.0, 1.0, type)) : prof;
+  // The lower half is made a third more solid than the top: a cumulus is a
+  // body with a cauliflower crown, and with one threshold all the way up the
+  // noise left domes floating over holes in their own bodies.
+  float env = uCloudFlags.x > 0.5
+    ? min(1.0, prof * sat(s * mix(4.0, 1.0, type)) * mix(1.35, 1.0, sat(h * 2.0)))
+    : prof;
   float thr = uCloudFlags.x > 0.5 ? 1.0 - env : 1.0 - cover;
-  float d = sat(remap(shape, thr, 1.0, 0.0, 1.0)) * env;
+  float d = sat(remap(shape, thr, 1.0, 0.0, 1.0)) * env * deckBase(h, type);
 
   // Erosion at the edges only: the interior is opaque and pays for nothing it
   // cannot show. Wispy (inverted Worley) at the base, billowy above, which is
