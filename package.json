@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "bun run check && vite build",
     "preview": "vite preview",
-    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json && bun test/solar.check.ts && bun test/touch.check.ts && bun test/flight.check.ts && bun test/drone.check.ts && bun test/roof.check.ts && bun test/facade.check.ts && bun test/sh.check.ts && bun test/gtao.check.ts && bun test/budget.check.ts && bun test/collision.check.ts && bun test/landmask.check.ts && bun test/roadmask.check.ts && bun test/ribbon.check.ts && bun test/trees.check.ts && bun test/shrubs.check.ts && bun test/car.check.ts && bun test/carmesh.check.ts && bun test/lighting.check.ts && bun test/live.check.ts && bun test/zoning.check.ts && bun test/pavement.check.ts && bun test/street.check.ts && bun test/streetsign.check.ts && bun test/bridge.check.ts && bun test/trafficmodel.check.ts && bun tools/verify-glsl.ts && bun tools/verify-packs.ts && bun tools/verify-land.ts && bun tools/verify-roads.ts && bun tools/verify-aircraft.ts",
+    "check": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json && bun test/solar.check.ts && bun test/touch.check.ts && bun test/flight.check.ts && bun test/drone.check.ts && bun test/roof.check.ts && bun test/facade.check.ts && bun test/archetype.check.ts && bun test/sh.check.ts && bun test/gtao.check.ts && bun test/budget.check.ts && bun test/collision.check.ts && bun test/landmask.check.ts && bun test/roadmask.check.ts && bun test/ribbon.check.ts && bun test/trees.check.ts && bun test/shrubs.check.ts && bun test/car.check.ts && bun test/carmesh.check.ts && bun test/lighting.check.ts && bun test/live.check.ts && bun test/zoning.check.ts && bun test/pavement.check.ts && bun test/street.check.ts && bun test/streetsign.check.ts && bun test/bridge.check.ts && bun test/trafficmodel.check.ts && bun tools/verify-glsl.ts && bun tools/verify-packs.ts && bun tools/verify-land.ts && bun tools/verify-roads.ts && bun tools/verify-aircraft.ts",
     "bake": "bun tools/bake-city.ts",
     "land": "bun tools/bake-land.ts",
     "roads": "bun tools/bake-roads.ts",
@@ -28,6 +28,8 @@
     "car": "bun test/car.check.ts",
     "collision": "bun test/collision.check.ts",
     "facade": "bun test/facade.check.ts",
+    "archetype": "bun test/archetype.check.ts",
+    "materials": "bun tools/bake-materials.ts",
     "sh": "bun test/sh.check.ts",
     "gtao": "bun test/gtao.check.ts",
     "budget": "bun test/budget.check.ts",
@@ -43,7 +45,8 @@
     "glass": "bun tools/verify-glass.ts",
     "bounce": "bun tools/verify-street.ts",
     "ground": "bun tools/verify-ground.ts",
-    "shadow": "bun tools/verify-shadow.ts"
+    "shadow": "bun tools/verify-shadow.ts",
+    "buildings": "bun tools/verify-buildings.ts"
   },
   "dependencies": {
     "three": "^0.180.0"

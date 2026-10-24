@@ -25,10 +25,11 @@
 import { readdirSync } from "node:fs";
 import { packFacadeBytes, FACADE_TEX_WIDTH } from "../src/render/buildings";
 import { parseCityPack, BuildingKind } from "../src/data/citypack";
+import { assignArchetypes } from "../src/render/archetype";
 import {
   CORE_PERIOD_MAX,
   CORE_PERIOD_MIN,
-  FACADE_BYTE_TEXELS,
+  FACADE_STRIDE,
   FACADE_ENCODE_MAX,
   FACADE_FLOATS,
   FACADE_GLSL,
@@ -230,12 +231,16 @@ for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
   // regression that only shows up in Paris is at least visible.
   const gated = city === "manhattan" || city === "chicago";
   const p = await pack(city);
+  // The path the renderer takes: the archetype survey where the city has one,
+  // the five families where it does not. Gating the family path on a city the
+  // renderer draws from archetypes would gate a picture nobody sees.
+  const choices = assignArchetypes(p);
 
   const counts = new Array<number>(FAMILY_COUNT).fill(0);
   const glassByKind = new Map<number, { sum: number; n: number }>();
   for (let i = 0; i < p.buildings.length; i++) {
     const b = p.buildings[i];
-    const f = facadeFor(b.kind, b.topM - b.baseM, i);
+    const f = facadeFor(b.kind, b.topM - b.baseM, i, choices?.[i]);
     counts[f.family]++;
     let g = glassByKind.get(b.kind);
     if (!g) { g = { sum: 0, n: 0 }; glassByKind.set(b.kind, g); }
@@ -313,6 +318,7 @@ check("hash3 is pinned", Math.abs(hash3(12345, 678, 90) - 0.48969510104507208) <
   };
 
   const buf = new Float32Array(FACADE_FLOATS).fill(Number.NaN);
+  const F0_SLOT = 6 * 4 + 3;
   const seen = new Map<FacadeFamily, Set<number>>();
   for (let seed = 0; seed < 4000; seed++) {
     const p = facadeFor(seed % 7, 3 + (seed % 220), seed * 13 + 5);
@@ -325,7 +331,9 @@ check("hash3 is pinned", Math.abs(hash3(12345, 678, 90) - 0.48969510104507208) <
     // Math.fround, because the buffer is a Float32Array: 0.22 does not survive
     // the narrowing exactly, and comparing a float32 with a double would fail
     // on every family for a reason that has nothing to do with the slot.
-    if (buf[FACADE_FLOATS - 1] !== Math.fround(p.f0)) {
+    // The seventh texel's last component. It was the last slot of the table
+    // until the archetype texel was appended after it.
+    if (buf[F0_SLOT] !== Math.fround(p.f0)) {
       set.add(Number.NaN); // forces the per-family check below to fail loudly
     }
   }
@@ -338,7 +346,7 @@ check("hash3 is pinned", Math.abs(hash3(12345, 678, 90) - 0.48969510104507208) <
     // rendering error rather than as variety: two curtain walls on one street
     // are glazed in the same generation of product far more reliably than they
     // are the same colour.
-    check(`${FAMILY_NAMES[family]} glazing is ${want} in the last slot`,
+    check(`${FAMILY_NAMES[family]} glazing is ${want} in its slot`,
       values.size === 1 && [...values][0] === want,
       // Capped: a jittered f0 produces one distinct value per building, and a
       // failure detail thousands of numbers long is unreadable.
@@ -531,7 +539,7 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
 // is what a city of randomly coloured buildings looks like.
 //
 // This walks the EXACT indexing the fragment shader walks, in TypeScript:
-//   t = bidx * FACADE_BYTE_TEXELS + k
+//   t = bidx * FACADE_STRIDE + k
 //   y = floor(t / width),  x = t - y * width
 // and one RGBA8 texel carries two 16-bit values, (r,g) then (b,a).
 {
@@ -550,7 +558,7 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
     // Which of the twelve byte-texels holds this value, and which half of it.
     const pair = Math.floor(valueIndex / 2);
     const half = valueIndex % 2;
-    const t = bidx * FACADE_BYTE_TEXELS + pair;
+    const t = bidx * FACADE_STRIDE + pair;
     const y = Math.floor(t / believedWidth);
     const x = t - y * believedWidth;
     const o = (y * trueWidth + x) * 4 + half * 2;
@@ -561,9 +569,9 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
   let worstErr = 0;
   let checkedTiles = 0;
   const scratch = new Float32Array(FACADE_FLOATS);
-  // 1 and 4 are real tile sizes; 85 crosses no row; 86 crosses exactly one row
-  // boundary (86 * 12 = 1032 > 1024), which is the case a stride bug hides in.
-  for (const n of [1, 4, 85, 86, 171, 512, 2000]) {
+  // 1 and 4 are real tile sizes; 44 crosses no row; 45 crosses exactly one row
+  // boundary (45 * 23 = 1035 > 1024), which is the case a stride bug hides in.
+  for (const n of [1, 4, 44, 45, 171, 512, 2000]) {
     const params = [];
     for (let i = 0; i < n; i++) params.push(facadeFor(i % 7, 4 + (i % 200), i * 7 + 1));
     const { data, height } = packFacadeBytes(params);
@@ -576,7 +584,7 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
       }
     }
     // The buffer must be big enough for the last building's last byte.
-    const needed = n * FACADE_FLOATS * 2;
+    const needed = n * FACADE_STRIDE * 4;
     check(
       `a ${n}-building table is large enough`,
       data.length >= needed,
@@ -590,7 +598,7 @@ check("core period is bounded", CORE_PERIOD_MIN >= 6 && CORE_PERIOD_MAX <= 20 &&
   );
 
   // VACUITY PROBE: the read must FAIL if the stride is wrong, or it is checking
-  // nothing. 86 buildings is 1032 texels, so it spans two rows and a stride of
+  // nothing. 86 buildings is 1978 texels, so it spans two rows and a stride of
   // width+1 misplaces every building after the first row.
   const params86 = [];
   for (let i = 0; i < 86; i++) params86.push(facadeFor(i % 7, 4 + i, i * 7 + 1));

@@ -76,3 +76,44 @@ picks wrong or says it cannot tell. 0% today; 50% is indistinguishable. Run it
 per archetype so the number points at which buildings give the game away, and
 keep the judge's stated reason, because "the windows have no depth" is the
 work list.
+
+## Shipped, 2026-10-24
+
+What exists now, so the next pass starts from it rather than from the plan.
+
+- **The library** (`src/render/archetype.ts`): 31 archetypes. New York 10
+  (walk-up, brownstone, pre-war apartment, cast-iron loft, Deco tower, pre-war
+  office, 1960s slab, white-brick tower, public housing, outer-borough house),
+  San Francisco 8 (Victorian, Edwardian, 1920s stucco, Marina, post-war box,
+  west-side house, downtown terracotta, SoMa warehouse), Chicago 7 (Chicago
+  School, Miesian, Deco, 1970s concrete, courtyard, two-flat, cottage), and 6
+  shared (glass tower, mid-rise office, condo tower, warehouse, retail strip,
+  civic). Each has storey height, column pitch, window rectangle, sash style,
+  frame width, cornice, sill band, interior, roof survey, weathering, palette.
+  Cities with no survey keep the five families, now laid in photographed scans.
+- **Assignment**: district from the area-weighted mean height of the 300 m
+  around each building; neighbourhood zones for the types that cluster
+  (brownstones in Park Slope and Harlem, cast iron in SoHo, Marina stucco);
+  one draw per party-wall cluster. OSM `building:material`, `start_date`,
+  `building:colour`, `roof:colour`, `roof:material` and `building:levels`
+  override the guess on the live path; the baked packs carry none of them (a
+  Chelsea query found 4.7% with a material, 7.6% with a date), so they were not
+  re-baked.
+- **Palettes**: written from the survey of each type and checked against
+  reference photographs rather than sampled pixel by pixel from a set; the one
+  measured cross-check so far is San Francisco siding (a yellow Pacific
+  Heights front at sRGB 185,164,131 and a green one at 52,68,62 in overcast
+  shade, Wikimedia Commons "San Francisco architecture (46674074822).jpg", CC
+  BY 2.0). Sampling a palette per type from a photo set is still open.
+- **Materials**: 16 CC0 ambientCG scans (`public/materials/CREDITS.md`), sized
+  from the measured brick course or board width, hex-tiled, 3.35 MB full tier
+  and 0.90 MB reduced.
+- **Gates**: `test/archetype.check.ts` (library ranges, district mix per city,
+  coherence 0.66-0.77 against 0.22-0.40 drawn per building, the bake, the byte
+  block, tag overrides) and `tools/verify-buildings.ts` (street detail, shimmer
+  under a 0.3 m camera move, night lit-window share, roof spread top-down),
+  every bound with a probe that runs the old behaviour and fails.
+
+Not done: building:part setbacks (the packs merge no parts), bay windows and
+fire escapes as geometry, geometric cornices, storefront signage, the blind
+Turing score.

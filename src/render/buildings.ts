@@ -35,13 +35,18 @@ import {
   FACADE_FLOATS,
   FACADE_GLSL,
   HOUSE_OPEN_FRAC,
-  FACADE_BYTE_TEXELS,
+  FACADE_STRIDE,
   encodeFacadeValue,
+  packFacadeRaw,
   facadeFor,
   hash3,
   packFacade,
   type FacadeParams,
 } from "./facade";
+import { ARCHETYPES, assignArchetypes, wantsWaterTank } from "./archetype";
+import { FACADE_DETAIL_GLSL } from "./facadedetail.glsl";
+import { loadMaterialTextures } from "./materialtex";
+import { Mat, MAT_COUNT } from "./materials";
 import {
   BuildingKind,
   RoofShape,
@@ -85,8 +90,17 @@ const MAX_CUTOFF_M = 40;
  *
  * Boxes go first, parapets second, buildings last.
  */
-const CLUTTER_M = 1200;
-const PARAPET_M = 1600;
+const CLUTTER_M = 2000;
+const PARAPET_M = 2200;
+/**
+ * Wooden water tanks go further out than the chillers: a tank is 4 m across
+ * and 8 m tall on its stand, the most recognisable thing on a New York roof,
+ * and it costs 72 triangles. Measured on the Manhattan pack: 2665 tanks inside
+ * 2.5 km, under 200k triangles, and the LOD solver still settles at k = 1.
+ */
+const TANK_M = 2500;
+/** Triangles one tank costs: four legs, a deck, ten staves and a ten-sided cone. */
+const TANK_TRIS = 72;
 
 /** Triangles a footprint costs: two per wall segment, plus the roof fan. */
 function triangleCost(vertCount: number): number {
@@ -106,6 +120,8 @@ export interface RoofExtras {
   boxes: number;
   /** One larger box for the stair and lift overrun. */
   overrun: boolean;
+  /** A wooden water tank on a steel stand; see wantsWaterTank. */
+  tank?: boolean;
 }
 
 const NO_EXTRAS: RoofExtras = { parapet: false, boxes: 0, overrun: false };
@@ -122,19 +138,25 @@ function roofExtras(
   // commercial roof. Nothing residential has one, and nothing with a pitch to
   // it could: the wall stops at the eave. Putting a chiller on a house is the
   // same mistake seen from further away.
-  if (roof !== RoofShape.Flat || kind === BuildingKind.Residential) return NO_EXTRAS;
-  if (heightM < 6 || areaM2 < 120) return NO_EXTRAS;
+  if (roof !== RoofShape.Flat) return NO_EXTRAS;
+  // A FLAT residential roof does have a parapet and a stair bulkhead: every
+  // walk-up, brownstone and two-flat in the three surveyed cities is a flat
+  // roof behind a parapet with a hatch or bulkhead on it, and keeping them off
+  // was what made the residential grid read as a field of identical lids from
+  // the air. What a home does not have is a chiller farm, so boxes stay off.
+  const home = kind === BuildingKind.Residential;
+  if (heightM < (home ? 9 : 6) || areaM2 < (home ? 70 : 120)) return NO_EXTRAS;
   const parapet = distM < PARAPET_M / k;
   if (!parapet) return NO_EXTRAS;
   if (distM >= CLUTTER_M / k) return { parapet, boxes: 0, overrun: false };
-  const boxes = Math.min(4, Math.floor(areaM2 / 900));
-  const overrun = heightM >= 22 && areaM2 >= 350;
+  const boxes = home ? (areaM2 >= 900 ? 1 : 0) : Math.min(4, Math.floor(areaM2 / 900));
+  const overrun = home ? areaM2 >= 90 : heightM >= 22 && areaM2 >= 350;
   return { parapet, boxes, overrun };
 }
 
 /** Triangles the roof extras add: the parapet's inner face, plus 10 per box. */
 function extrasCost(vertCount: number, e: RoofExtras): number {
-  return (e.parapet ? vertCount * 2 : 0) + (e.boxes + (e.overrun ? 1 : 0)) * 10;
+  return (e.parapet ? vertCount * 2 : 0) + (e.boxes + (e.overrun ? 1 : 0)) * 10 + (e.tank ? TANK_TRIS : 0);
 }
 
 /**
@@ -146,10 +168,11 @@ function extrasCost(vertCount: number, e: RoofExtras): number {
  * budget would be a number about walls and the actual triangle count would be
  * whatever the clutter happened to add.
  */
-function solveLod(pack: CityPack, triangleBudget: number): number {
+function solveLod(pack: CityPack, triangleBudget: number, tankAt: (i: number) => boolean): number {
   for (const k of [1, 1.4, 2, 3, 4.5, 7, 11, 18]) {
     let tris = 0;
-    for (const b of pack.buildings) {
+    for (let i = 0; i < pack.buildings.length; i++) {
+      const b = pack.buildings[i];
       const h = b.topM - b.baseM;
       const dist = Math.hypot(b.cx, b.cz);
       if (h < minHeightAt(dist, k)) continue;
@@ -162,6 +185,7 @@ function solveLod(pack: CityPack, triangleBudget: number): number {
       if (dist < PARAPET_M / k) {
         tris += extrasCost(n, roofExtras(dist, k, h, Math.abs(signedArea(b.ring)), b.kind, b.roof));
       }
+      if (dist < TANK_M / k && b.roof === RoofShape.Flat && tankAt(i)) tris += TANK_TRIS;
       if (tris > triangleBudget) break;
     }
     if (tris <= triangleBudget) return k;
@@ -216,6 +240,11 @@ export const PART_SHINGLE = 4;
  * for a parapet and paint it with the coping's pale grey.
  */
 export const PART_GABLE = 5;
+/**
+ * A wooden water tank and its stand. uv.y < 0 marks the steel (legs, deck),
+ * uv.y >= 0 the staves (uv = metres round, metres up) and the cone (isRoof).
+ */
+export const PART_TANK = 6;
 
 // --- What ONE lit window looks like ------------------------------------------
 //
@@ -267,6 +296,7 @@ const LAMP_NORM = Math.log(LAMP_HI / LAMP_LO) / (LAMP_HI - LAMP_LO);
 
 const FRAG = /* glsl */ `
 precision highp float;
+precision highp sampler2DArray;
 in vec3 vNormal;
 in vec3 vWorld;
 in vec2 vUv;
@@ -285,6 +315,7 @@ ${SUN_SHADOW_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
 ${FACADE_GLSL}
+${FACADE_DETAIL_GLSL}
 
 uniform vec3  uCameraPos;
 // The scene sky probe: prefiltered radiance for the glass, roughness to mip.
@@ -305,6 +336,13 @@ uniform float uFlatGlass;
 // and the probe's open sunlit ground under every downward reflected ray. The
 // vacuity probe for the reflection half of tools/verify-glass.ts.
 uniform float uFlatRefl;
+// ?flatfacade=1: the facade this repo had before the archetype work, in the
+// same binary: no photographed materials, no rooms behind the glass, no frames,
+// sills, cornice band or weathering, the old roof and the old night windows.
+// The vacuity probe for tools/verify-buildings.ts.
+uniform float uFlatFacade;
+// ?oneroof=1: every flat roof the same cover and colour; see the roof branch.
+uniform float uOneRoof;
 // Built-ness over the city, 0..1, from render/urbanmask.ts. The same coverage
 // grid terrain.ts lights its streets from; here it says how much of what a
 // facade reflects BELOW the horizon is other buildings rather than open ground.
@@ -408,6 +446,12 @@ void main() {
 
   Facade fp = readFacade(bidx);
 
+  // Everything the archetype work added is behind detailOn, so ?flatfacade=1
+  // is the old facade exactly; and the photographs are additionally behind
+  // uMatReady, so a city drawn before the strips arrive is the flat one.
+  float detailOn = 1.0 - uFlatFacade;
+  float matOn = uMatReady * detailOn;
+
   vec3 n = normalize(vNormal);
   vec3 albedo = fp.colour;
 
@@ -459,9 +503,34 @@ void main() {
   // ascending ladder any more: the shingle test has to come first (it is the
   // highest tag but the clutter branch is the trailing else), and the gable
   // has to be pulled back out of it.
-  bool gableEnd = part > 4.5;
+  bool gableEnd = part > 4.5 && part < 5.5;
 
-  if (part > 3.5 && !gableEnd) {
+  if (part > 5.5) {
+    // --- Water tank -------------------------------------------------------
+    // Cedar staves gone silver-brown, bound with dark steel hoops every half
+    // metre or so, a tar-black lid, on a black steel stand. uv.y < 0 is the
+    // steel; isRoof marks the lid.
+    float hT = hash11(fp.seed * 41.0 + 3.0);
+    if (vUv.y < -0.5) {
+      albedo = vec3(0.035, 0.034, 0.033);
+      roughness = 0.6;
+    } else if (isRoof > 0.5) {
+      albedo = mix(vec3(0.045, 0.043, 0.04), vec3(0.09, 0.085, 0.08), hT);
+    } else {
+      vec3 wood = mix(vec3(0.20, 0.15, 0.11), vec3(0.24, 0.22, 0.20), hT);
+      float stave = vUv.x / 0.14;
+      float swd = max(fwidth(stave), 1e-3);
+      wood *= 1.0 - 0.18 * (1.0 - smoothstep(0.0, max(0.12, swd), fract(stave))) * (1.0 - clamp(swd, 0.0, 1.0));
+      wood *= 0.85 + 0.3 * hash11(floor(stave) + fp.seed * 7.0) * (1.0 - clamp(swd, 0.0, 1.0));
+      float hoopP = vUv.y / (0.45 + 0.25 * hT);
+      float hw = max(fwidth(hoopP), 1e-3);
+      float hoop = (1.0 - smoothstep(0.0, max(0.08, hw), fract(hoopP))) * (1.0 - clamp(hw * 1.6, 0.0, 1.0));
+      // Water streaks down the staves from the lid.
+      wood *= 1.0 - 0.15 * smoothstep(0.6, 0.0, vUv.y / 4.0) * vnoise(vec2(vUv.x * 3.0, 1.0));
+      albedo = mix(wood, vec3(0.04), hoop * 0.8);
+    }
+    skyOcc = 0.95;
+  } else if (part > 3.5 && !gableEnd) {
     // --- Shingle --------------------------------------------------------
     // Asphalt shingle or tile, and it is DARK: a real roof covering is
     // 0.05-0.14 linear, which is well under any wall it sits on.
@@ -469,6 +538,22 @@ void main() {
     vec3 cover = pick < 0.45 ? vec3(0.045, 0.046, 0.049)      // charcoal asphalt
                : pick < 0.80 ? vec3(0.078, 0.070, 0.060)      // weathered grey-brown
                              : vec3(0.105, 0.060, 0.044);     // faded clay tile
+    // With the archetype, the cover is the survey's: asphalt, brown asphalt,
+    // red clay tile, slate, copper verdigris or cedar shake, each at the albedo
+    // of the aged product, jittered per building.
+    int pc = int(fp.pitchCover + 0.5);
+    float pj = 0.85 + 0.3 * hash11(fp.seed * 29.0 + 5.0);
+    if (detailOn > 0.5) {
+      cover = (pc == 0 ? vec3(0.042, 0.043, 0.046)
+             : pc == 1 ? vec3(0.075, 0.058, 0.046)
+             : pc == 2 ? vec3(0.30, 0.11, 0.06)
+             : pc == 3 ? vec3(0.07, 0.075, 0.085)
+             : pc == 4 ? vec3(0.13, 0.25, 0.20)
+             :           vec3(0.12, 0.10, 0.085)) * pj;
+    }
+    // Clay tile and slate are laid in shorter courses than shingle, and tile
+    // is a barrel: a ripple across the slope every quarter metre.
+    float courseM = detailOn > 0.5 && (pc == 2 || pc == 3) ? 0.24 : 0.30;
     // Granules, on the smooth noise for the same reason the flat roof uses it:
     // from the air this is the largest surface in the frame, and a lattice of
     // flat random squares seen from above reads as pixelation.
@@ -482,7 +567,7 @@ void main() {
     // Filtered and faded exactly the way the wall's mortar course is: a 0.3 m
     // stripe is under a pixel from any height worth flying, and point-sampling
     // it would moire against the pixel grid rather than converge.
-    float cy = vUv.y / 0.30;
+    float cy = vUv.y / courseM;
     float wy = max(fwidth(cy), 1e-4);
     float courseFade = 1.0 - clamp(wy * 1.6, 0.0, 1.0);
     float course = 1.0 - smoothstep(0.0, max(0.18, wy), fract(cy));
@@ -491,6 +576,21 @@ void main() {
     float tabFade = 1.0 - clamp(wx * 1.6, 0.0, 1.0);
     float tab = 1.0 - smoothstep(0.0, max(0.10, wx), fract(cx));
     albedo *= 1.0 - 0.18 * course * courseFade - 0.08 * tab * tabFade;
+    if (detailOn > 0.5 && pc == 2) {
+      float bw = vUv.x / 0.26;
+      float bwd = max(fwidth(bw), 1e-3);
+      albedo *= 1.0 - 0.25 * (0.5 + 0.5 * cos(bw * 6.2832)) * (1.0 - clamp(bwd * 1.6, 0.0, 1.0));
+      albedo *= 0.85 + 0.3 * hash21(floor(vec2(bw, cy)) + fp.seed);
+    }
+    if (detailOn > 0.5 && pc == 4) {
+      // Standing seams every half metre, and the patina is streaky.
+      float sm = vUv.x / 0.5;
+      float smd = max(fwidth(sm), 1e-3);
+      albedo *= 1.0 + 0.25 * (1.0 - smoothstep(0.0, max(0.06, smd), fract(sm))) * (1.0 - clamp(smd * 1.6, 0.0, 1.0));
+      albedo = mix(albedo, vec3(0.10, 0.09, 0.06), 0.3 * vnoise(vec2(vUv.x * 2.0, vUv.y * 0.3)));
+    }
+    // Moss and soot in the lower courses, and lichen on slate.
+    if (detailOn > 0.5) albedo *= 1.0 - 0.15 * fp.age * smoothstep(0.55, 0.85, vnoise(vUv * 0.7 + fp.seed * 3.0));
 
     roughness = 0.92;    // shingle is matte, whatever the wall under it is
     skyOcc = 1.0;        // a pitched roof sees the whole dome
@@ -557,6 +657,22 @@ void main() {
     float winMeanX = fp.win.y - fp.win.x;
     float winMeanY = fp.win.w - fp.win.z;
     float winMean = winMeanX * winMeanY;
+
+    // --- THE WALL ITSELF ---------------------------------------------------
+    //
+    // A photographed scan (render/materials.ts), shown as its variation around
+    // its own mean and multiplied by this building's palette colour, so one
+    // red-brick scan is a buff brick here and a brownstone on the next block.
+    // The mip chain takes the ratio to exactly 1 far away, which is the mean
+    // this facade had before, so a distant building does not change colour.
+    MatSample wallMat;
+    wallMat.ratio = vec3(1.0); wallMat.nT = vec2(0.0); wallMat.rough = roughness;
+    wallMat.height = 0.5; wallMat.ao = 1.0;
+    if (matOn > 0.5) {
+      wallMat = sampleMat(fp.wallLayer, vUv);
+      albedo = fp.colour * wallMat.ratio;
+      roughness = mix(roughness, wallMat.rough, 0.5);
+    }
 
     // Window rectangle inside the cell, every edge softened by the pixel
     // footprint so it antialiases instead of stair-stepping.
@@ -688,10 +804,72 @@ void main() {
 
     win *= step(groundH, vUv.y);   // the ground storey draws its own thing
 
-    glassMask = win * fp.glassFrac;
+    // --- FRAMES, BARS AND THE ROOM BEHIND THE GLASS ------------------------
+    //
+    // Window-local coordinates: 0..1 across and up the glazed rectangle, at
+    // the RECESSED position (pcell), because the sash sits in the glass plane.
+    vec2 winSz = vec2(winMeanX * fp.columnM, winMeanY * fp.storeyM);
+    vec2 wl = (pcell - fp.win.xz) / max(vec2(winMeanX, winMeanY), vec2(1e-3));
+    vec2 wfw = w / max(vec2(winMeanX, winMeanY), vec2(1e-3));
+    float frameMean = 0.0;
+    float frameMask = detailOn > 0.5
+      ? windowFrame(wl, winSz, wfw, fp.windowStyle, fp.frameM, fp.mullions, frameMean) : 0.0;
+    float frameLod = mix(frameMean, frameMask, detail) * detailOn;
+    float pane = win * (1.0 - frameLod);
+
+    // The whole pane is glass. glassFrac thinned the reflection to a fifth on a
+    // masonry front, which made a punched window a matte hole; a real sash
+    // reflects the street opposite as strongly as any curtain wall does at
+    // the same angle, and only its f0 differs. Its roughness is glass, not the
+    // brick's 0.86, which was putting the reflection in the blurriest mip.
+    glassMask = pane * mix(fp.glassFrac, 1.0, detailOn);
+    roughness = mix(roughness, 0.06, pane * detailOn);
 
     vec3 glass = mix(vec3(0.075, 0.095, 0.125), vec3(0.15, 0.19, 0.24), hash11(fp.seed + 3.3));
-    albedo = mix(albedo, glass, glassMask);
+    // With a room behind it the pane is nearly black: what a window shows is
+    // the room (seeIn, below) and the sky (the Fresnel term further down). The
+    // old grey-blue pane albedo, lit by the SUN, was neither. And it covers the
+    // whole opening: the old mix by glassFrac left a brick window 80% brick.
+    glass = mix(glass, fp.glassTint * 0.35, detailOn);
+    albedo = mix(albedo, glass, mix(glassMask, pane, detailOn));
+    albedo = mix(albedo, fp.frameColour, win * frameLod);
+
+    vec3 roomC = vec3(0.0);
+    float curtainCov = 0.0;
+    float blindCov = 0.0;
+    vec3 blindC = vec3(0.0);
+    if (detailOn > 0.5 && pane > 0.001) {
+      // The view ray in the wall's own frame, z INTO the building.
+      vec3 vT = vec3(dot(-eyeDir, uDir), dot(-eyeDir, upDir), dot(eyeDir, n));
+      vec3 rp = vec3(pcell.x * fp.columnM, pcell.y * fp.storeyM, 0.0);
+      float roomSeed = fp.seed * 977.0 + colIdx * 13.13 + floorIdx * 7.77;
+      // An office floor plate runs 12 m to the core and a flat's front room 4 m.
+      float depth = abs(fp.interior - 1.0) < 0.5 ? 6.5 : 4.2;
+      roomC = roomColour(rp, vT, vec2(fp.columnM, fp.storeyM), depth, fp.interior, roomSeed, uNight).rgb;
+      // Blinds and curtains hang in the window plane, so they take no
+      // parallax. The blind is the same hash the night windows have always
+      // used, so a blind seen by day is the one that shades the lamp at night.
+      float bH = hash21(vec2(colIdx * 0.71 + fp.seed * 17.0, floorIdx * 1.13 + 5.0));
+      float bDrop = step(bH, ${BLIND_FRAC}) * ${BLIND_MAX} * (bH / ${BLIND_FRAC});
+      float blind = step(1.0 - bDrop, wl.y);
+      float cH = hash21(vec2(colIdx * 1.37 + fp.seed * 5.0, floorIdx * 0.53 + 9.0));
+      if (fp.interior < 0.5 && cH < 0.45) {
+        float cw = 0.12 + 0.25 * fract(cH * 7.3);
+        curtainCov = 1.0 - step(cw, wl.x) * step(wl.x, 1.0 - cw);
+      }
+      blindCov = max(blind, curtainCov);
+      vec3 fabric = mix(vec3(0.62, 0.58, 0.50), vec3(0.42, 0.30, 0.26), step(0.3, fract(cH * 3.1)));
+      blindC = mix(vec3(0.66, 0.64, 0.60), fabric, curtainCov);
+    }
+    // By day a room is lit by the sky through its own window, so it rides the
+    // AMBIENT path the shopfront interior does (seeIn), never the beam. 0.32 is
+    // the share of that light a room returns through the same opening: a
+    // 0.45-albedo room loses half its light per bounce and most of what is
+    // left goes out of other windows or into the floor. Converges on the mean
+    // room (0.30 shaded albedo) as the windows go under a pixel.
+    vec3 dayRoom = mix(roomC, blindC * 0.8, blindCov) * 0.32;
+    seeIn = mix(vec3(0.30 * 0.32), dayRoom, detail) * pane * detailOn * (1.0 - uNight)
+          * step(groundH, vUv.y) * capped;
 
     // --- What the reveal does to the light ---------------------------------
     //
@@ -932,6 +1110,145 @@ void main() {
             * glassMask * (1.0 - uNight);
     }
 
+    // --- THE FIRE ESCAPE ------------------------------------------------------
+    //
+    // The single most New York thing on a walk-up front: a black steel stack of
+    // balconies two windows wide, a railing on each, and a stair zig-zagging
+    // down between them. Drawn in the wall plane (it stands a metre off it,
+    // under a pixel of parallax from anywhere but the pavement opposite), on
+    // the faces a hash of the wall's orientation picks, so a building has it on
+    // one or two elevations and not round all four.
+    float fireEsc = 0.0;
+    if (detailOn > 0.5 && mod(floor(fp.roofFeatures / 8.0), 2.0) > 0.5 && floorIdx >= 0.0 && capped > 0.5) {
+      float face = floor((atan(n.z, n.x) + 3.14159) / 6.28318 * 8.0);
+      float faceOn = step(hash11(face * 7.3 + fp.seed * 91.0), 0.45);
+      float period = 3.0 + floor(hash11(fp.seed * 13.0 + face) * 3.0);
+      float slot = floor(hash11(fp.seed * 17.0 + face * 3.0) * (period - 1.0));
+      float bay = floor(colIdx / period);
+      float ex = vUv.x - (bay * period + slot) * fp.columnM;      // metres into the escape
+      float span = 2.0 * fp.columnM;
+      float inEsc = step(0.0, ex) * step(ex, span) * faceOn;
+      float fy = (vUv.y - groundH) - floorIdx * fp.storeyM;       // metres above this floor
+      float aa = max(fwidth(vUv.y), 1e-3);
+      float platform = smoothstep(-aa, aa, fy) * smoothstep(0.10 + aa, 0.10 - aa, fy);
+      float rail = smoothstep(0.92 - aa, 0.92 + aa, fy) * smoothstep(0.98 + aa, 0.98 - aa, fy);
+      float bw = max(fwidth(ex / 0.12), 1e-3);
+      float baluster = mix(0.22, step(fract(ex / 0.12), 0.22), 1.0 - clamp(bw * 1.2, 0.0, 1.0))
+                     * step(0.10, fy) * step(fy, 0.92);
+      // The stair: a stringer from one platform up to the next, alternating
+      // direction floor by floor.
+      float dir = mod(floorIdx, 2.0) < 0.5 ? 1.0 : -1.0;
+      float sx = dir > 0.0 ? ex - 0.25 : span - 0.25 - ex;
+      float run = span - 0.9;
+      float stair = 1.0 - smoothstep(0.05 + aa * 2.0, 0.09 + aa * 2.0, abs(fy - sx * fp.storeyM / run))
+                  * 1.0;
+      stair *= step(0.0, sx) * step(sx, run);
+      float steel = max(max(platform, rail), max(baluster, stair));
+      fireEsc = inEsc * steel * mix(0.6, 1.0, detailY);
+      // The grating's shadow under each platform, when the sun is on the wall.
+      float under = smoothstep(-0.45, -0.05, fy - fp.storeyM) * step(fy - fp.storeyM, 0.0);
+      revealShade *= 1.0 - 0.5 * inEsc * under * step(0.02, dot(uSunDir, n));
+      albedo = mix(albedo, vec3(0.028, 0.028, 0.030), fireEsc);
+      glassMask *= 1.0 - fireEsc;
+      seeIn *= 1.0 - fireEsc;
+    }
+
+    // --- SILLS AND LINTELS ---------------------------------------------------
+    //
+    // A punched opening in masonry has a stone sill under it and a stone or
+    // brick lintel over it, wider than the opening, in the archetype's trim
+    // stone. It is the single strongest cue that a wall is a masonry wall and
+    // not a painted grid: each window gets a pale bar either side of it. In the
+    // WALL plane (cell, not pcell): the stone is on the face, not recessed.
+    float upper = capped * step(groundH, vUv.y);
+    float trimLod = 0.0;
+    float sillShadow = 0.0;
+    if (detailOn > 0.5 && fp.sillM > 0.01) {
+      float sillH = fp.sillM / fp.storeyM;
+      float ext = 0.09 / fp.columnM;
+      float inX = smoothstep(fp.win.x - ext - w.x, fp.win.x - ext + w.x, cell.x)
+                * smoothstep(fp.win.y + ext + w.x, fp.win.y + ext - w.x, cell.x);
+      float sill = smoothstep(fp.win.z - sillH - w.y, fp.win.z - sillH + w.y, cell.y)
+                 * smoothstep(fp.win.z + w.y, fp.win.z - w.y, cell.y);
+      float lintelH = sillH * 1.6;
+      float lintel = smoothstep(fp.win.w - w.y, fp.win.w + w.y, cell.y)
+                   * smoothstep(fp.win.w + lintelH + w.y, fp.win.w + lintelH - w.y, cell.y);
+      float trimMask = inX * (sill + lintel);
+      float trimMean = (winMeanX + 2.0 * ext) * (sillH + lintelH);
+      trimLod = mix(trimMean, trimMask, detail) * upper * (1.0 - win);
+      // The trim stone is its own scan: limestone under a brick wall.
+      vec3 trimRatio = matOn > 0.5 && trimLod > 0.01
+        ? sampleMat(${Mat.Limestone}.0, vUv + vec2(0.0, 0.31)).ratio : vec3(1.0);
+      albedo = mix(albedo, fp.trim * trimRatio, trimLod);
+      // A sill projects about 40 mm and throws a line of shadow just under it.
+      float under = smoothstep(fp.win.z - sillH - 0.07 / fp.storeyM - w.y, fp.win.z - sillH, cell.y)
+                  * smoothstep(fp.win.z - sillH + w.y, fp.win.z - sillH - w.y, cell.y);
+      sillShadow = inX * under * detail * upper;
+      // Its top face looks at the sky.
+      n = normalize(n + upDir * 0.35 * inX * sill * detail * upper);
+    }
+
+    // --- THE CORNICE BAND ------------------------------------------------------
+    //
+    // The archetypes that have a projecting cornice get it drawn as a band of
+    // trim at the wall head: a fascia, a row of dentils under it, and the
+    // shadow the projection throws down the wall, whose length is the
+    // projection times the tangent of the sun's elevation seen in the wall's
+    // own plane. Geometry carries the silhouette where the LOD affords it (see
+    // addCornice); this is what every other building and every distance gets.
+    float corniceShadow = 0.0;
+    if (detailOn > 0.5 && fp.corniceM > 0.01) {
+      float bandH = 0.45 + 0.75 * fp.corniceM;
+      float belowTopC = bldH - vUv.y;
+      float aaY = max(fwidth(vUv.y), 1e-3);
+      float band = smoothstep(bandH + aaY, bandH - aaY, belowTopC) * capped;
+      float dentRow = smoothstep(bandH + 0.18 + aaY, bandH + 0.18 - aaY, belowTopC) * (1.0 - band) * capped;
+      float aaX = max(fwidth(vUv.x), 1e-3);
+      float dent = step(0.5, fract(vUv.x / 0.22)) * (1.0 - clamp(aaX / 0.11, 0.0, 1.0)) + 0.5 * clamp(aaX / 0.11, 0.0, 1.0);
+      albedo = mix(albedo, fp.trim * 0.95, band);
+      albedo = mix(albedo, fp.trim * 0.55, dentRow * dent);
+      // The underside of the projection is in its own shade from any sun.
+      albedo *= 1.0 - 0.45 * smoothstep(bandH - 0.12 - aaY, bandH - 0.12 + aaY, belowTopC) * band;
+      float sElev = uSunDir.y / max(dot(uSunDir, n) + 0.02, 0.15);
+      float shadowLen = min(3.0, fp.corniceM * max(sElev, 0.0));
+      corniceShadow = smoothstep(bandH + shadowLen + aaY, bandH + shadowLen - aaY, belowTopC)
+                    * (1.0 - band) * capped * step(0.02, dot(uSunDir, n));
+    }
+    revealShade *= 1.0 - 0.85 * max(corniceShadow, sillShadow * 0.7);
+
+    // --- WEATHERING ------------------------------------------------------------
+    //
+    // Age from the archetype: a 1900 walk-up is sooted and streaked, a 2010
+    // curtain wall is not. Three things a real wall shows and a model never does:
+    //   * rain streaks under every sill, where water runs off and carries dirt;
+    //   * grime rising from the pavement, splash and rising damp, worst at the base;
+    //   * soot in broad vertical drifts on old masonry.
+    // All darken the ALBEDO, because they are dirt on the surface, and all are
+    // continuous noise except the streak edges, which fade with the footprint.
+    if (detailOn > 0.5) {
+      float age = fp.age;
+      float baseGrime = (1.0 - smoothstep(0.0, 3.2, vUv.y))
+                      * (0.55 + 0.45 * vnoise(vec2(vUv.x * 0.9, vUv.y * 1.7) + fp.seed * 11.0));
+      float soot = smoothstep(0.30, 0.90, vnoise(vec2(vUv.x * 0.16, vUv.y * 0.035) + fp.seed * 31.0))
+                 * (0.6 + 0.4 * vnoise(vec2(vUv.x * 1.3, vUv.y * 0.25)));
+      // Streaks: the window's x-range, falling from the sill, with a streaky
+      // profile across it so it is drips and not a shadow.
+      float belowSill = (fp.win.z - cell.y) * fp.storeyM;
+      float streakX = smoothstep(fp.win.x - w.x, fp.win.x + 0.05 + w.x, cell.x)
+                    * smoothstep(fp.win.y + w.x, fp.win.y - 0.05 - w.x, cell.x)
+                    * (0.35 + 0.65 * vnoise(vec2(vUv.x * 7.0, floorIdx * 3.1 + fp.seed)));
+      float streak = streakX * step(0.0, belowSill) * exp(-belowSill / 1.1) * upper;
+      float streakLod = mix(winMeanX * 0.45 * 0.6, streak, detailX);
+      // Under the cornice the same water runs off the whole width of the wall.
+      float underTop = bldH - vUv.y;
+      float corniceDrip = fp.corniceM > 0.01
+        ? smoothstep(0.4 + 0.75 * fp.corniceM + 2.5, 0.4 + 0.75 * fp.corniceM, underTop) * (1.0 - smoothstep(0.0, 0.4 + 0.75 * fp.corniceM, underTop) * 0.0)
+          * (0.4 + 0.6 * vnoise(vec2(vUv.x * 2.5, 3.0)))
+        : 0.0;
+      float dirt = 0.20 * baseGrime + 0.20 * soot + 0.22 * streakLod * (1.0 - win) + 0.15 * corniceDrip;
+      albedo *= 1.0 - age * dirt;
+    }
+
     // Horizontal banding between storeys: a thin darker line reads as a floor
     // slab and gives the facade its scale at distance.
     albedo *= 1.0 - 0.18 * detailY * smoothstep(0.10 + w.y, 0.0, cell.y);
@@ -993,7 +1310,12 @@ void main() {
     // Converge with the pixel footprint, like every other detail here: a
     // mortar course is under a pixel from any distance worth flying and must
     // fade to flat rather than alias into a moire.
-    float mortarFade = detailY * detailX * fp.relief;
+    float mortarFade = detailY * detailX * fp.relief * (1.0 - matOn);
+    // The scan's own normal map replaces the ruled mortar: it has the real
+    // joints, the real arrises and the real tooling in it. Faded by the pixel
+    // footprint like everything else, though the mips already flatten it.
+    n = normalize(n + (uDir * wallMat.nT.x + upDir * wallMat.nT.y) * 0.75 * matOn * min(detailX + 0.3, 1.0)
+                      * (1.0 - win));
     float mortar = (1.0 - smoothstep(0.55, 0.95, course))
                  + (1.0 - smoothstep(0.70, 0.97, perp)) * 0.6 * (1.0 - lap);
     mortar *= mortarFade;
@@ -1099,7 +1421,20 @@ void main() {
       float spillMeanY = min(1.0, winMeanY + sy);
       float profileMean = ${BLIND_KEEP}
                         * (winMean + ${SPILL_LEVEL} * max(0.0, spillMeanX * spillMeanY - winMean));
-      float profile = (winX * litY + ${SPILL_LEVEL} * halo) * (winMean / max(profileMean, 1e-4));
+      // A ROOM, NOT A LIT RECTANGLE. The pane's brightness follows the room
+      // behind it (a bright ceiling at the head, a dim floor at the cill, the
+      // furniture as a dark band), a blind or a curtain still glows dimly with
+      // the lamp behind it, and the sash bars stay dark. The room's own
+      // luminance is divided by its mean (0.40, measured over the analytic
+      // rooms at night) so the near field keeps the brightness the normaliser
+      // above was built for.
+      float paneY = smoothstep(fp.win.z - w.y, fp.win.z + w.y, cell.y)
+                  * smoothstep(fp.win.w + w.y, fp.win.w - w.y, cell.y);
+      float litYD = mix(litY, max(litY, paneY * 0.35), detailOn);
+      float roomLum = dot(roomC, vec3(0.299, 0.587, 0.114));
+      float glow = mix(1.0, mix(clamp(roomLum / 0.40, 0.3, 2.5), 0.6, curtainCov), detailOn)
+                 * (1.0 - frameLod);
+      float profile = (winX * litYD * glow + ${SPILL_LEVEL} * halo) * (winMean / max(profileMean, 1e-4));
 
       // Correlated occupancy: cores, then floors, then tenancies, then the
       // individual window. See facade.ts -- an independent coin per cell is
@@ -1110,7 +1445,25 @@ void main() {
       // up close, converge to the average glow of a lit building far away. The
       // far-field term is untouched by the blinds and the spill, which is the
       // whole point of the normaliser above.
-      float lit = mix(occ * winMean * openMean, litPattern, detail);
+      // NIGHT WINDOWS STAY RESOLVED LONGER THAN DAY ONES. By day a window
+      // under a pixel is a texture and has to converge before it shimmers. At
+      // night it is a point light, and a city at night from the air is points
+      // of light, not a lit wash: converging at the day footprint is what made
+      // Midtown's towers flat grey slabs with their windows averaged away.
+      // 0.9 holds the pattern until a pixel spans about a whole window cell.
+      float detailN = mix(detail, 1.0 - clamp(max(w.x, w.y) * 0.9, 0.0, 1.0), detailOn);
+      // AND A LIT FLOOR IS A STRIPE LONG AFTER ITS WINDOWS ARE NOT. Between the
+      // single window and the facade mean there is a middle scale: the floor
+      // and the tenancy, which is several metres of lit glass and stays bigger
+      // than a pixel to three or four kilometres. Averaging straight from the
+      // window to the facade mean is what turned every distant tower into one
+      // flat grey-orange slab; real night skylines are banded. This level keeps
+      // the core, floor and tenancy gates and averages only the window's own
+      // coin, so its mean is still facadeMeanOccupancy.
+      float blockLit = facadeLitBlock(fp, colIdx, floorIdx, heightFade) * winMean * openMean * capped;
+      float detailBlock = (1.0 - clamp(w.y * 0.6, 0.0, 1.0)) * (1.0 - clamp(w.x / fp.tenantW * 0.6, 0.0, 1.0));
+      float farLit = mix(occ * winMean * openMean, blockLit, detailBlock * detailOn);
+      float lit = mix(farLit, litPattern, detailN);
 
       // WHAT IS LIT TOGETHER IS LIT THE SAME.
       //
@@ -1143,7 +1496,7 @@ void main() {
       // exactly the colour this converges to once the windows are under a pixel.
       vec3 warm = mix(mix(warmC, coolC, 1.0 - coolBias),
                       mix(warmC, coolC, step(coolBias, hash21(vec2(tb * 0.37 + fp.seed, th * 0.71)))),
-                      detail);
+                      detailN);
 
       // AND THEY ARE NOT ALL THE SAME BRIGHTNESS.
       //
@@ -1157,7 +1510,7 @@ void main() {
                        exp(mix(log(${LAMP_LO}), log(${LAMP_HI}),
                                hash21(vec2(tb * 1.63 + fp.seed * 7.0, th * 0.29 + 3.0))))
                        * ${LAMP_NORM.toFixed(6)},
-                       detail);
+                       detailN);
 
       // The number to watch is not the peak, it is the MEAN. Far away this
       // converges to occupancy x winMean x scale over the whole facade, and at
@@ -1166,7 +1519,11 @@ void main() {
       // however neutral the skyglow and the albedo were made. At 0.09 the mean
       // sits at roughly the wall, so a building is dark with lit windows in
       // it, and the peak is still 12x the wall up close where it should be.
-      emissive += warm * gain * lit * uNight * 0.09;
+      // The room's own colour tints the lamp: a white office ceiling, a
+      // timber floor, a red curtain. Half strength, renormalised to luminance
+      // so it moves hue and not the mean.
+      vec3 roomTint = mix(vec3(1.0), roomC / max(roomLum, 1e-3) * 0.6 + 0.4, 0.5 * detailOn * detailN);
+      emissive += warm * roomTint * gain * lit * uNight * 0.09 * (1.0 - fireEsc);
 
       // Shopfronts. A lit shop window is far brighter than a flat above it and
       // it is at eye height, so it carries the night street the way the lit
@@ -1215,6 +1572,116 @@ void main() {
     float repatch = step(0.72, patchCell) * (0.5 + 0.5 * hash21(floor(rp * 0.085) + 3.7));
     albedo *= 0.88 + 0.20 * g;
     albedo *= 1.0 - 0.14 * repatch;
+
+    // WHAT THE ROOF IS COVERED IN.
+    //
+    // From 300 m up a city IS its roofs, and every roof here was the same grey
+    // with the same grain. Now each building's cover comes from the archetype's
+    // roof survey (render/archetype.ts, ROOF_SURVEY) or from roof:material where
+    // OSM has it: black tar, aluminium-coated tar, ballast gravel, white TPO,
+    // black EPDM, sedum, or a paver deck, at its own aged albedo with a per-
+    // building jitter. On top of that: the dirt line along the parapet where
+    // water and grit collect, ponding stains, re-covered patches with seams,
+    // and per-roof features (a solar array, skylights, a deck) laid out in the
+    // roof's own frame (uv is local metres along and across, see addBuilding),
+    // so they sit INSIDE the roof. The grey above is the ?flatfacade path.
+    //
+    // ?oneroof=1 forces one cover and one colour on every roof while keeping
+    // the textures, the soiling and the features: the probe that proves the
+    // inter-roof variety the gate measures comes from the per-building choice.
+    if (detailOn > 0.5) {
+      int rc = int(fp.roofCover + 0.5);
+      vec3 cover = fp.roofColour;
+      if (uOneRoof > 0.5) { rc = 0; cover = vec3(0.11, 0.11, 0.105); }
+      vec2 lp = vUv;                                   // roof-local metres
+      vec2 hl = vec2(max(fp.roofHalfL, 1.0), max(fp.roofHalfW, 1.0));
+      float edgeD = min(hl.x - abs(lp.x), hl.y - abs(lp.y));   // to the box edge, m
+      float aaR = max(fwidth(lp.x), 1e-3);
+      float soil = 0.84 + 0.32 * g;
+      if (rc == 2 && matOn > 0.5) {
+        cover *= sampleMat(${Mat.Gravel}.0, vWorld.xz).ratio;
+      } else if ((rc == 0 || rc == 1) && matOn > 0.5) {
+        vec3 tr = sampleMat(${Mat.Tar}.0, vWorld.xz).ratio;
+        cover *= rc == 0 ? tr : mix(vec3(1.0), tr, 0.35);
+      } else if (rc == 6 && matOn > 0.5) {
+        cover *= sampleMat(${Mat.Precast}.0, vWorld.xz).ratio;
+      }
+      if (rc == 3 || rc == 4) {
+        // Membrane comes in 3 m sheets with a welded lap, run along the roof.
+        float sh = lp.y / 3.05;
+        float swd = max(fwidth(sh), 1e-3);
+        float seam = (1.0 - smoothstep(0.0, max(0.03, swd), fract(sh))) * (1.0 - clamp(swd * 1.6, 0.0, 1.0));
+        cover *= 1.0 - 0.10 * seam;
+        // Ponding: dirt dries in rings where water stood, darker on white.
+        float pond = smoothstep(0.62, 0.8, vnoise(lp * 0.13 + fp.seed * 5.0));
+        cover *= 1.0 - (rc == 3 ? 0.18 : 0.10) * pond;
+      } else if (rc == 5) {
+        // Sedum: patchy green and straw-brown, in 0.6 m trays.
+        float sed = vnoise(lp * 1.3 + fp.seed);
+        cover = mix(cover, vec3(0.11, 0.09, 0.05), 0.45 * smoothstep(0.55, 0.85, sed));
+        vec2 tray = abs(fract(lp / 0.6) - 0.5);
+        cover *= 1.0 - 0.15 * step(0.46, max(tray.x, tray.y)) * (1.0 - clamp(aaR / 0.3, 0.0, 1.0));
+      } else if (rc == 6) {
+        // Pavers: 0.6 m squares on pedestals, open joints, a few lighter ones.
+        vec2 pv = lp / 0.61;
+        vec2 jv = abs(fract(pv) - 0.5);
+        float jw = max(fwidth(pv.x), 1e-3);
+        float joint = step(0.47, max(jv.x, jv.y)) * (1.0 - clamp(jw * 1.6, 0.0, 1.0));
+        cover *= (1.0 - 0.45 * joint) * (0.9 + 0.2 * hash21(floor(pv) + fp.seed * 3.0));
+      }
+      // Coating over tar wears through in patches.
+      if (rc == 1) cover = mix(cover, vec3(0.05), 0.4 * smoothstep(0.62, 0.7, vnoise(lp * 0.2 + fp.seed * 3.0)));
+      // Re-covered sections: a rectangle of fresher or older product with a
+      // hard edge, in the roof's own frame so the edges run with the walls.
+      vec2 pc = floor(lp / vec2(4.0, 3.0) + fp.seed * 17.0);
+      float patchOn = step(0.80, hash21(pc));
+      cover *= 1.0 + patchOn * (hash21(pc + 7.1) - 0.55) * 0.25;
+      // The dirt line: grit and standing water collect against the parapet.
+      cover *= 1.0 - 0.28 * (1.0 - smoothstep(0.0, 1.3, edgeD));
+
+      // --- Features ---
+      int feat = int(fp.roofFeatures + 0.5);
+      float glassy = 0.0;
+      if ((feat & 1) != 0 && hl.x > 4.0 && hl.y > 3.0) {
+        // A solar array: rows of 1.0 x 1.7 m modules tilted south, inside a
+        // setback from the parapet, over most of the roof.
+        vec2 inA = hl - vec2(1.6, 1.4);
+        float inside = step(abs(lp.x), inA.x) * step(abs(lp.y), inA.y);
+        vec2 m = vec2(lp.x / 1.04, lp.y / 2.1);
+        vec2 mf = fract(m);
+        float mw = max(fwidth(m.x), 1e-3);
+        float cell = step(0.03, mf.x) * step(mf.x, 0.97) * step(0.08, mf.y) * step(mf.y, 0.86);
+        float panel = inside * mix(0.8 * 0.86, cell, 1.0 - clamp(mw * 1.6, 0.0, 1.0));
+        vec3 pv = vec3(0.025, 0.032, 0.055) * (1.0 + 0.6 * step(0.5, fract(lp.x * 6.0)) * (1.0 - clamp(mw * 8.0, 0.0, 1.0)));
+        cover = mix(cover, pv, panel);
+        glassy = max(glassy, panel);
+      }
+      if ((feat & 2) != 0) {
+        // Skylights and a roof hatch: one to three small glazed boxes along
+        // the roof's long axis.
+        for (int k = 0; k < 3; k++) {
+          float hk = hash21(vec2(fp.seed * 31.0 + float(k), 2.0));
+          if (k > 0 && hk < 0.5) continue;
+          vec2 c = vec2((hash21(vec2(fp.seed, float(k) + 4.0)) - 0.5) * max(hl.x - 2.0, 0.0),
+                        (hash21(vec2(fp.seed, float(k) + 8.0)) - 0.5) * max(hl.y - 1.5, 0.0));
+          vec2 sz = vec2(0.6 + 0.5 * hk, 0.5 + 0.3 * hk);
+          vec2 d = abs(lp - c) - sz;
+          float box = 1.0 - smoothstep(-aaR, aaR, max(d.x, d.y));
+          float rim = box * smoothstep(-0.12 - aaR, -0.12 + aaR, max(d.x, d.y));
+          cover = mix(cover, mix(vec3(0.06, 0.07, 0.08), vec3(0.35), rim), box);
+          glassy = max(glassy, box * (1.0 - rim));
+        }
+      }
+      if ((feat & 4) != 0 && rc != 6) {
+        // A deck on part of the roof.
+        float deck = step(lp.x, -hl.x * 0.2) * step(1.0, edgeD);
+        cover = mix(cover, vec3(0.30, 0.22, 0.15) * (0.85 + 0.3 * step(0.5, fract(lp.y / 0.14))), deck);
+      }
+      albedo = cover * soil;
+      // Panels and skylights are glass: give them the sky.
+      glassMask = glassy * 0.9;
+      roughness = mix(0.9, 0.08, glassy);
+    }
   } else if (part < 2.5) {
     // --- Parapet --------------------------------------------------------
     // The low wall round the roof edge. Coped in stone or concrete whatever
@@ -1231,6 +1698,22 @@ void main() {
     // metal, greyer and slightly glossier than the roof they stand on.
     float g = vnoise(vWorld.xz * 0.6 + fp.seed * 41.0);
     albedo = mix(vec3(0.30, 0.30, 0.31), vec3(0.46, 0.46, 0.45), g);
+    if (detailOn > 0.5) {
+      // Plant comes in a few finishes: galvanised, factory beige, white, and
+      // the bulkhead is usually the building's own brick or a tar-black box.
+      vec2 cid = floor(vWorld.xz / 3.0);
+      float f = hash21(cid + fp.seed * 9.0);
+      vec3 fin = f < 0.45 ? vec3(0.34, 0.35, 0.36) : f < 0.7 ? vec3(0.42, 0.39, 0.32)
+               : f < 0.85 ? vec3(0.55, 0.56, 0.55) : fp.colour * 0.8;
+      albedo = fin * (0.85 + 0.3 * g);
+      if (isRoof > 0.5) {
+        // Fans on top of the condensers: dark discs on a 1.2 m pitch.
+        vec2 fc = fract(vWorld.xz / 1.2) - 0.5;
+        float fw = max(fwidth(vWorld.x / 1.2), 1e-3);
+        float fan = (1.0 - smoothstep(0.32 - fw, 0.32 + fw, length(fc))) * (1.0 - clamp(fw * 2.0, 0.0, 1.0));
+        albedo *= 1.0 - 0.6 * fan * step(0.45, f) * step(f, 0.85);
+      }
+    }
     if (isRoof > 0.5) albedo *= 0.86;   // the tops streak and collect dirt
     skyOcc = 0.8;
   }
@@ -1243,7 +1726,11 @@ void main() {
   // colour, because they are the light source rather than a surface.
   if (uNight > 0.02) {
     float ng = dot(albedo, vec3(0.299, 0.587, 0.114));
-    albedo = mix(albedo, vec3(ng * 0.55), uNight * 0.88);
+    // 0.40, not 0.55, with the archetype facade: walls at night were reading
+    // as pale grey slabs (measured on manhattan-night, the wall at 2 km came out
+    // brighter than the lit windows' far-field mean), and a real night skyline
+    // is dark masonry with light in it.
+    albedo = mix(albedo, vec3(ng * mix(0.55, 0.40, detailOn)), uNight * 0.88);
   }
 
   albedo *= (1.0 - 0.35 * uWetness);
@@ -1448,6 +1935,17 @@ void main() {
     float faceCos = clamp(dot(v, normalize(vNormal)), 0.0, 1.0);
     float graze = uBuildingDebug > 1.5 ? step(faceCos, GRAZE_COS) : 1.0;
     fragColor = vec4(0.0, 0.0, facadeMarker * graze, 1.0);
+    // ?buildingDebug=3: each FLAT ROOF in one of six saturated colours keyed
+    // on its building, everything else black, so tools/verify-buildings.ts can
+    // cut a top-down frame into roofs and measure each roof's own mean colour.
+    // Six classes survive the tonemap as which channels are on; two touching
+    // roofs share a class one time in six and are then measured as one.
+    if (uBuildingDebug > 2.5) {
+      float cls = mod(floor(hash11(bidx * 0.618 + 0.5) * 6.0), 6.0);
+      vec3 c = cls < 0.5 ? vec3(1, 0, 0) : cls < 1.5 ? vec3(0, 1, 0) : cls < 2.5 ? vec3(0, 0, 1)
+             : cls < 3.5 ? vec3(1, 1, 0) : cls < 4.5 ? vec3(1, 0, 1) : vec3(0, 1, 1);
+      fragColor = vec4(c * step(0.5, part) * step(part, 1.5), 1.0);
+    }
   }
 }
 `;
@@ -1469,6 +1967,20 @@ export interface BuildingUniforms extends SunShadowUniforms, AoUniforms {
   uFlatGlass: THREE.IUniform<number>;
   /** 1 restores the bare-dielectric F0 and the open ground half; `?flatrefl=1`. */
   uFlatRefl: THREE.IUniform<number>;
+  /** 1 restores the pre-archetype facade; `?flatfacade=1`. */
+  uFlatFacade: THREE.IUniform<number>;
+  /** 1 gives every flat roof one cover and colour; `?oneroof=1`, the roof gate's probe. */
+  uOneRoof: THREE.IUniform<number>;
+  /** 1 samples the scans without mips; `?nomip=1`, the aliasing probe. */
+  uMatNoMip: THREE.IUniform<number>;
+  /** The photographed material arrays; see render/materialtex.ts. Null until loaded. */
+  uMatAlbedo: THREE.IUniform<THREE.DataArrayTexture | null>;
+  uMatNormal: THREE.IUniform<THREE.DataArrayTexture | null>;
+  uMatRH: THREE.IUniform<THREE.DataArrayTexture | null>;
+  uMatInfo: THREE.IUniform<THREE.Vector4[]>;
+  uMatMean: THREE.IUniform<THREE.Vector3[]>;
+  uMatReady: THREE.IUniform<number>;
+  uMatCheap: THREE.IUniform<number>;
   /** Built-ness coverage grid; see render/urbanmask.ts. */
   uUrban: THREE.IUniform<THREE.Texture | null>;
   uUrbanExtent: THREE.IUniform<number>;
@@ -1511,6 +2023,16 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uSunSurface: { value: 0.105 },
     uFlatGlass: { value: 0 },
     uFlatRefl: { value: 0 },
+    uFlatFacade: { value: 0 },
+    uOneRoof: { value: 0 },
+    uMatNoMip: { value: 0 },
+    uMatAlbedo: { value: null },
+    uMatNormal: { value: null },
+    uMatRH: { value: null },
+    uMatInfo: { value: Array.from({ length: MAT_COUNT }, () => new THREE.Vector4(1, 1, 0, 0)) },
+    uMatMean: { value: Array.from({ length: MAT_COUNT }, () => new THREE.Vector3(1, 1, 1)) },
+    uMatReady: { value: 0 },
+    uMatCheap: { value: 0 },
     uUrban: { value: null },
     uUrbanExtent: { value: 1 },
     uBuildingDebug: { value: 0 },
@@ -1637,9 +2159,13 @@ function addRoofPlant(
     const r1 = hash3(seed, 0x900 + attempt, 3);
     const r2 = hash3(seed, 0x900 + attempt, 4);
     const r3 = hash3(seed, 0x900 + attempt, 5);
-    const hx = isOverrun ? 2.2 + 1.8 * r1 : 1.1 + 1.6 * r1;
-    const hz = isOverrun ? 2.0 + 1.8 * r2 : 1.0 + 1.5 * r2;
-    const hy = isOverrun ? 3.0 + 1.6 * r3 : 0.9 + 1.6 * r3;
+    // A walk-up's bulkhead is a stair hatch, 2.5 x 3 m; an office overrun is
+    // a lift motor room twice that. Scaled by the roof it stands on so a 7 m
+    // brownstone still gets one that fits.
+    const fit = Math.min(1, Math.min(spanX, spanZ) / 14);
+    const hx = isOverrun ? (1.2 + 3.0 * fit) * (0.6 + 0.4 * r1) : 1.1 + 1.6 * r1;
+    const hz = isOverrun ? (1.1 + 2.8 * fit) * (0.6 + 0.4 * r2) : 1.0 + 1.5 * r2;
+    const hy = isOverrun ? 2.6 + 2.0 * fit * r3 : 0.9 + 1.6 * r3;
     // Only if the whole box is inside the roof: half a chiller hanging over
     // the parapet is worse than no chiller.
     if (
@@ -1650,6 +2176,95 @@ function addRoofPlant(
     addBox(s, px, pz, hx, hz, top, top + hy, bidx, bldH);
     placed++;
   }
+}
+
+/**
+ * One planar quad, wound so its GEOMETRIC normal agrees with the shading
+ * normal given, whatever order the corners came in. The tank is built from
+ * dozens of these at arbitrary angles, and working each winding out by hand is
+ * exactly how the walls and the roofs both once shipped inside out.
+ */
+function quad(
+  s: Scratch,
+  a: readonly number[], b: readonly number[], c: readonly number[], d: readonly number[],
+  nrm: readonly number[], uvs: readonly number[], bidx: number, bldH: number, isRoof: number, part: number,
+): void {
+  const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+  const g = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+  const flip = g[0] * nrm[0] + g[1] * nrm[1] + g[2] * nrm[2] < 0;
+  const v = s.pos.length / 3;
+  for (const p of [a, b, c, d]) s.pos.push(p[0], p[1], p[2]);
+  for (let k = 0; k < 4; k++) {
+    s.nrm.push(nrm[0], nrm[1], nrm[2]);
+    s.uv.push(uvs[k * 2], uvs[k * 2 + 1]);
+    s.info.push(bidx, bldH, isRoof, part);
+  }
+  if (flip) s.idx.push(v, v + 2, v + 1, v, v + 3, v + 2);
+  else s.idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
+}
+
+/** A steel box (a leg or the deck), four sides and a lid. */
+function steelBox(s: Scratch, cx: number, cz: number, hx: number, hz: number, y0: number, y1: number, bidx: number, bldH: number): void {
+  const x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
+  const st = [0, -1, 0, -1, 0, -1, 0, -1];
+  quad(s, [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [0, 0, -1], st, bidx, bldH, 0, PART_TANK);
+  quad(s, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1], st, bidx, bldH, 0, PART_TANK);
+  quad(s, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [-1, 0, 0], st, bidx, bldH, 0, PART_TANK);
+  quad(s, [x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], [1, 0, 0], st, bidx, bldH, 0, PART_TANK);
+  quad(s, [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], [0, 1, 0], st, bidx, bldH, 1, PART_TANK);
+}
+
+/**
+ * A New York wooden water tank: cedar staves bound with steel hoops, a
+ * shallow conical lid, standing on a steel deck on four legs.
+ *
+ * Measured sizes: the common 10,000 gallon tank is about 12 ft (3.7 m) across
+ * and 12-16 ft tall, on a stand that lifts it one storey clear of the roof so
+ * gravity gives the top floors pressure. Sizes jitter per building.
+ */
+function addWaterTank(s: Scratch, b: Building, top: number, bidx: number, bldH: number, seed: number): boolean {
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let i = 0; i < b.ring.length; i += 2) {
+    minX = Math.min(minX, b.ring[i]); maxX = Math.max(maxX, b.ring[i]);
+    minZ = Math.min(minZ, b.ring[i + 1]); maxZ = Math.max(maxZ, b.ring[i + 1]);
+  }
+  const r = 1.5 + 0.6 * hash3(seed, 0xa00, 1);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    // Tanks sit toward the back or side of a roof, near the stair core; any
+    // spot the whole stand fits in will do.
+    const px = minX + (maxX - minX) * (0.2 + 0.6 * hash3(seed, 0xa10 + attempt, 1));
+    const pz = minZ + (maxZ - minZ) * (0.2 + 0.6 * hash3(seed, 0xa10 + attempt, 2));
+    const m = r + 0.4;
+    if (!insideRing(b.ring, px - m, pz - m) || !insideRing(b.ring, px + m, pz - m) ||
+        !insideRing(b.ring, px - m, pz + m) || !insideRing(b.ring, px + m, pz + m)) continue;
+    const standH = 2.6 + 1.2 * hash3(seed, 0xa00, 2);
+    const tankH = 3.6 + 1.4 * hash3(seed, 0xa00, 3);
+    const lidH = 0.6 + 0.5 * hash3(seed, 0xa00, 4);
+    const leg = r * 0.72;
+    for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      steelBox(s, px + sx * leg, pz + sz * leg, 0.11, 0.11, top, top + standH - 0.25, bidx, bldH);
+    }
+    steelBox(s, px, pz, r * 0.95, r * 0.95, top + standH - 0.25, top + standH, bidx, bldH);
+    const y0 = top + standH, y1 = y0 + tankH, y2 = y1 + lidH;
+    const N = 10;
+    for (let k = 0; k < N; k++) {
+      const a0 = (k / N) * Math.PI * 2, a1 = ((k + 1) / N) * Math.PI * 2;
+      const am = (a0 + a1) / 2;
+      const p0 = [px + Math.cos(a0) * r, pz + Math.sin(a0) * r];
+      const p1 = [px + Math.cos(a1) * r, pz + Math.sin(a1) * r];
+      const u0 = a0 * r, u1 = a1 * r;
+      quad(s, [p0[0], y0, p0[1]], [p1[0], y0, p1[1]], [p1[0], y1, p1[1]], [p0[0], y1, p0[1]],
+        [Math.cos(am), 0, Math.sin(am)], [u0, 0, u1, 0, u1, tankH, u0, tankH], bidx, bldH, 0, PART_TANK);
+      // The lid: a triangle per stave, as a quad with its two top corners
+      // meeting at the apex. Its normal leans out by the lid's rise.
+      const sl = Math.hypot(r, lidH);
+      quad(s, [p0[0], y1, p0[1]], [p1[0], y1, p1[1]], [px, y2, pz], [px, y2, pz],
+        [Math.cos(am) * lidH / sl, r / sl, Math.sin(am) * lidH / sl], [u0, 0, u1, 0, u1, 1, u0, 1], bidx, bldH, 1, PART_TANK);
+    }
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -2007,13 +2622,36 @@ export function addBuilding(
   // At the EAVE when there is a tent over it. Mostly hidden and it costs
   // nothing new, but without it any gap where a gable end meets the wall is a
   // hole you can see down into the building through.
+  // The roof's own frame: along its longest edge and across it, centred on
+  // the footprint. uv carries these local metres and the facade table carries
+  // the half extents, so the shader can lay a solar array or a deck INSIDE the
+  // roof and darken the dirt line along its parapet.
+  let ax = 1, az = 0, best = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = b.ring[j * 2] - b.ring[i * 2], dz = b.ring[j * 2 + 1] - b.ring[i * 2 + 1];
+    const l = Math.hypot(dx, dz);
+    if (l > best) { best = l; ax = dx / l; az = dz / l; }
+  }
+  let u0 = Infinity, u1 = -Infinity, w0 = Infinity, w1 = -Infinity;
+  for (let i = 0; i < n; i++) {
+    const x = b.ring[i * 2] - b.cx, z = b.ring[i * 2 + 1] - b.cz;
+    const u = x * ax + z * az, w = -x * az + z * ax;
+    u0 = Math.min(u0, u); u1 = Math.max(u1, u); w0 = Math.min(w0, w); w1 = Math.max(w1, w);
+  }
+  const uc = (u0 + u1) / 2, wc = (w0 + w1) / 2;
+  if (params) {
+    params.roofHalfL = (u1 - u0) / 2;
+    params.roofHalfW = (w1 - w0) / 2;
+  }
   const tri = triangulate(b.ring);
   if (tri.length) {
     const v0 = s.pos.length / 3;
     for (let i = 0; i < n; i++) {
       s.pos.push(b.ring[i * 2], eaveY, b.ring[i * 2 + 1]);
       s.nrm.push(0, 1, 0);
-      s.uv.push(b.ring[i * 2], b.ring[i * 2 + 1]);
+      const x = b.ring[i * 2] - b.cx, z = b.ring[i * 2 + 1] - b.cz;
+      s.uv.push(x * ax + z * az - uc, -x * az + z * ax - wc);
       s.info.push(bidx, wallH, 1, PART_ROOF);
     }
     // REVERSED against the ring's own winding, and that is not a typo.
@@ -2036,10 +2674,14 @@ export function addBuilding(
   if (pitch) {
     addTent(s, pitch, eaveY, top, base, bidx, wallH);
   } else if (extras.boxes > 0 || extras.overrun) {
+    // Plant first, tank after: a tank that lands on a chiller is caught by the
+    // tank's own inside test only against the ring, so the order just decides
+    // which of the two gets the better spot, and the stair core wins.
     // Same veto as the parapet, and for the same reason: nothing stands on a
     // slope, and the gate forces the extras on for every building.
     addRoofPlant(s, b, top, extras, bidx, wallH, seed);
   }
+  if (!pitch && extras.tank) addWaterTank(s, b, top, bidx, wallH, seed);
 }
 
 function buildMesh(s: Scratch, uniforms: BuildingUniforms): THREE.Mesh | null {
@@ -2082,18 +2724,20 @@ export const FACADE_TEX_WIDTH = 1024;
  * (a tile with four buildings in it) are only ever exercised in the field.
  */
 export function packFacadeBytes(params: FacadeParams[]): { data: Uint8Array; height: number } {
-  const texels = params.length * FACADE_BYTE_TEXELS;
+  const texels = params.length * FACADE_STRIDE;
   const height = Math.max(1, Math.ceil(texels / FACADE_TEX_WIDTH));
   const data = new Uint8Array(FACADE_TEX_WIDTH * height * 4);
   const scratch = new Float32Array(FACADE_FLOATS);
   for (let i = 0; i < params.length; i++) {
     packFacade(params[i], scratch, 0);
+    const base = i * FACADE_STRIDE * 4;
     for (let v = 0; v < FACADE_FLOATS; v++) {
       const [lo, hi] = encodeFacadeValue(scratch[v]);
-      const byteIndex = (i * FACADE_FLOATS + v) * 2;
-      data[byteIndex] = lo;
-      data[byteIndex + 1] = hi;
+      data[base + v * 2] = lo;
+      data[base + v * 2 + 1] = hi;
     }
+    // The byte block follows the pairs; see FACADE_RAW_TEXELS.
+    packFacadeRaw(params[i], data, base + FACADE_FLOATS * 2);
   }
   return { data, height };
 }
@@ -2133,6 +2777,8 @@ export interface BuildingStats {
   plantBoxes: number;
   /** Facade families in use, indexed by FacadeFamily. */
   families: number[];
+  /** Wooden water tanks placed. */
+  tanks: number;
 }
 
 export class Buildings {
@@ -2147,7 +2793,29 @@ export class Buildings {
     budget: Budget,
   ) {
     this.uniforms = makeUniforms(shadow);
-    const lodK = solveLod(pack, budget.buildingTriangleBudget);
+    // The photographs arrive after the city does; until then uMatReady is 0
+    // and the shader draws the flat facade. A phone gets the 256 px strips and
+    // one tiling tap instead of three.
+    const reduced = budget.tier === "reduced";
+    this.uniforms.uMatCheap.value = reduced ? 1 : 0;
+    void loadMaterialTextures(reduced, reduced ? 2 : 8).then((m) => {
+      if (!m) return;
+      const u = this.uniforms;
+      u.uMatAlbedo.value = m.albedo;
+      u.uMatNormal.value = m.normal;
+      u.uMatRH.value = m.rh;
+      u.uMatInfo.value = m.info;
+      u.uMatMean.value = m.mean;
+      u.uMatReady.value = 1;
+    });
+    const choices = assignArchetypes(pack);
+    const tankAt = (i: number): boolean => {
+      const c = choices?.[i];
+      if (!c) return false;
+      const b = pack.buildings[i];
+      return wantsWaterTank(ARCHETYPES[c.archetype], b.topM - b.baseM, i);
+    };
+    const lodK = solveLod(pack, budget.buildingTriangleBudget, tankAt);
     const cells = new Map<string, Scratch>();
     const params: FacadeParams[] = [];
     const families: number[] = new Array(5).fill(0);
@@ -2156,6 +2824,11 @@ export class Buildings {
     let skippedFlat = 0;
     let parapets = 0;
     let plantBoxes = 0;
+    let tanks = 0;
+    // `choices` (above, before the LOD solve, which has to cost the tanks):
+    // what KIND of building each footprint is, decided over the whole pack at
+    // once because it needs the neighbourhood (district) and the party walls
+    // (coherence). Null outside the surveyed cities; see render/archetype.ts.
 
     for (let i = 0; i < pack.buildings.length; i++) {
       const b = pack.buildings[i];
@@ -2199,12 +2872,18 @@ export class Buildings {
 
       // The seed is the building's index in the pack, so a facade is stable
       // across runs and traceable back to one record.
-      const fp = facadeFor(b.kind, h, i);
+      const fp = facadeFor(b.kind, h, i, choices?.[i]);
       const bidx = params.length;
       params.push(fp);
       families[fp.family]++;
 
-      const extras = roofExtras(dist, lodK, h, area, b.kind, b.roof);
+      // A copy: roofExtras hands back the shared NO_EXTRAS constant, and the
+      // tank flag below must not write through it into every building after.
+      const extras = { ...roofExtras(dist, lodK, h, area, b.kind, b.roof) };
+      if (dist < TANK_M / lodK && b.roof === RoofShape.Flat && tankAt(i)) {
+        extras.tank = true;
+        tanks++;
+      }
       if (extras.parapet) parapets++;
       plantBoxes += extras.boxes + (extras.overrun ? 1 : 0);
 
@@ -2230,7 +2909,7 @@ export class Buildings {
 
     this.stats = {
       drawn, skippedFar, skippedFlat, triangles, cells: cells.size, lod: lodK,
-      parapets, plantBoxes, families,
+      parapets, plantBoxes, families, tanks,
     };
   }
 

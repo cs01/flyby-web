@@ -15,7 +15,7 @@
 // PURE: no fetch, no cache, no DOM, no Bun.
 
 import { Origin } from "../geo";
-import { BuildingKind, RoofShape, isNeedle, type PackedBuilding } from "./citypack";
+import { BuildingKind, RoofShape, isNeedle, type BuildingTags, type PackedBuilding } from "./citypack";
 import { bboxFilter, Skips, type OsmBbox, type OsmElement, type OsmPt } from "./osm";
 
 // --- tunables ---------------------------------------------------------------
@@ -171,6 +171,65 @@ const KIND_BY_BUILDING: Record<string, BuildingKind> = {
   tower: BuildingKind.Tower,
   skyscraper: BuildingKind.Tower,
 };
+
+// --- what it is made of ------------------------------------------------------
+
+/** The CSS colour names OSM mappers actually use on buildings, as sRGB. */
+const NAMED_COLOUR: Record<string, [number, number, number]> = {
+  white: [240, 240, 236], black: [30, 30, 30], grey: [128, 128, 128], gray: [128, 128, 128],
+  silver: [192, 192, 192], red: [160, 60, 50], maroon: [110, 40, 36], brown: [120, 80, 56],
+  tan: [210, 180, 140], beige: [222, 210, 180], yellow: [230, 200, 90], orange: [210, 120, 60],
+  pink: [230, 180, 180], green: [90, 130, 90], olive: [128, 128, 64], blue: [90, 120, 170],
+  navy: [40, 50, 90], cream: [240, 230, 200], ivory: [240, 236, 220], lightgrey: [200, 200, 200],
+  lightgray: [200, 200, 200], darkgrey: [80, 80, 80], darkgray: [80, 80, 80], sandybrown: [220, 160, 100],
+};
+
+const srgbToLinear = (c: number): number => {
+  const v = c / 255;
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+};
+
+/**
+ * An OSM colour value (#rgb, #rrggbb or a CSS name) to linear rgb, or null.
+ *
+ * Mappers write the colour of the paint, which is a reflectance seen in
+ * daylight, so it is treated as an sRGB albedo. Clamped to 0.03..0.75 linear: a
+ * "white" building is not a 0.87 albedo surface after a city winter, and a
+ * "black" one is still lit by the sky.
+ */
+export function parseOsmColour(raw: string | undefined): [number, number, number] | null {
+  if (!raw) return null;
+  const v = raw.trim().toLowerCase().replace(/[\s_]/g, "");
+  let rgb: [number, number, number] | null = NAMED_COLOUR[v] ?? null;
+  const hex = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/.exec(v);
+  if (!rgb && hex) {
+    const h = hex[1].length === 3 ? hex[1].split("").map((c) => c + c).join("") : hex[1];
+    rgb = [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+  if (!rgb) return null;
+  return rgb.map((c) => Math.min(0.75, Math.max(0.03, srgbToLinear(c)))) as [number, number, number];
+}
+
+/** The material evidence on one element, or null when it has none. */
+export function materialTags(tags: Record<string, string>): BuildingTags | null {
+  const out: BuildingTags = {};
+  const material = (tags["building:material"] ?? tags["building:facade:material"] ?? "").trim().toLowerCase();
+  if (material) out.material = material;
+  const colour = parseOsmColour(tags["building:colour"] ?? tags["building:facade:colour"]);
+  if (colour) out.colour = colour;
+  const roofColour = parseOsmColour(tags["roof:colour"]);
+  if (roofColour) out.roofColour = roofColour;
+  const roofMaterial = (tags["roof:material"] ?? "").trim().toLowerCase();
+  if (roofMaterial) out.roofMaterial = roofMaterial;
+  const year = /(\d{4})/.exec(tags["start_date"] ?? tags["construction_date"] ?? "");
+  if (year) {
+    const y = Number(year[1]);
+    if (y >= 1600 && y <= 2100) out.year = y;
+  }
+  const levels = parseLevels(tags["building:levels"]);
+  if (levels !== null && levels >= 1) out.levels = levels;
+  return Object.keys(out).length ? out : null;
+}
 
 export function classifyKind(tags: Record<string, string>, topM: number): BuildingKind {
   const b = (tags["building"] ?? tags["building:part"] ?? "").toLowerCase();
@@ -649,7 +708,11 @@ export function buildingsFromOsm(
         continue;
       }
 
-      buildings.push({ cx, cz, baseM: heights.baseM, topM: heights.topM, kind, roof, dx, dz });
+      const evidence = materialTags(tags);
+      buildings.push({
+        cx, cz, baseM: heights.baseM, topM: heights.topM, kind, roof, dx, dz,
+        ...(evidence ? { tags: evidence } : {}),
+      });
       roofTagged.push(taggedRoof);
     }
   }

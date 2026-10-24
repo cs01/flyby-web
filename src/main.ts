@@ -682,6 +682,10 @@ async function main() {
   // binary -- the reveal half of that tool already has `?flatglass=1`, and the
   // two are separate because they are separate claims about the same wall.
   const flatRefl = gateFlag("flatrefl");
+  // `?flatfacade=1`: the pre-archetype facade, the probe for tools/verify-buildings.ts.
+  const flatFacade = gateFlag("flatfacade");
+  const oneRoof = gateFlag("oneroof");
+  const noMip = gateFlag("nomip");
 
   // `?flatbounce=1` restores the street floor this repo had before the canyon
   // bounce: a carriageway, a footway and a terrain drape that all went black
@@ -1700,6 +1704,9 @@ async function main() {
       // tiles add their own uniform set to this array long after that.
       b.uFlatGlass.value = flatGlass ? 1 : 0;
       b.uFlatRefl.value = flatRefl ? 1 : 0;
+      b.uFlatFacade.value = flatFacade ? 1 : 0;
+      b.uOneRoof.value = oneRoof ? 1 : 0;
+      b.uMatNoMip.value = noMip ? 1 : 0;
       b.uUrban.value = urban.texture;
       b.uUrbanExtent.value = urban.extent;
       b.uBuildingDebug.value = buildingDebug;
