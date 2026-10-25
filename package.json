@@ -49,6 +49,7 @@
     "streetsign": "bun test/streetsign.check.ts",
     "bridge": "bun test/bridge.check.ts",
     "profile": "bun tools/profile.ts",
+    "perf": "bun tools/verify-perf.ts",
     "water": "bun tools/verify-water.ts",
     "glass": "bun tools/verify-glass.ts",
     "bounce": "bun tools/verify-street.ts",

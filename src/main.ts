@@ -399,6 +399,7 @@ async function main() {
   const perfHidden: THREE.Object3D[] = [];
   const probeHidden: THREE.Object3D[] = [];
   const perfSync = new URLSearchParams(location.search).has("perfsync");
+  const perfHeavy = new URLSearchParams(location.search).get("perfprobe") === "heavy";
   const perfSyncPixel = new Uint8Array(4);
   composite.skip = perfOff;
 
@@ -2283,6 +2284,9 @@ async function main() {
     prof.cpuBegin("scene");
     prof.begin("scene");
     renderer.render(scene, camera);
+    // `?perfprobe=heavy`, tools/verify-perf.ts's vacuity probe: the world
+    // drawn twice more, which no frame budget should survive.
+    if (perfHeavy) for (let k = 0; k < 2; k++) renderer.render(scene, camera);
     prof.end();
     prof.cpuEnd("scene");
     // What this frame drew is what the next frame's water reflects.
@@ -2514,6 +2518,19 @@ async function main() {
       /** Per-pass GPU and per-subsystem CPU means; see render/gpuprof.ts. */
       profile: () => prof.report(),
       resetProfile: () => prof.reset(),
+      /** Hold quality ladder step `n` from now on, as `?qlevel` does at load. */
+      setLevel: (n: number) => {
+        quality.force(n);
+        quality.apply(renderer);
+        renderer.setSize(canvas.clientWidth || innerWidth, canvas.clientHeight || innerHeight, false);
+        const samples = quality.features.msaa ? budget.msaaSamples : 0;
+        if (target.samples !== samples) {
+          target.samples = samples;
+          target.dispose();
+        }
+        resizeTargets();
+        return quality.ladder.length;
+      },
       setOff: (names: string[]) => {
         perfOff.clear();
         for (const n of names) perfOff.add(n);

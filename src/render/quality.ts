@@ -47,8 +47,22 @@ interface Step {
   scale: number;
 }
 
-/** Feature steps, cheapest picture loss per millisecond first. */
-const FEATURE_STEPS: (keyof Features)[] = ["ssr", "lowClouds", "ao", "lowShadows", "msaa"];
+/**
+ * Feature steps, in order. Each step's share of the frame, measured with
+ * `flybyShot.setLevel` in paired 2 s windows on an M4 (median of six pairs;
+ * manhattan-cruise / manhattan-street / sf-street at 1280x720):
+ *
+ *   two small cascades   12% / 7% / 12%   softer near shadows, the city map from 1.4 km
+ *   ambient occlusion    10% / 2% / 10%   contact darkening in the street canyons
+ *   msaa                 25% / 18% / 16%  edge aliasing, least visible at high dpr
+ *   ssr                   2% / 2% / 1%    the city leaves the water and the glass
+ *   phone cloud march     0% under a clear or 30% sky; only an overcast pays it
+ *
+ * MSAA saves the most but costs the most to look at, so the two subtle steps
+ * go first; SSR and the cloud march save so little that they come after it,
+ * just before resolution starts to go.
+ */
+const FEATURE_STEPS: (keyof Features)[] = ["lowShadows", "ao", "msaa", "ssr", "lowClouds"];
 const SCALES = [1.0, 0.85, 0.72, 0.6, 0.5, 0.4];
 
 /**

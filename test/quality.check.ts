@@ -47,7 +47,7 @@ function run(q: AdaptiveQuality, ms: number, n: number, refreshMs = ms): number 
   check("  probe: the desktop ladder is longer", ladder.length > phone.length, `${ladder.length} against ${phone.length}`);
 }
 
-// 2. A sustained slow run sheds SSR first, a single slow frame sheds nothing.
+// 2. A sustained slow run sheds the cascades first, a single slow frame sheds nothing.
 {
   const q = new AdaptiveQuality(renderer(1.5), "full", FULL);
   run(q, 16.7, 60);
@@ -56,8 +56,8 @@ function run(q: AdaptiveQuality, ms: number, n: number, refreshMs = ms): number 
   check("one slow frame changes nothing", q.level === 0, `level ${q.level}`);
   run(q, 25, 40);
   check(
-    "a sustained 25 ms run sheds SSR and nothing else",
-    q.level === 1 && !q.features.ssr && q.features.ao && q.scale === 1,
+    "a sustained 25 ms run sheds the big cascades and nothing else",
+    q.level === 1 && q.features.lowShadows && q.features.ao && q.features.ssr && q.scale === 1,
     `level ${q.level}, ${JSON.stringify(q.features)}, scale ${q.scale}`,
   );
 }
