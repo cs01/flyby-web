@@ -780,7 +780,7 @@ function surfaceFor(
       trim: jitter(pick(arch.trim, seed, 0x72), 0.12, 0x73),
       frameColour: pick(arch.frame, seed, 0x74),
       roofColour: roofTag ?? jitter(ROOF_COLOUR[roofCover], 0.3, 0x75),
-      glassTint: arch.glass,
+      glassTint: arch.glasses ? pick(arch.glasses, seed, 0x7c) : arch.glass,
       roofCover,
       pitchCover,
       roofFeatures: features(arch.solar ?? 0, arch.interior === Interior.Apartment, heightM < 30)

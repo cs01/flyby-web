@@ -55,6 +55,7 @@
     "ground": "bun tools/verify-ground.ts",
     "night": "bun tools/verify-night.ts",
     "skyglow": "bun tools/verify-skyglow.ts",
+    "farcolour": "bun tools/verify-farcolour.ts",
     "shadow": "bun tools/verify-shadow.ts",
     "buildings": "bun tools/verify-buildings.ts",
     "clouds": "bun tools/verify-clouds.ts --profile /tmp/flyby-clouds-profile"

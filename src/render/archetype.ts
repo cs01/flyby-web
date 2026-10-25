@@ -370,6 +370,7 @@ export interface Archetype {
   frame: [number, number, number][];
   /** Linear tint of the glazing seen straight on. */
   glass: [number, number, number];
+  glasses?: [number, number, number][];
   storeyM: number;
   columnM: number;
   /** Window inside a cell: x0, x1, y0, y1. */
@@ -487,6 +488,17 @@ const GLASS_SPANDREL = [
   sw(Mat.MetalPanel, 104, 116, 120), sw(Mat.MetalPanel, 54, 70, 66),
 ];
 const METAL_GREY = [sw(Mat.MetalPanel, 150, 150, 146), sw(Mat.MetalPanel, 120, 122, 122), sw(Mat.MetalPanel, 176, 170, 156)];
+// What a curtain wall is actually glazed in, as a body tint (the reflection
+// takes the same hue on a coated glass; see the Fresnel term in buildings.ts).
+// From the air over Midtown the towers are not one blue-grey: dark neutral
+// grey and near-black, the blue of a 1980s and 2000s low-e coating, the
+// blue-green of the MetLife and Bank of America generation, bronze and brown
+// tints from the 1970s and 80s, and silver reflective. Read off the CC0
+// Midtown aerial tools/verify-farcolour.ts is set against.
+const CURTAIN_GLASS: [number, number, number][] = [
+  lin(36, 40, 42), lin(26, 28, 30), lin(34, 52, 78), lin(40, 60, 86),
+  lin(30, 66, 64), lin(38, 72, 66), lin(58, 46, 36), lin(70, 74, 76),
+];
 const MIES_STEEL = [sw(Mat.MetalPanel, 22, 22, 22), sw(Mat.MetalPanel, 30, 26, 22)];
 const HOUSE_SIDING = [
   sw(Mat.Siding, 216, 214, 204), sw(Mat.Siding, 190, 184, 166), sw(Mat.Siding, 170, 178, 176),
@@ -558,8 +570,12 @@ export const ARCHETYPES: Archetype[] = [
     ],
     zoneElse: 0.35,
     palette: [
-      sw(Mat.Limestone, 200, 194, 176), sw(Mat.Limestone, 170, 170, 164), sw(Mat.Limestone, 214, 210, 198),
-      sw(Mat.Limestone, 120, 132, 124), ...NYC_RED_BRICK.slice(0, 3),
+      // The Garment District and Flatiron lofts from the air: buff and tan
+      // brick, cream terracotta and limestone, red brick. Two grey stones
+      // (170,170,164 and a green-grey 120,132,124) were here and were most
+      // of why the loft blocks read as one grey from 600 m.
+      sw(Mat.Limestone, 200, 194, 176), sw(Mat.Limestone, 214, 210, 198), BUFF_BRICK[0], BUFF_BRICK[3],
+      CREAM_TERRACOTTA[0], ...NYC_RED_BRICK.slice(0, 3),
     ],
     trim: [lin(190, 186, 174), lin(150, 150, 146)], frame: [PAINT_BLACK, PAINT_WHITE, PAINT_GREEN], glass: CLEAR_GLASS,
     // A loft is all window: 4.1 m floors and 1.8 x 2.9 m sash between thin piers.
@@ -816,7 +832,7 @@ export const ARCHETYPES: Archetype[] = [
     id: "us-glass-tower", name: "post-1985 curtain-wall tower", region: Region.Generic, family: 0, era: [1985, 2030],
     districts: [1.0, 0.45, 0.04, 0.05], heightM: [55, 560], areaM2: [400, 16000], weight: 1.4,
     kinds: { 6: 1.5, 2: 1.3, 1: 0.7 },
-    palette: GLASS_SPANDREL, trim: [lin(150, 156, 160)], frame: [lin(150, 156, 160), lin(70, 76, 80)], glass: lin(40, 56, 66),
+    palette: GLASS_SPANDREL, trim: [lin(150, 156, 160)], frame: [lin(150, 156, 160), lin(70, 76, 80)], glass: lin(40, 56, 66), glasses: CURTAIN_GLASS,
     storeyM: 4.0, columnM: 1.5, win: [0.04, 0.96, 0.08, 0.95], glassFrac: 0.92,
     relief: 0.1, parapetM: 0.9, corniceM: 0, sillM: 0, window: WindowStyle.Curtain, frameM: 0.05, mullions: 1,
     interior: Interior.Office, roofs: [RoofCover.Gravel, RoofCover.WhiteMembrane],
@@ -838,7 +854,7 @@ export const ARCHETYPES: Archetype[] = [
     districts: [1.0, 0.8, 0.15, 0.1], heightM: [45, 450], areaM2: [400, 6000], weight: 0.45,
     kinds: { 1: 1.6, 2: 0.6, 6: 1.0 },
     palette: [...GLASS_SPANDREL.slice(0, 3), sw(Mat.MetalPanel, 190, 188, 182), sw(Mat.Precast, 200, 196, 186)],
-    trim: [lin(190, 190, 186)], frame: [lin(120, 124, 126), lin(60, 62, 64)], glass: lin(46, 58, 64),
+    trim: [lin(190, 190, 186)], frame: [lin(120, 124, 126), lin(60, 62, 64)], glass: lin(46, 58, 64), glasses: CURTAIN_GLASS,
     storeyM: 3.2, columnM: 1.6, win: [0.05, 0.95, 0.06, 0.94], glassFrac: 0.8,
     relief: 0.15, parapetM: 1.1, corniceM: 0, sillM: 0, window: WindowStyle.Curtain, frameM: 0.06, mullions: 1,
     interior: Interior.Apartment, roofs: [RoofCover.WhiteMembrane, RoofCover.Gravel],
