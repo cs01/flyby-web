@@ -1172,6 +1172,9 @@ void main() {
     // What the shop block below decides, for the night lighting further down.
     float shopOpen = 1.0, shopShutter = 0.0, signInk = 0.0, signLit = 0.0;
     vec3 shopRoom = vec3(0.36), signColour = vec3(0.0);
+    // The unit's lamps: colour temperature and level, per unit. See below.
+    vec3 shopLamp = vec3(1.0, 0.90, 0.76);
+    float shopGain = 1.0;
     bool shopDetail = false;
     if (ground > 0.5) {
       float plinthM = mix(0.75, 0.34, fp.shopfront) * (0.7 + 0.6 * hash11(fp.seed * 17.0 + 1.0));
@@ -1271,7 +1274,9 @@ void main() {
                            vec3(hash11(bayIdx * 3.1 + fp.seed * 41.0),
                                 hash11(bayIdx * 7.7 + fp.seed * 13.0),
                                 hash11(bayIdx * 5.3 + fp.seed * 29.0)) * 0.22 + 0.05,
-                           fp.shopfront * 0.8 * detailX);
+                           // A lobby's head is the building's own stone, not a
+                           // row of painted boards for tenants it does not have.
+                           fp.shopfront * 0.8 * detailX * (1.0 - fp.lobby));
 
       // The plinth stops at the garage: a door sits on the driveway, and a
       // kerb across the bottom of it would read as a step into a wall.
@@ -1366,12 +1371,22 @@ void main() {
         shopDetail = true;
         // Signs and shutters are a shop's; a lobby or a residential base
         // keeps only the room behind its glass.
-        float retail = step(0.3, fp.shopfront);
+        float retail = step(0.3, fp.shopfront) * (1.0 - fp.lobby);
         float uh1 = hash21(vec2(bayIdx * 1.31 + fp.seed * 7.0, 17.0));
         float uh2 = hash21(vec2(bayIdx * 2.17 + fp.seed * 3.0, 29.0));
         float uh3 = hash21(vec2(bayIdx * 0.73 + fp.seed * 11.0, 41.0));
         // Open after dark: 55% of units, decided per unit and not per building.
-        shopOpen = step(uh1, 0.55);
+        shopOpen = max(step(uh1, 0.55), fp.lobby);
+        // NOT ALL THE SAME LIGHT. A parade at night was a row of identical
+        // beige cards. Real units span 2700 K tungsten and warm LED (a
+        // restaurant, a bar) through 3500 K to 5000 K fluorescent and cool LED
+        // (a pharmacy, a deli, a phone shop), at levels a couple of stops
+        // apart. exp2 of a uniform on [-1.2, 1] averages 1.03, so the street's
+        // mean stays where it was. A lobby is warm and steady.
+        float uh4 = hash21(vec2(bayIdx * 3.71 + fp.seed * 5.0, 53.0));
+        shopLamp = uh4 < 0.38 ? vec3(1.0, 0.78, 0.55) : uh4 < 0.72 ? vec3(1.0, 0.90, 0.78) : vec3(0.84, 0.92, 1.0);
+        shopGain = exp2(mix(-1.2, 1.0, fract(uh4 * 7.31)));
+        if (fp.lobby > 0.5) { shopLamp = vec3(1.0, 0.86, 0.68); shopGain = 1.8; }
         // Shuttered: most closed units at night, one in fifteen by day (a
         // vacant unit or one that opens late).
         float shutNight = (1.0 - shopOpen) * step(uh2, 0.70);
@@ -1380,7 +1395,7 @@ void main() {
 
         vec3 vT = vec3(dot(-eyeDir, uDir), dot(-eyeDir, upDir), dot(eyeDir, n));
         vec3 rp = vec3(bx * bayM, vUv.y - plinthM, 0.0);
-        vec4 room = roomColour(rp, vT, vec2(bayM, headY - plinthM + 0.3), 7.0, 3.0,
+        vec4 room = roomColour(rp, vT, vec2(bayM, headY - plinthM + 0.3), 7.0, fp.lobby > 0.5 ? 4.0 : 3.0,
                                fp.seed * 31.0 + bayIdx * 5.3, uNight);
         // 0.36: the retail room's mean shaded value, so far away the bay is
         // the mean it was and only the near field gains the room.
@@ -1896,7 +1911,12 @@ void main() {
           // the old flat glow: at 0.26 (and still at 0.13) a lit unit
           // tonemapped to a white card with nothing in it, where a real one
           // shows its shelves.
-          emissive += vec3(1.0, 0.90, 0.76) * shopRoom / 0.36 * glassMask * uNight * open_ * 0.08;
+          // A closed unit that is not shuttered keeps a security light on at
+          // a tenth: dark glass with something in it, not a black hole.
+          float level = mix(open_, open_ * shopGain, detailX);
+          level = max(level, 0.1 * (1.0 - open_) * (1.0 - shopShutter) * detailX);
+          vec3 lampC = mix(vec3(1.0, 0.90, 0.76), shopLamp, detailX);
+          emissive += lampC * shopRoom / 0.36 * glassMask * uNight * level * 0.08;
           // The sign's own light: lettering at a few times a lit window.
           emissive += signColour * signInk * signLit * uNight * 0.55;
         } else {
@@ -3300,7 +3320,7 @@ export function addDetail(
     const len = Math.hypot(dx, dz) || 1;
     return !occupied(ax + dx * 0.5 + (dz / len) * 2, az + dz * 0.5 - (dx / len) * 2);
   };
-  if (street && p.shopfront > 0.5 && !p.house) {
+  if (street && p.shopfront > 0.5 && !p.house && !p.lobby) {
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       const x0 = b.ring[i * 2], z0 = b.ring[i * 2 + 1];
@@ -3314,6 +3334,13 @@ export function addDetail(
   // same search), which the shader hides inside TANK_NEAR_M.
   if (tank && !pitch && b.roof === RoofShape.Flat) addWaterTank(s, b, top, bidx, wallH, seed);
   if (escape && (p.roofFeatures & FIRE_ESCAPE) && !p.house && !pitch) addFireEscapes(s, b, p, groundY, wallH, bidx, seed, open);
+  // Inside the fire escapes' radius: a stoop is up to 48 quads, and past 380 m a few pixels.
+  if (escape && p.archetype >= 0) {
+    const id = ARCHETYPES[p.archetype].id;
+    if (id === "nyc-brownstone" || id === "nyc-walkup" || id === "sf-victorian") {
+      addStoop(s, b, p, groundY, bidx, wallH, seed, id !== "nyc-walkup", occupied);
+    }
+  }
   if (!relief) return;
   // A bay runs up to the eave whatever the roof: the Painted Ladies are
   // gabled. A cornice only crowns a flat roof; a pitched one has its eave.
@@ -3388,6 +3415,23 @@ function addFireEscapes(
       rail(P(a0, D, y), P(a1, D, y), W, [nx, 0, nz]);
       rail(P(a0, 0.05, y), P(a0, D, y), D, [-ux, 0, -uz]);
       rail(P(a1, D, y), P(a1, 0.05, y), D, [ux, 0, uz]);
+      // The drop ladder, hung up under the first platform: the counterweighted
+      // ladder a New York escape ends in, stowed with its foot well over head
+      // height so it is the last thing between the street and the stair. Two
+      // stiles and a rung every 0.3 m, both faces.
+      if (f === 0) {
+        const lx0 = a1 - 0.62, lx1 = a1 - 0.18, ld = D - 0.12;
+        const yTop = y - 0.06, yBot = Math.max(groundY + 2.6, yTop - 2.4);
+        if (yTop - yBot > 0.9) {
+          const nrmOut = [nx, 0, nz], nrmIn = [-nx, 0, -nz];
+          const strip = (A: number[], B2: number[], C: number[], Dd: number[]): void => {
+            steel(A, B2, C, Dd, nrmOut, solid);
+            steel(B2, A, Dd, C, nrmIn, solid);
+          };
+          for (const sx of [lx0, lx1 - 0.04]) strip(P(sx, ld, yBot), P(sx + 0.04, ld, yBot), P(sx + 0.04, ld, yTop), P(sx, ld, yTop));
+          for (let ry = yBot + 0.15; ry < yTop - 0.1; ry += 0.3) strip(P(lx0, ld, ry), P(lx1, ld, ry), P(lx1, ld, ry + 0.035), P(lx0, ld, ry + 0.035));
+        }
+      }
       // The stair down to the platform below, alternating ends.
       const yb = y - p.storeyM;
       if (f > 0) {
@@ -3406,6 +3450,101 @@ function addFireEscapes(
       }
     }
     placed++;
+  }
+}
+
+/**
+ * THE STOOP. A brownstone's front door is on the parlour floor, a storey-half
+ * up a flight of eight to ten stone steps that run out across the areaway to
+ * the sidewalk; a San Francisco Victorian's is the same flight in timber up to
+ * a door beside its bay (without it the raised basement read as a row of
+ * garage doors, which is the Marina house and not the Painted Ladies); a
+ * tenement walk-up has three or four steps up to a door just above the street. Both are the front of the building at eye height, and a
+ * flat wall meeting the sidewalk was what a street of either looked like.
+ *
+ * On the lot's street front: of the two short sides of a narrow deep footprint
+ * (as the fire escape), the one with the longer run of open ground straight
+ * out, up to 62 m in 3 m steps (40 m tied on the Painted Ladies, whose yards
+ * run back to the next row about 45 m off). A front looks across the street (18 to 30 m to the row
+ * opposite, more on a park); a back looks into a yard, closed by the row
+ * behind within about 20 m. Without the choice the first short side in the
+ * ring won, which put half the Painted Ladies' stairs in their back yards. Stone in the
+ * trim colour (the cornice part), and on a brownstone an iron railing up
+ * each side (the escape part's railing).
+ */
+function addStoop(
+  s: Scratch, b: Building, p: FacadeParams, groundY: number, bidx: number, wallH: number, seed: number,
+  tall: boolean, occupied: (x: number, z: number) => boolean,
+): void {
+  const n = b.ring.length / 2;
+  if (n < 4 || n > 24) return;
+  const obb = footprintObb(b.ring);
+  if (!obb || obb.halfL < obb.halfW * 1.4) return;
+  const free: number[] = new Array(n).fill(0);
+  let bestFree = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = b.ring[j * 2] - b.ring[i * 2], dz = b.ring[j * 2 + 1] - b.ring[i * 2 + 1];
+    const len = Math.hypot(dx, dz);
+    if (len < 4.5 || len > 14) continue;
+    if (Math.abs((dx * obb.ux + dz * obb.uz) / len) > 0.35) continue;
+    const mx = b.ring[i * 2] + dx * 0.5, mz = b.ring[i * 2 + 1] + dz * 0.5;
+    let f = 2;
+    while (f <= 62 && !occupied(mx + (dz / len) * f, mz - (dx / len) * f)) f += 3;
+    free[i] = f;
+    bestFree = Math.max(bestFree, f);
+  }
+  // Under 10 m clear it is a party wall or an alley, not a street.
+  if (bestFree < 10) return;
+  for (let i = 0; i < n; i++) {
+    // Both ends when both are open past the probe: the rear stair down to the
+    // yard is as real as the front one, and nothing here can tell them apart.
+    if (free[i] !== bestFree) continue;
+    const j = (i + 1) % n;
+    const ax = b.ring[i * 2], az = b.ring[i * 2 + 1];
+    const dx = b.ring[j * 2] - ax, dz = b.ring[j * 2 + 1] - az;
+    const len = Math.hypot(dx, dz);
+    const ux = dx / len, uz = dz / len, nx = dz / len, nz = -dx / len;
+    const rise = tall ? Math.min(1.9, Math.max(1.2, p.groundStoreyM * 0.45)) : 0.45 + 0.25 * hash3(seed, 0x5c, i);
+    const steps = Math.max(2, Math.round(rise / 0.18));
+    const h = rise / steps, run = 0.28;
+    const W = tall ? 1.7 : 1.6;
+    const landing = tall ? 1.1 : 0.4;
+    // The door on the side of the front the bay is not: addBays puts the bay
+    // at the start of the edge when this same hash is under a half.
+    const a0 = hash3(seed, 0xbb, i) < 0.5 ? len - 0.4 - W : 0.4;
+    if (a0 < 0) continue;
+    const a1 = a0 + W;
+    const P = (a: number, d: number, y: number): number[] => [ax + ux * a + nx * d, groundY + y, az + uz * a + nz * d];
+    const stone = (A: number[], B2: number[], C: number[], Dd: number[], nrm: number[], top: boolean): void =>
+      quad(s, A, B2, C, Dd, nrm, top ? [0, -2, 1, -2, 1, -2, 0, -2] : [0, 0, 1, 0, 1, 0.2, 0, 0.2], bidx, wallH, top ? 1 : 0, PART_CORNICE);
+    // Tread k (0 is the landing) at height rise - k*h, from d0 to d1.
+    for (let k = 0; k < steps; k++) {
+      const y = rise - k * h;
+      const d0 = k === 0 ? 0 : landing + (k - 1) * run;
+      const d1 = landing + k * run;
+      stone(P(a0, d0, y), P(a1, d0, y), P(a1, d1, y), P(a0, d1, y), [0, 1, 0], true);
+      // Its riser, facing the street, down to the next tread.
+      stone(P(a0, d1, y - h), P(a1, d1, y - h), P(a1, d1, y), P(a0, d1, y), [nx, 0, nz], false);
+      // The cheeks either side, down to the sidewalk.
+      stone(P(a0, d0, 0), P(a0, d1, 0), P(a0, d1, y), P(a0, d0, y), [-ux, 0, -uz], false);
+      stone(P(a1, d1, 0), P(a1, d0, 0), P(a1, d0, y), P(a1, d1, y), [ux, 0, uz], false);
+    }
+    if (tall) {
+      const end = landing + (steps - 1) * run;
+      for (const a of [a0 + 0.05, a1 - 0.05]) {
+        // The railing follows the flight: level over the landing, then down
+        // the stair, 0.9 m over the nosings. Both faces, as the escape's.
+        const segs: [number, number, number, number][] = [[0, rise, landing, rise], [landing, rise, end, h]];
+        for (const [d0, y0, d1, y1] of segs) {
+          const A = P(a, d0, y0), B2 = P(a, d1, y1);
+          const up = (q: number[]): number[] => [q[0], q[1] + 0.9, q[2]];
+          const l = d1 - d0;
+          quad(s, A, B2, up(B2), up(A), [ux, 0, uz], [0, 0, l, 0, l, 0.9, 0, 0.9], bidx, wallH, 0, PART_ESCAPE);
+          quad(s, B2, A, up(A), up(B2), [-ux, 0, -uz], [l, 0, 0, 0, 0, 0.9, l, 0.9], bidx, wallH, 0, PART_ESCAPE);
+        }
+      }
+    }
   }
 }
 

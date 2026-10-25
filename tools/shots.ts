@@ -602,6 +602,17 @@ export const POSES: Pose[] = [
     what: "Victorian row houses on Steiner Street",
   },
   {
+    // THE PAINTED LADIES from Alamo Square, the postcard view: 710-720
+    // Steiner across the park, looking east, their bays and gables toward the
+    // camera in the afternoon sun.
+    name: "sf-painted-ladies",
+    city: "sf",
+    lat: 37.77628, lon: -122.43345, altM: 78, hdgDeg: 95, pitchDeg: -6, // Steiner St kerb, 17 m up
+    t: D("2025-06-21T23:00:00Z"), // 16:00 PDT
+    wx: CLEAR,
+    what: "the Painted Ladies across Alamo Square",
+  },
+  {
     // The same block from 22 m off one walk-up front, looking at its fire
     // escape and windows: the near-range steel and the per-window variety.
     name: "manhattan-walkup-front",

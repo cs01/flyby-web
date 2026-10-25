@@ -237,10 +237,18 @@ vec4 roomColour(vec3 p, vec3 v, vec2 cellM, float depth, float kind, float seed,
   vec3 floorC = k == 1 ? vec3(0.12, 0.13, 0.15)                                        // carpet tile
               : k == 2 ? vec3(0.22, 0.21, 0.20)                                         // concrete
               : mix(vec3(0.24, 0.14, 0.07), vec3(0.35, 0.24, 0.14), h2);                // timber
-  // Retail (kind 3): white walls under the stock, a pale tiled floor.
+  // Retail (kind 3): the walls under the stock are white in most units but
+  // charcoal, timber or a brand colour in the rest, which is a lot of what
+  // makes a parade read as separate shops at night. A pale tiled floor.
   if (k == 3) {
-    wallC = vec3(0.46, 0.44, 0.40);
+    wallC = h3 < 0.55 ? vec3(0.46, 0.44, 0.40) : h3 < 0.70 ? vec3(0.07, 0.07, 0.075)
+          : h3 < 0.85 ? vec3(0.30, 0.18, 0.10) : mix(vec3(0.45, 0.10, 0.08), vec3(0.08, 0.30, 0.32), step(0.92, h3));
     floorC = mix(vec3(0.42, 0.41, 0.38), vec3(0.30, 0.27, 0.24), h2);
+  }
+  // A lobby (kind 4): stone walls, pale or dark, and a polished stone floor.
+  if (k == 4) {
+    wallC = h1 < 0.8 ? vec3(0.62, 0.56, 0.46) : vec3(0.16, 0.15, 0.14);
+    floorC = vec3(0.32, 0.31, 0.29);
   }
   vec3 ceilC = vec3(0.70, 0.70, 0.68);
   vec3 c;
@@ -262,6 +270,13 @@ vec4 roomColour(vec3 p, vec3 v, vec2 cellM, float depth, float kind, float seed,
                  : r < 0.6 ? vec3(0.12, 0.25, 0.45) : r < 0.75 ? vec3(0.65, 0.65, 0.62) : vec3(0.18, 0.30, 0.15);
       float edge = step(fract(h.y / 0.4), 0.08);
       c = mix(c, mix(stock, vec3(0.10), edge), shelf);
+    } else if (k == 4) {
+      // The security desk across the back of the hall, and the lift doors
+      // behind it in bronze.
+      float desk = step(h.y, 1.05);
+      float lift = step(0.25, fract(fx * 2.0)) * step(fract(fx * 2.0), 0.75) * step(h.y, 2.6) * (1.0 - desk);
+      c = mix(c, vec3(0.38, 0.27, 0.14), lift);
+      c = mix(c, vec3(0.16, 0.11, 0.07), desk);
     } else if (k == 1) {
       float desk = step(0.72, h.y) * step(h.y, 1.25);
       c = mix(c, vec3(0.18, 0.19, 0.21), desk * step(0.1, fract(fx * 2.0 + h3)));
@@ -282,7 +297,7 @@ vec4 roomColour(vec3 p, vec3 v, vec2 cellM, float depth, float kind, float seed,
       // a flat has one fitting in the middle of the room.
       vec2 cp = h.xz;
       float lamp;
-      if (k == 1 || k == 3) {
+      if (k == 1 || k == 3 || k == 4) {
         vec2 g = abs(fract(cp / vec2(1.8, 2.4)) - 0.5);
         lamp = step(g.x, 0.17) * step(g.y, 0.25);
       } else {
@@ -297,6 +312,25 @@ vec4 roomColour(vec3 p, vec3 v, vec2 cellM, float depth, float kind, float seed,
     }
   } else {
     c = wallC * 0.92;
+  }
+
+  // A shop's floor is not empty to the back wall: a run of free-standing
+  // shelving (a gondola) about 1.4 m tall stands across it a third of the way
+  // in, so the stock reads at two depths and slides against the back wall as
+  // you walk past. One more plane test, retail only.
+  if (k == 3) {
+    float zg = depth * (0.30 + 0.15 * h2);
+    float tg = (zg - p.z) / v.z;
+    vec3 hg = p + v * tg;
+    float gw = 0.15 + 0.2 * h1;
+    if (tg > 0.0 && tg < t && hg.y < 1.4 && hg.x > gw * cellM.x && hg.x < (1.0 - gw) * cellM.x) {
+      t = tg; h = hg;
+      vec2 sc = floor(vec2(h.x / 0.32, h.y / 0.35));
+      float r = fract(sin(dot(sc, vec2(39.3468, 11.135)) + seed * 1.7) * 43758.5);
+      c = r < 0.3 ? vec3(0.62, 0.58, 0.50) : r < 0.5 ? vec3(0.50, 0.12, 0.10)
+        : r < 0.7 ? vec3(0.15, 0.28, 0.48) : vec3(0.20, 0.20, 0.21);
+      c *= mix(0.55, 1.0, step(0.06, fract(h.y / 0.35)));
+    }
   }
 
   // Light falls off into the room by day (it all came through this window) and

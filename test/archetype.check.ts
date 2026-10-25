@@ -365,5 +365,41 @@ function manifestOk(m: MaterialManifest, sizes: Record<string, number>): string[
   check("building:material overrides the guess", glassy < plain * 0.2, `walk-up weight ${plain.toFixed(3)} -> ${glassy.toFixed(3)} for glass`);
 }
 
+// --- 7. A tower meets the street with its lobby, a row house with its own front --
+//
+// The owner, in the Loop: towers carrying a shop sign reading BANK at their
+// base. The shader draws trade signs and shutters on a ground storey with
+// shopfront >= 0.3 unless it is a lobby; the Loop's office towers (60 m and
+// up, within 1.2 km of State and Madison) must mostly be lobbies. Probe: the
+// same towers under the old rule, shopfront alone.
+{
+  const p = await pack("chicago");
+  const ch = assignArchetypes(p)!;
+  const mLat = 111320, mLon = 111320 * Math.cos((p.lat0 * Math.PI) / 180);
+  const cx = (-87.6278 - p.lon0) * mLon, cz = -(41.8820 - p.lat0) * mLat;
+  let n = 0, signed = 0, signedOld = 0;
+  p.buildings.forEach((b, i) => {
+    const h = b.topM - b.baseM;
+    if (h < 60 || Math.hypot(b.cx - cx, b.cz - cz) > 1200) return;
+    const f = facadeFor(b.kind, h, i, ch[i]);
+    if (f.group !== 1) return;
+    n++;
+    if (f.shopfront >= 0.3 && !f.lobby) signed++;
+    if (f.shopfront >= 0.3) signedOld++;
+  });
+  const share = signed / Math.max(1, n), old = signedOld / Math.max(1, n);
+  check("Loop office towers have lobbies, not shop signs", n >= 50 && share <= 0.3, `${pct(share)} of ${n} towers carry retail signs`);
+  probe("the shopfront rule alone signs them", n >= 50 && old <= 0.3, `${pct(old)} under the old rule`);
+
+  // The Painted Ladies, 710-720 Steiner: Victorians, not Marina stucco.
+  const sf = await pack("sf");
+  const sch = assignArchetypes(sf)!;
+  const sLon = 111320 * Math.cos((sf.lat0 * Math.PI) / 180);
+  const lx = (-122.43275 - sf.lon0) * sLon, lz = -(37.77622 - sf.lat0) * mLat;
+  const row = sf.buildings.map((b, i) => [b, i] as const).filter(([b]) => Math.hypot(b.cx - lx, b.cz - lz) < 25);
+  const vic = row.filter(([, i]) => ARCHETYPES[sch[i].archetype].id === "sf-victorian").length;
+  check("the Painted Ladies are Victorian row houses", row.length >= 5 && vic === row.length, `${vic} of ${row.length}`);
+}
+
 console.log(failures ? `\n${failures} archetype check(s) FAILED` : "\nall archetype checks ok");
 if (failures) process.exit(1);

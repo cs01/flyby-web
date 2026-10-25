@@ -390,6 +390,14 @@ export interface FacadeParams {
    */
   shopfront: number;
   /**
+   * 1 when the ground storey is an office tower's LOBBY: tall and glazed like
+   * a shopfront (shopfront still sets the glazing and the storey height) but
+   * one lit hall, with no trade signs, shutters or awnings. A Loop or Midtown
+   * tower meets the street with its lobby; a shop sign reading BANK at the
+   * foot of the Willis Tower is the tell this flag exists to remove.
+   */
+  lobby: number;
+  /**
    * 1 if this is a detached house, 0 otherwise. See HOUSE above.
    *
    * A flag and not a family, because a house's MATERIAL is still brick or
@@ -705,6 +713,9 @@ export function facadeFor(
     parapetM: s.parapetM * (0.7 + 0.6 * h1(seed, 0x47)),
     groundStoreyM,
     shopfront,
+    // Four office towers in five: the rest let the avenue frontage to retail,
+    // which the big Midtown slabs on Sixth and Seventh Avenues do.
+    lobby: !house && office && heightM >= 40 && h1(seed, 0x64) < 0.8 ? 1 : 0,
     house,
 
     // An office empties floor by floor; a block of flats empties flat by flat.
@@ -963,7 +974,7 @@ export function packFacade(p: FacadeParams, out: Float32Array, i: number): void 
   // five-family path's -1 survives an unsigned encoding.
   out[o++] = p.corniceM;  out[o++] = p.sillM;   out[o++] = p.frameM;    out[o++] = p.archetype + 1;
   // The ninth: the roof's own half extents, for laying features inside it.
-  out[o++] = Math.min(31, p.roofHalfL); out[o++] = Math.min(31, p.roofHalfW); out[o++] = 0; out[o++] = 0;
+  out[o++] = Math.min(31, p.roofHalfL); out[o++] = Math.min(31, p.roofHalfW); out[o++] = p.lobby; out[o++] = 0;
 }
 
 /** sqrt-encode a linear 0..1 colour channel into a byte. See FACADE_RAW_TEXELS. */
@@ -1045,6 +1056,7 @@ struct Facade {
   float roofFeatures;
   float roofHalfL;
   float roofHalfW;
+  float lobby;
   float windowStyle;
   float mullions;
   float interior;
@@ -1111,7 +1123,7 @@ Facade readFacade(float bidx) {
   vec3 t1 = r1.rgb / 255.0; p.frameColour = t1 * t1;   p.baseLayer = r1.a;
   vec3 t2 = r2.rgb / 255.0; p.roofColour = t2 * t2;
   p.pitchCover = floor(r2.a / 16.0);  p.roofCover = r2.a - p.pitchCover * 16.0;
-  p.roofHalfL = i9.x; p.roofHalfW = i9.y;
+  p.roofHalfL = i9.x; p.roofHalfW = i9.y; p.lobby = i9.z;
   vec3 t3 = r3.rgb / 255.0; p.glassTint = t3 * t3;     p.windowStyle = r3.a;
   p.mullions = r4.x;  p.interior = r4.y;  p.age = r4.z / 255.0;  p.roofFeatures = r4.w;
 
@@ -1157,7 +1169,7 @@ Facade readFacade(float bidx) {
     p.corniceM = 0.0; p.sillM = 0.0; p.frameM = 0.06; p.archetype = -1.0;
     p.trim = vec3(0.4); p.frameColour = vec3(0.3); p.roofColour = vec3(0.1);
     p.glassTint = vec3(0.03); p.wallLayer = fb2 > 0.82 ? 12.0 : 0.0; p.baseLayer = 13.0;
-    p.roofCover = 0.0; p.pitchCover = 0.0; p.roofFeatures = 0.0; p.roofHalfL = 0.0; p.roofHalfW = 0.0;
+    p.roofCover = 0.0; p.pitchCover = 0.0; p.roofFeatures = 0.0; p.roofHalfL = 0.0; p.roofHalfW = 0.0; p.lobby = 0.0;
     p.windowStyle = fb2 > 0.82 ? 3.0 : 0.0; p.mullions = 1.0;
     p.interior = 1.0; p.age = 0.3;
   }
