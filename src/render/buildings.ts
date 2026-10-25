@@ -96,14 +96,21 @@ const MAX_CUTOFF_M = 40;
 const CLUTTER_M = 2000;
 const PARAPET_M = 2200;
 /**
- * Wooden water tanks go further out than the chillers: a tank is 4 m across
- * and 8 m tall on its stand, the most recognisable thing on a New York roof,
- * and it costs 72 triangles. Measured on the Manhattan pack: 2665 tanks inside
- * 2.5 km, under 200k triangles, and the LOD solver still settles at k = 1.
+ * Wooden water tanks go further out than anything else on a roof: a tank is
+ * 4 m across and 8 m tall on its stand, the most recognisable thing on a New
+ * York roof, so the far version stands on every roof that has one.
  */
-const TANK_M = 2500;
-/** Triangles one tank costs: four legs, a deck, ten staves and a ten-sided cone. */
-const TANK_TRIS = 72;
+const TANK_M = 9000;
+/**
+ * Triangles one tank costs in the STATIC city: the 32-triangle far tank, out
+ * to the whole pack (the full 72-triangle one is built round the camera by
+ * the detail layer, inside TANK_NEAR_M). Measured on the Manhattan pack:
+ * 8,275 tanks over the whole pack, 265k triangles, where the old 72-triangle
+ * tank stopped 2.5 km from the pack centre at 2,598 (187k).
+ */
+const TANK_TRIS = 32;
+/** The full tank (legs, deck, ten staves) is detail-layer geometry inside this. */
+const TANK_NEAR_M = 1200;
 
 /** Triangles a footprint costs: two per wall segment, plus the roof fan. */
 function triangleCost(vertCount: number): number {
@@ -266,6 +273,12 @@ export const PART_AWNING = 8;
  * soffit and -2 on its top.
  */
 export const PART_CORNICE = 9;
+/**
+ * The far water tank: the static city's 32-triangle stand-in, drawn everywhere
+ * the tank is not built in full by the detail layer (see TANK_NEAR_M). The
+ * shader discards it inside that radius and shades it as PART_TANK outside.
+ */
+export const PART_TANK_FAR = 11;
 /** Fire escape steel; uv.y >= 0 a railing (metres up it), -1 solid, -2 a stair. */
 export const PART_ESCAPE = 10;
 /** Fire escapes are geometry inside this, metres from the camera. */
@@ -410,6 +423,7 @@ uniform float uOneRoof;
 uniform float uFlatShop;
 // Where the fire escapes are geometry: centre x, z and radius (negative: none).
 uniform vec3 uEscapeAt;
+uniform float uTankNear;
 // The fascia lettering atlas (render/signs.ts); uSignReady is 0 until it is built.
 uniform sampler2D uSignAtlas;
 uniform float uSignReady;
@@ -534,6 +548,12 @@ void main() {
   float bldH  = vInfo.y;
   float isRoof = vInfo.z;
   float part  = vInfo.w;
+  // The far water tank stands down where the detail layer built the full one,
+  // and is shaded as a tank everywhere else.
+  if (part > 10.5) {
+    if (length(vWorld.xz - uEscapeAt.xy) < uTankNear) discard;
+    part = 6.0;
+  }
 
   Facade fp = readFacade(bidx);
 
@@ -2364,6 +2384,8 @@ export interface BuildingUniforms extends SunShadowUniforms, AoUniforms, WaterSs
   uFlatShop: THREE.IUniform<number>;
   /** Detail layer centre (x, z) and its fire-escape radius; see ESCAPE_M. */
   uEscapeAt: THREE.IUniform<THREE.Vector3>;
+  /** Radius round uEscapeAt.xy where the full tanks are built; 0 before. */
+  uTankNear: THREE.IUniform<number>;
   uSignAtlas: THREE.IUniform<THREE.Texture | null>;
   uSignReady: THREE.IUniform<number>;
   /** Non-zero while the terrain draws a debug mask; buildings then draw black. */
@@ -2429,6 +2451,7 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uOneRoof: { value: 0 },
     uFlatShop: { value: 0 },
     uEscapeAt: { value: new THREE.Vector3(0, 0, -1) },
+    uTankNear: { value: 0 },
     uSignAtlas: { value: null },
     uSignReady: { value: 0 },
     uMatNoMip: { value: 0 },
@@ -2630,7 +2653,7 @@ function steelBox(s: Scratch, cx: number, cz: number, hx: number, hz: number, y0
  * and 12-16 ft tall, on a stand that lifts it one storey clear of the roof so
  * gravity gives the top floors pressure. Sizes jitter per building.
  */
-function addWaterTank(s: Scratch, b: Building, top: number, bidx: number, bldH: number, seed: number): boolean {
+function addWaterTank(s: Scratch, b: Building, top: number, bidx: number, bldH: number, seed: number, far = false): boolean {
   let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
   for (let i = 0; i < b.ring.length; i += 2) {
     minX = Math.min(minX, b.ring[i]); maxX = Math.max(maxX, b.ring[i]);
@@ -2649,12 +2672,27 @@ function addWaterTank(s: Scratch, b: Building, top: number, bidx: number, bldH: 
     const tankH = 3.6 + 1.4 * hash3(seed, 0xa00, 3);
     const lidH = 0.6 + 0.5 * hash3(seed, 0xa00, 4);
     const leg = r * 0.72;
-    for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-      steelBox(s, px + sx * leg, pz + sz * leg, 0.11, 0.11, top, top + standH - 0.25, bidx, bldH);
+    const part = far ? PART_TANK_FAR : PART_TANK;
+    if (far) {
+      // The far tank: the stand as one dark box the legs would read as from
+      // a few hundred metres, six staves, a six-sided lid. 32 triangles.
+      const h0 = top, h1 = top + standH;
+      const st = [0, -1, 0, -1, 0, -1, 0, -1];
+      const c = [[-leg, -leg], [leg, -leg], [leg, leg], [-leg, leg]];
+      for (let k = 0; k < 4; k++) {
+        const [ax, az] = c[k], [bx, bz] = c[(k + 1) % 4];
+        const nx = (az + bz) === 0 ? Math.sign(ax) : 0, nz = (ax + bx) === 0 ? Math.sign(az) : 0;
+        quad(s, [px + ax, h0, pz + az], [px + bx, h0, pz + bz], [px + bx, h1, pz + bz], [px + ax, h1, pz + az],
+          [nx, 0, nz], st, bidx, bldH, 0, part);
+      }
+    } else {
+      for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        steelBox(s, px + sx * leg, pz + sz * leg, 0.11, 0.11, top, top + standH - 0.25, bidx, bldH);
+      }
+      steelBox(s, px, pz, r * 0.95, r * 0.95, top + standH - 0.25, top + standH, bidx, bldH);
     }
-    steelBox(s, px, pz, r * 0.95, r * 0.95, top + standH - 0.25, top + standH, bidx, bldH);
     const y0 = top + standH, y1 = y0 + tankH, y2 = y1 + lidH;
-    const N = 10;
+    const N = far ? 6 : 10;
     for (let k = 0; k < N; k++) {
       const a0 = (k / N) * Math.PI * 2, a1 = ((k + 1) / N) * Math.PI * 2;
       const am = (a0 + a1) / 2;
@@ -2662,12 +2700,12 @@ function addWaterTank(s: Scratch, b: Building, top: number, bidx: number, bldH: 
       const p1 = [px + Math.cos(a1) * r, pz + Math.sin(a1) * r];
       const u0 = a0 * r, u1 = a1 * r;
       quad(s, [p0[0], y0, p0[1]], [p1[0], y0, p1[1]], [p1[0], y1, p1[1]], [p0[0], y1, p0[1]],
-        [Math.cos(am), 0, Math.sin(am)], [u0, 0, u1, 0, u1, tankH, u0, tankH], bidx, bldH, 0, PART_TANK);
+        [Math.cos(am), 0, Math.sin(am)], [u0, 0, u1, 0, u1, tankH, u0, tankH], bidx, bldH, 0, part);
       // The lid: a triangle per stave, as a quad with its two top corners
       // meeting at the apex. Its normal leans out by the lid's rise.
       const sl = Math.hypot(r, lidH);
       quad(s, [p0[0], y1, p0[1]], [p1[0], y1, p1[1]], [px, y2, pz], [px, y2, pz],
-        [Math.cos(am) * lidH / sl, r / sl, Math.sin(am) * lidH / sl], [u0, 0, u1, 0, u1, 1, u0, 1], bidx, bldH, 1, PART_TANK);
+        [Math.cos(am) * lidH / sl, r / sl, Math.sin(am) * lidH / sl], [u0, 0, u1, 0, u1, 1, u0, 1], bidx, bldH, 1, part);
     }
     return true;
   }
@@ -3106,7 +3144,7 @@ export function addBuilding(
     // slope, and the gate forces the extras on for every building.
     addRoofPlant(s, b, top, extras, bidx, wallH, seed);
   }
-  if (!pitch && extras.tank) addWaterTank(s, b, top, bidx, wallH, seed);
+  if (!pitch && extras.tank) addWaterTank(s, b, top, bidx, wallH, seed, true);
 }
 
 function buildMesh(s: Scratch, uniforms: BuildingUniforms): THREE.Mesh | null {
@@ -3219,7 +3257,7 @@ export function flattenParts(bs: readonly Building[]): Building[] {
  */
 export function addDetail(
   s: Scratch, b: Building, groundY: number, bidx: number, p: FacadeParams, street: boolean, relief: boolean,
-  escape = false, occupied: (x: number, z: number) => boolean = () => false,
+  escape = false, occupied: (x: number, z: number) => boolean = () => false, tank = false,
 ): void {
   if (b.baseM > 1.0) return;
   const n = b.ring.length / 2;
@@ -3252,6 +3290,9 @@ export function addDetail(
       addAwning(s, p, x0, z0, dx / len, dz / len, dz / len, -dx / len, len, groundY, bidx, wallH, seed + i * 31);
     }
   }
+  // The full tank, at exactly the spot the static far tank took (same seed,
+  // same search), which the shader hides inside TANK_NEAR_M.
+  if (tank && !pitch && b.roof === RoofShape.Flat) addWaterTank(s, b, top, bidx, wallH, seed);
   if (escape && (p.roofFeatures & FIRE_ESCAPE) && !p.house && !pitch) addFireEscapes(s, b, p, groundY, wallH, bidx, seed, open);
   if (!relief) return;
   // A bay runs up to the eave whatever the roof: the Painted Ladies are
@@ -3654,6 +3695,9 @@ export class Buildings {
   private streetM = STREET_M;
   private reliefM = RELIEF_M;
   private escapeM = ESCAPE_M;
+  private tankNearM = TANK_NEAR_M;
+  /** Pack indices whose static mesh carries a far tank. */
+  private readonly tankOf = new Set<number>();
 
   constructor(
     pack: CityPack,
@@ -3670,6 +3714,7 @@ export class Buildings {
       this.streetM = 400;
       this.reliefM = 500;
       this.escapeM = 220;
+      this.tankNearM = 600;
     }
     this.uniforms.uMatCheap.value = reduced ? 1 : 0;
     void loadMaterialTextures(reduced, reduced ? 2 : 8).then((m) => {
@@ -3772,6 +3817,7 @@ export class Buildings {
       const extras = { ...roofExtras(dist, lodK, h, area, b.kind, b.roof) };
       if (dist < TANK_M / lodK && b.roof === RoofShape.Flat && tankAt(i)) {
         extras.tank = true;
+        this.tankOf.add(i);
         tanks++;
       }
       if (extras.parapet) parapets++;
@@ -3896,7 +3942,7 @@ export class Buildings {
     if (!job) {
       if (this.detailAt && Math.hypot(x - this.detailAt.x, z - this.detailAt.z) < DETAIL_REBUILD_M) return;
       this.detailAt = { x, z };
-      const r = Math.max(this.streetM, this.reliefM);
+      const r = Math.max(this.streetM, this.reliefM, this.tankNearM + 40);
       const cells: number[][] = [];
       const c0x = Math.floor((x - r) / DETAIL_CELL_M), c1x = Math.floor((x + r) / DETAIL_CELL_M);
       const c0z = Math.floor((z - r) / DETAIL_CELL_M), c1z = Math.floor((z + r) / DETAIL_CELL_M);
@@ -3912,7 +3958,7 @@ export class Buildings {
       return this.updateDetail(x, z);
     }
     const t0 = performance.now();
-    const r = Math.max(this.streetM, this.reliefM);
+    const r = Math.max(this.streetM, this.reliefM, this.tankNearM + 40);
     while (job.next < job.cells.length) {
       for (const k of job.cells[job.next++]) {
         const i = this.detailOf[k], bidx = this.detailOf[k + 1];
@@ -3920,7 +3966,7 @@ export class Buildings {
         const d = Math.hypot(b.cx - job.x, b.cz - job.z);
         if (d > r) continue;
         addDetail(job.s, b, this.groundYOf.get(i) ?? 0, bidx, this.params[bidx], d < this.streetM, d < this.reliefM,
-          d < this.escapeM, this.occupied);
+          d < this.escapeM, this.occupied, d < this.tankNearM + 40 && this.tankOf.has(i));
       }
       if (!job.sync && performance.now() - t0 > DETAIL_SLICE_MS) return;
     }
@@ -3935,6 +3981,10 @@ export class Buildings {
     this.detailTriangles = job.s.idx.length / 3;
     // The painted escapes stand down where the built ones now are.
     this.uniforms.uEscapeAt.value.set(job.x, job.z, this.escapeM);
+    // The full tanks are built out to 40 m past this (a tank stands in the
+    // middle 60% of its roof, so within 40 m of the centroid on anything
+    // smaller than a block), so no roof between the two loses its tank.
+    this.uniforms.uTankNear.value = this.tankNearM;
     if (mesh) {
       mesh.layers.enable(SHADOW_CASTER_LAYER);
       this.detail.add(mesh);
