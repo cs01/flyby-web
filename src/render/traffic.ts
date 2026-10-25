@@ -1,30 +1,12 @@
-// Moving traffic and parked cars, as instanced boxes with the motion in the
-// vertex shader.
+// Moving traffic and parked cars, as instanced car bodies.
 //
-// WHY THE MOTION IS IN THE VERTEX SHADER. A few thousand cars is a few thousand
-// transforms, and rebuilding them on the CPU every frame is both the cost and
-// the wrong shape: the buffers would have to be re-uploaded at 60 Hz, which is
-// megabytes a second of PCIe for information that is a straight line and a
-// clock. Instead an instance carries the two ends of the stretch it drives, a
-// phase and a speed, and `fract(phase + uTime * speed / length)` is where it is.
-// Nothing is uploaded between rebuilds of the ring, and the ring only rebuilds
-// when the camera crosses a 400 m tile.
-//
-// WHY STRAIGHT RUNS AND NOT THE ROAD GRAPH. data/roadgraph.ts cuts a way at
-// every junction another way touches, which is exactly right for driving one
-// car under player control and exactly wrong here: the average edge is under a
-// hundred metres, so every car in the city would reach the end of its edge and
-// vanish every few seconds. data/streetfurniture.ts merges consecutive
-// centreline segments into the longest stretches that stay inside a corridor
-// about their own chord, and that corridor is bounded by what the carriageway
-// can spare after the lane offset and the car's own width. An avenue comes out
-// as one run of several hundred metres.
-//
-// THE ENDS ARE FADED, NOT POPPED. A car reaching the end of its run shrinks to
-// nothing over the last few per cent of it and grows back at the start. At the
-// distances the ends matter (a junction two hundred metres away) the shrink is
-// under a pixel; up close it reads as a car turning off, which is what happens
-// at junctions anyway.
+// WHERE THE CARS ARE is sim/trafficsim.ts's business: a lane-following
+// simulation on the road graph, stepped on the CPU, with one pose per car
+// written here every frame (48 bytes a car). It replaced an analytic motion in
+// the vertex shader, which could not stop for a light, follow the car in
+// front, yield to the player or turn a corner, and which drove both directions
+// of a narrow street through each other down its middle. The parked cars do
+// not move and are still placed per 400 m tile and cached.
 //
 // AT NIGHT THE LIGHTS ARE THE PRODUCT. From an aircraft a car is two pixels at
 // 300 m and a stream of headlights down a boulevard is the strongest "this city
