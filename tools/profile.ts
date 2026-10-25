@@ -130,7 +130,7 @@ export interface PoseResult {
 }
 
 /** Start a dev server on `port` and a headless Chrome. */
-export async function startHarness(port: number, debugPort: number, profileDir: string):
+export async function startHarness(port: number, debugPort: number, profileDir: string, root = ""):
   Promise<{ base: string; cdp: Cdp; stop: () => void }> {
   const base = `http://localhost:${port}`;
   // Always a fresh server, never one found on the port: vite.config.ts stops
@@ -144,7 +144,7 @@ export async function startHarness(port: number, debugPort: number, profileDir: 
     if (err instanceof Error && err.message.startsWith(`port ${port}`)) throw err;
   }
   const vite = Bun.spawn(["bunx", "vite", "--port", String(port), "--strictPort"], {
-    cwd: new URL("..", import.meta.url).pathname, stdout: "ignore", stderr: "ignore",
+    cwd: root || new URL("..", import.meta.url).pathname, stdout: "ignore", stderr: "ignore",
   });
   for (let i = 0; i < 100; i++) {
     try { if ((await fetch(base)).ok) break; } catch { /* starting */ }
@@ -154,12 +154,39 @@ export async function startHarness(port: number, debugPort: number, profileDir: 
   return { base, cdp, stop: () => { cdp.close(); vite.kill(); } };
 }
 
-/** Wait (up to `maxMs`) for every other headless Chrome to exit. */
+/**
+ * CPU of every other headless Chrome's process tree, percent of one core,
+ * sampled three times a second apart and the highest kept. Its GPU process is
+ * in the tree, and a busy GPU process means the GPU is shared.
+ */
+function othersBusy(profileDir: string): number {
+  let worst = 0;
+  for (let k = 0; k < 3; k++) {
+    const ps = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pcpu=,command="]).stdout.toString().split("\n");
+    const roots = new Set<string>();
+    const rows = ps.map((l) => l.trim().split(/\s+/, 4)).filter((r) => r.length === 4);
+    for (const [pid, , , cmd] of rows) {
+      if (cmd.includes("Google Chrome") && cmd.includes("--headless") && !cmd.includes("--type=") &&
+          !cmd.includes(profileDir)) roots.add(pid);
+    }
+    let sum = 0;
+    for (const [pid, ppid, pcpu] of rows) if (roots.has(pid) || roots.has(ppid)) sum += Number(pcpu);
+    worst = Math.max(worst, sum);
+    if (k < 2) Bun.sleepSync(1000);
+  }
+  return worst;
+}
+
+/**
+ * Wait (up to `maxMs`) until no other headless Chrome is busy. An idle one is
+ * tolerated: another agent's harness sits between captures for minutes at a
+ * time, and only its rendering competes for the GPU.
+ */
 export async function waitForQuiet(profileDir: string, maxMs = 600_000): Promise<number> {
   const until = Date.now() + maxMs;
   for (;;) {
-    const m = await machineLoad(profileDir);
-    if (m.others === 0 || Date.now() > until) return m.others;
+    const busy = othersBusy(profileDir);
+    if (busy < 15 || Date.now() > until) return busy;
     await Bun.sleep(5000);
   }
 }
@@ -171,8 +198,8 @@ export async function measure(
     width: v.width, height: v.height, deviceScaleFactor: v.dpr, mobile: v.mobile,
   });
   cdp.problems.length = 0;
-  const others = await waitForQuiet(profileDir);
-  if (others) console.log(`WARNING: ${others} other headless Chrome(s) still running after 10 min`);
+  const busy = await waitForQuiet(profileDir);
+  if (busy >= 15) console.log(`WARNING: another headless Chrome still at ${busy.toFixed(0)}% CPU after 10 min`);
   await cdp.goto(poseUrl(base, p, v.tier, extra));
   await cdp.waitFor("window.flybyShot", 240_000, `${p.name} to load`);
   await cdp.waitFor("window.flybyShot.frames > 60", 60_000, `${p.name} to settle`);
@@ -181,7 +208,7 @@ export async function measure(
   // Shader compiles, mip generation and the city shadow map's first draw all
   // land in the first frames after the load; none of them is steady state.
   const at = await cdp.eval<number>("window.flybyShot.frames");
-  await cdp.waitFor(`window.flybyShot.frames > ${at + 60}`, 60_000, `${p.name} warm-up`);
+  await cdp.waitFor(`window.flybyShot.frames > ${at + 150}`, 60_000, `${p.name} warm-up`);
   const { load } = await machineLoad(profileDir);
   await cdp.eval("window.flybyShot.resetTiming(); window.flybyShot.resetProfile()");
   await cdp.waitFor(`window.flybyShot.timed > ${frames}`, 120_000, `${p.name} sample`);
@@ -235,13 +262,20 @@ export async function attribute(cdp: Cdp, frames: number, base: string[] = []):
   Promise<{ base: number; drift: number; floor: number; delta: Record<string, number> }> {
   const present = await cdp.eval<string[]>("window.flyby.scene.children.map((c) => c.name)");
   const toggles = TOGGLES.filter((t) => TOGGLES.indexOf(t) < 8 || present.includes(t)).filter((t) => !base.includes(t));
-  const b0 = await frameWith(cdp, base, frames);
+  // The base three times (start, middle, end) and the median of those kept:
+  // one sample can land on the other agent's Chrome or a late texture upload.
+  const bases = [await frameWith(cdp, base, frames)];
   const delta: Record<string, number> = {};
-  for (const t of toggles) delta[t] = b0 - (await frameWith(cdp, [...base, t], frames));
+  for (let i = 0; i < toggles.length; i++) {
+    if (i === toggles.length >> 1) bases.push(await frameWith(cdp, base, frames));
+    delta[toggles[i]] = await frameWith(cdp, [...base, toggles[i]], frames);
+  }
   const floor = await frameWith(cdp, [...base, ...toggles], frames);
-  const b1 = await frameWith(cdp, base, frames);
+  bases.push(await frameWith(cdp, base, frames));
+  const b = median(bases);
+  for (const t of toggles) delta[t] = b - delta[t];
   await cdp.eval("window.flybyShot.setOff([])");
-  return { base: (b0 + b1) / 2, drift: Math.abs(b1 - b0), floor, delta };
+  return { base: b, drift: Math.max(...bases) - Math.min(...bases), floor, delta };
 }
 
 function table(results: PoseResult[], key: "gpu" | "cpu", compare: PoseResult[] | null): string {
@@ -316,7 +350,9 @@ async function main(): Promise<void> {
   console.log(`load average ${m.load.toFixed(2)}, ${m.others} other headless Chrome(s)`);
   if (m.others > 0) console.log("WARNING: another headless Chrome is running; GPU numbers are shared");
 
-  const h = await startHarness(port, debugPort, profileDir);
+  // `--root DIR` serves another checkout, so a baseline can be profiled with
+  // this harness while the tree under it carries the fix.
+  const h = await startHarness(port, debugPort, profileDir, arg("root", ""));
   const results: PoseResult[] = [];
   try {
     for (const v of views) {
