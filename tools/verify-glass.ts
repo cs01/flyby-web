@@ -206,8 +206,8 @@ function probe(label: string, checkerSaidOk: boolean, detail: string): void {
 // than only in a red line.
 //
 //   pose              measure         flat     recessed   bound
-//   manhattan-7th     head, absolute  4.104    4.410      >= 4.25
-//   manhattan-7th     jamb, absolute  2.942    3.917      >= 3.45
+//   manhattan-7th     head, absolute  4.714    5.598      >= 5.15
+//   manhattan-7th     jamb, absolute  5.223    8.632      >= 6.90
 //   hongkong-central  head, relative  0.0292   0.0283     <= 0.045
 //   hongkong-central  jamb, relative  0.0626   0.0591     <= 0.090
 //
@@ -230,6 +230,18 @@ function probe(label: string, checkerSaidOk: boolean, detail: string): void {
 // fails, so it stays; if it erodes further it should be deleted rather than
 // shaved, because a floor the flat facade nearly clears is not a gate.
 //
+// RE-MEASURED 2026-10-25, and both floors moved UP. The 08-31 pair was
+// 4.104 / 4.410 and 2.942 / 3.917; by the building rounds the flat facade read
+// 4.713 and 4.753 on main and passed both floors, so neither claim could fail.
+// Two things moved it. The archetype work drew frames, sills and mullions on
+// every wall, which a high-pass sees with the glass in the wall plane or not
+// (the flat frame keeps them; ?flatglass only takes the reveal out). And
+// 2d047fd re-rolled every Midtown facade, so the pose was looking at other
+// families than the ones it was measured on; that is fixed (citypack.ts
+// Building.seed) and the numbers above are with it. The reveal's own share is
+// larger than it was: the head separates by 17% (3.6% before) and the jamb by
+// 65%, so the floors sit near the middle again rather than being shaved.
+//
 // Both ceilings sit ABOVE the flat facade's own number as well as above the
 // recessed one, which is deliberate: at 500 m the correct answer is that
 // nothing changed, and a ceiling the flat frame would fail would be asserting
@@ -249,7 +261,7 @@ interface PoseGate {
 }
 
 const GATES: PoseGate[] = [
-  { name: "manhattan-7th", kind: "floor", vlc: 4.25, hlc: 3.45 },
+  { name: "manhattan-7th", kind: "floor", vlc: 5.15, hlc: 6.90 },
   { name: "hongkong-central", kind: "ceiling", vlc: 0.045, hlc: 0.090 },
 ];
 
@@ -260,7 +272,7 @@ const GATES: PoseGate[] = [
 // each one.
 //
 //   pose              measure          flatrefl   reflecting   bound
-//   manhattan-7th     top/bottom       1.1920     1.4360       >= 1.32
+//   manhattan-7th     top/bottom       1.2731     1.7964       >= 1.50
 //   chicago-loop-day  square/grazing   0.6042     0.7312       >= 0.67
 //   sf-residential    mean gain          --       0.9983       <= 1.02
 //
@@ -270,8 +282,10 @@ const GATES: PoseGate[] = [
 // ratio, and a facade shaded from an ambient term alone cannot: it has one
 // answer for the whole wall. Taken over the top and bottom FIFTHS of the facade
 // pixels by row, not of the frame, so it measures the walls and not how much
-// sky the pose happens to include. 10.7% clear of the flat frame and 8.1% under
-// the reflecting one.
+// sky the pose happens to include. Set at 1.32 on 08-31 between 1.1920 and
+// 1.4360; on 2026-10-25 the pair is 1.2731 and 1.7964 (with the facade seeds
+// fixed; 1.3518 and 2.1470 before, which passed the probe), so the floor is
+// 1.50: 18% clear of the flat frame and 16% under the reflecting one.
 //
 // SQUARE-ON OVER GRAZING is the Fresnel test, in the direction the frames
 // actually support (see the header). At grazing incidence Schlick returns ~1
@@ -300,7 +314,7 @@ interface ReflGate {
 }
 
 const REFL_GATES: ReflGate[] = [
-  { name: "manhattan-7th", vgrad: 1.32 },
+  { name: "manhattan-7th", vgrad: 1.50 },
   { name: "chicago-loop-day", fresnel: 0.67 },
   { name: "sf-residential", gain: 1.02 },
 ];
