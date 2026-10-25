@@ -32,6 +32,26 @@
  * produces is the biggest single term in the memory estimate below. */
 export const MAX_PIXEL_RATIO = 1.5;
 
+/** The reduced tier's cap, below MAX_PIXEL_RATIO.
+ *
+ * A phone panel is 2.6 to 3.5 device pixels per CSS pixel and its GPU is the
+ * slowest this renders on. On the phone profile (412x860, M4 under emulation)
+ * 1.1 instead of 1.5 took 24% off manhattan-cruise and 30% off
+ * manhattan-street; 1.25 keeps more than a device pixel per CSS pixel through
+ * the quality ladder's first resolution step (0.85) and is 69% of the pixels. */
+export const REDUCED_MAX_PIXEL_RATIO = 1.25;
+
+function capRatio(d: DeviceDescriptor, cap: number): DeviceDescriptor {
+  if (d.pixelRatio <= cap) return d;
+  const k = cap / d.pixelRatio;
+  return {
+    ...d,
+    pixelRatio: cap,
+    drawingBufferWidth: Math.round(d.drawingBufferWidth * k),
+    drawingBufferHeight: Math.round(d.drawingBufferHeight * k),
+  };
+}
+
 export interface TerrainRing {
   /** Half-width in metres. */
   extent: number;
@@ -598,8 +618,9 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
 }
 
 /** The budget a named tier produces on this device, whatever tier it would be given. */
-export function budgetForTier(tier: QualityTier, d: DeviceDescriptor): Budget {
+export function budgetForTier(tier: QualityTier, desc: DeviceDescriptor): Budget {
   const plan = PLANS[tier];
+  const d = tier === "reduced" ? capRatio(desc, REDUCED_MAX_PIXEL_RATIO) : desc;
   return {
     tier,
     device: d,
