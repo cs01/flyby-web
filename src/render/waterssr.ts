@@ -109,7 +109,13 @@ vec4 ssrMarch(vec3 p0, vec3 r, float viewDist, float alpha) {
       // And the hit must stand clear of the water. A near-horizontal ray
       // skims the water's own depth, which half float stores in terraces, and
       // crossed every terrace edge: dotted lines ruled across the harbour.
+#ifdef SSR_FACADE
+      // Off a facade the hit only has to be clear of the glass it left: three
+      // metres out, past the reveal and the mullions of its own wall.
+      bool clear = hi > 3.0;
+#else
       bool clear = r.y * hi > 0.5 + viewDist * 0.0015;
+#endif
       if (dzHi < tol && clear) {
         vec2 uh = ch.xy / ch.w * 0.5 + 0.5;
         // A reflection that runs off the frame has to fade before it gets

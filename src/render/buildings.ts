@@ -45,6 +45,7 @@ import {
 } from "./facade";
 import { ARCHETYPES, WindowStyle, assignArchetypes, regionAt, wantsWaterTank } from "./archetype";
 import { FACADE_DETAIL_GLSL } from "./facadedetail.glsl";
+import { WATER_SSR_GLSL, WATER_SSR_UNIFORMS, type WaterSsrUniforms } from "./waterssr";
 import { SIGN_COLS, SIGN_COUNT, SIGN_ROWS, buildSignAtlas } from "./signs";
 import { loadMaterialTextures } from "./materialtex";
 import { Mat, MAT_COUNT } from "./materials";
@@ -370,6 +371,8 @@ ${SH_GLSL}
 ${AO_GLSL}
 ${FACADE_GLSL}
 ${FACADE_DETAIL_GLSL}
+#define SSR_FACADE 1
+${WATER_SSR_GLSL}
 
 uniform vec3  uCameraPos;
 // The scene sky probe: prefiltered radiance for the glass, roughness to mip.
@@ -2230,7 +2233,21 @@ void main() {
     float f0 = mix(fp.f0, 0.04, uFlatRefl);
     float f = pow(1.0 - clamp(dot(v, n), 0.0, 1.0), 5.0);
     float fres = f0 + (1.0 - f0) * f;
-    lit = mix(lit, skyRefl, fres * glassMask * (1.0 - roughness * 0.6));
+    // THE CITY IN THE GLASS. The probe has no buildings in it, so a curtain
+    // wall reflected only sky and the urban darkening below the horizon,
+    // never the tower across the street, which is the first thing a photo of
+    // a glass tower shows. The water's screen-space march runs against the
+    // previous frame's colour and depth; off a curtain wall the reflected ray
+    // is near horizontal and lands on the facades opposite. Only where the
+    // reflection is worth the march: curtain-wall glass within 2.5 km, where
+    // the Fresnel weight is past 8%. Off on the reduced tier and under
+    // ?nossr=1, which turn the history off.
+    float reflW = fres * glassMask * (1.0 - roughness * 0.6);
+    if (uSsrOn > 0.5 && reflW > 0.08 && fp.family < 0.5 && vViewDist < 2500.0 && uFlatRefl < 0.5) {
+      vec4 hit = ssrMarch(vWorld + n * 0.3, refl, vViewDist, max(roughness, 0.02));
+      skyRefl = mix(skyRefl, hit.rgb * revealOcc, hit.a);
+    }
+    lit = mix(lit, skyRefl, reflW);
   }
 
   // Specular: a tight sun glint on glass, a broad one on wet stone.
@@ -2280,7 +2297,7 @@ void main() {
 }
 `;
 
-export interface BuildingUniforms extends SunShadowUniforms, AoUniforms {
+export interface BuildingUniforms extends SunShadowUniforms, AoUniforms, WaterSsrUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -2344,6 +2361,9 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
   return {
     ...shadow,
     ...aoUniforms(),
+    // By reference, like the terrain's: one history and one matrix for every
+    // shader that marches it.
+    ...WATER_SSR_UNIFORMS,
     uCameraPos: { value: new THREE.Vector3() },
     // The hemispherical ambient the shader ran before the probe existed, so a
     // frame drawn before the first capture is the old picture, not a black one.
