@@ -1009,7 +1009,11 @@ export function archetypeWeight(a: Archetype, x: WeightInput): number {
   // Height is sharp: a Victorian at 40 m or a curtain wall at 8 m are both
   // impossible, not unlikely. Area is softer, because a footprint in OSM is
   // often a whole block outline or half of a party-wall pair.
-  w *= trapezoid(x.heightM, a.heightM[0], a.heightM[1], 0.75, 1.3);
+  // The shoulder above a TALL type is narrower: 30% past a 110 m pre-war
+  // office is a 143 m tower, and with whole downtown blocks drawing on one
+  // hash (clusters) a shift in cluster roots moved 10% of San Francisco's
+  // core towers onto that shoulder when the building:part outlines went.
+  w *= trapezoid(x.heightM, a.heightM[0], a.heightM[1], 0.75, a.heightM[1] >= 100 ? 1.12 : 1.3);
   if (w <= 0) return 0;
   w *= 0.12 + 0.88 * trapezoid(x.areaM2, a.areaM2[0], a.areaM2[1], 0.5, 2.0);
   w *= a.kinds?.[x.kind] ?? 1;

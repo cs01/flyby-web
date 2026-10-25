@@ -3,7 +3,7 @@
 // the oracle for tools/verify-packs.ts.
 
 import { fetchBytes, evict } from "./cache";
-import { buildingIsNeedle, parseCityPack, type CityPack } from "./citypack";
+import { CITY_VERSION, buildingIsNeedle, parseCityPack, type CityPack } from "./citypack";
 
 /**
  * Load a baked pack, or null when the city has no pack yet.
@@ -13,7 +13,10 @@ import { buildingIsNeedle, parseCityPack, type CityPack } from "./citypack";
  * made a 404 and a corrupt file look identical to a city nobody has baked.
  */
 export async function loadCityPack(cityId: string): Promise<CityPack | null> {
-  const url = `${import.meta.env.BASE_URL}cities/${cityId}.city`;
+  // The format version rides the URL because packs are cached by URL for 30
+  // days (data/cache.ts TTL_STATIC): without it a browser that had the
+  // version 1 pack kept drawing the boxes for a month after the re-bake.
+  const url = `${import.meta.env.BASE_URL}cities/${cityId}.city?v=${CITY_VERSION}`;
   let buf: ArrayBuffer;
   try {
     buf = await fetchBytes(url);

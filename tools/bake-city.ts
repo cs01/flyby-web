@@ -22,8 +22,10 @@
 
 import { CITIES, cityById, type City } from "../src/cities";
 import { Origin } from "../src/geo";
-import { CITY_MAGIC, CITY_VERSION, encodeCityPack, tailBytes, type PackedBuilding } from "../src/data/citypack";
-import { buildingsFromOsm, buildingsQuery } from "../src/data/osmbuildings";
+import {
+  CITY_MAGIC, CITY_VERSION, encodeCityPack, parseCityPack, tailBytes, type PackedBuilding,
+} from "../src/data/citypack";
+import { buildingsFromOsm, buildingsQuery, inferPartFlags, QUANT, resolveParts } from "../src/data/osmbuildings";
 import type { OsmBbox, OsmElement, OverpassResponse } from "../src/data/osm";
 
 // The repo's tsconfig deliberately carries no node/bun types (`types:
@@ -479,6 +481,39 @@ function jobForCity(c: City): Job {
   };
 }
 
+/**
+ * `--upgrade <id>`: rewrite a shipped version 1 pack as version 2 with its
+ * building:part massing resolved, from the pack's own geometry (see
+ * inferPartFlags). For when Overpass will not answer: the parts were always in
+ * the pack, only the outlines standing over them were wrong. Carries no OSM
+ * material tags, because a version 1 pack never had them.
+ */
+async function upgrade(id: string): Promise<void> {
+  const path = `${ROOT}public/cities/${id}.city`;
+  const before = Bun.file(path).size;
+  const pack = parseCityPack(await Bun.file(path).arrayBuffer());
+  const packed: PackedBuilding[] = pack.buildings.map((b) => {
+    const n = b.ring.length / 2;
+    const dx = new Int16Array(n), dz = new Int16Array(n);
+    for (let v = 0; v < n; v++) {
+      dx[v] = Math.round((b.ring[v * 2] - b.cx) / QUANT);
+      dz[v] = Math.round((b.ring[v * 2 + 1] - b.cz) / QUANT);
+    }
+    return { cx: b.cx, cz: b.cz, baseM: b.baseM, topM: b.topM, kind: b.kind, roof: b.roof, dx, dz };
+  });
+  const isPart = inferPartFlags(packed);
+  const { buildings, stats } = resolveParts(packed, isPart, packed.map(() => false));
+  const bytes = encodeCityPack(buildings, pack.lat0, pack.lon0, pack.radiusM);
+  await Bun.write(path, bytes);
+  console.log(
+    `${id}: ${isPart.filter(Boolean).length} parts found from geometry, ${stats.grouped} grouped; ` +
+      `${stats.dropped} outlines dropped, ${stats.clipped} cut to a podium; ` +
+      `${pack.buildings.length} -> ${buildings.length} records, ${before} -> ${bytes.byteLength} bytes`,
+  );
+  const back = decode(new Uint8Array(await Bun.file(path).arrayBuffer()));
+  if (back.header.count !== buildings.length) throw new Error("upgrade did not round-trip");
+}
+
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const flags = new Map<string, string>();
@@ -495,6 +530,10 @@ async function main(): Promise<void> {
     }
   }
 
+  if (flags.has("upgrade")) {
+    await upgrade(flags.get("upgrade") ?? "");
+    return;
+  }
   const force = flags.has("force");
   const jobs: Job[] = [];
 

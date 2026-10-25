@@ -177,7 +177,15 @@ for (const city of ["manhattan", "sf", "chicago"]) {
     check(`${city} is a surveyed region`, false, "assignArchetypes returned null");
     continue;
   }
-  const h = (i: number): number => p.buildings[i].topM - p.buildings[i].baseM;
+  // A building:part is drawn as part of its tower (render/archetype.ts weighs
+  // the whole group), so the height a type has to fit is the TOWER's: a 20 m
+  // crown stage of a 255 m tower is a tower type, correctly.
+  const groupTop = new Map<number, number>();
+  for (const b of p.buildings) if (b.group !== undefined) groupTop.set(b.group, Math.max(groupTop.get(b.group) ?? 0, b.topM));
+  const h = (i: number): number => {
+    const b = p.buildings[i];
+    return b.group !== undefined ? groupTop.get(b.group)! : b.topM - b.baseM;
+  };
   const dCount = [0, 0, 0, 0];
   for (const c of ch) dCount[c.district]++;
   console.log(`     ${city}: ${p.buildings.length} buildings in ${ms.toFixed(0)} ms, districts ` +

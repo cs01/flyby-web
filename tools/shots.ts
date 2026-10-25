@@ -500,13 +500,13 @@ export const POSES: Pose[] = [
     what: "Midtown Manhattan at night from over Chelsea",
   },
   {
-    // THE EMPIRE STATE AGAINST THE SKY, from 1.4 km south-west and 140 m up.
+    // THE EMPIRE STATE AGAINST THE SKY, from 700 m south-west and 200 m up.
     // The pose the skyline claim in tools/verify-buildings.ts is measured on:
     // low enough that the Midtown towers stand above the horizon, so the
     // top of every column of building pixels is the silhouette itself.
     name: "manhattan-esb-skyline",
     city: "manhattan",
-    lat: 40.7379, lon: -73.9982, altM: 140, hdgDeg: 42, pitchDeg: 9,
+    lat: 40.7439, lon: -73.9916, altM: 200, hdgDeg: 44, pitchDeg: 12,
     t: D("2025-06-21T15:30:00Z"), // 11:30 EDT
     wx: CLEAR,
     what: "the Empire State and Midtown against the sky from the south-west",
@@ -524,7 +524,7 @@ export const POSES: Pose[] = [
     // The same skyline at night: the crown floodlights and the warning beacons.
     name: "manhattan-esb-night",
     city: "manhattan",
-    lat: 40.7379, lon: -73.9982, altM: 140, hdgDeg: 42, pitchDeg: 9,
+    lat: 40.7439, lon: -73.9916, altM: 200, hdgDeg: 44, pitchDeg: 12,
     t: D("2025-06-22T02:30:00Z"), // 22:30 EDT
     wx: CLEAR,
     what: "the Empire State skyline at night",

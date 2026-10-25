@@ -510,6 +510,61 @@ function packedBox(b: PackedBuilding): [number, number, number, number] {
 }
 
 /**
+ * Which records are building:parts, recovered from geometry alone, for a pack
+ * baked before the tags were kept (version 1).
+ *
+ * A record standing ABOVE the ground (baseM past PART_GROUND_M) can only be a
+ * part: nothing else in OSM has a min_height. The smallest ground-standing
+ * record whose footprint holds its centroid is then its outline, and every
+ * other record inside that outline is one of its parts. A building with no
+ * raised part anywhere in it is left alone, which is the safe failure: it
+ * stays the box it was.
+ */
+export function inferPartFlags(buildings: readonly PackedBuilding[]): boolean[] {
+  const isPart = new Array<boolean>(buildings.length).fill(false);
+  const CELL = 50;
+  const cells = new Map<string, number[]>();
+  const areas = buildings.map(packedArea);
+  for (let i = 0; i < buildings.length; i++) {
+    const [x0, x1, z0, z1] = packedBox(buildings[i]);
+    for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++) {
+      for (let gz = Math.floor(z0 / CELL); gz <= Math.floor(z1 / CELL); gz++) {
+        const k = `${gx},${gz}`;
+        const l = cells.get(k);
+        if (l) l.push(i); else cells.set(k, [i]);
+      }
+    }
+  }
+  const containing = (j: number): number[] => {
+    const p = buildings[j];
+    const out: number[] = [];
+    for (const i of cells.get(`${Math.floor(p.cx / CELL)},${Math.floor(p.cz / CELL)}`) ?? []) {
+      if (i !== j && areas[i] > areas[j] && insidePacked(buildings[i], p.cx, p.cz)) out.push(i);
+    }
+    return out;
+  };
+  const outlines = new Set<number>();
+  for (let j = 0; j < buildings.length; j++) {
+    if (buildings[j].baseM <= PART_GROUND_M) continue;
+    let best = -1;
+    for (const i of containing(j)) {
+      if (buildings[i].baseM > PART_GROUND_M) continue;
+      if (best < 0 || areas[i] < areas[best]) best = i;
+    }
+    if (best >= 0) outlines.add(best);
+    isPart[j] = true;
+  }
+  for (let j = 0; j < buildings.length; j++) {
+    if (isPart[j] || outlines.has(j)) continue;
+    // A ground-standing record inside an outline: the podium or core part.
+    for (const i of containing(j)) {
+      if (outlines.has(i) && areas[j] <= areas[i] * 1.1) { isPart[j] = true; break; }
+    }
+  }
+  return isPart;
+}
+
+/**
  * Resolve outlines against their parts. Returns the kept records (in order)
  * and the flags that ride alongside them.
  *
