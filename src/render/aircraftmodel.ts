@@ -39,6 +39,15 @@ export const SEMI_SPAN = 5.46;
 /** Aircraft meshes live on this layer so the shadow pass can draw them alone. */
 const AIRCRAFT_LAYER = 1;
 
+/**
+ * Past this the aircraft is a few pixels tall and its reflections and self-
+ * shadow cannot be seen: at 400 m a 11 m wingspan subtends 1.6 degrees, about
+ * 20 px across a 720 px frame at the chase lens.
+ */
+const PROBE_MAX_RANGE_M = 400;
+
+const _look = new THREE.Vector3();
+
 const VERT = /* glsl */ `
 precision highp float;
 in vec3 position;
@@ -370,6 +379,7 @@ class EnvProbe {
   readonly target: THREE.WebGLCubeRenderTarget;
   private cameras: THREE.PerspectiveCamera[] = [];
   private frame = 0;
+  private face = 0;
 
   constructor(size: number) {
     this.target = new THREE.WebGLCubeRenderTarget(size, {
@@ -401,26 +411,40 @@ class EnvProbe {
     return Math.log2(this.target.width);
   }
 
-  /** True when this frame actually re-rendered the probe. */
+  /**
+   * Re-render ONE face, every `everyNFrames` frames, or all six at once when
+   * `all` is set (the first frame the aircraft is drawn after a gap, so it
+   * never shows a half-black cube).
+   *
+   * One face at a time because all six in one frame is six full-scene renders
+   * landing on a single frame: measured on sf-street at 1280x720 (M4, frames
+   * drained), every tenth frame took 31 ms against a 17 ms median, which at
+   * 60 Hz is a dropped frame six times a second. A face every other frame
+   * refreshes the whole cube every twelve frames, a fifth of a second.
+   */
   update(
     renderer: THREE.WebGLRenderer,
     scene: THREE.Scene,
     at: THREE.Vector3,
     everyNFrames: number,
     onFace: (camera: THREE.PerspectiveCamera) => void,
+    all = false,
   ): boolean {
-    if (this.frame++ % everyNFrames !== 0) return false;
+    if (!all && this.frame++ % everyNFrames !== 0) return false;
 
     const prevTarget = renderer.getRenderTarget();
-    for (let i = 0; i < 6; i++) {
+    const n = all ? 6 : 1;
+    for (let k = 0; k < n; k++) {
+      const i = all ? k : this.face;
       const cam = this.cameras[i];
       cam.position.copy(at);
-      cam.lookAt(at.clone().add(cam.userData.look as THREE.Vector3));
+      cam.lookAt(_look.copy(at).add(cam.userData.look as THREE.Vector3));
       cam.updateMatrixWorld(true);
       onFace(cam);
       renderer.setRenderTarget(this.target, i);
       renderer.render(scene, cam);
     }
+    if (!all) this.face = (this.face + 1) % 6;
     renderer.setRenderTarget(prevTarget);
     return true;
   }
@@ -534,6 +558,10 @@ export class AircraftModel {
   readonly ready: Promise<void>;
 
   private env: EnvProbe;
+  /** The cube has been drawn at least once. */
+  private filled = false;
+  /** The cube missed refreshes while the aircraft was hidden or far. */
+  private stale = true;
   private shadow: SelfShadow;
   private readonly budget: Budget;
   private materials: THREE.RawShaderMaterial[] = [];
@@ -765,6 +793,7 @@ export class AircraftModel {
     scene: THREE.Scene,
     quality: number,
     onFace: (c: THREE.PerspectiveCamera) => void,
+    viewer: THREE.Vector3,
   ): void {
     // As with the sun cascades, the adaptive controller may only take more
     // away than the device tier already did, never give any back.
@@ -778,10 +807,27 @@ export class AircraftModel {
 
     const centre = this.group.position;
 
-    // The aircraft must not appear in its own reflection.
+    // Both maps are read by the airframe's own material and nothing else, so
+    // an aeroplane that is not drawn (the cockpit, a `?shot` pose) or is a
+    // speck (parked a few hundred metres behind the drone) needs neither.
+    // These two passes were 1.4 ms a frame on average and a 14 ms spike every
+    // tenth frame while the aircraft was hidden.
+    const shown = this.group.visible && centre.distanceTo(viewer) < PROBE_MAX_RANGE_M;
+    // Filled once whatever happens: the live traffic's airframes sample this
+    // same cube, and one that was never drawn would reflect black.
+    if (!shown && this.filled) {
+      this.stale = true;
+      return;
+    }
+
+    // The aircraft must not appear in its own reflection. Its visibility is
+    // put back as it was, not forced on: main.ts hides it in the cockpit.
+    const wasVisible = this.group.visible;
     this.group.visible = false;
-    this.env.update(renderer, scene, centre, lowTier ? 30 : 10, onFace);
-    this.group.visible = true;
+    this.env.update(renderer, scene, centre, lowTier ? 5 : 2, onFace, this.stale);
+    this.group.visible = wasVisible;
+    this.stale = false;
+    this.filled = true;
 
     this.shadow.render(renderer, scene, centre, this.uniforms.uSunDir.value);
   }
