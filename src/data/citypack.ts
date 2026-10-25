@@ -213,6 +213,14 @@ export interface Building {
   group?: number;
   /** roof:height, metres: how much of the record's height is its roof. */
   roofM?: number;
+  /**
+   * True when `kind` is Residential because osmbuildings.ts inferResidential
+   * said so from the footprints, not because a mapper tagged it. Version 2
+   * carries it in the top bit of the kind byte, so test/zoning.check.ts can
+   * take a re-baked pack's inference back out and still score the rule
+   * against what mappers actually wrote.
+   */
+  inferredKind?: boolean;
 }
 
 export interface CityPack {
@@ -246,6 +254,7 @@ export interface PackedBuilding {
   tags?: BuildingTags;
   group?: number;
   roofM?: number;
+  inferredKind?: boolean;
 }
 
 /**
@@ -277,7 +286,8 @@ export function encodeCityPack(
     dv.setFloat32(o, b.cz, true); o += 4;
     dv.setFloat32(o, b.baseM, true); o += 4;
     dv.setFloat32(o, b.topM, true); o += 4;
-    dv.setUint8(o, b.kind); o += 1;
+    // Version 2: the top bit of the kind byte is inferredKind.
+    dv.setUint8(o, b.kind | (b.inferredKind ? 0x80 : 0)); o += 1;
     dv.setUint8(o, b.roof); o += 1;
     dv.setUint16(o, b.dx.length, true); o += 2;
     for (let i = 0; i < b.dx.length; i++) {
@@ -324,6 +334,7 @@ export function unpackBuildings(packed: readonly PackedBuilding[]): Building[] {
       ...(p.tags ? { tags: p.tags } : {}),
       ...(p.group !== undefined ? { group: p.group } : {}),
       ...(p.roofM !== undefined ? { roofM: p.roofM } : {}),
+      ...(p.inferredKind ? { inferredKind: true } : {}),
     };
   }
   return out;
@@ -360,7 +371,8 @@ export function parseCityPack(buf: ArrayBuffer): CityPack {
       ring[v * 2] = cx + dv.getInt16(o, true) * VERT_SCALE; o += 2;
       ring[v * 2 + 1] = cz + dv.getInt16(o, true) * VERT_SCALE; o += 2;
     }
-    const b: Building = { cx, cz, baseM, topM, kind, roof, ring };
+    const b: Building = { cx, cz, baseM, topM, kind: kind & 0x7f, roof, ring };
+    if (version >= 2 && kind & 0x80) b.inferredKind = true;
     if (version >= 2) o = decodeTail(dv, o, b);
     buildings[i] = b;
   }

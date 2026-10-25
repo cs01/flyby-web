@@ -792,6 +792,7 @@ export function inferResidential(
     }
     if (near < MIN_NEIGHBOURS) continue;
     b.kind = BuildingKind.Residential;
+    b.inferredKind = true;
     if (!roofTagged[i]) b.roof = RoofShape.Pitched;
     promoted++;
   }

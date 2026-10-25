@@ -285,7 +285,7 @@ function decode(bytes: Uint8Array): Decoded {
     const cz = dv.getFloat32(o, true); o += 4;
     const baseM = dv.getFloat32(o, true); o += 4;
     const topM = dv.getFloat32(o, true); o += 4;
-    const kind = dv.getUint8(o); o += 1;
+    const kind = dv.getUint8(o) & 0x7f; o += 1; // top bit: inferredKind
     const roof = dv.getUint8(o); o += 1;
     const vc = dv.getUint16(o, true); o += 2;
     const dx = new Int16Array(vc);

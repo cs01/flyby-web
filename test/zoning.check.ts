@@ -95,7 +95,10 @@ function repack(b: Building): PackedBuilding {
     dx[i] = Math.round((b.ring[i * 2] - b.cx) / QUANT);
     dz[i] = Math.round((b.ring[i * 2 + 1] - b.cz) / QUANT);
   }
-  return { cx: b.cx, cz: b.cz, baseM: b.baseM, topM: b.topM, kind: b.kind, roof: b.roof, dx, dz };
+  // A re-baked pack marks the kinds the rule itself wrote; those go back to
+  // Generic, which is what the rule saw, so the pack is ground truth again.
+  const kind = b.inferredKind ? BuildingKind.Generic : b.kind;
+  return { cx: b.cx, cz: b.cz, baseM: b.baseM, topM: b.topM, kind, roof: b.roof, dx, dz };
 }
 
 /**
