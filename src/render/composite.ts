@@ -833,6 +833,8 @@ export class Composite {
   private lowCompiled = false;
   /** March with the cheaper scene, when there is one. */
   lowClouds = false;
+  /** No cloud shadows on the ground (render/quality.ts's lean phone preset). */
+  noCloudShadow = false;
   private readonly reconScene: THREE.Scene;
   private readonly shadowScene: THREE.Scene;
   private readonly presentScene: THREE.Scene;
@@ -1271,7 +1273,7 @@ export class Composite {
     // a shadow does not crawl as the aircraft moves.
     const lowOn = wx.low.cover > 0.03;
     const midOn = wx.mid.cover > 0.03;
-    this.shadowOn = (lowOn || midOn) && light.sunDir.y > 0.02;
+    this.shadowOn = (lowOn || midOn) && light.sunDir.y > 0.02 && !this.noCloudShadow;
     const su = this.sunUniforms;
     if (su) {
       su.uCloudShadow.value.set(this.shadowOn && this.historyValid && !this.noShadow ? 1 : 0, gain, 0, 0);

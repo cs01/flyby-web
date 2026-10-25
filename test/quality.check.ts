@@ -133,5 +133,25 @@ function run(q: AdaptiveQuality, ms: number, n: number, refreshMs = ms): number 
   check("  probe: 25 ms frames drop one", near.level === 1, `level ${near.level}`);
 }
 
+// 7. A phone starts lean and climbs. On the reduced tier the ladder has the
+//    lean preset under the plan, the controller starts at its bottom, and a
+//    phone with headroom gives it all back. Probe: one at 34 ms stays lean.
+{
+  const LEAN = { ...PHONE, lean: true };
+  const q = new AdaptiveQuality(renderer(1.5), "reduced", LEAN);
+  const start = q.level;
+  const f = q.features;
+  check(
+    "a phone starts on the lean preset at full resolution",
+    start === 4 && f.oneCascade && !f.cloudShadow && !f.shrubs && f.lightTraffic && q.scale === 1,
+    `level ${start}, ${JSON.stringify(f)}, scale ${q.scale}`,
+  );
+  run(q, 16.7, 3000, 16.7);
+  check("  and climbs to its tier's own plan with headroom", q.level === 0 && q.features.shrubs, `level ${q.level}`);
+  const busy = new AdaptiveQuality(renderer(1.5), "reduced", LEAN);
+  run(busy, 34, 3000, 16.7);
+  check("  probe: a phone at 34 ms stays lean", busy.level === start, `level ${busy.level}`);
+}
+
 console.log(failures === 0 ? "\nquality: all checks passed" : `\nquality: ${failures} FAILED`);
 if (failures) process.exit(1);

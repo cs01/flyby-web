@@ -38,9 +38,21 @@ export interface Features {
   lowShadows: boolean;
   /** Multisampling on the scene target, where the tier has it. */
   msaa: boolean;
+  /** The phone's lean preset, below its tier's own plan: */
+  /** one sun cascade, the city map beyond it; */
+  oneCascade: boolean;
+  /** the clouds' shadows on the ground; */
+  cloudShadow: boolean;
+  /** the shrubs; */
+  shrubs: boolean;
+  /** street traffic in a ring 0.4 of its radius (about a sixth of the cars) and four tags. */
+  lightTraffic: boolean;
 }
 
-export const FULL_FEATURES: Features = { ssr: true, lowClouds: false, ao: true, lowShadows: false, msaa: true };
+export const FULL_FEATURES: Features = {
+  ssr: true, lowClouds: false, ao: true, lowShadows: false, msaa: true,
+  oneCascade: false, cloudShadow: true, shrubs: true, lightTraffic: false,
+};
 
 interface Step {
   features: Features;
@@ -63,6 +75,18 @@ interface Step {
  * just before resolution starts to go.
  */
 const FEATURE_STEPS: (keyof Features)[] = ["lowShadows", "ao", "msaa", "ssr", "lowClouds"];
+
+/**
+ * The lean preset's steps, on the reduced tier only, in the order the ladder
+ * gives them back. A phone STARTS at the bottom of these and climbs while it
+ * has headroom: the owner's mid-range Android was choppy on the tier's own
+ * plan, and a phone that starts high spends its first seconds dropping frames
+ * on the way down. On the M4 at 412x860 dpr 2.6 (reduced tier, paired windows)
+ * the steps measured: see the commit that introduced them.
+ */
+const LEAN_STEPS: (keyof Features)[] = ["oneCascade", "cloudShadow", "shrubs", "lightTraffic"];
+/** Which way each feature is shed: true means "on" is the cheap state. */
+const SHED_ON = new Set<keyof Features>(["lowClouds", "lowShadows", "oneCascade", "lightTraffic"]);
 const SCALES = [1.0, 0.85, 0.72, 0.6, 0.5, 0.4];
 
 /**
@@ -95,6 +119,8 @@ const UP_FRAMES = 180;
 /** A step up that proves too slow within this long doubles the next wait. */
 const BOUNCE_S = 6;
 const MAX_UP_FRAMES = 3600;
+/** Slowest display refresh treated as one, ms: 60 Hz with jitter. */
+const MAX_REFRESH_MS = 17.5;
 
 /** Which features a tier has to shed at all; a phone already has no SSR or AO. */
 export interface TierFeatures {
@@ -106,6 +132,8 @@ export interface TierFeatures {
   bigShadows: boolean;
   /** The tier multisamples the scene target. */
   msaa: boolean;
+  /** The tier has the lean preset under its plan, and starts there. */
+  lean?: boolean;
 }
 
 /** The ladder for a tier: every feature step that changes something, then resolution. */
@@ -115,11 +143,18 @@ export function buildLadder(baseRatio: number, tier: TierFeatures): Step[] {
   steps.push({ features: f, scale: 1 });
   const has: Record<keyof Features, boolean> = {
     ssr: tier.ssr, lowClouds: tier.fullClouds, ao: tier.ao, lowShadows: tier.bigShadows, msaa: tier.msaa,
+    oneCascade: false, cloudShadow: false, shrubs: false, lightTraffic: false,
   };
   for (const k of FEATURE_STEPS) {
     if (!has[k]) continue;
-    f = { ...f, [k]: k === "lowClouds" || k === "lowShadows" };
+    f = { ...f, [k]: SHED_ON.has(k) };
     steps.push({ features: f, scale: 1 });
+  }
+  if (tier.lean) {
+    for (const k of LEAN_STEPS) {
+      f = { ...f, [k]: SHED_ON.has(k) };
+      steps.push({ features: f, scale: 1 });
+    }
   }
   for (let i = 1; i < SCALES.length; i++) {
     if (baseRatio * SCALES[i] < MIN_DEVICE_PER_CSS - 1e-6) break;
@@ -160,6 +195,11 @@ export class AdaptiveQuality {
     this.targetMs = TARGET_MS[tier];
     this.comfortableMs = COMFORTABLE_MS[tier];
     this.ladder = buildLadder(this.baseRatio, features);
+    if (features.lean) {
+      let i = 0;
+      while (i + 1 < this.ladder.length && this.ladder[i + 1].scale === 1) i++;
+      this.index = i;
+    }
   }
 
   get scale(): number {
@@ -215,7 +255,10 @@ export class AdaptiveQuality {
       return false;
     }
 
-    const atRefresh = smoothedMs < this.refreshMs * 1.06 && smoothedMs < this.targetMs;
+    // Only a refresh interval a display could have: a phone held at a steady
+    // 33 ms by its GPU would otherwise read its own frame time as the refresh
+    // and climb into a step it cannot hold, every few seconds.
+    const atRefresh = this.refreshMs < MAX_REFRESH_MS && smoothedMs < this.refreshMs * 1.06 && smoothedMs < this.targetMs;
     if (smoothedMs > this.targetMs) {
       this.slowFrames++;
       this.fastFrames = 0;

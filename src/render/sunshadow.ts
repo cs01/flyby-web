@@ -376,6 +376,8 @@ interface Cascade {
   texelWorld: number;
   /** Metres the ortho near..far range spans. */
   depthRange: number;
+  /** The map holds a draw at its current size; until then it is drawn every frame. */
+  drawn: boolean;
 }
 
 const _centre = new THREE.Vector3();
@@ -425,6 +427,11 @@ export class SunShadow {
    * unshadowed as they did before it existed; for A/B timing from the console.
    */
   cityEnabled = true;
+  /** The quality ladder's cap on the cascades drawn (the phone's lean preset draws one). */
+  maxCascades = 3;
+  /** Outer cascades on alternate frames; see update(). */
+  alternate = true;
+  private frame = 0;
   /** For the harness: how many times the city map has been drawn, and the CPU cost of the last draw. */
   readonly cityStats = { renders: 0, cpuMs: 0 };
   /** The city map everywhere and no cascades: the reference frame tools/verify-shadow.ts measures against. */
@@ -454,6 +461,7 @@ export class SunShadow {
         camera: new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 100),
         matrix: new THREE.Matrix4(),
         texelWorld: 1,
+        drawn: false,
         depthRange: 1,
       });
     }
@@ -643,11 +651,23 @@ export class SunShadow {
     // The outermost cascade is the one that draws the whole city three times
     // over, and it is also the one carrying the least visible detail, so it is
     // what goes first when there is no frame time for it.
-    const count = lowTier
-      ? Math.min(this.budget.shadowCascadeCount, 2)
-      : this.budget.shadowCascadeCount;
+    const count = Math.min(
+      this.maxCascades,
+      lowTier ? Math.min(this.budget.shadowCascadeCount, 2) : this.budget.shadowCascadeCount,
+    );
 
-    for (let i = 0; i < count; i++) this.fit(this.cascades[i], camera, sunDir, i);
+    // The outer cascades take turns: cascade 0 every frame, then 1 and 2 on
+    // alternate frames (1 every other frame when there are only two). Each
+    // keeps the matrix it was drawn with, so a skipped one is a frame old and
+    // still exactly consistent; at 6 km a frame of camera motion is a few
+    // texels of a 2048 map. Each cascade pass draws the city's casters again,
+    // so this takes a third of the cascade passes off every frame.
+    this.frame++;
+    // A cascade the step has switched off is stale by the time it comes back.
+    for (let i = count; i < 3; i++) this.cascades[i].drawn = false;
+    const due = (i: number): boolean =>
+      i === 0 || !this.alternate || !this.cascades[i].drawn || (count > 2 ? this.frame % 2 === i - 1 : this.frame % 2 === 0);
+    for (let i = 0; i < count; i++) if (due(i)) this.fit(this.cascades[i], camera, sunDir, i);
 
     const prevTarget = renderer.getRenderTarget();
     const prevOverride = scene.overrideMaterial;
@@ -658,7 +678,9 @@ export class SunShadow {
     renderer.autoClear = false;
 
     for (let i = 0; i < count; i++) {
+      if (!due(i)) continue;
       const c = this.cascades[i];
+      c.drawn = true;
       // Layer 2 alone: this excludes the sky (a full-screen triangle, which in
       // a shadow map would blanket the entire city), the clouds, the beacons
       // and the labels, without any of them having to know shadows exist.
@@ -694,8 +716,8 @@ export class SunShadow {
     // both stops it being sampled and moves the outer fade in to meet it.
     u.uCascadeFar.value.set(
       CASCADE_FAR[0],
-      CASCADE_FAR[1],
-      count > 2 ? CASCADE_FAR[2] : CASCADE_FAR[1],
+      count > 1 ? CASCADE_FAR[1] : CASCADE_FAR[0],
+      count > 2 ? CASCADE_FAR[2] : count > 1 ? CASCADE_FAR[1] : CASCADE_FAR[0],
     );
     u.uShadowTexel.value = 1 / this.size;
     u.uShadowStrength.value = strength;
@@ -791,7 +813,10 @@ export class SunShadow {
   private setSize(size: number): void {
     if (size === this.size) return;
     this.size = size;
-    for (const c of this.cascades) c.target?.setSize(size, size);
+    for (const c of this.cascades) {
+      c.target?.setSize(size, size);
+      c.drawn = false;
+    }
     this.uniforms.uShadowMap0.value = this.cascades[0].target?.depthTexture ?? null;
     this.uniforms.uShadowMap1.value = this.cascades[1].target?.depthTexture ?? null;
     this.uniforms.uShadowMap2.value = this.cascades[2].target?.depthTexture ?? null;

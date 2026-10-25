@@ -40,6 +40,9 @@ export interface ProfileReport {
   disjoint: number;
 }
 
+/** A frame loop body this long is logged with its breakdown. */
+const LONG_MS = 33;
+
 export class FrameProfiler {
   enabled = false;
   /** Attribute the main pass per object; see `objectLabel` and main.ts. */
@@ -56,6 +59,12 @@ export class FrameProfiler {
   private cpuSum = new Map<string, number>();
   private cpuStart = new Map<string, number>();
   private cpuMax = new Map<string, number>();
+  /** This frame's CPU ms by label, kept when the frame turns out long. */
+  private cpuFrame = new Map<string, number>();
+  /** Frames whose loop body took over LONG_MS, with what they spent it on. */
+  readonly longFrames: { ms: number; at: number; labels: Record<string, number> }[] = [];
+  /** Main-thread tasks over 50 ms that the browser saw, from a PerformanceObserver. */
+  readonly longTasks: { ms: number; at: number; name: string }[] = [];
   private frames = 0;
   private cpuFrames = 0;
   private disjoint = 0;
@@ -65,6 +74,15 @@ export class FrameProfiler {
 
   init(gl: GL, objects: boolean, wholeFrame = false): boolean {
     this.wholeFrame = wholeFrame;
+    try {
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          if (this.longTasks.length < 500) this.longTasks.push({ ms: e.duration, at: e.startTime, name: e.name });
+        }
+      }).observe({ type: "longtask", buffered: false });
+    } catch {
+      // No long-task timing in this browser; the long-frame log still works.
+    }
     const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2") as TimerExt | null;
     this.gl = gl;
     this.ext = ext;
@@ -106,12 +124,20 @@ export class FrameProfiler {
     if (t0 === undefined) return;
     const ms = performance.now() - t0;
     this.cpuSum.set(label, (this.cpuSum.get(label) ?? 0) + ms);
+    this.cpuFrame.set(label, (this.cpuFrame.get(label) ?? 0) + ms);
     if (ms > (this.cpuMax.get(label) ?? 0)) this.cpuMax.set(label, ms);
   }
 
   frameEnd(): void {
     if (!this.enabled) return;
     this.cpuFrames++;
+    const total = this.cpuFrame.get("frame") ?? 0;
+    if (total > LONG_MS && this.longFrames.length < 500) {
+      const labels: Record<string, number> = {};
+      for (const [k, v] of this.cpuFrame) if (v > 1) labels[k] = Math.round(v * 10) / 10;
+      this.longFrames.push({ ms: total, at: performance.now(), labels });
+    }
+    this.cpuFrame.clear();
     if (!this.ext || !this.gl) return;
     this.switchTo("");
     this.stack.length = 0;
@@ -121,6 +147,8 @@ export class FrameProfiler {
   }
 
   reset(): void {
+    this.longFrames.length = 0;
+    this.longTasks.length = 0;
     this.gpuSum.clear();
     this.cpuSum.clear();
     this.cpuMax.clear();

@@ -391,6 +391,7 @@ async function main() {
     fullClouds: budget.tier === "full",
     bigShadows: budget.shadowCascadeCount > 2 || budget.shadowCascadeSize > 1024,
     msaa: budget.msaaSamples > 0,
+    lean: budget.tier === "reduced",
   });
   // Passes and scene groups switched off, by name: `?off=ao,clouds,buildings`
   // or flybyShot.setOff at run time. tools/profile.ts attributes the frame by
@@ -399,6 +400,7 @@ async function main() {
   const perfOff = new Set((new URLSearchParams(location.search).get("off") ?? "").split(",").filter(Boolean));
   const perfHidden: THREE.Object3D[] = [];
   const probeHidden: THREE.Object3D[] = [];
+  let leanTags = false;
   const perfSync = new URLSearchParams(location.search).has("perfsync");
   const perfHeavy = new URLSearchParams(location.search).get("perfprobe") === "heavy";
   const perfSyncPixel = new Uint8Array(4);
@@ -1922,7 +1924,9 @@ async function main() {
     updateSkyglow(urban.glow, camera.position.x, camera.position.z, light.night, hf.residential,
       noSkyglow, wx.low.cover > 0.03 ? wx.low.base : wx.mid.base, cityUplight);
     // ?nodetail=1: no camera-centred detail layer, a probe for the gates.
+    prof.cpuBegin("bldgdetail");
     if (!noDetail) buildings?.updateDetail(camera.position.x, camera.position.z);
+    prof.cpuEnd("bldgdetail");
     for (const b of buildingUniformSets) {
       b.uCameraPos.value.copy(camera.position);
       b.uSH.value = skyProbe.sh;
@@ -2130,6 +2134,18 @@ async function main() {
       waterHistory.enabled = ssrBase && f.ssr;
       ao.enabled = aoBase && f.ao;
       composite.lowClouds = f.lowClouds;
+      sunShadow.maxCascades = f.oneCascade ? 1 : 3;
+      composite.noCloudShadow = !f.cloudShadow;
+      if (shrubs) shrubs.group.visible = f.shrubs;
+      traffic?.setRingScale(f.lightTraffic ? 0.4 : 1);
+      if (f.lightTraffic !== leanTags) {
+        // Four tags each, not the eight and six a desktop gets: each is DOM
+        // the browser lays out and composites every frame.
+        leanTags = f.lightTraffic;
+        airTraffic.tags.maxTags = leanTags ? 4 : 8;
+      }
+      // Every frame: the transit pack, and its tags, can arrive after the step.
+      if (transit.tags) transit.tags.maxTags = leanTags ? 4 : 6;
     }
     // `?off=` hides whole groups for every pass of this frame; restored below.
     if (perfOff.size) {
@@ -2161,7 +2177,7 @@ async function main() {
     // of that cost with the least to show for it.
     const shadowCasters = [
       ...(foliage && !perfOff.has("foliage") ? [foliage.depthScene] : []),
-      ...(shrubs && !perfOff.has("shrubs") ? [shrubs.depthScene] : []),
+      ...(shrubs && shrubs.group.visible && !perfOff.has("shrubs") ? [shrubs.depthScene] : []),
       ...(traffic && !perfOff.has("traffic") ? [traffic.depthScene] : []),
       ...(parkedCars && !perfOff.has("parkedcars") ? [parkedCars.depthScene] : []),
     ];
@@ -2200,7 +2216,7 @@ async function main() {
     }
     prof.cpuBegin("aircraft");
     prof.begin("aircraft");
-    if (!perfOff.has("aircraft")) model.prepare(renderer, scene, quality.features.lowShadows ? 0.7 : 1, (c) => sky.syncCamera(c), camera.position);
+    if (!perfOff.has("aircraft")) model.prepare(renderer, scene, quality.features.lowShadows || budget.tier === "reduced" ? 0.7 : 1, (c) => sky.syncCamera(c), camera.position);
     prof.end();
     prof.cpuEnd("aircraft");
     for (const g of probeHidden) g.visible = true;
@@ -2525,6 +2541,8 @@ async function main() {
       benchTrace: () => Array.from(benchRing.slice(0, benchTimed)),
       /** Per-pass GPU and per-subsystem CPU means; see render/gpuprof.ts. */
       profile: () => prof.report(),
+      /** Long frames with their CPU breakdown, and long main-thread tasks; see render/gpuprof.ts. */
+      jank: () => ({ longFrames: prof.longFrames.slice(), longTasks: prof.longTasks.slice() }),
       resetProfile: () => prof.reset(),
       /** Hold quality ladder step `n` from now on, as `?qlevel` does at load. */
       setLevel: (n: number) => {

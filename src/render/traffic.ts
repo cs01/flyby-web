@@ -718,6 +718,19 @@ export class Traffic extends CarField {
   player: { x: number; y: number; z: number; headingDeg: number; braking: boolean } | null = null;
   private readonly flat = new Float32Array(STRIDE);
   private readonly pose: Pose = { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 };
+  private ringScale = 1;
+
+  /**
+   * Shrink the moving traffic's ring, for render/quality.ts's lean phone
+   * preset: the sim drops the edges outside it, so the step and the draw both
+   * shrink with its area, and the fade moves in with it so cars still fade out
+   * rather than pop at the new rim.
+   */
+  setRingScale(k: number): void {
+    if (k === this.ringScale) return;
+    this.ringScale = k;
+    this.uniforms.uFade.value.set(this.ringM * k * FADE_FRACTION, this.ringM * k);
+  }
 
   constructor(graph: RoadGraph, world: StreetWorld, shadow: SunShadowUniforms, budget: Budget) {
     const mobile = budget.tier === "reduced";
@@ -754,7 +767,7 @@ export class Traffic extends CarField {
       }
     }
     const before = this.sim.stats.activeEdges;
-    this.sim.setRing(camX, camZ, this.ringM);
+    this.sim.setRing(camX, camZ, this.ringM * this.ringScale);
     if (this.sim.stats.activeEdges !== before) this.stats.rebuilds++;
     this.sim.step(dt);
 
