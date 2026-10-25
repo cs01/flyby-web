@@ -109,9 +109,9 @@ async function politeGap(): Promise<void> {
  * Overpass answers 406 unless the body is form-encoded AND an Accept header is
  * present. Both halves have bitten this tool before; neither is optional.
  */
-async function overpass(query: string): Promise<OverpassResponse> {
+async function overpass(query: string, attempts = MAX_ATTEMPTS): Promise<OverpassResponse> {
   let lastErr = "";
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const endpoint = ENDPOINTS[attempt % ENDPOINTS.length];
     await politeGap();
     try {
@@ -148,7 +148,43 @@ async function overpass(query: string): Promise<OverpassResponse> {
     process.stdout.write(`    retry in ${(backoff / 1000).toFixed(0)}s (${lastErr})\n`);
     await sleep(backoff);
   }
-  throw new Error(`overpass failed after ${MAX_ATTEMPTS} attempts: ${lastErr}`);
+  throw new Error(`overpass failed after ${attempts} attempts: ${lastErr}`);
+}
+
+/**
+ * One cell, and if the public instances keep timing out on it, its four
+ * quarters instead (twice over at most). A 2 km cell of Midtown is about
+ * 30,000 elements, and on a loaded afternoon overpass-api.de answers it with
+ * a 504 every time while answering a 1 km quarter in under a minute. The
+ * quarters are cached on their own so a retry resumes, and the merged answer
+ * is written under the cell's own name, so the cache keeps one file per cell
+ * whichever way it was fetched.
+ */
+async function fetchSplitting(cell: OsmBbox, path: string, depth: number): Promise<OverpassResponse> {
+  try {
+    return await overpass(buildingsQuery(cell), depth < 2 ? 3 : MAX_ATTEMPTS);
+  } catch (e) {
+    if (depth >= 2) throw e;
+  }
+  process.stdout.write(`\n    splitting into quarters (depth ${depth + 1})...`);
+  const midLat = (cell.s + cell.n) / 2, midLon = (cell.w + cell.e) / 2;
+  const quarters: OsmBbox[] = [
+    { s: cell.s, n: midLat, w: cell.w, e: midLon }, { s: cell.s, n: midLat, w: midLon, e: cell.e },
+    { s: midLat, n: cell.n, w: cell.w, e: midLon }, { s: midLat, n: cell.n, w: midLon, e: cell.e },
+  ];
+  const byId = new Map<string, OsmElement>();
+  for (let q = 0; q < 4; q++) {
+    const qPath = `${path}-q${q}.json`;
+    let body: OverpassResponse | null = null;
+    try {
+      body = JSON.parse(await Bun.file(qPath).text()) as OverpassResponse;
+    } catch {
+      body = await fetchSplitting(quarters[q], `${path}-q${q}`, depth + 1);
+      await Bun.write(qPath, JSON.stringify(body));
+    }
+    for (const el of body.elements ?? []) byId.set(`${el.type}/${el.id}`, el);
+  }
+  return { elements: [...byId.values()] } as OverpassResponse;
 }
 
 async function fetchCells(key: string, bbox: OsmBbox, force: boolean): Promise<OsmElement[]> {
@@ -185,7 +221,7 @@ async function fetchCells(key: string, bbox: OsmBbox, force: boolean): Promise<O
       }
       if (body === null) {
         process.stdout.write(`  cell ${index + 1}/${total} fetching...`);
-        body = await overpass(buildingsQuery(cell));
+        body = await fetchSplitting(cell, cachePath.replace(/\.json$/, ""), 0);
         await Bun.write(cachePath, JSON.stringify(body));
         process.stdout.write(` ${(body.elements ?? []).length} elements\n`);
       } else {

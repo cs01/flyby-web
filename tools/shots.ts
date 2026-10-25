@@ -499,6 +499,74 @@ export const POSES: Pose[] = [
     what: "Midtown Manhattan at night from over Chelsea",
   },
   {
+    // THE EMPIRE STATE AGAINST THE SKY, from 1.4 km south-west and 140 m up.
+    // The pose the skyline claim in tools/verify-buildings.ts is measured on:
+    // low enough that the Midtown towers stand above the horizon, so the
+    // top of every column of building pixels is the silhouette itself.
+    name: "manhattan-esb-skyline",
+    city: "manhattan",
+    lat: 40.7379, lon: -73.9982, altM: 140, hdgDeg: 42, pitchDeg: 9,
+    t: D("2025-06-21T15:30:00Z"), // 11:30 EDT
+    wx: CLEAR,
+    what: "the Empire State and Midtown against the sky from the south-west",
+  },
+  {
+    // The same bearing from 600 m, the height a sightseeing flight takes.
+    name: "manhattan-esb-600",
+    city: "manhattan",
+    lat: 40.7330, lon: -74.0040, altM: 600, hdgDeg: 42, pitchDeg: -10,
+    t: D("2025-06-21T15:30:00Z"),
+    wx: CLEAR,
+    what: "Midtown from 600 m with the Empire State in frame",
+  },
+  {
+    // The same skyline at night: the crown floodlights and the warning beacons.
+    name: "manhattan-esb-night",
+    city: "manhattan",
+    lat: 40.7379, lon: -73.9982, altM: 140, hdgDeg: 42, pitchDeg: 9,
+    t: D("2025-06-22T02:30:00Z"), // 22:30 EDT
+    wx: CLEAR,
+    what: "the Empire State skyline at night",
+  },
+  {
+    // SEVENTH AVENUE FROM THE KERB AT NIGHT, looking south from 34th: shops
+    // along both sides, the band the shopfront claim measures. Ground is
+    // about 14 m AMSL here, so 16 m is two metres up.
+    name: "manhattan-shops-night",
+    city: "manhattan",
+    lat: 40.7507, lon: -73.99085, altM: 16, hdgDeg: 209, pitchDeg: 2,
+    t: D("2025-06-22T02:30:00Z"), // 22:30 EDT
+    wx: CLEAR,
+    what: "Seventh Avenue shopfronts from the kerb at night",
+  },
+  {
+    // The same kerb by day, for the awnings, signs and window variety.
+    name: "manhattan-shops-day",
+    city: "manhattan",
+    lat: 40.7507, lon: -73.99085, altM: 16, hdgDeg: 209, pitchDeg: 2,
+    t: D("2025-06-21T15:00:00Z"),
+    wx: CLEAR,
+    what: "Seventh Avenue shopfronts from the kerb by day",
+  },
+  {
+    // Willis and the Loop from 600 m, north-west of the river.
+    name: "chicago-willis-600",
+    city: "chicago",
+    lat: 41.8960, lon: -87.6560, altM: 600, hdgDeg: 145, pitchDeg: -10,
+    t: D("2025-06-21T16:00:00Z"),
+    wx: CLEAR,
+    what: "the Loop and Willis Tower from 600 m",
+  },
+  {
+    // The Financial District from over North Beach: Transamerica in frame.
+    name: "sf-transamerica-600",
+    city: "sf",
+    lat: 37.8060, lon: -122.4120, altM: 600, hdgDeg: 150, pitchDeg: -18,
+    t: D("2025-06-21T18:30:00Z"),
+    wx: CLEAR,
+    what: "the Financial District and the Transamerica Pyramid from 600 m",
+  },
+  {
     // STRAIGHT DOWN ON CHELSEA, from 420 m. From altitude Manhattan is mostly
     // roofs, and the owner's report was that they all looked identical. This
     // is the frame tools/verify-buildings.ts measures inter-roof variety on.
