@@ -281,6 +281,7 @@ export class LiveWorld {
           buildings,
         };
         const b = new Buildings(pack, heightAt, shadow, this.tileBudget);
+        b.group.name = "live";
         scene.add(b.group);
         this.opts.buildingUniforms.push(b.uniforms);
         this.stats.buildings += buildings.length;
@@ -307,6 +308,7 @@ export class LiveWorld {
         // over the water instead of in it, so it solves them the same way.
         const decks = buildBridgeDecks(roads, heightAt, LIVE_WORLD_RADIUS_M).deck;
         const r = new Roads(pack, heightAt, shadow, this.tileBudget, decks);
+        r.group.name = "live";
         scene.add(r.group);
         this.opts.roadUniforms.push(r.uniforms);
         this.stats.roads += roads.length;

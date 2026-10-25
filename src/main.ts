@@ -110,6 +110,7 @@ import { SpotGame } from "./app/spotgame";
 import { TransitLayer } from "./app/transit";
 import { AIRPORTS, airportById, spotPose } from "./data/airports";
 import { haversine } from "./geo";
+import { prof, installObjectProfiling } from "./render/gpuprof";
 
 function chooseCity(): City | null {
   const params = new URLSearchParams(location.search);
@@ -348,6 +349,10 @@ async function main() {
 
   loading.set(0.88, "building world");
   const { renderer, scene, camera } = createRenderer(canvas, budget);
+  // `?gpuprof` times every pass on the GPU, `?gpuprof=objects` the main pass
+  // object by object as well; tools/profile.ts reads both back.
+  const profQ = new URLSearchParams(location.search).get("gpuprof");
+  if (profQ !== null) prof.init(renderer.getContext() as WebGL2RenderingContext, profQ === "objects", profQ === "frame");
 
   // A failed shader is invisible on a phone: three.js logs and carries on, and
   // the mesh either vanishes or draws garbage. Surface it in the same red box
@@ -380,6 +385,15 @@ async function main() {
   // shaders read its result rather than the composite doing so; see render/ao.ts.
   const ao = new AoPass(renderer);
   const quality = new AdaptiveQuality(renderer, budget.tier);
+  // Passes and scene groups switched off, by name: `?off=ao,clouds,buildings`
+  // or flybyShot.setOff at run time. tools/profile.ts attributes the frame by
+  // taking each one away in turn, because the timer queries on this GPU
+  // overlap and sum to twice the frame (see render/gpuprof.ts).
+  const perfOff = new Set((new URLSearchParams(location.search).get("off") ?? "").split(",").filter(Boolean));
+  const perfHidden: THREE.Object3D[] = [];
+  const perfSync = new URLSearchParams(location.search).has("perfsync");
+  const perfSyncPixel = new Uint8Array(4);
+  composite.skip = perfOff;
 
   const resizeTargets = () => {
     const s2 = renderer.getDrawingBufferSize(new THREE.Vector2());
@@ -413,6 +427,7 @@ async function main() {
   if (shotMode) ui.style.display = "none";
 
   const sky = new Sky();
+  sky.mesh.name = "sky";
   scene.add(sky.mesh);
 
   // Sun shadows. Constructed before anything that reads them, because the
@@ -435,6 +450,7 @@ async function main() {
   // The plan the drapes were stitched for. Defaulting to CITY_RINGS here gave a
   // reduced-tier device the desktop meshes under its own smaller drapes.
   const terrain = new Terrain(origin, fields, drapes, sunShadow.uniforms, budget.rings);
+  terrain.group.name = "terrain";
   scene.add(terrain.group);
 
   // Buildings. A city with no baked pack still flies, it just has no skyline,
@@ -481,6 +497,7 @@ async function main() {
   }
   if (pack && !buildingsOff) {
     buildings = new Buildings(pack, terrain.heightAt, sunShadow.uniforms, budget);
+    buildings.group.name = "buildings";
     scene.add(buildings.group);
     // `?nocityshadow=1` and `?cityshadowonly=1` are the probe and the reference
     // for tools/verify-shadow.ts.
@@ -550,6 +567,7 @@ async function main() {
       roadGraph ? junctionCaps(roadGraph) : [],
       medianPieces(roadPack.roads),
     );
+    roads.group.name = "roads";
     scene.add(roads.group);
     const rs = roads.stats;
     console.log(
@@ -560,6 +578,7 @@ async function main() {
     );
     if (landmarks.length) {
       bridges = new Bridges(landmarks, roadPack, bridgeDecks!.deck, terrain.heightAt, sunShadow.uniforms);
+      bridges.group.name = "bridges";
       scene.add(bridges.group);
       const b = bridges.stats;
       console.log(
@@ -832,6 +851,7 @@ async function main() {
       budget,
       carriageways,
     );
+    pavement.group.name = "pavement";
     scene.add(pavement.group);
     roadUniformSets.push(pavement.uniforms);
     // No eager build here. The frame loop calls update() before the first
@@ -880,12 +900,15 @@ async function main() {
     };
 
     lamps = new StreetLamps(roadPack, streetWorld, sunShadow.uniforms, budget, ledShare(city.id));
+    lamps.group.name = "lamps";
     scene.add(lamps.group);
     if (roadGraph) {
       traffic = new Traffic(roadGraph, streetWorld, sunShadow.uniforms, budget);
+      traffic.group.name = "traffic";
       scene.add(traffic.group);
     }
     parkedCars = new ParkedCars(roadPack, streetWorld, sunShadow.uniforms, budget);
+    parkedCars.group.name = "parkedcars";
     scene.add(parkedCars.group);
     streetUniformSets.push(lamps.uniforms, parkedCars.uniforms);
     if (traffic) streetUniformSets.push(traffic.uniforms);
@@ -919,6 +942,7 @@ async function main() {
     );
     const indexMs = performance.now() - t0;
     foliage.update(0, 0);
+    foliage.group.name = "foliage";
     scene.add(foliage.group);
     canopies.push(foliage);
     const fs = foliage.stats;
@@ -958,6 +982,7 @@ async function main() {
       SHRUB_FOLIAGE,
     );
     shrubs.update(0, 0);
+    shrubs.group.name = "shrubs";
     scene.add(shrubs.group);
     canopies.push(shrubs);
     const ss = shrubs.stats;
@@ -1000,6 +1025,7 @@ async function main() {
         budget.tier === "reduced",
       );
       foliage.update(0, 0);
+      foliage.group.name = "foliage";
       scene.add(foliage.group);
       canopies.push(foliage);
     }
@@ -1105,6 +1131,7 @@ async function main() {
     if (p) arriveAt(p);
   });
   const beacon = new Beacon();
+  beacon.group.name = "beacon";
   scene.add(beacon.group);
 
   const chase = new ChaseCam();
@@ -1147,8 +1174,10 @@ async function main() {
   const PLANE_NEAR = camera.near;
 
   const model = new AircraftModel(budget);
+  model.group.name = "model";
   scene.add(model.group);
   const droneModel = new DroneModel(model);
+  droneModel.group.name = "dronemodel";
   scene.add(droneModel.group);
 
   const osd = new Osd(ui);
@@ -1163,6 +1192,7 @@ async function main() {
   const airTraffic = new AirTrafficLayer({ scene, ui, model, origin, groundAt: terrain.heightAt, shotMode });
   // Trains and boats; see app/transit.ts.
   const transit = new TransitLayer({ scene, ui, model, origin, cityId: city.id, groundAt: terrain.heightAt, waterY: waterLevel, landmarks, shotMode });
+  airTraffic.render.group.name = "airtraffic";
   const drawSize = new THREE.Vector2();
   // Plane spotting over the live traffic; see app/spotgame.ts.
   const spotGame = new SpotGame(ui, airTraffic, () => city.name);
@@ -1443,6 +1473,9 @@ async function main() {
     // every build, which is a tail metric that cannot distinguish anything.
     const rawDt = clock.getDelta();
     const dt = Math.min(0.05, rawDt);
+    prof.cpuBegin("frame");
+    prof.begin("frame");
+    if (prof.objects && shotFrames % 30 === 0) installObjectProfiling(scene);
     // The animation clock stays at zero for a screenshot. It drives the cloud
     // drift, the sky and the beacon, and a wall-clock-derived phase is the one
     // thing that would make two runs of the same URL differ.
@@ -1707,7 +1740,9 @@ async function main() {
       const carDir = (car?.headingDeg ?? 0) * Math.PI / 180;
       const vx = carActive && car ? Math.sin(carDir) * car.speed : droneActive ? drone.velocity.x : 0;
       const vz = carActive && car ? -Math.cos(carDir) * car.speed : droneActive ? drone.velocity.z : 0;
+      prof.cpuBegin("drape");
       detailRing.follow(camera.position.x, camera.position.z, vx, vz);
+      prof.cpuEnd("drape");
     }
 
     // Ease the lens. ~0.4 s to settle, and the projection matrix is rebuilt
@@ -1790,14 +1825,20 @@ async function main() {
     const light = computeLighting(solar, wx);
 
     renderer.getDrawingBufferSize(drawSize);
+    prof.cpuBegin("airtraffic");
     airTraffic.update(camera, drawSize.y, dt, light.night, layers.traffic, droneActive ? drone.position : carActive ? undefined : ac.position);
+    prof.cpuEnd("airtraffic");
     {
       const me = carActive && car ? car.position : droneActive ? drone.position : ac.position;
       const hdg = carActive && car ? car.headingDeg : droneActive ? drone.yawDeg : ac.headingDeg;
+      prof.cpuBegin("spotgame");
       spotGame.update(camera, dt, { x: me.x, y: me.y, z: me.z, headingDeg: hdg }, layers.traffic);
+      prof.cpuEnd("spotgame");
       minimap.setTraffic(layers.traffic ? spotGame.near : []);
     }
+    prof.cpuBegin("transit");
     transit.update(camera, drawSize.y, dt, light.night, layers.trains, layers.boats, airTraffic.tags.rects);
+    prof.cpuEnd("transit");
     minimap.setTransit(transit.blips);
     spotGame.transit = transit.blips;
 
@@ -1910,18 +1951,28 @@ async function main() {
     // Ask for the ground ahead. Cheap every frame: it only rescans once the
     // camera has moved a few hundred metres, and the rate limiter decides when
     // anything is actually sent.
+    prof.cpuBegin("live");
     live?.update(camera.position.x, camera.position.z);
+    prof.cpuEnd("live");
 
     // Keep the kerbs under the camera. Cheap every frame: it only rebuilds when
     // the camera has crossed a 400 m tile boundary.
+    prof.cpuBegin("pavement");
     pavement?.update(camera.position.x, camera.position.z);
+    prof.cpuEnd("pavement");
 
     // The street fields follow the same 400 m tiles, and each of them holds a
     // ring of its own size around the camera; see render/traffic.ts for why the
     // moving cars reach four times further than the parked ones.
+    prof.cpuBegin("lamps");
     lamps?.update(camera.position.x, camera.position.z);
+    prof.cpuEnd("lamps");
+    prof.cpuBegin("parked");
     parkedCars?.update(camera.position.x, camera.position.z);
+    prof.cpuEnd("parked");
+    prof.cpuBegin("bridges");
     bridges?.update(camera, renderer.getDrawingBufferSize(bridgeBufferSize).y, elapsed);
+    prof.cpuEnd("bridges");
     // The player's headlights and the lamps' light on the ground; see
     // render/streetlight.ts. `?noheadlights=1` and `?nolamplight=1` switch
     // each off, which is how tools/verify-night.ts proves its floor bites.
@@ -1987,13 +2038,17 @@ async function main() {
         x: car.position.x, y: car.position.y, z: car.position.z,
         headingDeg: car.headingDeg, braking: car.speed > 0.5 && car.lastAccel < -2,
       } : null;
+      prof.cpuBegin("traffic");
       traffic.update(camera.position.x, camera.position.z, dEl, ts);
+      prof.cpuEnd("traffic");
     }
 
     for (const fol of canopies) {
       // Rebuilt only when the camera has moved far enough for an instance's
       // level of detail to be stale; see render/trees.ts.
+      prof.cpuBegin("foliage");
       fol.update(camera.position.x, camera.position.z);
+      prof.cpuEnd("foliage");
       fol.setWind(wx.windSpeed, wx.windDir);
       const f = fol.uniforms;
       // The animation clock, which `?shot` holds at zero: a canopy that swayed
@@ -2034,7 +2089,18 @@ async function main() {
     // The sky probe, before anything that reads it. It re-renders on its own
     // cadence rather than every frame; see render/skyprobe.ts.
     skyProbe.setSize(quality.scale < 0.8 ? 32 : 64);
-    skyProbe.update(renderer, light, camAlt);
+    // `?off=` hides whole groups for every pass of this frame; restored below.
+    if (perfOff.size) {
+      perfHidden.length = 0;
+      for (const c of scene.children) {
+        if (c.visible && perfOff.has(c.name)) { c.visible = false; perfHidden.push(c); }
+      }
+    }
+    prof.cpuBegin("skyprobe");
+    prof.begin("skyprobe");
+    if (!perfOff.has("skyprobe")) skyProbe.update(renderer, light, camAlt);
+    prof.end();
+    prof.cpuEnd("skyprobe");
     // The canopy is instanced, so it cannot be drawn through the depth-only
     // override the cascades and the AO prepass use; it comes in as its own
     // scene carrying its own depth shader. See render/trees.ts.
@@ -2052,10 +2118,10 @@ async function main() {
     // around a 4.6 m box that already has a hard shadow under it is the quarter
     // of that cost with the least to show for it.
     const shadowCasters = [
-      ...(foliage ? [foliage.depthScene] : []),
-      ...(shrubs ? [shrubs.depthScene] : []),
-      ...(traffic ? [traffic.depthScene] : []),
-      ...(parkedCars ? [parkedCars.depthScene] : []),
+      ...(foliage && !perfOff.has("foliage") ? [foliage.depthScene] : []),
+      ...(shrubs && !perfOff.has("shrubs") ? [shrubs.depthScene] : []),
+      ...(traffic && !perfOff.has("traffic") ? [traffic.depthScene] : []),
+      ...(parkedCars && !perfOff.has("parkedcars") ? [parkedCars.depthScene] : []),
     ];
     // The AO prepass needs the SAME list. Anything whose vertex shader places
     // it, and which is therefore absent from this buffer, does not merely fail
@@ -2063,7 +2129,11 @@ async function main() {
     // whatever is BEHIND it. A car in a street canyon then shades against the
     // pavement under the far kerb and comes out black, which is exactly what it
     // did until this line stopped being a shorter list than the one above it.
-    sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale, shadowCasters);
+    prof.cpuBegin("sunshadow");
+    prof.begin("sunshadow");
+    if (!perfOff.has("shadow")) sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale, shadowCasters);
+    prof.end();
+    prof.cpuEnd("sunshadow");
     // The environment probe renders the city into a cube with its own camera
     // and its own viewport, where a gl_FragCoord lookup into a buffer built for
     // the main frame would be reading the wrong pixel of the wrong picture.
@@ -2079,12 +2149,20 @@ async function main() {
     droneModel.group.visible = false;
     airTraffic.render.group.visible = false;
     if (transit.render) transit.render.group.visible = false;
-    model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
+    prof.cpuBegin("aircraft");
+    prof.begin("aircraft");
+    if (!perfOff.has("aircraft")) model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
+    prof.end();
+    prof.cpuEnd("aircraft");
     droneModel.group.visible = droneShown;
     airTraffic.render.group.visible = trafficShown;
     if (transit.render) transit.render.group.visible = transitShown;
     sky.syncCamera(camera);
-    ao.render(renderer, scene, camera, shadowCasters);
+    prof.cpuBegin("ao");
+    prof.begin("ao");
+    if (!perfOff.has("ao")) ao.render(renderer, scene, camera, shadowCasters);
+    prof.end();
+    prof.cpuEnd("ao");
     setAo(1);
 
     // Drift angle: the difference between where the nose points and where the
@@ -2161,9 +2239,17 @@ async function main() {
 
     // Pass 1: the world, in linear HDR, into the offscreen target.
     renderer.setRenderTarget(target);
+    prof.cpuBegin("scene");
+    prof.begin("scene");
     renderer.render(scene, camera);
+    prof.end();
+    prof.cpuEnd("scene");
     // What this frame drew is what the next frame's water reflects.
-    waterHistory.capture(renderer, target, camera);
+    prof.cpuBegin("waterhist");
+    prof.begin("waterhist");
+    if (!perfOff.has("ssr")) waterHistory.capture(renderer, target, camera);
+    prof.end();
+    prof.cpuEnd("waterhist");
 
     // Pass 2 + 3: clouds raymarched at half resolution against that target's
     // depth, then a full-resolution present that folds them in and tone maps.
@@ -2172,8 +2258,26 @@ async function main() {
     composite.presentUniforms.uNight.value = light.night;
     composite.brightUniforms.uExposure.value = light.exposure * exposureScale;
     composite.brightUniforms.uNight.value = light.night;
+    prof.cpuBegin("composite");
+    prof.begin("composite");
     composite.render(renderer, target.texture, target.depthTexture);
+    prof.end();
+    prof.cpuEnd("composite");
+    for (const c of perfHidden) c.visible = true;
+    // `?perfsync`: drain the GPU every frame. Uncapped, Chrome queues ~20
+    // frames and pays for them all at whatever sync point comes next (the sky
+    // probe's readback), so one frame in ~45 took 100-400 ms and a 240-frame
+    // mean moved by 3 ms between two samples of the same pose. Drained, a frame
+    // costs CPU plus GPU with no overlap: an overstatement, but a stable one,
+    // and the difference a toggle makes is then that toggle's cost.
+    if (perfSync) {
+      const gl = renderer.getContext();
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, perfSyncPixel);
+    }
+    perfHidden.length = 0;
 
+    prof.cpuEnd("frame");
+    prof.frameEnd();
     if (timedFrames < frameRing.length) frameRing[timedFrames++] = rawDt * 1000;
     shotFrames++;
 
@@ -2330,10 +2434,19 @@ async function main() {
       },
       /** Start a fresh timing window, so warm-up frames are not in the sample. */
       resetTiming: () => { timedFrames = 0; },
+      /** Per-pass GPU and per-subsystem CPU means; see render/gpuprof.ts. */
+      profile: () => prof.report(),
+      resetProfile: () => prof.reset(),
+      setOff: (names: string[]) => {
+        perfOff.clear();
+        for (const n of names) perfOff.add(n);
+        composite.skip = perfOff;
+      },
       // Moves the clouds' clock only, so tools/verify-clouds.ts can ask what
       // one frame of cloud time does to a frame whose scene is otherwise still.
       stepClouds: (s: number) => { composite.timeOffset += s; },
       get timed() { return timedFrames; },
+      frameTrace: () => Array.from(frameRing.slice(0, timedFrames)),
       // Mean and p99, never the median.
       //
       // The median is what this used to report, and it lied by a factor of five.

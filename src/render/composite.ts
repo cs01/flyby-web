@@ -849,6 +849,8 @@ export class Composite {
   /** Metres the cloud shadow map spans. */
   private readonly shadowExtent: number;
   private shadowOn = false;
+  /** Stages left out, for tools/profile.ts: "clouds", "cloudshadow", "bloom". */
+  skip: ReadonlySet<string> = new Set();
   private sunUniforms: SunShadowUniforms | null = null;
 
   private readonly benchRepeats: number;
@@ -1027,8 +1029,9 @@ export class Composite {
     this.frame++;
     this.uniforms.uPhase.value.set(px, py);
     this.uniforms.uDepth.value = depth;
+    const clouds = !this.skip.has("clouds");
     renderer.setRenderTarget(this.march);
-    renderer.render(this.marchScene, this.camera);
+    if (clouds) renderer.render(this.marchScene, this.camera);
     for (let i = 0; i < this.benchRepeats; i++) {
       renderer.render(this.marchScene, this.camera);
       if (this.shadowOn) {
@@ -1046,31 +1049,32 @@ export class Composite {
     ru.uHistAux.value = read.textures[1];
     ru.uHistValid.value = this.historyValid && this.hasPrev ? 1 : 0;
     renderer.setRenderTarget(write);
-    renderer.render(this.reconScene, this.camera);
+    if (clouds) renderer.render(this.reconScene, this.camera);
     this.history = [write, read];
     this.historyValid = true;
 
     // Drawn after this frame's scene, so the ground reads last frame's map:
     // a frame of lag on something that moves at the wind's speed.
-    if (this.shadowOn) {
+    if (this.shadowOn && !this.skip.has("cloudshadow")) {
       renderer.setRenderTarget(this.shadowMap);
       renderer.render(this.shadowScene, this.camera);
     }
 
     // Bright pass, then one blur across and one down.
     this.brightUniforms.uScene.value = sceneColour;
+    const bloom = !this.skip.has("bloom");
     renderer.setRenderTarget(this.bloomA);
-    renderer.render(this.brightScene, this.camera);
+    if (bloom) renderer.render(this.brightScene, this.camera);
 
     this.blurUniforms.uSource.value = this.bloomA.texture;
     this.blurUniforms.uDirection.value.set(1, 0);
     renderer.setRenderTarget(this.bloomB);
-    renderer.render(this.blurScene, this.camera);
+    if (bloom) renderer.render(this.blurScene, this.camera);
 
     this.blurUniforms.uSource.value = this.bloomB.texture;
     this.blurUniforms.uDirection.value.set(0, 1);
     renderer.setRenderTarget(this.bloomA);
-    renderer.render(this.blurScene, this.camera);
+    if (bloom) renderer.render(this.blurScene, this.camera);
 
     this.presentUniforms.uScene.value = sceneColour;
     this.presentUniforms.uCloud.value = write.textures[0];

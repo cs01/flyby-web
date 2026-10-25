@@ -106,6 +106,7 @@ export class TransitLayer {
     this.model = new TransitModel(pack, this.o.origin);
     this.render = new TransitRender(this.o.model, pack);
     this.tags = new TransitTags(this.o.ui, pack);
+    this.render.group.name = "transit";
     this.o.scene.add(this.render.group);
     // The elevated structure stands where the trains run: every elevated
     // track point, hashed on a 10 m grid, gives its rail height.
