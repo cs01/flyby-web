@@ -1519,3 +1519,20 @@ html, body {
     flex-direction: column;
   }
 }
+
+/* The driver's-seat dash; see `dash` in main.ts. A bonnet's leading edge is
+   a shallow arc, so the top of the silhouette is an ellipse wider than the
+   frame, and a soft upper edge so it reads as out of focus at 0.6 m. */
+#dash {
+  display: none;
+  position: fixed;
+  left: -10%;
+  right: -10%;
+  bottom: -14vh;
+  height: 25vh;
+  border-radius: 50% 50% 0 0 / 38% 38% 0 0;
+  background: linear-gradient(to bottom, rgba(14, 15, 18, 0.0) 0%, rgba(14, 15, 18, 0.88) 9%, #08090b 40%);
+  box-shadow: 0 -6px 14px rgba(8, 9, 11, 0.35);
+  pointer-events: none;
+  z-index: 1;
+}

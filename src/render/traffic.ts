@@ -730,6 +730,8 @@ export class Traffic extends CarField {
   readonly sim: TrafficSim;
   /** The lamps as stable points once they are under a few pixels. */
   readonly glow: GlowPoints;
+  /** The player's car, drawn with the traffic, or null when not driving. */
+  player: { x: number; y: number; z: number; headingDeg: number; braking: boolean } | null = null;
   private readonly flat = new Float32Array(STRIDE);
   private readonly pose: Pose = { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 };
 
@@ -798,6 +800,16 @@ export class Traffic extends CarField {
       f[0] = p.x; f[1] = p.z; f[2] = p.dirX; f[3] = p.dirZ;
       f[4] = p.y; f[5] = c.brake; f[6] = c.scale; f[7] = 1;
       f[8] = c.tint; f[9] = c.archetype; f[10] = c.cls; f[11] = c.rank;
+      this.push(f, 0);
+    }
+    if (this.player) {
+      // A red saloon (palette slot 7 of 12), lights on, brake lamps from the
+      // car's own deceleration. Its origin is the contact patch, like every
+      // other car's, so the bonnet sits where the driver's seat says.
+      const h = (this.player.headingDeg * Math.PI) / 180;
+      f[0] = this.player.x; f[1] = this.player.z; f[2] = Math.sin(h); f[3] = -Math.cos(h);
+      f[4] = this.player.y; f[5] = this.player.braking ? 1 : 0; f[6] = 1; f[7] = 1;
+      f[8] = 7.5 / 12; f[9] = 0.01; f[10] = 0; f[11] = 0;
       this.push(f, 0);
     }
     this.end();

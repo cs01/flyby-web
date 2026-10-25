@@ -64,14 +64,17 @@ const BAND_BOTTOM = 0.80;
 
 /** Road luminance floor per pose, 0..255; see the printed measurements. */
 //
-// Measured: dusk 22.7 lit against 13.7 unlit; Loop at night 34.3 against
-// 25.5; Seventh Avenue 76.4 against 17.6 (the dark Loop numbers are mostly the
-// lit shopfronts' bounce, which is why the gap there is narrower). Each floor
-// sits between the two, nearer the lit number.
+// Measured from the driver's seat (1.25 m, 62 degree lens): dusk 17.7 lit
+// against 3.2 with neither headlights nor lamp light; the Loop at night 25.3
+// against 3.5; Seventh Avenue 56.8 against 4.1. Before this change the road
+// band was lit only by procedural pools that painted the cross street ahead as
+// one flat bright stripe, which is why the dark probe turns them off too
+// (render/streetlight.ts, lampGridCovers). Each floor sits about two thirds of
+// the way from the dark number to the lit one.
 const ROAD_FLOOR: Record<string, number> = {
-  "chicago-drive-dusk": 19,
-  "chicago-drive-night": 30,
-  "manhattan-drive-night": 45,
+  "chicago-drive-dusk": 13,
+  "chicago-drive-night": 18,
+  "manhattan-drive-night": 39,
 };
 
 /** Lane ceilings and floors, as in test/trafficmodel.check.ts. */

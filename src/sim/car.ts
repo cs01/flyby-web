@@ -62,8 +62,17 @@ const DRAG = 2.2;
 const TURN_SPEED = 9;
 const TURN_ANGLE_DEG = 55;
 
-/** Eye height above the carriageway, in metres. A saloon's, near enough. */
-export const CAR_EYE_HEIGHT_M = 1.5;
+/**
+ * Eye height above the carriageway, in metres: a saloon driver's. It was 1.5,
+ * which is a van's, and put the bonnet out of sight under the frame; at 1.25
+ * the player's own car (drawn in render/traffic.ts) shows as a strip of bonnet
+ * along the bottom, which is most of what makes a street view read as driving.
+ */
+export const CAR_EYE_HEIGHT_M = 1.25;
+/** The driver sits left of the car's centre line (left-hand drive) and a
+ *  little behind its middle, metres. */
+export const CAR_SEAT_LEFT_M = 0.37;
+export const CAR_SEAT_BACK_M = 0.35;
 
 /**
  * Camera near plane while driving, in metres.
@@ -210,6 +219,8 @@ export class Car {
   speed = 0;
   /** True when the road ran out and there was nowhere legal to go. */
   stalled = false;
+  /** Change of speed over the last update, m/s^2: the brake lamps read it. */
+  lastAccel = 0;
 
   private readonly graph: RoadGraph;
   private readonly index: RoadIndex;
@@ -302,7 +313,25 @@ export class Car {
 
   /** Eye point for the camera. */
   eye(out: THREE.Vector3): THREE.Vector3 {
-    return out.set(this.position.x, this.position.y + CAR_EYE_HEIGHT_M, this.position.z);
+    const h = this.headingDeg * DEG;
+    const fx = Math.sin(h), fz = -Math.cos(h);
+    // Left of travel is (fz, -fx) in this x-east, z-south frame.
+    return out.set(
+      this.position.x + fz * CAR_SEAT_LEFT_M - fx * CAR_SEAT_BACK_M,
+      this.position.y + CAR_EYE_HEIGHT_M,
+      this.position.z - fx * CAR_SEAT_LEFT_M - fz * CAR_SEAT_BACK_M,
+    );
+  }
+
+  /**
+   * A chase camera: behind and above the car, looking where it is going.
+   * The CAM button flips between this and the driver's seat.
+   */
+  chaseEye(out: THREE.Vector3, quat: THREE.Quaternion): void {
+    const h = (this.headingDeg + this.lookYaw) * DEG;
+    const fx = Math.sin(h), fz = -Math.cos(h);
+    out.set(this.position.x - fx * 6.5, this.position.y + 2.3, this.position.z - fz * 6.5);
+    quat.setFromEuler(new THREE.Euler((this.lookPitch - 8) * DEG, -(this.headingDeg + this.lookYaw) * DEG, 0, "YXZ"));
   }
 
   /** Where the driver is looking: body heading plus the free look. */
@@ -411,6 +440,7 @@ export class Car {
     this.lookYaw = clamp(this.lookYaw + input.lookYawDeg, -LOOK_YAW_LIMIT, LOOK_YAW_LIMIT);
     this.lookPitch = clamp(this.lookPitch + input.lookPitchDeg, -CAR_PITCH_LIMIT, CAR_PITCH_LIMIT);
 
+    const speedBefore = this.speed;
     // --- Speed ------------------------------------------------------------
     const boost = clamp(input.boost, 0, 1);
     const top = Math.min(
@@ -437,6 +467,8 @@ export class Car {
     // could pass through another one is the single loudest thing a street-level
     // view can get wrong.
     if (traffic) this.yieldToTraffic(traffic, dt);
+
+    this.lastAccel = (this.speed - speedBefore) / dt;
 
     // --- Along the road ---------------------------------------------------
     this.advance(this.speed * dt);

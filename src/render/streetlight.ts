@@ -91,7 +91,7 @@ vec3 headLight(vec3 p, vec3 n) {
   for (int k = 0; k < 2; k++) {
     vec3 o = uHeadPos + r * (k == 0 ? -uHeadParams.z : uHeadParams.z);
     vec3 d = p - o;
-    float r2 = max(dot(d, d), 9.0);
+    float r2 = max(dot(d, d), 16.0);
     vec3 L = d * inversesqrt(r2);
     float fwd = dot(L, f);
     if (fwd <= 0.05) continue;
@@ -124,12 +124,22 @@ vec3 streetLight(vec3 p, vec3 n) {
   return lampLight(p, n) + headLight(p, n);
 }
 
-/** Whether the lamp grid covers p: inside it the shader's old mean pool is
- *  replaced by real lamps, outside it the mean pool stands. */
+/**
+ * Whether the lamp grid covers p: inside it the shaders' old procedural pool
+ * is replaced by the real lamps, outside it the mean pool stands for lamps too
+ * far off to resolve. Independent of whether the lamps are lit, so
+ * ?nolamplight=1 is a street with no lamp light rather than the old pools.
+ *
+ * Inside the window the old pool also had a defect of its own: its far-field
+ * mean term keys off the ribbon's u derivative, which a cross street seen
+ * end-on from the kerb blows up, so the whole width of the junction ahead was
+ * painted one flat bright band (the light stripe across the road in the
+ * owner's dusk frame from the Loop).
+ */
 float lampGridCovers(vec3 p) {
   vec2 c = (p.xz - uLampGridOrigin.xy) / uLampGridOrigin.z;
   vec2 e = min(c, vec2(${GRID_CELLS}.0) - c);
-  return uLampGridOrigin.w > 0.0 ? smoothstep(0.0, 4.0, min(e.x, e.y)) : 0.0;
+  return smoothstep(0.0, 4.0, min(e.x, e.y));
 }
 `;
 
@@ -164,7 +174,7 @@ export const streetLightUniforms: StreetLightUniforms = {
   uLampIntensity: { value: 250 },
   uHeadPos: { value: new THREE.Vector3() },
   uHeadFwd: { value: new THREE.Vector3(0, 0, -1) },
-  uHeadParams: { value: new THREE.Vector4(0, 0, 0.62, 1500) },
+  uHeadParams: { value: new THREE.Vector4(0, 0, 0.62, 1600) },
 };
 
 /** A lens, as the grid wants it. */

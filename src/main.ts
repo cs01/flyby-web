@@ -258,6 +258,14 @@ function goToCoords(lat: number, lon: number): void {
 async function main() {
   const canvas = document.getElementById("view") as HTMLCanvasElement;
   const ui = document.getElementById("ui")!;
+  // The driver's-seat dash: a dark silhouette along the bottom of the frame
+  // with the curve of a bonnet's leading edge in it. Drawing the player's
+  // car from inside its own body put the cabin's pillars, clipped by the
+  // near plane, across the windscreen; a silhouette says "you are in a car"
+  // and costs nothing. Outside #ui, so `?shot` frames have it too.
+  const dash = document.createElement("div");
+  dash.id = "dash";
+  canvas.insertAdjacentElement("afterend", dash);
   const loading = new LoadingScreen();
 
   // A black screen on a phone is unreportable without these: `?diag=1` prints
@@ -1116,7 +1124,15 @@ async function main() {
   // corridor and a narrow lens down one reads as a telephoto shot of a street
   // rather than as being in it; the drone's 78 is a lens choice for an FPV look
   // and puts too much barrel on a horizon that is now at eye level.
-  const CAR_FOV = 70;
+  //
+  // 62 rather than the 70 it was: from 1.25 m a 70 degree lens stretched the
+  // parked cars at the frame edges into wedges, and the owner's frames from
+  // the car read as a wide-angle photograph rather than a windscreen.
+  const CAR_FOV = 62;
+  /** Chase view while driving: an odd count of CAM presses since the car was
+   *  entered. The driver's seat is the default. */
+  let carCamBase = 0;
+  const carChase = (): boolean => carActive && ((input.cameraCycled - carCamBase) & 1) === 1;
   /**
    * Height above the ground under which the detail ring follows the camera.
    *
@@ -1439,7 +1455,11 @@ async function main() {
       driveEntered = true;
       const w = origin.toWorld(shotCam.lat, shotCam.lon);
       _driveFrom.set(w.x, shotCam.altM, w.z);
-      if (car.enterFrom(_driveFrom, shotCam.hdgDeg, _driveStill, terrain.heightAt)) carActive = true;
+      if (car.enterFrom(_driveFrom, shotCam.hdgDeg, _driveStill, terrain.heightAt)) {
+        carActive = true;
+        // `?drive=1&chase=1` starts in the chase view, for the shots.
+        carCamBase = input.cameraCycled - (new URLSearchParams(location.search).has("chase") ? 1 : 0);
+      }
     }
 
     // --- Which machine is flying ------------------------------------------
@@ -1491,6 +1511,7 @@ async function main() {
         const vel = droneActive ? drone.velocity : ac.velocity;
         if (car.enterFrom(from, hdg, vel, terrain.heightAt)) {
           carActive = true;
+          carCamBase = input.cameraCycled;
           droneActive = false;
           input.setPointerLock(true);
           hud.toast("Car: W/S drive \u00b7 A/D steer and pick the turning \u00b7 mouse looks \u00b7 G to get out");
@@ -1622,12 +1643,18 @@ async function main() {
 
     chase.mode = CAMERA_MODES[input.cameraCycled % CAMERA_MODES.length];
     if (carActive && car) {
-      // Straight off the car, like the drone: the camera IS the driver's head,
-      // an eye height over the carriageway the car is standing on.
-      car.eye(camera.position);
       camera.up.set(0, 1, 0);
-      car.orientation(camera.quaternion);
+      dash.style.display = carChase() ? "none" : "block";
+      if (carChase()) {
+        car.chaseEye(camera.position, camera.quaternion);
+      } else {
+        // Straight off the car, like the drone: the camera IS the driver's
+        // head, in the driver's seat over the carriageway.
+        car.eye(camera.position);
+        car.orientation(camera.quaternion);
+      }
     } else if (droneActive) {
+      dash.style.display = "none";
       camera.up.set(0, 1, 0);
       if (chase.mode === "cockpit") {
         // FPV: the camera IS the machine, and the lean it has is the lean it
@@ -1644,6 +1671,7 @@ async function main() {
         camera.position.copy(drone.position).add(_droneOffset);
       }
     } else {
+      dash.style.display = "none";
       chase.update(camera, ac, dt, input.lookBack, terrain.heightAt(camera.position.x, camera.position.z));
     }
 
@@ -1950,6 +1978,12 @@ async function main() {
     trafficNow = ts;
     if (traffic) {
       traffic.sim.player = carActive && car ? car.obstacle() : null;
+      // The player's own car, drawn in the chase view; from the driver's seat
+      // the dash silhouette stands in for it (see `dash`).
+      traffic.player = carActive && car && carChase() ? {
+        x: car.position.x, y: car.position.y, z: car.position.z,
+        headingDeg: car.headingDeg, braking: car.speed > 0.5 && car.lastAccel < -2,
+      } : null;
       traffic.update(camera.position.x, camera.position.z, dEl, ts);
     }
 
@@ -2209,6 +2243,19 @@ async function main() {
        * its own lane. `biasM` displaces every car sideways first, which is how
        * tools/verify-night.ts proves the bound can fail.
        */
+      /** What the street traffic costs on the CPU: one sim step and the whole
+       *  per-frame update (step, poses, upload), in ms, timed over `frames`
+       *  steps of 1/60 s so a held shot clock still measures something. */
+      streetTrafficCost(frames = 120) {
+        if (!traffic) return null;
+        let step = 0, update = 0;
+        for (let i = 0; i < frames; i++) {
+          traffic.update(camera.position.x, camera.position.z, 1 / 60, trafficNow);
+          step += traffic.sim.stats.lastStepMs;
+          update += traffic.stats.lastBuildMs;
+        }
+        return { cars: traffic.sim.cars.length, stepMs: step / frames, updateMs: update / frames };
+      },
       streetLanes(seconds = 20, radiusM = 200, biasM = 0) {
         if (!traffic || !roadGraph) return null;
         traffic.sim.player = carActive && car ? car.obstacle() : null;
