@@ -503,6 +503,16 @@ vec3 parapetColour(Facade p) {
   return mix(p.colour, vec3(0.42, 0.41, 0.39), 0.55 + 0.25 * hash11(p.seed * 31.0 + 5.0));
 }
 
+// The colour a tower's crown is floodlit in: mostly white (the Empire State's
+// default, metal halide), some warm sodium-white, a few in a colour.
+vec3 floodColour(Facade p) {
+  float h = hash11(p.seed * 61.0 + 2.0);
+  return h < 0.50 ? vec3(1.0, 0.97, 0.92)
+       : h < 0.75 ? vec3(1.0, 0.82, 0.55)
+       : h < 0.88 ? vec3(0.55, 0.70, 1.0)
+       :            vec3(1.0, 0.65, 0.30);
+}
+
 // Share of windows with a through-the-window air conditioner, by archetype.
 float acRate(float a) {
   ${acRateGlsl()}
@@ -628,6 +638,10 @@ void main() {
     roughness = mix(0.75, 0.28, metal);
     glassMask = 0.45 * metal;
     skyOcc = 1.0;
+    // A spire on a tower is floodlit all the way up after dark.
+    if (uNight > 0.02 && bldH >= 100.0) {
+      emissive += floodColour(fp) * uNight * (0.12 + 0.55 * dot(albedo, vec3(0.333))) * detailOn;
+    }
   } else if (part > 5.5) {
     // --- Water tank -------------------------------------------------------
     // Cedar staves gone silver-brown, bound with dark steel hoops every half
@@ -1828,6 +1842,20 @@ void main() {
           emissive += vec3(1.0, 0.88, 0.70) * glassMask * uNight * open_ * 0.26;
         }
       }
+    }
+
+    // --- FLOODLIT CROWN --------------------------------------------------
+    // Past 150 m the top of a tower is lit from below after dark: the Empire
+    // State's white, the Chrysler's crown, the setback stages of every Deco
+    // tower in Midtown. The top tenth of each record (14 m at least), so a
+    // tower mapped as setback parts lights every setback, which is what the
+    // real ones do. Brighter toward the top, where the lamps on the setback
+    // below are aimed.
+    if (uNight > 0.02 && bldH >= 150.0 && detailOn > 0.5) {
+      float crownH = max(14.0, 0.10 * bldH);
+      float ct = clamp((vUv.y - (bldH - crownH)) / crownH, 0.0, 1.0);
+      float crown = step(bldH - crownH, vUv.y) * (0.35 + 0.65 * ct);
+      emissive += floodColour(fp) * crown * uNight * (0.10 + 0.5 * dot(albedo, vec3(0.333)));
     }
 
     // Above the wall top, a PART_WALL fragment is the outer face of the
@@ -3431,6 +3459,9 @@ export interface BuildingStats {
 }
 
 const DETAIL_CELL_M = 100;
+/** Obstruction lighting threshold, metres above ground (FAA: 200 ft is the
+ *  lowest; 150 m is where a skyline's lights read from the air). */
+const WARNING_LIGHT_M = 150;
 
 export class Buildings {
   readonly group = new THREE.Group();
@@ -3448,6 +3479,7 @@ export class Buildings {
   private detailJob: { x: number; z: number; cells: number[][]; next: number; s: Scratch; sync: boolean } | null = null;
   /** Triangles in the detail layer as last built; -1 before the first build. */
   detailTriangles = -1;
+  private warningMat: THREE.PointsMaterial | null = null;
   /** Detail radii; a phone gets a little over half of each. */
   private streetM = STREET_M;
   private reliefM = RELIEF_M;
@@ -3586,6 +3618,7 @@ export class Buildings {
       if (l) l.push(k); else this.detailCells.set(key, [k]);
     }
     this.group.add(this.detail);
+    this.addWarningLights(pack);
 
     const tex = buildFacadeTexture(params);
     this.uniforms.uFacade.value = tex;
@@ -3610,6 +3643,49 @@ export class Buildings {
   }
 
   /**
+   * AIRCRAFT WARNING LIGHTS. Every structure past 150 m carries red
+   * obstruction lights at its top corners (FAA AC 70/7460-1, L-810/L-864),
+   * and after dark they are what a skyline seen from the air is punctuated
+   * by. One red point per corner of each tower's highest record, and one on a
+   * spire's tip; a fixed pixel size, because a lamp is a point at any range.
+   */
+  private addWarningLights(pack: CityPack): void {
+    const tallest = new Map<number, number>();
+    for (let k = 0; k < this.detailOf.length; k += 2) {
+      const i = this.detailOf[k], b = pack.buildings[i];
+      if (b.topM < WARNING_LIGHT_M) continue;
+      const key = b.group ?? -1 - i;
+      const cur = tallest.get(key);
+      if (cur === undefined || pack.buildings[cur].topM < b.topM) tallest.set(key, i);
+    }
+    const pos: number[] = [];
+    for (const i of tallest.values()) {
+      const b = pack.buildings[i];
+      const y = (this.groundYOf.get(i) ?? 0) + b.topM + 0.6;
+      if (shapedRoofFor(b, b.topM - b.baseM)) { pos.push(b.cx, y, b.cz); continue; }
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (let v = 0; v < b.ring.length; v += 2) {
+        x0 = Math.min(x0, b.ring[v]); x1 = Math.max(x1, b.ring[v]);
+        z0 = Math.min(z0, b.ring[v + 1]); z1 = Math.max(z1, b.ring[v + 1]);
+      }
+      // The bounding box corners pulled a metre in, kept only where they are
+      // over the roof (an L or a circle has corners in the air).
+      const before = pos.length;
+      for (const [x, z] of [[x0 + 1, z0 + 1], [x1 - 1, z0 + 1], [x1 - 1, z1 - 1], [x0 + 1, z1 - 1]]) {
+        if (insideRing(b.ring, x, z)) pos.push(x, y, z);
+      }
+      if (pos.length === before) pos.push(b.cx, y, b.cz);
+    }
+    if (!pos.length) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    this.warningMat = new THREE.PointsMaterial({
+      color: 0xff2a14, size: 3, sizeAttenuation: false, transparent: true, opacity: 0, depthWrite: false,
+    });
+    this.group.add(new THREE.Points(geo, this.warningMat));
+  }
+
+  /**
    * Rebuild the detail layer round the camera when it has moved far enough.
    *
    * TIME-SLICED. Building the layer over Midtown is 4,200 buildings and 130k
@@ -3620,6 +3696,10 @@ export class Buildings {
    */
   updateDetail(x: number, z: number): void {
     if (!this.pack) return;
+    // The warning lights burn by day too, but against a sunlit sky a 3 px red
+    // point is invisible; fading them in with the night keeps them from
+    // reading as specks of dirt on a daylight frame.
+    if (this.warningMat) this.warningMat.opacity = Math.min(1, Math.max(0, (this.uniforms.uNight.value - 0.1) * 2));
     const job = this.detailJob;
     if (!job) {
       if (this.detailAt && Math.hypot(x - this.detailAt.x, z - this.detailAt.z) < DETAIL_REBUILD_M) return;

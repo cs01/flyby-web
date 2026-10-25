@@ -99,6 +99,7 @@ function num(v: string | undefined, what: string): number {
 // --- Overpass -------------------------------------------------------------
 
 let lastRequestAt = 0;
+const strikes = new Map<string, number>();
 
 async function politeGap(): Promise<void> {
   const wait = POLITE_DELAY_MS - (Date.now() - lastRequestAt);
@@ -112,7 +113,12 @@ async function politeGap(): Promise<void> {
 async function overpass(query: string, attempts = MAX_ATTEMPTS): Promise<OverpassResponse> {
   let lastErr = "";
   for (let attempt = 0; attempt < attempts; attempt++) {
-    const endpoint = ENDPOINTS[attempt % ENDPOINTS.length];
+    // An instance that has timed out twice is left alone for the rest of the
+    // run: each timeout costs REQUEST_TIMEOUT_MS, and on 2026-10-24 two of the
+    // three timed out on every request while overpass-api.de answered.
+    const live = ENDPOINTS.filter((e) => (strikes.get(e) ?? 0) < 2);
+    const pool = live.length ? live : ENDPOINTS;
+    const endpoint = pool[attempt % pool.length];
     await politeGap();
     try {
       const res = await fetch(endpoint, {
@@ -143,6 +149,7 @@ async function overpass(query: string, attempts = MAX_ATTEMPTS): Promise<Overpas
       lastRequestAt = Date.now();
       if (e instanceof Error && e.message.startsWith("400 ")) throw e;
       lastErr = e instanceof Error ? e.message : String(e);
+      if (/timed out/i.test(lastErr)) strikes.set(endpoint, (strikes.get(endpoint) ?? 0) + 1);
     }
     const backoff = Math.min(60_000, 2000 * 2 ** attempt);
     process.stdout.write(`    retry in ${(backoff / 1000).toFixed(0)}s (${lastErr})\n`);
