@@ -33,7 +33,7 @@ import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./si
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
-import { buildRoadGraph, type RoadGraph } from "./data/roadgraph";
+import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
 import {
   densifyLandmarkWays,
@@ -76,6 +76,7 @@ import type { StreetLampUniforms } from "./render/streetlamps";
 import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
 import { pixelAngle } from "./render/glowpoints";
 import { ledShare, streetLightUniforms } from "./render/streetlight";
+import { measureLanes } from "./sim/lanecheck";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { WaterHistory } from "./render/waterssr";
 import { Foliage, SHRUB_FOLIAGE, TREE_LOD_TRIANGLES } from "./render/trees";
@@ -2176,6 +2177,34 @@ async function main() {
   Object.assign(window as unknown as Record<string, unknown>, {
     flybyShot: {
       get frames() { return shotFrames; },
+      /**
+       * The lane gate's measurement, from the SIM rather than from pixels:
+       * step the street traffic `seconds` at a fixed 1/30 s (the shot clock is
+       * held, so nothing else moves), then measure every car within `radiusM`
+       * of the camera against its centreline, and the player's car against
+       * its own lane. `biasM` displaces every car sideways first, which is how
+       * tools/verify-night.ts proves the bound can fail.
+       */
+      streetLanes(seconds = 20, radiusM = 200, biasM = 0) {
+        if (!traffic || !roadGraph) return null;
+        traffic.sim.player = carActive && car ? car.obstacle() : null;
+        for (let i = 0; i < Math.round(seconds * 30); i++) traffic.sim.step(1 / 30);
+        const r = measureLanes(traffic.sim, roadGraph, camera.position.x, camera.position.z, radiusM, biasM);
+        let playerLaneErrM: number | null = null;
+        let overlapsPlayer = 0;
+        const tr = car?.track;
+        if (carActive && car && tr) {
+          const e = roadGraph.edges[tr.half.edge];
+          playerLaneErrM = Math.abs(car.lateralM + biasM - laneOffsetM(e, tr.half.forward));
+          const o = car.obstacle()!;
+          for (const c of traffic.sim.cars) {
+            const p = traffic.sim.pose(c, { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 });
+            const rx = p.x - o.x, rz = p.z - o.z;
+            if (Math.abs(rx * o.dirX + rz * o.dirZ) < 4.6 && Math.abs(-rx * o.dirZ + rz * o.dirX) < 1.8) overlapsPlayer++;
+          }
+        }
+        return { ...r, playerLaneErrM, overlapsPlayer };
+      },
       // What the live-traffic layer has and draws, for the traffic checks.
       get traffic() {
         return {

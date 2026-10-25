@@ -44,6 +44,7 @@ import { hash1, type StreetWorld } from "../src/data/streetfurniture";
 import { ROAD_ONEWAY, parseRoadPack, roadWidthM, type Road, type RoadPack } from "../src/data/roadpack";
 import { buildRoadGraph, type RoadGraph } from "../src/data/roadgraph";
 import { laneLayout, lanesForTravel } from "../src/data/lanes";
+import { inBend, onCentreline } from "../src/sim/lanecheck";
 import { TrafficSim, trafficable, CAR_LENGTH_M, HARD_GAP_M, type Pose, type Vehicle } from "../src/sim/trafficsim";
 import type { Weather } from "../src/data/weather";
 
@@ -572,48 +573,6 @@ const { Origin } = await import("../src/geo");
 
 async function loadRoads(id: string): Promise<RoadPack> {
   return parseRoadPack(await Bun.file(`${CITIES_DIR}${id}.roads`).arrayBuffer());
-}
-
-/** Nearest point on a polyline, its travel tangent, and the signed lateral of
- *  (x, z) right of that tangent. */
-/**
- * Whether (x, z) is inside the zone round a centreline vertex where the road
- * turns by 3 degrees or more: a hinge the sim rounds off, with no tangent to
- * measure a heading against. The zone is the half width (an outside lane is
- * that far from the vertex before it has turned at all) plus 3 m plus
- * 6 tan(angle / 2), so a 90 degree corner on a 7 m street is 12.5 m and a
- * 5 degree kink 6.8 m.
- */
-function inBend(pts: Float32Array, x: number, z: number, halfW: number): boolean {
-  for (let k = 2; k + 2 < pts.length; k += 2) {
-    const ax = pts[k] - pts[k - 2], az = pts[k + 1] - pts[k - 1];
-    const bx = pts[k + 2] - pts[k], bz = pts[k + 3] - pts[k + 1];
-    const c = (ax * bx + az * bz) / ((Math.hypot(ax, az) * Math.hypot(bx, bz)) || 1);
-    const th = Math.acos(Math.max(-1, Math.min(1, c)));
-    if (th < 3 * Math.PI / 180) continue;
-    if (Math.hypot(x - pts[k], z - pts[k + 1]) < halfW + 3 + 6 * Math.tan(th / 2)) return true;
-  }
-  return false;
-}
-
-function onCentreline(pts: Float32Array, x: number, z: number, forward: boolean): { lat: number; tx: number; tz: number; d: number } {
-  let best = Infinity, bl = 0, btx = 1, btz = 0;
-  for (let k = 2; k < pts.length; k += 2) {
-    const ax = pts[k - 2], az = pts[k - 1], bx = pts[k], bz = pts[k + 1];
-    const dx = bx - ax, dz = bz - az;
-    const l2 = dx * dx + dz * dz;
-    if (l2 <= 0) continue;
-    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
-    const qx = ax + t * dx, qz = az + t * dz;
-    const d = Math.hypot(x - qx, z - qz);
-    if (d < best) {
-      const L = Math.sqrt(l2);
-      const tx = (forward ? dx : -dx) / L, tz = (forward ? dz : -dz) / L;
-      best = d; btx = tx; btz = tz;
-      bl = (x - qx) * -tz + (z - qz) * tx;
-    }
-  }
-  return { lat: bl, tx: btx, tz: btz, d: best };
 }
 
 /** The lane offsets the analytic traffic used before this change: the running

@@ -794,6 +794,9 @@ function cloudPoses(): Pose[] {
   return out;
 }
 
+/** An expression evaluated in the page after each capture; see capture. */
+let evalExpr = "";
+
 /** Extra query parameters appended to every pose, e.g. `--query terrainDebug=3`. */
 let extraQuery = "";
 /**
@@ -943,6 +946,11 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const png = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64");
   const file = `${outDir}/${p.name}${tag}.png`;
   writeFileSync(file, png);
+  // `--eval EXPR`: a gate's own measurement of the page, taken AFTER the frame
+  // so it cannot change the picture, written beside it as JSON.
+  if (evalExpr) {
+    writeFileSync(`${outDir}/${p.name}${tag}.eval.json`, JSON.stringify(await cdp.eval(evalExpr)));
+  }
 
   // `--step-clouds 0.0167,10`: after the main capture, advance the clouds'
   // clock by each amount in turn (cumulatively) and capture again as
@@ -979,6 +987,7 @@ async function main(): Promise<void> {
   const profileDir = arg("profile", "/tmp/flyby-shots-profile")!;
   const repeat = has("repeat");
   extraQuery = arg("query", "") ?? "";
+  evalExpr = arg("eval", "") ?? "";
   nudgeM = Number(arg("nudge", "0"));
   stepClouds = (arg("step-clouds", "") ?? "").split(",").filter(Boolean).map(Number);
 
