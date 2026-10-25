@@ -77,6 +77,8 @@ import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
 import { pixelAngle } from "./render/glowpoints";
 import { ledShare, streetLightUniforms } from "./render/streetlight";
 import { measureLanes } from "./sim/lanecheck";
+import { junctionCaps } from "./data/junctioncaps";
+import { medianPieces } from "./data/medians";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { WaterHistory } from "./render/waterssr";
 import { Foliage, SHRUB_FOLIAGE, TREE_LOD_TRIANGLES } from "./render/trees";
@@ -531,8 +533,15 @@ async function main() {
       `longest chain ${bs.longestChainM.toFixed(0)} m, ${bs.buildMs} ms`,
     );
   }
+  // Built before the ribbons, which cap their junctions from it; see
+  // data/junctioncaps.ts.
+  const roadGraph: RoadGraph | null = roadPack ? buildRoadGraph(roadPack.roads) : null;
   if (roadPack) {
-    roads = new Roads(roadPack, terrain.heightAt, sunShadow.uniforms, budget, bridgeDecks!.deck);
+    roads = new Roads(
+      roadPack, terrain.heightAt, sunShadow.uniforms, budget, bridgeDecks!.deck,
+      roadGraph ? junctionCaps(roadGraph) : [],
+      medianPieces(roadPack.roads),
+    );
     scene.add(roads.group);
     const rs = roads.stats;
     console.log(
@@ -559,7 +568,6 @@ async function main() {
   // no .roads pack simply has no car, the same way it has no skyline.
   // Kept alongside the car because the street sign walks it, and the car owns
   // its graph privately.
-  const roadGraph: RoadGraph | null = roadPack ? buildRoadGraph(roadPack.roads) : null;
   const car = roadGraph ? new Car(roadGraph) : null;
   if (car && bridgeDecks) car.setBridgeDecks(bridgeDecks.deck);
   if (car) {

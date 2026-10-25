@@ -39,6 +39,11 @@ import { GROUND_BOUNCE_GLSL, groundBounceUniforms, type GroundBounceUniforms } f
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { laneLayoutCached } from "../data/lanes";
+import type { JunctionCap } from "../data/junctioncaps";
+import type { MedianPiece } from "../data/medians";
+
+/** The class caps and medians are shaded as: one with no paint on it. */
+const RoadClassResidential = 5;
 import { streetLightUniforms, STREET_LIGHT_GLSL, type StreetLightUniforms } from "./streetlight";
 import { addRibbon, emptyRibbon, ribbonTriangleCost, type RibbonScratch } from "../data/ribbon";
 // The lamp spacing table, and the GLSL copy of it that this shader indexes. It
@@ -54,6 +59,13 @@ import {
   type RoadClass,
   type RoadPack,
 } from "../data/roadpack";
+
+/** Junction caps draw before every ribbon; see the cap loop in Roads. */
+const CAP_RANK = -1;
+/** A width under one lane, so the shader paints no edge, lane or centre line
+ *  across a cap. */
+const CAP_WIDTH_M = 3;
+const CAP_RANGE_M = 3000;
 
 /** Merge cell size, matching buildings.ts: big enough that draw calls stay in
  *  the low hundreds, small enough that frustum culling means something. */
@@ -758,6 +770,10 @@ export class Roads {
      * the same object; see data/bridgedeck.ts.
      */
     decks: readonly (Deck | null)[],
+    /** Tarmac under each junction's corners; see data/junctioncaps.ts. */
+    caps: readonly JunctionCap[] = [],
+    /** Paving between the halves of a divided road; see data/medians.ts. */
+    medians: readonly MedianPiece[] = [],
   ) {
     const t0 = performance.now();
     this.uniforms = makeRoadUniforms(shadow);
@@ -828,6 +844,50 @@ export class Roads {
 
     let triangles = 0;
     let meshes = 0;
+    // The junction caps: a disc each, in buckets ranked UNDER every ribbon
+    // (the ribbons write no depth, so draw order is what puts their paint on
+    // top), a whisker below the ribbon surface for the same reason. The
+    // material is the widest road's, with a width that paints no lines.
+    for (const c of caps) {
+      // A cap is a street-level fix: past 3 km a corner gap is under a pixel,
+      // and the triangles go to the ribbons instead.
+      if (!(Math.hypot(c.x, c.z) < Math.min(CAP_RANGE_M, classRange(c.cls, lod)))) continue;
+      const key = `cap:${Math.floor(c.x / CELL_M)},${Math.floor(c.z / CELL_M)}`;
+      let b = buckets.get(key);
+      if (!b) { b = { ribbon: emptyRibbon(), y: [], info: [], rank: CAP_RANK }; buckets.set(key, b); }
+      const v0 = b.ribbon.xz.length / 2;
+      const y = groundAt(c.x, c.z) + roadLiftM(0, 0) - 0.02;
+      const SEG = 20;
+      b.ribbon.xz.push(c.x, c.z);
+      b.ribbon.uv.push(0, 0.5);
+      b.y.push(y);
+      b.info.push(RoadClassResidential, c.surface, CAP_WIDTH_M, packLaneInfo(false, null, CAP_WIDTH_M));
+      for (let k = 0; k < SEG; k++) {
+        const a = (k / SEG) * Math.PI * 2;
+        const x = c.x + Math.cos(a) * c.radiusM, z = c.z + Math.sin(a) * c.radiusM;
+        b.ribbon.xz.push(x, z);
+        b.ribbon.uv.push(a * c.radiusM, 0.5);
+        b.y.push(groundAt(x, z) + roadLiftM(0, 0) - 0.02);
+        b.info.push(RoadClassResidential, c.surface, CAP_WIDTH_M, packLaneInfo(false, null, CAP_WIDTH_M));
+        b.ribbon.idx.push(v0, v0 + 1 + k, v0 + 1 + ((k + 1) % SEG));
+      }
+    }
+
+    for (const m of medians) {
+      if (!(Math.hypot(m.pts[0], m.pts[1]) < CAP_RANGE_M)) continue;
+      const key = `cap:${Math.floor(m.pts[0] / CELL_M)},${Math.floor(m.pts[1] / CELL_M)}`;
+      let b = buckets.get(key);
+      if (!b) { b = { ribbon: emptyRibbon(), y: [], info: [], rank: CAP_RANK }; buckets.set(key, b); }
+      const v0 = b.ribbon.xz.length / 2;
+      if (addRibbon(b.ribbon, m.pts, m.widthM) === 0) continue;
+      for (let k = v0; k < b.ribbon.xz.length / 2; k++) {
+        b.y.push(groundAt(b.ribbon.xz[k * 2], b.ribbon.xz[k * 2 + 1]) + roadLiftM(0, 0) - 0.02);
+        // Residential and narrow: a class and width the shader paints no
+        // line on, so a median is plain paving.
+        b.info.push(RoadClassResidential, pack.roads[m.road].surface, CAP_WIDTH_M, packLaneInfo(false, null, CAP_WIDTH_M));
+      }
+    }
+
     for (const b of buckets.values()) {
       if (!b.ribbon.idx.length) continue;
       const n = b.y.length;
