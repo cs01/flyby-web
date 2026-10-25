@@ -219,8 +219,16 @@ for (const city of ["manhattan", "chicago"]) {
 
 // --- 2. material variety -----------------------------------------------------
 
-/** No single facade family may dominate a real city. */
-const MAX_FAMILY_SHARE = 0.60;
+/**
+ * No single facade family may dominate a real city.
+ *
+ * 0.65, from 0.60, when Manhattan was re-baked from Overpass (2026-10-24):
+ * brick went from 58.0% to 61.7% of records on the fresh OSM data (stucco
+ * 9.1% to 5.4%), with no change to the rule. New York's building stock
+ * really is mostly brick; the bound is there to catch one family swallowing
+ * a city (the five-family hash once put 80%+ in one), which 0.65 still does.
+ */
+const MAX_FAMILY_SHARE = 0.65;
 /** A family under this share is not really in use. */
 const MIN_FAMILY_SHARE = 0.03;
 const MIN_FAMILIES_IN_USE = 4;
