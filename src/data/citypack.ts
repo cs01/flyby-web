@@ -430,3 +430,26 @@ export function footprintGroundY(b: Building, heightAt: (x: number, z: number) =
   }
   return Number.isFinite(lowest) ? lowest : heightAt(b.cx, b.cz);
 }
+
+/**
+ * footprintGroundY for every record, with each building:part group anchored at
+ * ONE ground: the lowest under any of its records. Each part sampled on its
+ * own footprint sat its podium and its setbacks a metre or two apart on a
+ * slope, which opens a crack between the stages of a tower and gives the
+ * drone's collider overlapping volumes to be pushed back and forth between.
+ * The renderer and the collider both read it, so they stay the same number.
+ */
+export function packGroundY(bs: readonly Building[], heightAt: (x: number, z: number) => number): Float64Array {
+  const out = new Float64Array(bs.length);
+  const low = new Map<number, number>();
+  for (let i = 0; i < bs.length; i++) {
+    out[i] = footprintGroundY(bs[i], heightAt);
+    const g = bs[i].group;
+    if (g !== undefined) low.set(g, Math.min(low.get(g) ?? Infinity, out[i]));
+  }
+  for (let i = 0; i < bs.length; i++) {
+    const g = bs[i].group;
+    if (g !== undefined) out[i] = low.get(g)!;
+  }
+  return out;
+}

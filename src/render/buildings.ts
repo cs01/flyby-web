@@ -52,7 +52,7 @@ import { Mat, MAT_COUNT } from "./materials";
 import {
   BuildingKind,
   RoofShape,
-  footprintGroundY,
+  packGroundY,
   type Building,
   type CityPack,
 } from "../data/citypack";
@@ -3684,6 +3684,7 @@ export class Buildings {
     };
     const lodK = solveLod(pack, budget.buildingTriangleBudget, tankAt);
     const groups = partGroups(pack.buildings);
+    const grounds = packGroundY(pack.buildings, groundAt);
     const cells = new Map<string, Scratch>();
     const params: FacadeParams[] = [];
     const families: number[] = new Array(5).fill(0);
@@ -3732,7 +3733,7 @@ export class Buildings {
       // Lowest ground under the footprint, so nothing floats on a hillside.
       // Shared with the drone's collider, which has to raise its roof to the
       // same height this puts the geometry at.
-      const groundY = footprintGroundY(b, groundAt);
+      const groundY = grounds[i];
 
       const key = `${Math.floor(b.cx / CELL_M)},${Math.floor(b.cz / CELL_M)}`;
       let s = cells.get(key);

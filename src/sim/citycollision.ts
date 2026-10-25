@@ -34,7 +34,7 @@
 // through walls.
 
 import type * as THREE from "three";
-import { footprintGroundY, type CityPack } from "../data/citypack";
+import { packGroundY, type CityPack } from "../data/citypack";
 
 /**
  * Broadphase cell size.
@@ -157,6 +157,7 @@ export class CityCollision {
   constructor(pack: CityPack, heightAt: (x: number, z: number) => number) {
     const all = pack.buildings;
     const cap = all.length;
+    const grounds = packGroundY(all, heightAt);
 
     const aabb = new Float32Array(cap * 4);
     const span = new Float32Array(cap * 2);
@@ -195,7 +196,7 @@ export class CityCollision {
       // candidate would put a DEM lookup and a lat/lon conversion inside the
       // narrowphase, which is the most expensive thing in this file by an
       // order of magnitude and cannot change between frames anyway.
-      const groundY = footprintGroundY(b, heightAt);
+      const groundY = grounds[i];
       if (!Number.isFinite(groundY)) continue;
 
       aabb[n * 4] = minX;
@@ -362,6 +363,46 @@ export class CityCollision {
           velocity.x -= nx * vn;
           velocity.y -= ny * vn;
           velocity.z -= nz * vn;
+        }
+      }
+    }
+    this.escapeOverlap(position, radius);
+  }
+
+  /**
+   * The fallback for OVERLAPPING footprints. OSM has buildings whose rings
+   * overlap (a tower mapped over the block it stands in), and inside both the
+   * minimum translation out of one lands inside the other, whose own minimum
+   * translation pushes back: measured on the Manhattan pack, five of 4,000
+   * one-frame penetrations never got out though open street was within 8 m.
+   * So when the iterations end still inside something, march out across the
+   * UNION instead: the nearest of sixteen horizontal directions that clears
+   * every building, half a metre at a time, out to 30 m. Rare, so the
+   * brute force costs nothing in a frame.
+   */
+  private escapeOverlap(position: THREE.Vector3, radius: number): void {
+    // Only a CENTRE inside a footprint is stuck: a drone skimming a wall is
+    // within its radius of it every frame and must be left to slide. A
+    // vanishing radius makes contact() a point-in-volume test.
+    const inside = (x: number, y: number, z: number): boolean => {
+      const m = this.gather(x, z, 1e-3);
+      for (let k = 0; k < m; k++) if (this.contact(this.cand[k], x, y, z, 1e-3) > 0) return true;
+      return false;
+    };
+    if (!inside(position.x, position.y, position.z)) return;
+    const blocked = (x: number, y: number, z: number): boolean => {
+      const m = this.gather(x, z, radius);
+      for (let k = 0; k < m; k++) if (this.contact(this.cand[k], x, y, z, radius) > 0) return true;
+      return false;
+    };
+    for (let t = 0.5; t <= 30; t += 0.5) {
+      for (let a = 0; a < 16; a++) {
+        const x = position.x + Math.cos((a * Math.PI) / 8) * t;
+        const z = position.z + Math.sin((a * Math.PI) / 8) * t;
+        if (!blocked(x, position.y, z)) {
+          position.x = x;
+          position.z = z;
+          return;
         }
       }
     }

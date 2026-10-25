@@ -21,7 +21,7 @@
 // guards. A check nobody has seen fail is not a check.
 
 import * as THREE from "three";
-import { parseCityPack, footprintGroundY, type Building } from "../src/data/citypack";
+import { parseCityPack, footprintGroundY, packGroundY, type Building } from "../src/data/citypack";
 import {
   CityCollision, MIN_HEIGHT_M, MIN_THICKNESS_M, SLAB_MAX_HEIGHT_M, SLAB_MIN_AREA_M2,
   ringArea, ringPerimeter,
@@ -489,7 +489,10 @@ if (!tower || !helipad || !wall) {
 {
   interface Near { ring: Float32Array; minX: number; minZ: number; maxX: number; maxZ: number; baseY: number; topY: number }
   const dense: Near[] = [];
-  for (const b of pack.buildings) {
+  // The collider's ground, not each footprint's own: parts of one tower share
+  // one (citypack packGroundY).
+  const grounds = packGroundY(pack.buildings, heightAt);
+  for (const [bi, b] of pack.buildings.entries()) {
     // The collider's own drop rules, restated. An oracle that counted the
     // footprints the collider deliberately ignores -- the pier decks, the
     // half-metre slivers -- would be asserting collision against things
@@ -508,7 +511,7 @@ if (!tower || !helipad || !wall) {
       if (b.ring[i + 1] < minZ) minZ = b.ring[i + 1];
       if (b.ring[i + 1] > maxZ) maxZ = b.ring[i + 1];
     }
-    const gy = footprintGroundY(b, heightAt);
+    const gy = grounds[bi];
     dense.push({ ring: b.ring, minX, minZ, maxX, maxZ, baseY: gy + b.baseM, topY: gy + b.topM });
   }
 
