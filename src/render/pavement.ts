@@ -59,6 +59,7 @@ import { GROUND_BOUNCE_GLSL } from "./groundbounce";
 import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeRoadUniforms, type RoadUniforms } from "./roads";
+import { STREET_LIGHT_GLSL } from "./streetlight";
 import { RoadIndex } from "../data/trees";
 import type { FootprintMask } from "../data/trees";
 import {
@@ -150,6 +151,7 @@ uniform float uEnvMaxLod;
 uniform float uWetness;
 uniform float uSnow;
 uniform float uNight;
+${STREET_LIGHT_GLSL}
 uniform vec3  uNightGlow;
 uniform vec3  uMoonDir;
 uniform vec3  uMoonLight;
@@ -370,9 +372,14 @@ void main() {
     lit = mix(lit, env, (0.02 + 0.98 * f) * uWetness * 0.8);
   }
 
+  // The lamps that stand on this footway and the player's headlights; see
+  // render/streetlight.ts.
+  lit += albedo * streetLight(vWorld, n) + streetLight(vWorld, n) * uWetness * 0.04;
+  float gridCover = lampGridCovers(vWorld);
+
   // --- night --------------------------------------------------------------
   if (uNight > 0.02) {
-    // The same 52 m rhythm, the same alternation and the same hash that
+    // Past the light grid only: the same 52 m rhythm, the same alternation and the same hash that
     // render/roads.ts uses for the carriageway lamps, off the same u -- so a
     // lamp lights the pavement it stands on and the road beside it, rather
     // than the two disagreeing about where the lamps are.
@@ -388,7 +395,7 @@ void main() {
     pool = mix(min(0.22, 0.16), pool, lampDetail);
     vec3 lampCol = mix(vec3(0.85, 0.90, 1.0), vec3(1.0, 0.72, 0.36),
                        smoothstep(0.05, 0.6, hash11(idx * 9.1 + 2.0)));
-    lit += lampCol * pool * uNight * (1.0 + 2.2 * uWetness) * 0.17;
+    lit += lampCol * pool * (1.0 - gridCover) * uNight * (1.0 + 2.2 * uWetness) * 0.17;
     lit += albedo * uNightGlow * 0.9;
   }
 

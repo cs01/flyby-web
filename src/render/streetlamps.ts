@@ -24,6 +24,10 @@
 
 import * as THREE from "three";
 import { GlowPoints, LAMP_FOOTPRINT_GLSL } from "./glowpoints";
+import {
+  fillLampGrid, streetLightUniforms, STREET_LIGHT_GLSL, GRID_CELLS, GRID_CELL_M,
+  type GridLamp, type StreetLightUniforms,
+} from "./streetlight";
 
 /** The lantern's lens as one size: about the root of its 0.48 x 0.38 m. */
 const LAMP_LENS_M = 0.43;
@@ -220,6 +224,7 @@ out vec3 vWorld;
 out float vPart;
 out float vViewDist;
 out float vSeed;
+out float vLed;
 
 void main() {
   Placed pl = placeVertex();
@@ -228,6 +233,7 @@ void main() {
   vWorld = pl.world;
   vPart = pl.part;
   vSeed = iShape.z;
+  vLed = iShape.w;
   vViewDist = distance(pl.world, uCameraPos);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pl.world, 1.0);
 }
@@ -240,6 +246,7 @@ in vec3 vWorld;
 in float vPart;
 in float vViewDist;
 in float vSeed;
+in float vLed;
 out vec4 fragColor;
 
 // Three steps: the same argument render/traffic.ts makes. A column is 10 m of
@@ -257,6 +264,7 @@ uniform vec3  uMoonDir;
 uniform vec3  uMoonLight;
 uniform float uNight;
 ${LAMP_FOOTPRINT_GLSL}
+${STREET_LIGHT_GLSL}
 const float LAMP_LENS_M = ${LAMP_LENS_M.toFixed(2)};
 uniform vec3  uNightGlow;
 
@@ -279,16 +287,17 @@ void main() {
 
   vec3 lit = albedo * (sunE * ndl * sunVis + ambient + moon);
   lit += albedo * uNightGlow * uNight * 0.5;
+  // The neighbours' lamps and the player's headlights on the column.
+  lit += albedo * streetLight(vWorld, n);
 
   // The lens. This is the whole reason the object is worth drawing at night:
   // the pool on the road already exists, and what it was missing was a source
   // above it. Bright enough to bloom, and warm, because the pool it agrees with
-  // is a sodium-to-LED mix; the same hash the road shader uses would be nice
-  // here and is not available across the language boundary, so the colour
-  // varies on the instance seed and the two only have to agree in POSITION.
+  // is a sodium-to-LED mix.
   if (part > 1.5) {
-    vec3 warm = mix(vec3(1.0, 0.74, 0.40), vec3(0.86, 0.90, 1.0),
-                    smoothstep(0.35, 0.75, vSeed));
+    // Sodium or LED per lamp, the same decision the light it throws makes
+    // (render/streetlight.ts), so a lens and its pool are one colour.
+    vec3 warm = mix(uLampSodium, uLampLed, vLed);
     // Faded with distance, and not because a distant lamp is dimmer. The lens
     // is 480 by 380 mm, so past a few hundred metres it is under a pixel, and a
     // sub-pixel emitter at five times white is a bloom blob that crawls as the
@@ -310,7 +319,7 @@ void main() {
 }
 `;
 
-export interface StreetLampUniforms extends SunShadowUniforms, AoUniforms {
+export interface StreetLampUniforms extends SunShadowUniforms, AoUniforms, StreetLightUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uSH: THREE.IUniform<Float32Array>;
   uFade: THREE.IUniform<THREE.Vector2>;
@@ -333,6 +342,7 @@ export function makeStreetLampUniforms(shadow: SunShadowUniforms): StreetLampUni
   return {
     ...shadow,
     ...aoUniforms(),
+    ...streetLightUniforms,
     uCameraPos: { value: new THREE.Vector3() },
     uSH: { value: shHemispherical([0.28, 0.36, 0.5], 0.55, 0.45) },
     uFade: { value: new THREE.Vector2(RING_M * FADE_FRACTION, RING_M) },
@@ -355,6 +365,9 @@ export function makeStreetLampUniforms(shadow: SunShadowUniforms): StreetLampUni
 export interface StreetLampStats {
   /** Tiles of lit carriageway in the pack. Fixed at construction. */
   indexedTiles: number;
+  /** Lenses in the light grid, and cell slots that overflowed it. */
+  gridLamps?: number;
+  gridDropped?: number;
   tiles: number;
   count: number;
   triangles: number;
@@ -391,8 +404,15 @@ export class StreetLamps {
   private readonly cache = new Map<string, LampInstance[]>();
   private atX = Number.NaN;
   private atZ = Number.NaN;
+  /** Every lens in the ring, for the light grid. */
+  private lenses: GridLamp[] = [];
+  private gridAtX = Number.NaN;
+  private gridAtZ = Number.NaN;
+  /** This city's LED share; see render/streetlight.ts. */
+  readonly led: number;
 
-  constructor(pack: RoadPack, world: StreetWorld, shadow: SunShadowUniforms, budget: Budget) {
+  constructor(pack: RoadPack, world: StreetWorld, shadow: SunShadowUniforms, budget: Budget, ledShareOfCity = 0.5) {
+    this.led = ledShareOfCity;
     this.pack = pack;
     this.world = world;
     this.ringM = budget.tier === "reduced" ? MOBILE_RING_M : RING_M;
@@ -431,6 +451,20 @@ export class StreetLamps {
 
   /** Follow a camera. Cheap between tile crossings; safe every frame. */
   update(camX: number, camZ: number): void {
+    this.rebuild(camX, camZ);
+    // The light grid re-centres on its own, finer schedule: a quarter of its
+    // window, so the camera is never near its edge.
+    const quarter = (GRID_CELLS * GRID_CELL_M) / 4;
+    if (!(Math.abs(camX - this.gridAtX) < quarter && Math.abs(camZ - this.gridAtZ) < quarter)) {
+      this.gridAtX = camX;
+      this.gridAtZ = camZ;
+      const r = fillLampGrid(this.lenses, camX, camZ);
+      this.stats.gridLamps = r.placed;
+      this.stats.gridDropped = r.dropped;
+    }
+  }
+
+  private rebuild(camX: number, camZ: number): void {
     const tx = Math.floor(camX / 400);
     const tz = Math.floor(camZ / 400);
     if (tx === this.atX && tz === this.atZ) return;
@@ -446,6 +480,7 @@ export class StreetLamps {
     let clipped = 0;
     const keep = new Set<string>();
     this.glow.begin();
+    this.lenses = [];
 
     for (const w of wanted) {
       let lamps = this.cache.get(w.key);
@@ -468,18 +503,19 @@ export class StreetLamps {
         iShape[p + 1] = l.armM;
         // A stable per-lamp hash: the road it belongs to and how far along it.
         iShape[p + 2] = fract(l.road * 0.6180339887 + l.u * 0.013);
-        iShape[p + 3] = 0;
+        // Sodium or LED: this city's share, decided per lamp on its seed.
+        iShape[p + 3] = fract(iShape[p + 2] * 7.31) < this.led ? 1 : 0;
         // The lens: at the end of the arm (instanceToWorld's +x is
         // (cos yaw, -sin yaw)), just under the mounting height. Colour from
         // the same seed the lens shader mixes sodium and LED on.
-        const seed = iShape[p + 2];
-        const led = Math.min(1, Math.max(0, (seed - 0.35) / 0.4));
+        const led = iShape[p + 3];
         const reach = l.armM - 0.1;
-        this.glow.push(
-          l.x + Math.cos(l.yaw) * reach, l.y + l.heightM - 0.08, l.z - Math.sin(l.yaw) * reach,
-          0, 0, LAMP_LENS_M, 5.5,
-          1.0 - 0.14 * led, 0.74 + 0.16 * led, 0.40 + 0.60 * led,
-        );
+        const lx = l.x + Math.cos(l.yaw) * reach;
+        const ly = l.y + l.heightM - 0.08;
+        const lz = l.z - Math.sin(l.yaw) * reach;
+        const col = led ? streetLightUniforms.uLampLed.value : streetLightUniforms.uLampSodium.value;
+        this.glow.push(lx, ly, lz, 0, 0, LAMP_LENS_M, 5.5, col.r, col.g, col.b);
+        this.lenses.push({ x: lx, y: ly, z: lz, led });
         count++;
         if (l.measured) measured++;
       }
@@ -491,6 +527,7 @@ export class StreetLamps {
 
     this.field.upload(count);
     this.glow.end();
+    this.gridAtX = Number.NaN;
     this.stats.tiles = keep.size;
     this.stats.count = count;
     this.stats.measured = measured;

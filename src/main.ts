@@ -75,6 +75,7 @@ import { StreetLamps, LAMP_TRIANGLES } from "./render/streetlamps";
 import type { StreetLampUniforms } from "./render/streetlamps";
 import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
 import { pixelAngle } from "./render/glowpoints";
+import { ledShare, streetLightUniforms } from "./render/streetlight";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { WaterHistory } from "./render/waterssr";
 import { Foliage, SHRUB_FOLIAGE, TREE_LOD_TRIANGLES } from "./render/trees";
@@ -383,6 +384,9 @@ async function main() {
   const shotMode = new URLSearchParams(location.search).has("shot");
   const shotCam = pinnedCam();
   const driveFromShot = new URLSearchParams(location.search).has("drive");
+  const headlightsOff = new URLSearchParams(location.search).has("noheadlights");
+  const lampLightOff = new URLSearchParams(location.search).has("nolamplight");
+  const forceHighBeam = new URLSearchParams(location.search).has("highbeam");
   let driveEntered = false;
   const _driveFrom = new THREE.Vector3();
   const _driveStill = new THREE.Vector3();
@@ -850,7 +854,7 @@ async function main() {
         : null,
     };
 
-    lamps = new StreetLamps(roadPack, streetWorld, sunShadow.uniforms, budget);
+    lamps = new StreetLamps(roadPack, streetWorld, sunShadow.uniforms, budget, ledShare(city.id));
     scene.add(lamps.group);
     if (roadGraph) {
       traffic = new Traffic(roadGraph, streetWorld, sunShadow.uniforms, budget);
@@ -1865,6 +1869,26 @@ async function main() {
     lamps?.update(camera.position.x, camera.position.z);
     parkedCars?.update(camera.position.x, camera.position.z);
     bridges?.update(camera, renderer.getDrawingBufferSize(bridgeBufferSize).y, elapsed);
+    // The player's headlights and the lamps' light on the ground; see
+    // render/streetlight.ts. `?noheadlights=1` and `?nolamplight=1` switch
+    // each off, which is how tools/verify-night.ts proves its floor bites.
+    {
+      const sl = streetLightUniforms;
+      sl.uLampGridOrigin.value.w = lampLightOff ? 0 : light.night;
+      const hp = sl.uHeadParams.value;
+      const on = carActive && car && !headlightsOff ? THREE.MathUtils.smoothstep(light.night, 0.02, 0.3) : 0;
+      hp.x = on;
+      if (on > 0 && car) {
+        const h = car.headingDeg * DEG2RAD;
+        const fx = Math.sin(h), fz = -Math.cos(h);
+        sl.uHeadFwd.value.set(fx, 0, fz);
+        sl.uHeadPos.value.set(car.position.x + fx * 2.2, car.position.y + 0.65, car.position.z + fz * 2.2);
+        // Automatic high beam, as most new cars have: full beam unless a
+        // car is ahead in either direction within 150 m and a lane or two.
+        const lead = traffic?.sim.ahead(car.position.x, car.position.z, fx, fz, 5, 150) ?? null;
+        hp.y = forceHighBeam ? 1 : lead ? 0 : 1;
+      }
+    }
     // Radians per pixel, for the lamps' footprint: a lens hands its light to a
     // stable point once it is under a couple of pixels (render/glowpoints.ts).
     const pixAngle = pixelAngle(camera.fov, renderer.getDrawingBufferSize(bridgeBufferSize).y);

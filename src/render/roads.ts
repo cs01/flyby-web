@@ -39,6 +39,7 @@ import { GROUND_BOUNCE_GLSL, groundBounceUniforms, type GroundBounceUniforms } f
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { laneLayoutCached } from "../data/lanes";
+import { streetLightUniforms, STREET_LIGHT_GLSL, type StreetLightUniforms } from "./streetlight";
 import { addRibbon, emptyRibbon, ribbonTriangleCost, type RibbonScratch } from "../data/ribbon";
 // The lamp spacing table, and the GLSL copy of it that this shader indexes. It
 // is GENERATED from the same array render/streetlamps.ts places columns from,
@@ -203,6 +204,7 @@ ${GROUND_BOUNCE_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
 ${LAMP_GLSL}
+${STREET_LIGHT_GLSL}
 
 uniform vec3  uCameraPos;
 // The scene sky probe: what wet asphalt reflects.
@@ -576,6 +578,14 @@ void main() {
     lit += uMoonLight * uSunSurface * pow(max(0.0, dot(n, hm)), shine) * gloss * 1.5;
   }
 
+  // --- street light ---------------------------------------------------------
+  // The lamps that stand here and the player's headlights, as real point
+  // lights; see render/streetlight.ts. Retroreflective paint returns several
+  // times what the tarmac does, and wet tarmac throws the lamps back at you.
+  vec3 sl = streetLight(vWorld, n);
+  lit += albedo * sl + vec3(1.0, 0.95, 0.85) * paint * sl * 0.12 + sl * uWetness * 0.05;
+  float gridCover = lampGridCovers(vWorld);
+
   // --- night ---------------------------------------------------------------
   // Roads ARE the night city from the air: the lit grid is the picture. The
   // terrain paints street lamps on a random lattice because it has no idea
@@ -625,6 +635,8 @@ void main() {
       lampCol = mix(vec3(1.0, 0.80, 0.55), lampCol, lampDetail);
       // Wet tarmac throws the lamp back at you: this is the single strongest
       // cue that a night city has been rained on.
+      // Inside the light grid the real lamps above have lit this already.
+      pool *= 1.0 - gridCover;
       lit += lampCol * pool * uNight * (1.0 + 2.2 * uWetness) * 0.19;
       // Retroreflective paint under the lamps.
       lit += vec3(1.0, 0.95, 0.85) * paint * pool * uNight * 0.32;
@@ -647,7 +659,7 @@ void main() {
 }
 `;
 
-export interface RoadUniforms extends SunShadowUniforms, AoUniforms, GroundBounceUniforms {
+export interface RoadUniforms extends SunShadowUniforms, AoUniforms, GroundBounceUniforms, StreetLightUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -681,6 +693,7 @@ export function makeRoadUniforms(shadow: SunShadowUniforms): RoadUniforms {
     ...shadow,
     ...aoUniforms(),
     ...groundBounceUniforms(),
+    ...streetLightUniforms,
     uCameraPos: { value: new THREE.Vector3() },
     // The hemispherical ambient this shader ran before the probe existed, so a
     // frame drawn before the first capture is the old picture, not a black one.

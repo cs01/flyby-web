@@ -53,6 +53,7 @@ import { CLASS_COUNT, type TrafficState } from "../data/trafficmodel";
 import type { RoadGraph } from "../data/roadgraph";
 import { TrafficSim, type Pose } from "../sim/trafficsim";
 import { GlowPoints, LAMP_FOOTPRINT_GLSL } from "./glowpoints";
+import { streetLightUniforms, STREET_LIGHT_GLSL, type StreetLightUniforms } from "./streetlight";
 
 /** A lamp lens, as one size: the root of its 0.42 x 0.19 m area. */
 const CAR_LENS_M = 0.28;
@@ -246,6 +247,7 @@ ${SH_GLSL}
 ${AO_GLSL}
 ${PALETTE_GLSL}
 ${LAMP_FOOTPRINT_GLSL}
+${STREET_LIGHT_GLSL}
 const float LENS_M = ${CAR_LENS_M.toFixed(2)};
 
 uniform vec3  uCameraPos;
@@ -471,6 +473,8 @@ void main() {
   }
 
   lit += albedo * uNightGlow * uNight * 0.6;
+  // Under a street lamp, or in the player's headlights.
+  lit += albedo * streetLight(vWorld, n);
 
   // The lamps. Emissive far past white so the bloom pass makes streaks of them;
   // this is the single biggest thing in the frame at night from the air, and it
@@ -507,7 +511,7 @@ void main() {
 }
 `;
 
-export interface TrafficUniforms extends SunShadowUniforms, AoUniforms {
+export interface TrafficUniforms extends SunShadowUniforms, AoUniforms, StreetLightUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   uSH: THREE.IUniform<Float32Array>;
   uFade: THREE.IUniform<THREE.Vector2>;
@@ -531,6 +535,7 @@ function makeTrafficUniforms(shadow: SunShadowUniforms, ringM: number): TrafficU
   return {
     ...shadow,
     ...aoUniforms(),
+    ...streetLightUniforms,
     uCameraPos: { value: new THREE.Vector3() },
     uSH: { value: shHemispherical([0.28, 0.36, 0.5], 0.55, 0.45) },
     uFade: { value: new THREE.Vector2(ringM * FADE_FRACTION, ringM) },
