@@ -35,6 +35,8 @@ export interface ProfileReport {
   gpu: Record<string, number>;
   /** Mean CPU ms per frame, by label, inclusive (CPU labels may nest). */
   cpu: Record<string, number>;
+  /** The worst single frame's CPU ms, by label: where a hitch came from. */
+  cpuMax: Record<string, number>;
   disjoint: number;
 }
 
@@ -53,6 +55,7 @@ export class FrameProfiler {
   private gpuSum = new Map<string, number>();
   private cpuSum = new Map<string, number>();
   private cpuStart = new Map<string, number>();
+  private cpuMax = new Map<string, number>();
   private frames = 0;
   private cpuFrames = 0;
   private disjoint = 0;
@@ -101,7 +104,9 @@ export class FrameProfiler {
     if (!this.enabled) return;
     const t0 = this.cpuStart.get(label);
     if (t0 === undefined) return;
-    this.cpuSum.set(label, (this.cpuSum.get(label) ?? 0) + performance.now() - t0);
+    const ms = performance.now() - t0;
+    this.cpuSum.set(label, (this.cpuSum.get(label) ?? 0) + ms);
+    if (ms > (this.cpuMax.get(label) ?? 0)) this.cpuMax.set(label, ms);
   }
 
   frameEnd(): void {
@@ -118,6 +123,7 @@ export class FrameProfiler {
   reset(): void {
     this.gpuSum.clear();
     this.cpuSum.clear();
+    this.cpuMax.clear();
     this.frames = 0;
     this.cpuFrames = 0;
     this.disjoint = 0;
@@ -128,7 +134,9 @@ export class FrameProfiler {
     const cpu: Record<string, number> = {};
     for (const [k, v] of this.gpuSum) gpu[k] = v / Math.max(1, this.frames);
     for (const [k, v] of this.cpuSum) cpu[k] = v / Math.max(1, this.cpuFrames);
-    return { frames: this.frames, gpu, cpu, disjoint: this.disjoint };
+    const cpuMax: Record<string, number> = {};
+    for (const [k, v] of this.cpuMax) cpuMax[k] = v;
+    return { frames: this.frames, gpu, cpu, cpuMax, disjoint: this.disjoint };
   }
 
   private switchTo(label: string): void {

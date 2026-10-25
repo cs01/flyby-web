@@ -36,6 +36,7 @@
 //     ground is a plane instead: see the ground term in the shader.
 
 import * as THREE from "three";
+import { AsyncReadback } from "./readback";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import {
   CUBE_FACES,
@@ -125,8 +126,15 @@ void main() {
 // slow is the time scrubber, which can run a whole day past in a few seconds,
 // so the cadence is driven by how much the lighting actually moved rather than
 // by a fixed frame count alone.
+//
+// The fixed count is only a backstop now, ten seconds rather than 45 frames:
+// every refresh ends in a readback, and in Chrome the readback is a round trip
+// that waits for the GPU process to drain (render/readback.ts), which landed
+// a 280 ms frame every 45 uncapped and one long frame every 0.75 s at 60 Hz.
+// The sun's intensity is in the change test instead, so a weather change that
+// dims the sky still refreshes at once.
 const MIN_FRAMES = 6;
-const MAX_FRAMES = 45;
+const MAX_FRAMES = 600;
 /** Refresh once the sun has moved this far, in radians. */
 const SUN_MOVE = 0.009;
 
@@ -148,6 +156,7 @@ export class SkyProbe {
   private raw = shZero();
   /** True while a readback is in flight; a second one would fight it. */
   private reading = false;
+  private readback: AsyncReadback | null = null;
   /** The scene ambient as it was when the pixels now in flight were drawn. */
   private ambient = new Float32Array(3);
 
@@ -158,6 +167,9 @@ export class SkyProbe {
   private basis: THREE.Matrix3[] = [];
 
   private frames = MAX_FRAMES;
+  private lastIntensity = 0;
+  /** No backstop refreshes: `?shot`, where nothing about the sky can change. */
+  hold = false;
   private lastSun = new THREE.Vector3(0, -1, 0);
   private lastAlt = -1;
   private lastTurbidity = -1;
@@ -251,13 +263,19 @@ export class SkyProbe {
   update(renderer: THREE.WebGLRenderer, light: SceneLighting, camAltitude: number): boolean {
     const u = this.uniforms;
     this.frames++;
+    if (this.reading && this.readback!.poll(this.pixels)) {
+      this.reading = false;
+      this.project();
+    }
 
     const moved =
       !this.rendered ||
       this.lastSun.dot(light.sunDir) < Math.cos(SUN_MOVE) ||
       Math.abs(camAltitude - this.lastAlt) > 60 + 0.12 * Math.abs(this.lastAlt) ||
-      Math.abs(light.turbidity - this.lastTurbidity) > 0.04 * this.lastTurbidity;
-    if (!(this.frames >= MAX_FRAMES || (moved && this.frames >= MIN_FRAMES))) return false;
+      Math.abs(light.turbidity - this.lastTurbidity) > 0.04 * this.lastTurbidity ||
+      Math.abs(light.sunIntensity - this.lastIntensity) > 0.04 * this.lastIntensity;
+    const due = this.frames >= MAX_FRAMES && !this.hold;
+    if (!(due || (moved && this.frames >= MIN_FRAMES))) return false;
     this.frames = 0;
 
     (u.uSunDir.value as THREE.Vector3).copy(light.sunDir);
@@ -277,6 +295,7 @@ export class SkyProbe {
     this.lastSun.copy(light.sunDir);
     this.lastAlt = camAltitude;
     this.lastTurbidity = light.turbidity;
+    this.lastIntensity = light.sunIntensity;
 
     const prevTarget = renderer.getRenderTarget();
     const faceBasis = u.uFaceBasis.value as THREE.Matrix3;
@@ -322,24 +341,19 @@ export class SkyProbe {
     // frame and it costs nothing measurable: the whole 600-frame sample stayed
     // between 16.7 and 18.8 ms, with no frame dropped.
     //
-    // The async form is used anyway, because it moves the fence wait off the
-    // main thread and leaves only the flush. It also means the coefficients are
-    // a frame or two old, which at this cadence is not a quantity anything can
-    // notice.
+    // The read itself goes through render/readback.ts, which unlike three's
+    // async form never makes a blocking getParameter call to set it up: that
+    // call was the 100-350 ms. The coefficients arrive a frame or a few later,
+    // which at this cadence is not a quantity anything can notice.
     if (!this.reading) {
-      this.reading = true;
+      this.readback ??= new AsyncReadback(renderer.getContext() as WebGL2RenderingContext, this.pixels.byteLength);
       this.ambient[0] = light.ambient.r;
       this.ambient[1] = light.ambient.g;
       this.ambient[2] = light.ambient.b;
-      renderer
-        .readRenderTargetPixelsAsync(this.strip, 0, 0, SH_FACE, SH_FACE * CUBE_FACES, this.pixels)
-        .then(() => this.project())
-        // A failed read leaves the previous coefficients in place, which is the
-        // last good sky rather than a black one.
-        .catch(() => undefined)
-        .finally(() => {
-          this.reading = false;
-        });
+      const gl = renderer.getContext();
+      renderer.setRenderTarget(this.strip);
+      this.reading = this.readback.start(0, 0, SH_FACE, SH_FACE * CUBE_FACES, gl.RGBA, gl.FLOAT);
+      renderer.setRenderTarget(prevTarget);
     }
     return true;
   }

@@ -391,6 +391,7 @@ async function main() {
   // overlap and sum to twice the frame (see render/gpuprof.ts).
   const perfOff = new Set((new URLSearchParams(location.search).get("off") ?? "").split(",").filter(Boolean));
   const perfHidden: THREE.Object3D[] = [];
+  const probeHidden: THREE.Object3D[] = [];
   const perfSync = new URLSearchParams(location.search).has("perfsync");
   const perfSyncPixel = new Uint8Array(4);
   composite.skip = perfOff;
@@ -438,6 +439,7 @@ async function main() {
   // One environment probe for the whole scene: sky irradiance for every diffuse
   // surface and a prefiltered cube for the glass and the wet tarmac.
   const skyProbe = new SkyProbe();
+  skyProbe.hold = shotMode;
   if (new URLSearchParams(location.search).get("shadows") === "0") sunShadow.enabled = false;
   // Whether this device gets ambient occlusion at all is render/budget.ts's
   // call; the query parameters below still override it either way, because
@@ -2149,11 +2151,19 @@ async function main() {
     droneModel.group.visible = false;
     airTraffic.render.group.visible = false;
     if (transit.render) transit.render.group.visible = false;
+    // Street detail is left out of the aircraft's cube too: a car or a lamp is
+    // a pixel or two of a 128 px face, behind a roughness blur, and each group
+    // is a full instanced draw per face.
+    probeHidden.length = 0;
+    for (const g of [lamps?.group, traffic?.group, parkedCars?.group, shrubs?.group, pavement?.group]) {
+      if (g && g.visible) { g.visible = false; probeHidden.push(g); }
+    }
     prof.cpuBegin("aircraft");
     prof.begin("aircraft");
-    if (!perfOff.has("aircraft")) model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
+    if (!perfOff.has("aircraft")) model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c), camera.position);
     prof.end();
     prof.cpuEnd("aircraft");
+    for (const g of probeHidden) g.visible = true;
     droneModel.group.visible = droneShown;
     airTraffic.render.group.visible = trafficShown;
     if (transit.render) transit.render.group.visible = transitShown;
@@ -2264,12 +2274,10 @@ async function main() {
     prof.end();
     prof.cpuEnd("composite");
     for (const c of perfHidden) c.visible = true;
-    // `?perfsync`: drain the GPU every frame. Uncapped, Chrome queues ~20
-    // frames and pays for them all at whatever sync point comes next (the sky
-    // probe's readback), so one frame in ~45 took 100-400 ms and a 240-frame
-    // mean moved by 3 ms between two samples of the same pose. Drained, a frame
-    // costs CPU plus GPU with no overlap: an overstatement, but a stable one,
-    // and the difference a toggle makes is then that toggle's cost.
+    // `?perfsync`: drain the GPU every frame, so a frame costs CPU plus GPU
+    // with no overlap. Kept as an experiment, not the default: drained, the
+    // M4 GPU idles while the CPU works and settles into a slow clock state for
+    // seconds at a time (see tools/profile.ts), which no statistic undoes.
     if (perfSync) {
       const gl = renderer.getContext();
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, perfSyncPixel);

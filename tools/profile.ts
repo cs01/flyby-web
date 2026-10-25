@@ -278,20 +278,33 @@ export async function attribute(cdp: Cdp, frames: number, base: string[] = []):
   Promise<{ base: number; drift: number; floor: number; delta: Record<string, number> }> {
   const present = await cdp.eval<string[]>("window.flyby.scene.children.map((c) => c.name)");
   const toggles = TOGGLES.filter((t) => TOGGLES.indexOf(t) < 8 || present.includes(t)).filter((t) => !base.includes(t));
-  // The base three times (start, middle, end) and the median of those kept:
-  // one sample can land on the other agent's Chrome or a late texture upload.
-  const bases = [await frameWith(cdp, base, frames)];
+  // Every toggle is SANDWICHED between two base samples, and kept only when
+  // the two agree within 8%. Something on this machine (the other agent's
+  // Chrome in bursts too short for ps to see, or the GPU changing clock state)
+  // doubles the frame time for seconds at a time, and a sweep that sampled the
+  // base once read deltas of -30 ms for things that cost nothing.
+  const bases: number[] = [];
   const delta: Record<string, number> = {};
-  for (let i = 0; i < toggles.length; i++) {
-    if (i === toggles.length >> 1) bases.push(await frameWith(cdp, base, frames));
-    delta[toggles[i]] = await frameWith(cdp, [...base, toggles[i]], frames);
-  }
-  const floor = await frameWith(cdp, [...base, ...toggles], frames);
-  bases.push(await frameWith(cdp, base, frames));
-  const b = median(bases);
-  for (const t of toggles) delta[t] = b - delta[t];
-  await cdp.eval("window.flybyShot.setOff([])");
-  return { base: b, drift: Math.max(...bases) - Math.min(...bases), floor, delta };
+  const sandwich = async (off: string[]): Promise<number> => {
+    let best = { spread: Infinity, d: 0 };
+    for (let tries = 0; tries < 5; tries++) {
+      const a1 = await frameWith(cdp, base, frames);
+      const t = await frameWith(cdp, off, frames);
+      const a2 = await frameWith(cdp, base, frames);
+      const spread = Math.abs(a1 - a2) / Math.min(a1, a2);
+      if (spread < best.spread) best = { spread, d: (a1 + a2) / 2 - t };
+      if (spread < 0.08) {
+        bases.push(a1, a2);
+        break;
+      }
+    }
+    return best.d;
+  };
+  for (const t of toggles) delta[t] = await sandwich([...base, t]);
+  const offAll = await sandwich([...base, ...toggles]);
+  const b = median(bases.length ? bases : [await frameWith(cdp, base, frames)]);
+  const floor = b - offAll;
+  return { base: b, drift: bases.length ? Math.max(...bases) - Math.min(...bases) : 0, floor, delta };
 }
 
 function table(results: PoseResult[], key: "gpu" | "cpu", compare: PoseResult[] | null): string {
@@ -376,7 +389,7 @@ async function main(): Promise<void> {
       const vr: PoseResult[] = [];
       for (const p of poses) {
         const r = await measure(h.cdp, h.base, p, v, extra, frames, profileDir);
-        if (has("attrib")) {
+        if (has("attrib") && (!arg("attrib-viewport", "") || arg("attrib-viewport", "").split(",").includes(v.name))) {
           const base = arg("base-off", "").split(",").filter(Boolean);
           const a = await attribute(h.cdp, frames, base);
           r.attrib = a;
