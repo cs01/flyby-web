@@ -38,6 +38,7 @@ import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
 import { GROUND_BOUNCE_GLSL, groundBounceUniforms, type GroundBounceUniforms } from "./groundbounce";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
+import { laneLayoutCached } from "../data/lanes";
 import { addRibbon, emptyRibbon, ribbonTriangleCost, type RibbonScratch } from "../data/ribbon";
 // The lamp spacing table, and the GLSL copy of it that this shader indexes. It
 // is GENERATED from the same array render/streetlamps.ts places columns from,
@@ -143,6 +144,18 @@ function solveLod(pack: RoadPack, dists: Float64Array, triangleBudget: number): 
   return 22;
 }
 
+/**
+ * The fourth float of a ribbon vertex's `info`: the bridge flag in the low
+ * bit, then where the painted centre line goes. 0 above the bit is a one-way
+ * (no centre line); otherwise 1 + the divider's v in thousandths, where v is
+ * 0 on the LEFT kerb of the way's vertex order (data/ribbon.ts) and data/lanes.ts
+ * measures offsets to the right. Exported for test/ribbon or anyone decoding it.
+ */
+export function packLaneInfo(bridge: boolean, dividerM: number | null, widthM: number): number {
+  const code = dividerM === null ? 0 : 1 + Math.round(Math.min(1, Math.max(0, 0.5 + dividerM / widthM)) * 1000);
+  return (bridge ? 1 : 0) + 2 * code;
+}
+
 // --- shaders ----------------------------------------------------------------
 
 const VERT = /* glsl */ `
@@ -150,7 +163,7 @@ precision highp float;
 in vec3 position;
 in vec3 normal;
 in vec2 uv;    // x: metres along the centreline, y: 0..1 across the carriageway
-in vec4 info;  // class, surface kind, carriageway width in metres, bridge flag
+in vec4 info;  // class, surface kind, carriageway width in metres, packLaneInfo
 
 uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
@@ -257,7 +270,12 @@ void main() {
   // ones worth flying to.
   const float BRIDGE_FADE_NEAR = 9000.0;
   const float BRIDGE_FADE_FAR = 12000.0;
-  float bridge = vInfo.w;
+  // info.w is packLaneInfo: bridge in the low bit, then the centre line.
+  float bridge = mod(vInfo.w, 2.0);
+  float laneCode = floor(vInfo.w / 2.0);
+  bool oneway = laneCode < 0.5;
+  // Where the two directions meet, in v; see data/lanes.ts.
+  float dividerV = (laneCode - 1.0) / 1000.0;
   float fade = bridge > 0.5
     ? 1.0 - smoothstep(BRIDGE_FADE_NEAR, BRIDGE_FADE_FAR, vViewDist)
     : 1.0 - smoothstep(uFadeNear, uFadeFar, vViewDist);
@@ -420,6 +438,10 @@ void main() {
   bool paved      = !unpaved && cls < 10.5;
   bool hasEdge    = paved && (cls < 4.5 || (cls > 8.5 && cls < 9.5) || lanes >= 4.0);
   bool hasCentre  = paved && cls < 6.5 && lanes >= 2.0;
+  // The yellow is the line between the two directions: none on a one-way,
+  // where it told the driver half of Seventh Avenue was oncoming, and off
+  // the middle on a street parked on one side only.
+  bool hasYellow  = hasCentre && !oneway;
   bool motorway   = cls < 1.5;
   float aaV = fwidth(v) * 0.6 + 1e-4;
   float aaU = fwidth(u) * 0.6 + 1e-4;
@@ -441,7 +463,7 @@ void main() {
     for (float i = 1.0; i < 6.0; i += 1.0) {
       if (i >= lanes) break;
       float lb = i / lanes;
-      if (abs(lb - 0.5) < 0.01) continue;   // the centre is the yellow's
+      if (!oneway && abs(lb - dividerV) * width < 1.2) continue;   // the yellow's
       white += band(v, lb, pw, aaV) * dash;
     }
     // Double yellow down the middle: the American centre line. On a motorway
@@ -449,7 +471,7 @@ void main() {
     // the edges of a median rather than as a centre line nobody would paint on
     // a freeway.
     float o = (motorway ? 0.45 : 0.125) / width;
-    yellow += band(v, 0.5 - o, pw, aaV) + band(v, 0.5 + o, pw, aaV);
+    if (hasYellow) yellow += band(v, dividerV - o, pw, aaV) + band(v, dividerV + o, pw, aaV);
   }
   white = clamp(white, 0.0, 1.0);
   yellow = clamp(yellow, 0.0, 1.0);
@@ -786,7 +808,7 @@ export class Roads {
         // sim/car.ts reaches the same point by.
         if (deck) b.y.push(deckYAt(deck, b.ribbon.uv[(v0 + k) * 2]));
         else b.y.push(groundAt(x, z) + lift);
-        b.info.push(r.cls, r.surface, width, isBridge ? 1 : 0);
+        b.info.push(r.cls, r.surface, width, packLaneInfo(isBridge, laneLayoutCached(r).dividerM, width));
       }
       drawn++;
     }
