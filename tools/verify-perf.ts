@@ -111,6 +111,9 @@ console.log(`load average ${loadavg()[0].toFixed(2)}`);
   }
   if (b.pct >= 30) {
     console.log(`INCONCLUSIVE: ${b.who} using ${b.pct.toFixed(0)}% CPU; the GPU is shared and these bounds need it quiet`);
+    // The headless Chrome is already up: exiting without closing it left it
+    // holding the profile lock and the debug port for the next gate.
+    cdp.close();
     vite.kill();
     process.exit(2);
   }
