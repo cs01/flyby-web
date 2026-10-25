@@ -74,6 +74,7 @@ import {
 import { StreetLamps, LAMP_TRIANGLES } from "./render/streetlamps";
 import type { StreetLampUniforms } from "./render/streetlamps";
 import { ParkedCars, Traffic, CAR_TRIANGLES } from "./render/traffic";
+import { pixelAngle } from "./render/glowpoints";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { WaterHistory } from "./render/waterssr";
 import { Foliage, SHRUB_FOLIAGE, TREE_LOD_TRIANGLES } from "./render/trees";
@@ -1864,7 +1865,18 @@ async function main() {
     lamps?.update(camera.position.x, camera.position.z);
     parkedCars?.update(camera.position.x, camera.position.z);
     bridges?.update(camera, renderer.getDrawingBufferSize(bridgeBufferSize).y, elapsed);
+    // Radians per pixel, for the lamps' footprint: a lens hands its light to a
+    // stable point once it is under a couple of pixels (render/glowpoints.ts).
+    const pixAngle = pixelAngle(camera.fov, renderer.getDrawingBufferSize(bridgeBufferSize).y);
+    for (const g of [lamps?.glow, traffic?.glow]) {
+      if (!g) continue;
+      g.uniforms.uCameraPos.value.copy(camera.position);
+      g.uniforms.uPixelAngle.value = pixAngle;
+      g.uniforms.uNight.value = light.night;
+    }
     for (const u of streetUniformSets) {
+      // The bridges share this set and carry no lamp, hence the guard.
+      if (u.uPixelAngle) u.uPixelAngle.value = pixAngle;
       u.uCameraPos.value.copy(camera.position);
       u.uSH.value = skyProbe.sh;
       u.uSunDir.value.copy(light.sunDir);

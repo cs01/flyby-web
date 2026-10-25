@@ -23,6 +23,10 @@
 // scale, and why the yaw rotation is applied by hand from the same helper.
 
 import * as THREE from "three";
+import { GlowPoints, LAMP_FOOTPRINT_GLSL } from "./glowpoints";
+
+/** The lantern's lens as one size: about the root of its 0.48 x 0.38 m. */
+const LAMP_LENS_M = 0.43;
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
@@ -252,6 +256,8 @@ uniform float uSunSurface;
 uniform vec3  uMoonDir;
 uniform vec3  uMoonLight;
 uniform float uNight;
+${LAMP_FOOTPRINT_GLSL}
+const float LAMP_LENS_M = ${LAMP_LENS_M.toFixed(2)};
 uniform vec3  uNightGlow;
 
 void main() {
@@ -289,8 +295,11 @@ void main() {
     // camera moves. The pool on the carriageway already carries the lit street
     // from the air, and it has its own converge-to-the-mean term for exactly
     // this reason; this is that term's counterpart on the object.
-    float near = 1.0 - smoothstep(90.0, 430.0, vViewDist);
-    lit += warm * uNight * mix(0.35, 5.5, near);
+    //
+    // That fade is now the lens's own size on screen: once it is under a couple
+    // of pixels its light is a point of fixed minimum size in
+    // render/glowpoints.ts, which cannot twinkle the way a sub-pixel quad does.
+    lit += warm * uNight * 5.5 * lampMeshWeight(LAMP_LENS_M, vViewDist);
   }
 
   vec3 ro = atmoOrigin(uCamAltitude);
@@ -317,6 +326,7 @@ export interface StreetLampUniforms extends SunShadowUniforms, AoUniforms {
   uTurbidity: THREE.IUniform<number>;
   uCamAltitude: THREE.IUniform<number>;
   uMultiScatter: THREE.IUniform<number>;
+  uPixelAngle: THREE.IUniform<number>;
 }
 
 export function makeStreetLampUniforms(shadow: SunShadowUniforms): StreetLampUniforms {
@@ -338,6 +348,7 @@ export function makeStreetLampUniforms(shadow: SunShadowUniforms): StreetLampUni
     uTurbidity: { value: 1 },
     uCamAltitude: { value: 100 },
     uMultiScatter: { value: 0.055 },
+    uPixelAngle: { value: 0.0015 },
   };
 }
 
@@ -361,6 +372,8 @@ export interface StreetLampStats {
 
 export class StreetLamps {
   readonly group = new THREE.Group();
+  /** The lenses as stable points once they are under a few pixels. */
+  readonly glow: GlowPoints;
   readonly uniforms: StreetLampUniforms;
   readonly stats: StreetLampStats = {
     indexedTiles: 0, tiles: 0, count: 0, triangles: 0, clipped: 0,
@@ -412,6 +425,8 @@ export class StreetLamps {
 
     this.byTile = indexWaysByTile(pack.roads, hasStreetLamps);
     this.stats.indexedTiles = this.byTile.size;
+    this.glow = new GlowPoints(budget.lampInstanceBudget, this.ringM);
+    this.group.add(this.glow.points);
   }
 
   /** Follow a camera. Cheap between tile crossings; safe every frame. */
@@ -430,6 +445,7 @@ export class StreetLamps {
     let measured = 0;
     let clipped = 0;
     const keep = new Set<string>();
+    this.glow.begin();
 
     for (const w of wanted) {
       let lamps = this.cache.get(w.key);
@@ -453,6 +469,17 @@ export class StreetLamps {
         // A stable per-lamp hash: the road it belongs to and how far along it.
         iShape[p + 2] = fract(l.road * 0.6180339887 + l.u * 0.013);
         iShape[p + 3] = 0;
+        // The lens: at the end of the arm (instanceToWorld's +x is
+        // (cos yaw, -sin yaw)), just under the mounting height. Colour from
+        // the same seed the lens shader mixes sodium and LED on.
+        const seed = iShape[p + 2];
+        const led = Math.min(1, Math.max(0, (seed - 0.35) / 0.4));
+        const reach = l.armM - 0.1;
+        this.glow.push(
+          l.x + Math.cos(l.yaw) * reach, l.y + l.heightM - 0.08, l.z - Math.sin(l.yaw) * reach,
+          0, 0, LAMP_LENS_M, 5.5,
+          1.0 - 0.14 * led, 0.74 + 0.16 * led, 0.40 + 0.60 * led,
+        );
         count++;
         if (l.measured) measured++;
       }
@@ -463,6 +490,7 @@ export class StreetLamps {
     for (const key of this.cache.keys()) if (!keep.has(key)) this.cache.delete(key);
 
     this.field.upload(count);
+    this.glow.end();
     this.stats.tiles = keep.size;
     this.stats.count = count;
     this.stats.measured = measured;

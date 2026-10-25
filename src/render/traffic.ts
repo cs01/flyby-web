@@ -52,6 +52,10 @@ import { RoadClass, ROAD_TUNNEL, type Road, type RoadPack } from "../data/roadpa
 import { CLASS_COUNT, type TrafficState } from "../data/trafficmodel";
 import type { RoadGraph } from "../data/roadgraph";
 import { TrafficSim, type Pose } from "../sim/trafficsim";
+import { GlowPoints, LAMP_FOOTPRINT_GLSL } from "./glowpoints";
+
+/** A lamp lens, as one size: the root of its 0.42 x 0.19 m area. */
+const CAR_LENS_M = 0.28;
 
 /**
  * Where the traffic stops, in metres from the camera.
@@ -241,6 +245,8 @@ ${SUN_SHADOW_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
 ${PALETTE_GLSL}
+${LAMP_FOOTPRINT_GLSL}
+const float LENS_M = ${CAR_LENS_M.toFixed(2)};
 
 uniform vec3  uCameraPos;
 uniform float uSunSurface;
@@ -479,7 +485,10 @@ void main() {
   // headlights blazing is a car park at a drive-in rather than a street.
   float lights = vLook.w;
   float brake = vLook.z;
-  float on = uNight * lights;
+  // Only while the lens is a few pixels across: past that its light is a
+  // stable point in render/glowpoints.ts, because a sub-pixel lens quad at
+  // seven times white is exactly the twinkle the owner reported.
+  float on = uNight * lights * lampMeshWeight(LENS_M, vViewDist);
   lit += vec3(1.0, 0.94, 0.82) * isHead * on * 7.0;
   // A brake lamp is about five times a tail lamp (FMVSS 108 puts the stop
   // function at 80-300 cd against 2-18 for the tail), so a queue pulling up at
@@ -515,6 +524,7 @@ export interface TrafficUniforms extends SunShadowUniforms, AoUniforms {
   uTurbidity: THREE.IUniform<number>;
   uCamAltitude: THREE.IUniform<number>;
   uMultiScatter: THREE.IUniform<number>;
+  uPixelAngle: THREE.IUniform<number>;
 }
 
 function makeTrafficUniforms(shadow: SunShadowUniforms, ringM: number): TrafficUniforms {
@@ -537,6 +547,7 @@ function makeTrafficUniforms(shadow: SunShadowUniforms, ringM: number): TrafficU
     uTurbidity: { value: 1 },
     uCamAltitude: { value: 100 },
     uMultiScatter: { value: 0.055 },
+    uPixelAngle: { value: 0.0015 },
   };
 }
 
@@ -712,6 +723,8 @@ abstract class CarField {
  */
 export class Traffic extends CarField {
   readonly sim: TrafficSim;
+  /** The lamps as stable points once they are under a few pixels. */
+  readonly glow: GlowPoints;
   private readonly flat = new Float32Array(STRIDE);
   private readonly pose: Pose = { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 };
 
@@ -731,6 +744,8 @@ export class Traffic extends CarField {
     // field is where the fragments are.
     this.sim.densityScale = mobile ? 0.55 : 1;
     this.stats.indexedTiles = 0;
+    this.glow = new GlowPoints(budget.trafficInstanceBudget * 4, this.ringM);
+    this.group.add(this.glow.points);
   }
 
   /**
@@ -755,15 +770,33 @@ export class Traffic extends CarField {
     this.begin();
     const f = this.flat;
     const p = this.pose;
+    const glow = this.glow;
+    glow.begin();
     for (const c of this.sim.cars) {
       if (c.scale <= 0.001) continue;
       this.sim.pose(c, p);
+      if (this.glow.uniforms.uNight.value > 0.02) {
+        const a = CAR_ARCHETYPES[Math.min(CAR_ARCHETYPES.length - 1, Math.floor(c.archetype * CAR_ARCHETYPES.length))];
+        const half = a.lengthM * 0.5 * c.scale;
+        const side = a.widthM * 0.31 * c.scale;
+        const y = p.y + a.beltM * 0.62 * c.scale;
+        const rx = -p.dirZ, rz = p.dirX;
+        const head = 7.0;
+        const tail = 3.5 + 9.0 * c.brake;
+        for (const sgn of [-1, 1]) {
+          glow.push(p.x + p.dirX * half + rx * side * sgn, y, p.z + p.dirZ * half + rz * side * sgn,
+            p.dirX, p.dirZ, CAR_LENS_M, head, 1.0, 0.94, 0.82);
+          glow.push(p.x - p.dirX * half + rx * side * sgn, y, p.z - p.dirZ * half + rz * side * sgn,
+            -p.dirX, -p.dirZ, CAR_LENS_M, tail, 1.0, 0.10, 0.045);
+        }
+      }
       f[0] = p.x; f[1] = p.z; f[2] = p.dirX; f[3] = p.dirZ;
       f[4] = p.y; f[5] = c.brake; f[6] = c.scale; f[7] = 1;
       f[8] = c.tint; f[9] = c.archetype; f[10] = c.cls; f[11] = c.rank;
       this.push(f, 0);
     }
     this.end();
+    glow.end();
     this.stats.tiles = this.sim.stats.activeEdges;
     this.stats.lastBuildMs = performance.now() - t0;
     this.stats.worstBuildMs = Math.max(this.stats.worstBuildMs, this.stats.lastBuildMs);
