@@ -25,6 +25,29 @@ import { Cdp } from "./cdp";
 import { PROFILE_POSES, VIEWPORTS, measure, othersBusy } from "./profile";
 import { loadavg } from "node:os";
 
+/**
+ * CPU of every browser on the machine that is not this harness's Chrome:
+ * another agent's headless Chrome, and a person's own Brave or Chrome with a
+ * WebGL tab open. Three Brave helpers at 100% each slowed all four poses (and
+ * the probe) by 20% together, which is the GPU being shared, not the code.
+ */
+function browsersBusy(): { pct: number; who: string } {
+  const rows = Bun.spawnSync(["ps", "-axo", "pcpu=,command="]).stdout.toString().split("\n");
+  let pct = 0;
+  const who = new Set<string>();
+  for (const r of rows) {
+    const m = r.trim().match(/^([\d.]+)\s+(.*)$/);
+    if (!m) continue;
+    const cmd = m[2];
+    if (cmd.includes(profileDir)) continue;
+    const name = cmd.includes("Brave Browser") ? "Brave" : cmd.includes("Google Chrome") ? "Chrome" : "";
+    if (!name) continue;
+    pct += Number(m[1]);
+    if (Number(m[1]) > 5) who.add(name);
+  }
+  return { pct, who: [...who].join(", ") };
+}
+
 declare const process: { argv: string[]; exit(code?: number): never };
 function arg(name: string, fallback: string): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -77,6 +100,21 @@ for (let i = 0; i < 100; i++) {
 const cdp = await Cdp.launch({ port: debugPort, width: 1280, height: 720, profileDir, uncapped: true });
 let failures = 0;
 console.log(`load average ${loadavg()[0].toFixed(2)}`);
+// Wait up to five minutes for the GPU to be ours; if it never is, say so and
+// exit 2, which is neither a pass nor a regression.
+{
+  const until = Date.now() + 300_000;
+  let b = browsersBusy();
+  while (b.pct >= 30 && Date.now() < until) {
+    await Bun.sleep(10_000);
+    b = browsersBusy();
+  }
+  if (b.pct >= 30) {
+    console.log(`INCONCLUSIVE: ${b.who} using ${b.pct.toFixed(0)}% CPU; the GPU is shared and these bounds need it quiet`);
+    vite.kill();
+    process.exit(2);
+  }
+}
 try {
   for (const probe of [false, true]) {
     for (const r of REFS) {
