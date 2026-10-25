@@ -59,7 +59,8 @@
     "farcolour": "bun tools/verify-farcolour.ts",
     "shadow": "bun tools/verify-shadow.ts",
     "buildings": "bun tools/verify-buildings.ts",
-    "clouds": "bun tools/verify-clouds.ts --profile /tmp/flyby-clouds-profile"
+    "clouds": "bun tools/verify-clouds.ts --profile /tmp/flyby-clouds-profile",
+    "gates": "bun tools/gates.ts"
   },
   "dependencies": {
     "three": "^0.180.0"
