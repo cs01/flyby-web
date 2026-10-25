@@ -1434,6 +1434,19 @@ async function main() {
     if (spot) spotAt(spot);
   }
 
+  // Compile every program the scene has now, behind the loading screen, with
+  // KHR_parallel_shader_compile where the browser has it. Otherwise each is
+  // compiled the first frame its mesh is in view, and on the phone profile
+  // (tools/jank.ts) the first sight of a material was a 40-50 ms frame in the
+  // middle of a flight. Bounded, so a driver that never reports done cannot
+  // hold the load.
+  loading.set(0.99, "preparing shaders");
+  try {
+    await Promise.race([renderer.compileAsync(scene, camera), new Promise((r) => setTimeout(r, 8000))]);
+  } catch {
+    // A compile failure is reported by onShaderError when the mesh draws.
+  }
+
   loading.done();
 
   // Live tuning scale, driven from the console while looking at the scene.

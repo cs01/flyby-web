@@ -88,7 +88,9 @@ try {
       await cdp.eval("window.flybyShot.resetTiming()");
     }
     const j = await cdp.eval<{ longFrames: { ms: number; labels: Record<string, number> }[]; longTasks: { ms: number }[] }>(
-      "window.flybyShot.jank()",
+      // A build from before the long-frame log has no jank(); its frame times
+      // are still comparable.
+      "window.flybyShot.jank ? window.flybyShot.jank() : { longFrames: [], longTasks: [] }",
     );
     const sorted = [...trace].sort((a, b) => a - b);
     const blame: Record<string, number> = {};

@@ -82,6 +82,8 @@ const SHADOW_FADE_M = 1400;
  * than a tile, because a tree's level is chosen here and a tile is 256 m.
  */
 const LOD_REPACK_M = 64;
+/** Most of a frame new tree tiles may take to place, ms; see Foliage.update. */
+const PLACE_SLICE_MS = 2;
 
 /**
  * Level distances are halved on the reduced tier.
@@ -707,11 +709,24 @@ export class Foliage {
    * Rebuild the field around a camera position. Cheap and idempotent between
    * repack thresholds, so it is safe to call every frame.
    */
+  private placedOnce = false;
+  /** Tiles in the ring that a time-sliced update left for the next frame. */
+  private unplaced = false;
+
   update(camX: number, camZ: number): void {
     const tx = Math.floor(camX / TREE_TILE_M);
     const tz = Math.floor(camZ / TREE_TILE_M);
     const moved = Math.hypot(camX - this.packedX, camZ - this.packedZ);
-    if (tx === this.atX && tz === this.atZ && moved < LOD_REPACK_M) return;
+    if (tx === this.atX && tz === this.atZ && moved < LOD_REPACK_M && !this.unplaced) return;
+    // The first fill places everything at once (a `?shot` pose is complete
+    // before it is captured); after that, new tiles are placed at most
+    // PLACE_SLICE_MS a frame and the rest wait for the next frame's repack,
+    // nearest first, so the ones still missing are at the rim. Placed all at
+    // once, a tile crossing over Manhattan was 43 ms of the long frames on the
+    // phone profile (tools/jank.ts, 6x CPU throttle).
+    const first = !this.placedOnce;
+    this.placedOnce = true;
+    this.unplaced = false;
     this.atX = tx;
     this.atZ = tz;
     this.packedX = camX;
@@ -747,6 +762,10 @@ export class Foliage {
     for (const w of wanted) {
       let tile = this.tiles.get(w.key);
       if (!tile) {
+        if (!first && performance.now() - t0 > PLACE_SLICE_MS) {
+          this.unplaced = true;
+          continue;
+        }
         tile = this.source.place(w.x, w.z, w.x + TREE_TILE_M, w.z + TREE_TILE_M);
         this.tiles.set(w.key, tile);
       }
