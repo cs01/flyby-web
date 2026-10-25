@@ -347,6 +347,10 @@ async function shoot(
     "--debug-port", String(dbg),
   ];
   if (query) args.push("--query", query);
+  // Without this every run shared shots.ts's default profile, so `bun run gates`
+  // could not keep one tile cache and two gates could fight over one profile.
+  const profile = arg("profile", "");
+  if (profile) args.push("--profile", profile);
   const p = Bun.spawn(["bun", ...args], {
     cwd: new URL("..", import.meta.url).pathname,
     stdout: "inherit",
