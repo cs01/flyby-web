@@ -28,6 +28,17 @@
 //      luminance over the mean, and the mean chroma distance) has a floor.
 //      Probes: ?oneroof=1 (one cover, one colour, same textures and features)
 //      and ?flatfacade=1 (the old roof) must both fall under it.
+//
+//   5. SETBACK SILHOUETTES. The Empire State against the sky, from 700 m: the
+//      top of the buildingDebug=4 mask in each column over the tower is its
+//      skyline, and a setback tower's has many steps where a box has a few.
+//      Counted as column-to-column jumps of 3 px or more. Probe: ?flatparts=1,
+//      every building:part group put back to the one box the pack used to be.
+//
+//   6. SHOPFRONTS AT NIGHT. Seventh Avenue from the kerb: over the ground
+//      storey (the buildingDebug=5 mask) the relative local contrast, which
+//      the shop rooms, signs and shutters put there and a row of uniformly
+//      glowing panels does not have. Probe: ?flatshop=1.
 
 import { existsSync, mkdirSync } from "node:fs";
 import { decodePng } from "./pixdiff";
@@ -92,6 +103,17 @@ const ROOF_SPREAD_FLOOR = 0.30;
 /** Roofs under this many pixels are not measured: their mean is mostly edge. */
 const ROOF_MIN_PX = 60;
 
+/** The skyline claim: pose, the tower's column window, and the step floor. */
+const SKYLINE_POSE = "manhattan-esb-skyline";
+const SKYLINE_COLS: [number, number] = [600, 700];
+const SKYLINE_STEP_PX = 3;
+// Measured 2026-10-24: 13 steps with the parts, 4 as one box (?flatparts=1).
+const SKYLINE_STEPS_FLOOR = 8;
+/** The shopfront claim: relLC over the ground storey at night, floor. */
+const SHOP_POSE = "manhattan-shops-night";
+// Measured 0.0606 with the shop rooms, signs and shutters, 0.0399 without.
+const SHOP_LC_FLOOR = 0.05;
+
 const LC_RADIUS = 2;
 
 async function shoot(outDir: string, query: string, poses: string[], port: number, dbg: number, profile: string, nudge = 0): Promise<void> {
@@ -127,6 +149,30 @@ function facadeMask(path: string): Uint8Array {
     m[i] = r <= 3 && g <= 3 && b >= 60 ? 1 : 0;
   }
   return m;
+}
+
+/** Green-marker mask (buildingDebug=4 and =5). */
+function greenMask(path: string): Uint8Array {
+  const img = load(path);
+  const m = new Uint8Array(img.w * img.h);
+  for (let i = 0; i < m.length; i++) {
+    m[i] = img.data[i * 4] < 40 && img.data[i * 4 + 1] > 120 && img.data[i * 4 + 2] < 40 ? 1 : 0;
+  }
+  return m;
+}
+
+/** Column-to-column jumps of the skyline (topmost building pixel) in a window. */
+function skylineSteps(path: string, cols: [number, number]): number {
+  const img = load(path);
+  const m = greenMask(path);
+  let steps = 0, prev = -1;
+  for (let x = cols[0]; x < cols[1]; x++) {
+    let top = img.h;
+    for (let y = 0; y < img.h; y++) if (m[y * img.w + x]) { top = y; break; }
+    if (prev >= 0 && Math.abs(top - prev) >= SKYLINE_STEP_PX) steps++;
+    prev = top;
+  }
+  return steps;
 }
 
 /** Relative local contrast over a mask: mean |p - mean of 4 neighbours| / mean p. */
@@ -246,6 +292,13 @@ async function main(): Promise<void> {
     await shoot(`${out}/mask`, "buildingDebug=1", [...STREET_POSES, ...AERIAL_POSES, NIGHT_POSE], port, dbg, profile);
     console.log("rendering the roof mask (?buildingDebug=3) ...");
     await shoot(`${out}/roofmask`, "buildingDebug=3", ROOF_POSES, port, dbg, profile);
+    console.log("rendering the skyline mask, with parts and as boxes (?buildingDebug=4, ?flatparts=1) ...");
+    await shoot(`${out}/skyline`, "buildingDebug=4", [SKYLINE_POSE], port, dbg, profile);
+    await shoot(`${out}/skyline-flat`, "buildingDebug=4&flatparts=1", [SKYLINE_POSE], port, dbg, profile);
+    console.log("rendering the shopfronts and their mask (?flatshop=1, ?buildingDebug=5) ...");
+    await shoot(`${out}/shop`, "", [SHOP_POSE], port, dbg, profile);
+    await shoot(`${out}/shop-flat`, "flatshop=1", [SHOP_POSE], port, dbg, profile);
+    await shoot(`${out}/shopmask`, "buildingDebug=5", [SHOP_POSE], port, dbg, profile);
     console.log("");
   }
 
@@ -290,6 +343,23 @@ async function main(): Promise<void> {
       `spread ${full.spread.toFixed(3)} chroma ${full.chroma.toFixed(4)} over ${full.roofs} roofs (floor ${ROOF_SPREAD_FLOOR})`);
     probe(`${p}: one roof material is uniform`, one.spread >= ROOF_SPREAD_FLOOR, `spread ${one.spread.toFixed(3)} chroma ${one.chroma.toFixed(4)}`);
     probe(`${p}: the old roofs were uniform`, flat.spread >= ROOF_SPREAD_FLOOR, `spread ${flat.spread.toFixed(3)} chroma ${flat.chroma.toFixed(4)}`);
+  }
+
+  {
+    const full = skylineSteps(`${out}/skyline/${SKYLINE_POSE}.png`, SKYLINE_COLS);
+    const flat = skylineSteps(`${out}/skyline-flat/${SKYLINE_POSE}.png`, SKYLINE_COLS);
+    check(`${SKYLINE_POSE}: setbacks in the silhouette`, full >= SKYLINE_STEPS_FLOOR,
+      `${full} steps of ${SKYLINE_STEP_PX}+ px over columns ${SKYLINE_COLS.join("-")} (floor ${SKYLINE_STEPS_FLOOR})`);
+    probe(`${SKYLINE_POSE}: one box per tower`, flat >= SKYLINE_STEPS_FLOOR, `${flat} steps must fall under ${SKYLINE_STEPS_FLOOR}`);
+  }
+
+  {
+    const mask = greenMask(`${out}/shopmask/${SHOP_POSE}.png`);
+    const full = relLC(load(`${out}/shop/${SHOP_POSE}.png`), mask);
+    const flat = relLC(load(`${out}/shop-flat/${SHOP_POSE}.png`), mask);
+    check(`${SHOP_POSE}: shopfronts have something in them`, full.lc >= SHOP_LC_FLOOR,
+      `relLC ${full.lc.toFixed(4)} >= ${SHOP_LC_FLOOR} over ${full.n} ground-storey px`);
+    probe(`${SHOP_POSE}: glowing panels do not`, flat.lc >= SHOP_LC_FLOOR, `relLC ${flat.lc.toFixed(4)} must fall under ${SHOP_LC_FLOOR}`);
   }
 
   console.log(failures ? `\n${failures} building check(s) FAILED` : "\nall building checks ok");
