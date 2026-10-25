@@ -550,6 +550,17 @@ export const POSES: Pose[] = [
     what: "Seventh Avenue shopfronts from the kerb by day",
   },
   {
+    // EAST 7TH STREET, the East Village: a block of five- and six-storey
+    // walk-ups from the middle of the carriageway, looking west. The pose for
+    // the windows themselves: units, plants, raised sashes, fire escapes.
+    name: "manhattan-walkup-street",
+    city: "manhattan",
+    lat: 40.72578, lon: -73.98484, altM: 12, hdgDeg: 299, pitchDeg: 8,
+    t: D("2025-06-21T21:00:00Z"), // 17:00 EDT
+    wx: CLEAR,
+    what: "an East Village walk-up block from the street",
+  },
+  {
     // Willis and the Loop from 600 m, north-west of the river.
     name: "chicago-willis-600",
     city: "chicago",

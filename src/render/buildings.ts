@@ -312,6 +312,25 @@ const LAMP_HI = 1.6;
  */
 const LAMP_NORM = Math.log(LAMP_HI / LAMP_LO) / (LAMP_HI - LAMP_LO);
 
+/**
+ * The acRate() body: window units per window by archetype. Rates from street
+ * counts of the type: about one window in five on a pre-war walk-up or
+ * elevator block, fewer on the post-war towers with through-wall sleeves,
+ * almost none on offices, none in San Francisco.
+ */
+function acRateGlsl(): string {
+  const rates: Record<string, number> = {
+    "nyc-walkup": 0.22, "nyc-prewar-apt": 0.20, "nyc-white-brick": 0.12, "nyc-projects": 0.16,
+    "nyc-brownstone": 0.08, "nyc-house": 0.06, "nyc-loft": 0.05,
+    "chi-courtyard": 0.10, "chi-two-flat": 0.06, "chi-concrete": 0.04,
+  };
+  const terms = Object.entries(rates)
+    .map(([id, r]) => [ARCHETYPES.findIndex((a) => a.id === id), r] as const)
+    .filter(([i]) => i >= 0)
+    .map(([i, r]) => `if (abs(a - ${i}.0) < 0.5) return ${r.toFixed(3)};`);
+  return `${terms.join("\n  ")}\n  return 0.0;`;
+}
+
 const FRAG = /* glsl */ `
 precision highp float;
 precision highp sampler2DArray;
@@ -465,6 +484,11 @@ float winRect(vec2 g, vec4 win, vec2 w) {
  */
 vec3 parapetColour(Facade p) {
   return mix(p.colour, vec3(0.42, 0.41, 0.39), 0.55 + 0.25 * hash11(p.seed * 31.0 + 5.0));
+}
+
+// Share of windows with a through-the-window air conditioner, by archetype.
+float acRate(float a) {
+  ${acRateGlsl()}
 }
 
 void main() {
@@ -929,6 +953,45 @@ void main() {
     vec3 dayRoom = mix(roomC, blindC * 0.8, blindCov) * 0.32;
     seeIn = mix(vec3(0.30 * 0.32), dayRoom, detail) * pane * detailOn * (1.0 - uNight)
           * step(groundH, vUv.y) * capped;
+
+    // --- WHAT IS IN THE WINDOW ---------------------------------------------
+    //
+    // A grid of identical openings, every floor the same, is the tell up
+    // close. A pre-war New York front is a window unit in one window in four
+    // or five, a plant on a cill, a sash pushed up for air. One hash per
+    // window decides all three, so a window is the same window by day and by
+    // night, and each is an object of a few tens of centimetres that fades
+    // with the window's own footprint (detail), never sooner and never later.
+    // acRate is per archetype: through-the-window units are a New York and
+    // Chicago thing, almost absent in San Francisco's climate.
+    float winObj = 0.0;
+    if (detailOn > 0.5 && pane > 0.001 && fp.interior < 0.5) {
+      float wh = hash21(vec2(colIdx * 3.71 + fp.seed * 1.9, floorIdx * 2.03 + 77.0));
+      float hasAc = step(wh, acRate(fp.archetype));
+      vec2 acSz = min(vec2(0.66, 0.40) / max(winSz, vec2(0.3)), vec2(0.9));
+      float acX0 = 0.5 - 0.5 * acSz.x + (fract(wh * 17.3) - 0.5) * (1.0 - acSz.x) * 0.8;
+      float acM = hasAc * step(acX0, wl.x) * step(wl.x, acX0 + acSz.x) * step(0.02, wl.y) * step(wl.y, 0.02 + acSz.y);
+      // Beige or white plastic, a dark grille on its face, darker underneath.
+      vec3 acC = mix(vec3(0.42, 0.40, 0.35), vec3(0.58, 0.58, 0.56), step(0.5, fract(wh * 5.7)));
+      float grille = step(0.5, fract((wl.x - acX0) / acSz.x * 9.0)) * step(0.35, (wl.y - 0.02) / acSz.y);
+      acC *= 1.0 - 0.35 * grille * detail;
+      acC *= mix(0.6, 1.0, smoothstep(0.02, 0.02 + acSz.y * 0.4, wl.y));
+      // Plants on the cill: a ragged dark green band, never with a unit.
+      float hasPlant = (1.0 - hasAc) * step(fract(wh * 29.1), 0.06);
+      float plantTop = 0.10 + 0.14 * vnoise(vec2(wl.x * 9.0, wh * 31.0));
+      float plantM = hasPlant * step(wl.y, plantTop);
+      vec3 plantC = mix(vec3(0.03, 0.07, 0.025), vec3(0.08, 0.13, 0.04), vnoise(wl * 14.0 + wh * 9.0));
+      // A raised sash: the lower light is open, so there is no glass in it to
+      // reflect the street, and the room shows straight through.
+      float isSash = 1.0 - step(0.5, fp.windowStyle);
+      float openM = (1.0 - hasAc) * isSash * step(fract(wh * 41.3), 0.06) * step(wl.y, 0.45);
+      float objM = max(acM, plantM) * pane * detail;
+      albedo = mix(albedo, acM > 0.5 ? acC : plantC, objM);
+      glassMask *= 1.0 - objM - openM * pane * detail;
+      seeIn *= 1.0 - objM;
+      seeIn += roomC * 0.32 * openM * pane * detail * (1.0 - uNight) * 0.6;
+      winObj = objM;
+    }
 
     // --- What the reveal does to the light ---------------------------------
     //
@@ -1586,7 +1649,7 @@ void main() {
       float roomLum = dot(roomC, vec3(0.299, 0.587, 0.114));
       float glow = mix(1.0, mix(clamp(roomLum / 0.40, 0.3, 2.5), 0.6, curtainCov), detailOn)
                  * (1.0 - frameLod);
-      float profile = (winX * litYD * glow + ${SPILL_LEVEL} * halo) * (winMean / max(profileMean, 1e-4));
+      float profile = (winX * litYD * glow * (1.0 - winObj) + ${SPILL_LEVEL} * halo) * (winMean / max(profileMean, 1e-4));
 
       // Correlated occupancy: cores, then floors, then tenancies, then the
       // individual window. See facade.ts -- an independent coin per cell is
