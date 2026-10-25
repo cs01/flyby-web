@@ -39,6 +39,7 @@ precision highp float;
 in vec3 vRayDir;
 out vec4 fragColor;
 
+#define ATMO_GLOW_STEPS 12
 ${ATMOSPHERE_GLSL}
 ${TONEMAP_GLSL}
 
