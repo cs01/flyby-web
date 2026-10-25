@@ -78,8 +78,21 @@ const REF_GM = 0.0623;
 // office and 1960s slab palettes too measured 0.1881 / 0.0446, no better,
 // and redrew enough of Midtown's colours to move the manhattan-rooftops
 // shimmer from 0.0890 to 0.0910, so they were left as they were.
-const RB_FLOOR = 0.175;
-const GM_FLOOR = 0.040;
+//
+// RE-MEASURED 2026-10-25 ACROSS DRAWS, and both floors came down. Which
+// archetype and palette a building gets is a hash of its record index, so a
+// pack re-bake or a filtered record deals Midtown again; the 0.1904 / 0.0440
+// above was one deal. Seven deals of the same code (the facade seed offset by
+// 0..5, and main before the seeds were fixed) measured sd ln(R/B) 0.1732 to
+// 0.2133 and sd ln(G/sqrt(RB)) 0.0302 to 0.0440, and the seed fix alone moved
+// the second from 0.0440 to 0.0391 and failed it. So 0.040 was inside the
+// claim's own sampling spread: it told a lucky deal from an unlucky one, and
+// the old palette's 0.0368 sits inside that spread too, so this pose never
+// could tell the palettes apart. The floors now sit between ?onepalette (0.0932
+// / 0.0103) and the lowest deal, which is the claim the frame can support:
+// a city's spread of colours, not one grey.
+const RB_FLOOR = 0.16;
+const GM_FLOOR = 0.025;
 
 const PATCH = 16;
 
