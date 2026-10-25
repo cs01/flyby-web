@@ -532,6 +532,20 @@ html, body {
 .ttag .l2 { color: var(--ink); }
 .ttag .l3 { color: var(--dim); font-size: 9px; }
 .ttag.sel { background: rgba(12, 20, 32, 0.9); border-left-color: #ffd166; }
+/* Transit tags: the line's own bullet, a round MTA-style disc, wider for a
+   name (Yellow, Brown) than for a letter. */
+.xtag { padding: 2px 7px 2px 3px; border-left-color: rgba(242, 246, 250, 0.5); }
+.xtag .l1 { display: flex; align-items: center; gap: 5px; }
+.xtag .l1 span { margin-left: 0; color: var(--ink); }
+.xb {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 16px; height: 16px; padding: 0 3px; box-sizing: border-box;
+  border-radius: 8px; font-style: normal; font-weight: 700; font-size: 10px; line-height: 1;
+}
+.xb.wide { border-radius: 3px; font-size: 9px; }
+.xtag-card h2 { display: flex; align-items: center; gap: 6px; }
+.xtag-card h2 .xb { min-width: 20px; height: 20px; border-radius: 10px; font-size: 12px; }
+.xtag-card .xstops div { white-space: nowrap; }
 .ttag-card {
   top: 92px;
   right: 14px;

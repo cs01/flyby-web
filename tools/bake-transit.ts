@@ -542,7 +542,22 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
       }
       const keep = new Set<number>();
       for (let i = 1; i < n; i++) if (lv[i] !== lv[i - 1]) keep.add(i - 1), keep.add(i);
-      const kept = simplify(d, keep, SIMPLIFY_M);
+      const simple = simplify(d, keep, SIMPLIFY_M);
+      // Heights are worked out per point in the app and are linear between, so
+      // a straight stretch the simplifier left as two points 1.4 km apart
+      // would cut through the ground between them and put the Manhattan
+      // Bridge's deck curve on a chord (the Q drew at 15 m mid-span, under a
+      // 41 m deck). Track that can be seen keeps a point every 30 m; tunnel
+      // cannot be seen and keeps only its corners.
+      const kept: number[] = [];
+      for (let k = 0; k < simple.length; k++) {
+        const i0 = simple[k];
+        kept.push(i0);
+        const i1 = simple[k + 1];
+        if (i1 === undefined || a.kind === "ferry") continue;
+        if (lv[i0] === Level.Tunnel && lv[i1] === Level.Tunnel) continue;
+        for (let j = i0 + 3; j < i1 - 1; j += 3) kept.push(j);
+      }
       // Quantise first, then measure, so the app recomputes identical s.
       const qp: number[] = [];
       const ql: number[] = [];

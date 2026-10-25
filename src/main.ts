@@ -103,6 +103,7 @@ import { EasyStick } from "./sim/easystick";
 import { fetchNearby, searchNamedPlaces } from "./data/nearby";
 import { AirTrafficLayer } from "./app/airtraffic";
 import { SpotGame } from "./app/spotgame";
+import { TransitLayer } from "./app/transit";
 import { AIRPORTS, airportById, spotPose } from "./data/airports";
 import { haversine } from "./geo";
 
@@ -1117,6 +1118,8 @@ async function main() {
   if (pack) minimap.setCity(pack);
   const layers = new Layers(ui);
   const airTraffic = new AirTrafficLayer({ scene, ui, model, origin, groundAt: terrain.heightAt, shotMode });
+  // Trains and boats; see app/transit.ts.
+  const transit = new TransitLayer({ scene, ui, model, origin, cityId: city.id, groundAt: terrain.heightAt, waterY: waterLevel, landmarks, shotMode });
   const drawSize = new THREE.Vector2();
   // Plane spotting over the live traffic; see app/spotgame.ts.
   const spotGame = new SpotGame(ui, airTraffic, () => city.name);
@@ -1579,7 +1582,7 @@ async function main() {
         done: autopilot.target?.name === p.name,
       })),
       ac.position,
-      airTraffic.tags.rects,
+      transit.tags ? [...airTraffic.tags.rects, ...transit.tags.rects] : airTraffic.tags.rects,
     );
 
     if (input.helpToggled > 0) {
@@ -1735,6 +1738,9 @@ async function main() {
       spotGame.update(camera, dt, { x: me.x, y: me.y, z: me.z, headingDeg: hdg }, layers.traffic);
       minimap.setTraffic(layers.traffic ? spotGame.near : []);
     }
+    transit.update(camera, drawSize.y, dt, light.night, layers.trains, layers.boats, airTraffic.tags.rects);
+    minimap.setTransit(transit.blips);
+    spotGame.transit = transit.blips;
 
     const camAlt = camera.position.y;
     sky.update(solar, wx, camAlt, elapsed);
@@ -1992,11 +1998,14 @@ async function main() {
     // The live traffic samples it too.
     const droneShown = droneModel.group.visible;
     const trafficShown = airTraffic.render.group.visible;
+    const transitShown = transit.render?.group.visible ?? false;
     droneModel.group.visible = false;
     airTraffic.render.group.visible = false;
+    if (transit.render) transit.render.group.visible = false;
     model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c));
     droneModel.group.visible = droneShown;
     airTraffic.render.group.visible = trafficShown;
+    if (transit.render) transit.render.group.visible = transitShown;
     sky.syncCamera(camera);
     ao.render(renderer, scene, camera, shadowCasters);
     setAo(1);
@@ -2162,6 +2171,11 @@ async function main() {
           tags: airTraffic.tags.root.querySelectorAll(".ttag:not([style*='display: none'])").length,
         };
       },
+      // What the transit layer has and draws, for the transit shots.
+      get transit() {
+        return transit.stats;
+      },
+      transitList: () => transit.list(),
       /** Every track as lat/lon/AMSL, for pointing a pose at a real aircraft. */
       trafficList: () =>
         [...airTraffic.traffic.tracks.values()].map((t) => ({

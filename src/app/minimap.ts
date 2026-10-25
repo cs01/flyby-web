@@ -18,6 +18,7 @@
 
 import type { CityPack } from "../data/citypack";
 import type { PlaceRow } from "./places";
+import type { TransitBlip } from "./transit";
 
 /** Metres from the aircraft to the edge of the map. */
 const RANGE_M = 1400;
@@ -38,6 +39,8 @@ export class Minimap {
   private places: PlaceRow[] = [];
   /** Live aircraft near enough for this map's 1.4 km, and the spotting target. */
   private traffic: { x: number; z: number; headingDeg: number; target: boolean }[] = [];
+  /** Trains and boats, underground ones included: the map is where you see them. */
+  private transit: TransitBlip[] = [];
 
   private lastDraw = 0;
   private visible = true;
@@ -93,6 +96,10 @@ export class Minimap {
 
   setTraffic(t: { x: number; z: number; headingDeg: number; target: boolean }[]): void {
     this.traffic = t;
+  }
+
+  setTransit(t: TransitBlip[]): void {
+    this.transit = t;
   }
 
   setVisible(v: boolean): void {
@@ -159,6 +166,25 @@ export class Minimap {
       g.beginPath();
       g.arc(px, py, 3.2, 0, Math.PI * 2);
       g.fill();
+    }
+    // Trains and boats in their line's colour; a train in tunnel is a ring,
+    // because nothing in the window matches it.
+    for (const t of this.transit) {
+      const dx = t.x - acX;
+      const dz = t.z - acZ;
+      if (Math.abs(dx) > RANGE_M || Math.abs(dz) > RANGE_M) continue;
+      const px = c + (dx * cos - dz * sin) * scale;
+      const py = c + (dx * sin + dz * cos) * scale;
+      g.beginPath();
+      g.arc(px, py, t.boat ? 4.5 : 3.5, 0, Math.PI * 2);
+      if (t.under) {
+        g.strokeStyle = t.color;
+        g.lineWidth = 1.6;
+        g.stroke();
+      } else {
+        g.fillStyle = t.color;
+        g.fill();
+      }
     }
     // Live traffic close enough to be on this map: a chevron along its track.
     for (const t of this.traffic) {

@@ -475,10 +475,11 @@ export const CAR_HEIGHT_M = 3.7;
  * Top-of-rail height at every point of every run of a shape, metres AMSL.
  *
  * Grade track sits on the terrain; tunnel is TUNNEL_DEPTH_M under it; elevated
- * is `elevatedM` over it, or on a landmark bridge's own deck where `deckAt`
- * says so. Between levels the track ramps at RAMP_GRADE, and it is the TUNNEL
- * and the EL that move to meet the ground, never the grade track: a portal is
- * a ramp down from the street, an el's end a ramp up from it.
+ * is `elevatedM` over it, or on a landmark bridge's own surveyed deck where
+ * `deckAt` says so. Grade and deck are FIXED: everything else ramps at
+ * RAMP_GRADE to meet them, so a portal is a ramp down from the street and the
+ * Manhattan Bridge's approach viaduct climbs from Canal Street to the 39 m
+ * deck end instead of stepping 30 m at the anchorage.
  */
 export function trackHeights(
   sh: PackShape,
@@ -490,14 +491,45 @@ export function trackHeights(
     const n = run.s.length;
     const y = new Float32Array(n);
     const g = new Float32Array(n);
+    const fixed = new Uint8Array(n);
+    const deck = new Uint8Array(n);
     for (let i = 0; i < n; i++) {
       const x = run.pts[i * 2], z = run.pts[i * 2 + 1];
       g[i] = groundAt(x, z);
       const lv = run.lvl[i];
-      const deck = lv === Level.Elevated ? deckAt(x, z) : null;
-      y[i] = lv === Level.Tunnel ? g[i] - TUNNEL_DEPTH_M : lv === Level.Elevated ? (deck ?? g[i] + elevatedM) : g[i];
+      const d = lv === Level.Elevated ? deckAt(x, z) : null;
+      if (d !== null) deck[i] = 1;
+      fixed[i] = lv === Level.Grade || d !== null ? 1 : 0;
+      y[i] = lv === Level.Tunnel ? g[i] - TUNNEL_DEPTH_M : lv === Level.Elevated ? (d ?? g[i] + elevatedM) : g[i];
     }
-    // Tunnels rise toward their neighbours, never above the street.
+    // Within RAMP_GRADE of every fixed point, both ways.
+    const lo = new Float32Array(n).fill(-Infinity);
+    const hi = new Float32Array(n).fill(Infinity);
+    for (let pass = 0; pass < 2; pass++) {
+      let l = -Infinity, h = Infinity;
+      for (let k = 0; k < n; k++) {
+        const i = pass === 0 ? k : n - 1 - k;
+        const prev = pass === 0 ? i - 1 : i + 1;
+        if (prev >= 0 && prev < n) {
+          const ds = Math.abs(run.s[i] - run.s[prev]);
+          l -= RAMP_GRADE * ds;
+          h += RAMP_GRADE * ds;
+        }
+        if (fixed[i]) {
+          l = y[i];
+          h = y[i];
+        }
+        lo[i] = Math.max(lo[i], l);
+        hi[i] = Math.min(hi[i], h);
+      }
+    }
+    for (let i = 0; i < n; i++) {
+      if (fixed[i]) continue;
+      y[i] = Math.min(hi[i], Math.max(lo[i], y[i]));
+      if (run.lvl[i] === Level.Tunnel) y[i] = Math.min(y[i], g[i]);
+    }
+    // A tunnel meeting an el with no grade between: the tunnel rises to the
+    // street and the el comes down to it.
     for (let pass = 0; pass < 2; pass++) {
       for (let k = 0; k < n; k++) {
         const i = pass === 0 ? k : n - 1 - k;
@@ -508,12 +540,11 @@ export function trackHeights(
         y[i] = Math.min(g[i], Math.max(y[i], ref - RAMP_GRADE * ds));
       }
     }
-    // Els come down toward theirs.
     for (let pass = 0; pass < 2; pass++) {
       for (let k = 0; k < n; k++) {
         const i = pass === 0 ? k : n - 1 - k;
         const j = pass === 0 ? i - 1 : i + 1;
-        if (j < 0 || j >= n || run.lvl[i] !== Level.Elevated) continue;
+        if (j < 0 || j >= n || run.lvl[i] !== Level.Elevated || deck[i]) continue;
         const ds = Math.abs(run.s[i] - run.s[j]);
         y[i] = Math.min(y[i], Math.max(y[j], g[j]) + RAMP_GRADE * ds);
       }
@@ -533,4 +564,97 @@ export function heightAtSample(heights: Float32Array[], smp: ShapeSample): numbe
 /** Whether a car whose rail is at `railY` is wholly below the ground at `groundY`. */
 export function carUnderground(railY: number, groundY: number): boolean {
   return railY + CAR_HEIGHT_M < groundY - 0.3;
+}
+
+// --- consists and hulls ------------------------------------------------------------
+
+export interface Rolling {
+  /** Car length over couplers, metres; a boat's length overall. */
+  len: number;
+  width: number;
+  cars: number;
+}
+
+/** What a route runs: car length and count, from the agencies' fleet sheets. */
+export function rollingFor(agency: string, routeId: string): Rolling {
+  if (agency === "mta") {
+    // A Division (numbered lines) runs 51 ft cars ten to a train; B Division
+    // 60 ft cars, ten to a 600 ft train, fewer where the platforms are short.
+    if (/^(\d|\dX|GS)$/.test(routeId)) return { len: 15.6, width: 2.67, cars: routeId === "GS" ? 6 : 10 };
+    const cars: Record<string, number> = { G: 5, L: 8, J: 8, Z: 8, M: 8, FS: 2, H: 4 };
+    return { len: 18.4, width: 3.05, cars: cars[routeId] ?? 10 };
+  }
+  if (agency === "bart") return { len: 21.3, width: 3.2, cars: 8 };
+  if (agency === "cta") {
+    const cars: Record<string, number> = { Red: 8, Blue: 8, Brn: 8, P: 8, G: 6, Org: 6, Pink: 6, Y: 2 };
+    return { len: 14.6, width: 2.84, cars: cars[routeId] ?? 6 };
+  }
+  // Hulls: the Staten Island Ferry's Ollis class is 94 m; NYC Ferry's
+  // 150-seat boats 26 m; the Bay Ferry's and Golden Gate's 40 and 50 m.
+  if (agency === "siferry") return { len: 94, width: 21, cars: 1 };
+  if (agency === "nycferry") return { len: 26, width: 8.5, cars: 1 };
+  if (agency === "sfbayferry") return { len: 40, width: 10, cars: 1 };
+  return { len: 50, width: 11, cars: 1 };
+}
+
+export interface CarPose {
+  x: number;
+  y: number;
+  z: number;
+  /** Radians about +y, the three.js yaw that turns a -z nose onto the track. */
+  yaw: number;
+  pitch: number;
+  hidden: boolean;
+}
+
+const smpA: ShapeSample = { x: 0, z: 0, dx: 0, dz: 0, lvl: 0, run: 0, seg: 0, u: 0 };
+const smpB: ShapeSample = { x: 0, z: 0, dx: 0, dz: 0, lvl: 0, run: 0, seg: 0, u: 0 };
+
+/**
+ * Car `i` (0 at the head) of a train whose head is at arc length `s`, its
+ * trucks at 0.35 of a car either side of its centre so it chords a curve the
+ * way a real car does. Null where any of it is outside the pack.
+ */
+export function carPose(
+  sh: PackShape,
+  heights: Float32Array[],
+  s: number,
+  i: number,
+  car: Rolling,
+  groundAt: (x: number, z: number) => number,
+  out: CarPose,
+): CarPose | null {
+  const c = s - (i + 0.5) * car.len;
+  const a = sampleShape(sh, c + car.len * 0.35, smpA);
+  const b = a && sampleShape(sh, c - car.len * 0.35, smpB);
+  if (!a || !b) return null;
+  const ya = heightAtSample(heights, a);
+  const yb = heightAtSample(heights, b);
+  const dx = a.x - b.x, dz = a.z - b.z;
+  const h = Math.hypot(dx, dz) || 1;
+  out.x = (a.x + b.x) / 2;
+  out.z = (a.z + b.z) / 2;
+  out.y = (ya + yb) / 2;
+  out.yaw = Math.atan2(-dx, -dz);
+  out.pitch = Math.atan2(ya - yb, h);
+  out.hidden = carUnderground(Math.max(ya, yb), groundAt(out.x, out.z));
+  return out;
+}
+
+/** A hull on the water at the head's arc length: bow forward, on the surface. */
+export function boatPose(sh: PackShape, s: number, boat: Rolling, waterY: number, out: CarPose): CarPose | null {
+  // The centre half a length behind the shape point, so the BOW is where the
+  // timetable says the boat is: berthed bow-in rather than half on the slip.
+  const a = sampleShape(sh, s, smpA);
+  const b = a && sampleShape(sh, Math.max(0, s - boat.len), smpB);
+  if (!a) return null;
+  const dx = b ? a.x - b.x : a.dx, dz = b ? a.z - b.z : a.dz;
+  const L = Math.hypot(dx, dz) || 1;
+  out.x = a.x - (dx / L) * boat.len * 0.5;
+  out.z = a.z - (dz / L) * boat.len * 0.5;
+  out.y = waterY;
+  out.yaw = Math.atan2(-dx, -dz);
+  out.pitch = 0;
+  out.hidden = false;
+  return out;
 }
