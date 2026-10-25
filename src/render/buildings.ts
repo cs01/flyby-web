@@ -25,6 +25,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import { SKYGLOW_UNIFORMS } from "./skyglow";
 import type { Budget } from "./budget";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { triangulate, signedArea } from "./earcut";
@@ -2475,6 +2476,7 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uTurbidity: { value: 1 },
     uCamAltitude: { value: 100 },
     uMultiScatter: { value: 0.055 },
+    ...SKYGLOW_UNIFORMS,
     uFacade: { value: null },
     uFacadeWidth: { value: 1 },
     uHourFactor: { value: new THREE.Vector3(1, 1, 1) },

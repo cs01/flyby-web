@@ -32,6 +32,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import { SKYGLOW_UNIFORMS } from "./skyglow";
 import type { Budget } from "./budget";
 import { deckYAt, type Deck } from "../data/bridgedeck";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
@@ -728,6 +729,7 @@ export function makeRoadUniforms(shadow: SunShadowUniforms): RoadUniforms {
     uTurbidity: { value: 1 },
     uCamAltitude: { value: 100 },
     uMultiScatter: { value: 0.055 },
+    ...SKYGLOW_UNIFORMS,
   };
 }
 

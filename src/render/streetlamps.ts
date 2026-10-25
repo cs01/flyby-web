@@ -32,6 +32,7 @@ import {
 /** The lantern's lens as one size: about the root of its 0.48 x 0.38 m. */
 const LAMP_LENS_M = 0.43;
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import { SKYGLOW_UNIFORMS } from "./skyglow";
 import { SUN_SHADOW_GLSL, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
@@ -358,6 +359,7 @@ export function makeStreetLampUniforms(shadow: SunShadowUniforms): StreetLampUni
     uTurbidity: { value: 1 },
     uCamAltitude: { value: 100 },
     uMultiScatter: { value: 0.055 },
+    ...SKYGLOW_UNIFORMS,
     uPixelAngle: { value: 0.0015 },
   };
 }

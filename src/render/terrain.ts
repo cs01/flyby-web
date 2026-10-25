@@ -17,6 +17,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import { SKYGLOW_UNIFORMS } from "./skyglow";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import type { Heightfield } from "../data/dem";
 import type { StitchedImage } from "../data/imagery";
@@ -1455,6 +1456,7 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uTurbidity: { value: 1 },
     uCamAltitude: { value: 100 },
     uMultiScatter: { value: 0.055 },
+    ...SKYGLOW_UNIFORMS,
   };
 }
 

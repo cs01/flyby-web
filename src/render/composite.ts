@@ -36,6 +36,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import { SKYGLOW_UNIFORMS } from "./skyglow";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { CLOUD_GLSL } from "./clouds.glsl";
 import { makeShapeNoise, makeDetailNoise } from "./noise3d";
@@ -897,6 +898,7 @@ export class Composite {
       uTurbidity: { value: 1 },
       uCamAltitude: { value: 100 },
       uMultiScatter: { value: 0.055 },
+      ...SKYGLOW_UNIFORMS,
       uShape: { value: this.shapeNoise },
       uDetail: { value: this.detailNoise },
       uWeather: { value: this.weatherMap },
@@ -1171,6 +1173,7 @@ export class Composite {
     light: SceneLighting,
     timeSec: number,
     sh: SH9 | null = null,
+    cityUplight: THREE.Color | null = null,
   ): void {
     const u = this.uniforms;
     u.uInvProj.value.copy(camera.projectionMatrixInverse);
@@ -1236,6 +1239,16 @@ export class Composite {
       light.ambient.g * downRatio[1],
       light.ambient.b * downRatio[2],
     );
+    // A cloud base over a city at night is lit from below by it
+    // (render/skyglow.ts): the orange underside of a low overcast over
+    // Manhattan is the brightest thing in its sky. The interior gets a third
+    // of it, as light that has scattered up into the deck.
+    if (cityUplight) {
+      u.uAmbBottom.value.add(cityUplight);
+      u.uAmbTop.value.r += cityUplight.r / 3;
+      u.uAmbTop.value.g += cityUplight.g / 3;
+      u.uAmbTop.value.b += cityUplight.b / 3;
+    }
 
     // The cloud shadow map, centred on the camera and snapped to its texels so
     // a shadow does not crawl as the aircraft moves.

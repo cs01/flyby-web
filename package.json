@@ -53,6 +53,7 @@
     "bounce": "bun tools/verify-street.ts",
     "ground": "bun tools/verify-ground.ts",
     "night": "bun tools/verify-night.ts",
+    "skyglow": "bun tools/verify-skyglow.ts",
     "shadow": "bun tools/verify-shadow.ts",
     "buildings": "bun tools/verify-buildings.ts",
     "clouds": "bun tools/verify-clouds.ts --profile /tmp/flyby-clouds-profile"

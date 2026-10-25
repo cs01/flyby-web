@@ -49,6 +49,8 @@ const vec3  BETA_O = vec3(0.650e-6, 1.881e-6, 0.085e-6);
 
 const float H_R = 8000.0;   // Rayleigh scale height
 const float H_M = 1200.0;   // Mie scale height
+// Urban aerosol over the regional value, for the skyglow term only.
+const float GLOW_AEROSOL = 2.5;
 
 uniform vec3  uSunDir;        // world-space, normalised, +y up
 uniform float uSunIntensity;
@@ -56,6 +58,14 @@ uniform vec3  uSunColor;
 uniform float uMieG;          // forward-scatter asymmetry, from humidity
 uniform float uTurbidity;     // aerosol multiplier, from visibility
 uniform float uCamAltitude;   // metres above sea level
+// City skyglow (render/skyglow.ts). The city is a disc of upward light,
+// centred uGlowDisc.xy metres from the camera in world x/z with radius
+// uGlowDisc.z; uGlowRad is its emission colour times strength, zero by day and
+// in any shader that never binds it, which turns the term off.
+uniform vec4  uGlowDisc;
+uniform vec3  uGlowRad;
+// The glow share of the last atmosphere() call, for the sky's star washout.
+vec3 gAtmoGlow;
 // Multiple-scattering gain. Compare against the Rayleigh phase function, which
 // averages 1/4pi = 0.0796 over the sphere: this term is isotropic, so a value
 // near 0.05 makes multiple scattering a realistic fraction of single scattering.
@@ -116,6 +126,61 @@ vec3 sunTransmittance(vec3 p, vec3 sunDir, float turbidity) {
   return exp(-(BETA_R * odR + BETA_M * turbidity * 1.11 * odM + BETA_O * odO));
 }
 
+// The glow march takes the shader's own budget: a surface 2 km off needs no
+// more samples of the lit air in front of it than of the sunlit air.
+#ifndef ATMO_GLOW_STEPS
+#define ATMO_GLOW_STEPS ATMO_STEPS
+#endif
+
+/**
+ * Skyglow: the air lit from BELOW by the city, render/skyglow.ts.
+ *
+ * Its own march, because the sun march cannot see it: a ray at the horizon is
+ * 900 km long and 16 steps put the first sample 28 km out, past the whole lit
+ * volume, which measured the horizon over Midtown at a third of the zenith.
+ * This one stops where the city's light has fallen to a few percent and spaces
+ * its samples quadratically, densest near the eye.
+ *
+ * Irradiance from a uniformly emitting disc of radius R is flat over it up to
+ * a height near R and then falls as R^2/(R^2+h^2); off its edge it falls the
+ * same way with the distance d past the edge. The aerosol is GLOW_AEROSOL
+ * times the regional value because the urban boundary layer carries several
+ * times the background haze, and that grey Mie share is what turns a Rayleigh
+ * (blue-violet) glow into the orange-to-pink dome a city's sky photographs
+ * as: low, long paths sit in the haze and come out orange, the zenith is
+ * mostly Rayleigh and comes out mauve. Phase is isotropic: the light arrives
+ * from a whole disc below, not from a point.
+ */
+vec3 skyglowMarch(vec3 ro, vec3 rd, float far) {
+  float R = uGlowDisc.z;
+  float r2 = R * R;
+  float hz = length(rd.xz);
+  // Out to 4 radii past the disc horizontally, or 3 radii up.
+  float L = (length(uGlowDisc.xy) + 4.0 * R) / max(hz, 1e-3);
+  if (rd.y > 0.0) L = min(L, 3.0 * R / rd.y);
+  L = min(L, far);
+  const int N = ATMO_GLOW_STEPS;
+  float odR = 0.0, odM = 0.0;
+  vec3 sum = vec3(0.0);
+  float tPrev = 0.0;
+  for (int i = 0; i < N; i++) {
+    float u = (float(i) + 1.0) / float(N);
+    float t1 = L * u * u;
+    float dt = t1 - tPrev;
+    vec3 p = ro + rd * (tPrev + 0.5 * dt);
+    tPrev = t1;
+    float h = max(0.0, length(p) - R_GROUND);
+    float dR = exp(-h / H_R) * dt;
+    float dM = exp(-h / H_M) * dt * max(uTurbidity, 1.0) * GLOW_AEROSOL;
+    odR += dR; odM += dM;
+    vec3 viewT = exp(-(BETA_R * odR + BETA_M * 1.11 * odM));
+    float dq = max(0.0, length(p.xz - uGlowDisc.xy) - R);
+    float e = r2 / (r2 + 4.0 * (h * h + dq * dq));
+    sum += viewT * (BETA_R * dR + BETA_M * dM) * e;
+  }
+  return uGlowRad * sum * (1.0 / (4.0 * PI));
+}
+
 /**
  * Integrate scattering along a ray for 'maxDist' metres (use a huge number for
  * the open sky). Returns in-scattered radiance and writes the transmittance of
@@ -124,6 +189,7 @@ vec3 sunTransmittance(vec3 p, vec3 sunDir, float turbidity) {
  */
 vec3 atmosphere(vec3 ro, vec3 rd, float maxDist, out vec3 transmittance) {
   float shell = rayShell(ro, rd, R_TOP);
+  gAtmoGlow = vec3(0.0);
   if (shell <= 0.0) { transmittance = vec3(1.0); return vec3(0.0); }
 
   float ground = rayGround(ro, rd);
@@ -161,6 +227,7 @@ vec3 atmosphere(vec3 ro, vec3 rd, float maxDist, out vec3 transmittance) {
     // that the single-scatter model cannot produce.
     vec3 shortPathSunT = pow(sunT, vec3(0.45));
     sumMS += viewT * shortPathSunT * (BETA_R * dR + BETA_M * uTurbidity * 1.11 * dM);
+
   }
 
   transmittance = exp(-(BETA_R * odR + BETA_M * uTurbidity * 1.11 * odM + BETA_O * odO));
@@ -170,7 +237,8 @@ vec3 atmosphere(vec3 ro, vec3 rd, float maxDist, out vec3 transmittance) {
     (sumR * BETA_R * rayleighPhase(c) +
      sumM * BETA_M * uTurbidity * miePhase(c, uMieG) +
      sumMS * uMultiScatter);
-  return scatter;
+  if (uGlowRad.r + uGlowRad.g + uGlowRad.b > 0.0) gAtmoGlow = skyglowMarch(ro, rd, far);
+  return scatter + gAtmoGlow;
 }
 
 /** Ray origin for a camera 'altM' metres above the ground at the scene origin. */

@@ -8,6 +8,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import { SKYGLOW_UNIFORMS } from "./skyglow";
 import { TONEMAP_GLSL } from "./tonemap.glsl";
 import type { Weather } from "../data/weather";
 import type { SolarState } from "../data/solar";
@@ -54,7 +55,12 @@ float hash13(vec3 p) {
   return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
 
-vec3 stars(vec3 rd, float amount) {
+// wash: the skyglow's luminance at this pixel over the level that drowns all
+// but the brightest stars. A bright background raises the faintest star the
+// eye can pick out (about 6.5 mag in the country, 3 under Manhattan, where a
+// few dozen stars are left), so the faint octave goes first and the bright one
+// thins from the bottom of its range.
+vec3 stars(vec3 rd, float amount, float wash) {
   if (amount <= 0.001) return vec3(0.0);
   vec3 c = vec3(0.0);
   // Two octaves: a dense faint field and a sparse bright one, so the sky has
@@ -69,7 +75,11 @@ vec3 stars(vec3 rd, float amount) {
       vec3 jitter = vec3(hash13(cell + 1.7), hash13(cell + 3.1), hash13(cell + 5.3)) - 0.5;
       vec3 centre = (cell + 0.5 + jitter * 0.6) / scale;
       float d = length(normalize(centre) - rd) * scale;
-      float mag = smoothstep(1.0, 0.0, d) * (h - thresh) / (1.0 - thresh);
+      float rank = (h - thresh) / (1.0 - thresh);
+      // Only the top of the bright octave survives a full city sky.
+      float cut = oct == 0 ? wash * 3.0 : wash * 0.85;
+      rank = clamp((rank - cut) / max(1.0 - cut, 1e-3), 0.0, 1.0);
+      float mag = smoothstep(1.0, 0.0, d) * rank;
       // Twinkle harder near the horizon, where real air does it.
       float tw = 0.75 + 0.25 * sin(uTime * 3.0 + h * 90.0);
       float horizonFade = smoothstep(-0.02, 0.15, rd.y);
@@ -145,7 +155,10 @@ void main() {
   float halo = exp(-moonAng * 110.0) * 0.045 + exp(-moonAng * 14.0) * 0.005;
   col += trans * vec3(0.78, 0.84, 1.0) * halo * uMoonIllum * uNightAmount;
 
-  col += stars(rd, uNightAmount) * trans;
+  // gAtmoGlow is the skyglow share of this pixel, left behind by atmosphere().
+  // 0.03 is about the horizon over Midtown at full glow: wash 1 there.
+  float wash = clamp(dot(gAtmoGlow, vec3(0.2126, 0.7152, 0.0722)) / 0.03, 0.0, 1.0);
+  col += stars(rd, uNightAmount, wash) * trans;
 
   fragColor = vec4(col, 1.0);
 }
@@ -183,6 +196,7 @@ export class Sky {
       uTurbidity: { value: 1 },
       uCamAltitude: { value: 100 },
       uMultiScatter: { value: 0.055 },
+      ...SKYGLOW_UNIFORMS,
       uExposure: { value: 1 },
       uMoonDir: { value: new THREE.Vector3(0, -1, 0) },
       uMoonIllum: { value: 1 },
