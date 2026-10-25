@@ -16,6 +16,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import { SKYGLOW_UNIFORMS } from "./skyglow";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
@@ -534,6 +535,7 @@ function makeTrafficUniforms(shadow: SunShadowUniforms, ringM: number): TrafficU
     uTurbidity: { value: 1 },
     uCamAltitude: { value: 100 },
     uMultiScatter: { value: 0.055 },
+    ...SKYGLOW_UNIFORMS,
     uPixelAngle: { value: 0.0015 },
   };
 }

@@ -24,6 +24,21 @@ export interface UrbanMask {
   texture: THREE.DataTexture;
   /** Half-width in metres the texture spans about the scene origin. */
   extent: number;
+  /** The city as one disc of upward light, for render/skyglow.ts. */
+  glow: CityGlow;
+}
+
+/**
+ * The built-up area reduced to a disc: the density-weighted centroid, the
+ * radius of a fully built disc of the same covered area, and the floor area
+ * ratio inside it (total floor area over covered ground), which is what sets
+ * how many lit windows and lamps a square metre of the city holds.
+ */
+export interface CityGlow {
+  cx: number;
+  cz: number;
+  radius: number;
+  far: number;
 }
 
 export function buildUrbanMask(pack: CityPack): UrbanMask {
@@ -31,6 +46,7 @@ export function buildUrbanMask(pack: CityPack): UrbanMask {
   const cell = (extent * 2) / N;
   const acc = new Float32Array(N * N);
 
+  let floorArea = 0;
   for (const b of pack.buildings) {
     // Footprint area, so a tower block counts for more than a shed. Bounding
     // box is close enough at this resolution and far cheaper than the polygon.
@@ -43,6 +59,9 @@ export function buildUrbanMask(pack: CityPack): UrbanMask {
       if (z > maxZ) maxZ = z;
     }
     const area = Math.max(0, (maxX - minX) * (maxZ - minZ));
+    // 3.5 m storeys. The bounding box overstates an L-shaped footprint by
+    // about as much on every building, which the ratio below divides out.
+    floorArea += area * Math.max(1, (b.topM - b.baseM) / 3.5);
     const gx = Math.floor((b.cx + extent) / cell);
     const gz = Math.floor((b.cz + extent) / cell);
     if (gx < 0 || gx >= N || gz < 0 || gz >= N) continue;
@@ -75,9 +94,21 @@ export function buildUrbanMask(pack: CityPack): UrbanMask {
   }
 
   const data = new Uint8Array(N * N);
+  let wSum = 0, wx = 0, wz = 0, footprint = 0;
   for (let i = 0; i < data.length; i++) {
-    data[i] = Math.round(255 * Math.min(1, Math.sqrt(blurred[i] / p98)));
+    const d = Math.min(1, blurred[i] / p98);
+    data[i] = Math.round(255 * Math.sqrt(d));
+    const x = ((i % N) + 0.5) * cell - extent;
+    const z = (Math.floor(i / N) + 0.5) * cell - extent;
+    wSum += d; wx += d * x; wz += d * z;
+    footprint += acc[i];
   }
+  const covered = wSum * cell * cell;
+  // Floor area over the covered ground; footprint/covered is the site
+  // coverage it implies, so the FAR is floor area per covered square metre.
+  const glow: CityGlow = wSum > 0
+    ? { cx: wx / wSum, cz: wz / wSum, radius: Math.sqrt(covered / Math.PI), far: footprint > 0 ? floorArea / covered : 0 }
+    : { cx: 0, cz: 0, radius: 0, far: 0 };
 
   const texture = new THREE.DataTexture(data, N, N, THREE.RedFormat, THREE.UnsignedByteType);
   texture.minFilter = THREE.LinearFilter;
@@ -86,7 +117,7 @@ export function buildUrbanMask(pack: CityPack): UrbanMask {
   texture.wrapT = THREE.ClampToEdgeWrapping;
   texture.needsUpdate = true;
 
-  return { texture, extent };
+  return { texture, extent, glow };
 }
 
 /** An all-dark mask, for a city with no baked pack. */
@@ -94,5 +125,5 @@ export function emptyUrbanMask(): UrbanMask {
   const data = new Uint8Array(1);
   const texture = new THREE.DataTexture(data, 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
   texture.needsUpdate = true;
-  return { texture, extent: 1 };
+  return { texture, extent: 1, glow: { cx: 0, cz: 0, radius: 0, far: 0 } };
 }

@@ -41,6 +41,7 @@
 
 import * as THREE from "three";
 import { ATMOSPHERE_GLSL } from "./atmosphere.glsl";
+import { SKYGLOW_UNIFORMS } from "./skyglow";
 import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./sunshadow";
 import { SH_GLSL, shHemispherical } from "./sh";
 import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
@@ -600,6 +601,7 @@ export class Foliage {
       uTurbidity: { value: 1 },
       uCamAltitude: { value: 100 },
       uMultiScatter: { value: 0.055 },
+      ...SKYGLOW_UNIFORMS,
     };
 
     const beauty = new THREE.RawShaderMaterial({

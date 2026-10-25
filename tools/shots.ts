@@ -541,6 +541,36 @@ export const POSES: Pose[] = [
     what: "Seventh Avenue shopfronts from the kerb at night",
   },
   {
+    // THE SKY OVER THE CITY AT NIGHT, from 300 m over Chelsea looking up
+    // toward Midtown: the near-horizon band over the towers and the sky up to
+    // 45 degrees, the frame tools/verify-skyglow.ts measures the dome on.
+    name: "manhattan-skyglow",
+    city: "manhattan",
+    lat: 40.7440, lon: -74.0010, altM: 300, hdgDeg: 48, pitchDeg: 22,
+    t: D("2025-06-22T02:30:00Z"), // 22:30 EDT, moon down
+    wx: CLEAR,
+    what: "the night sky over Midtown from over Chelsea",
+  },
+  {
+    // The same, under a low overcast: the deck's underside lit by the city.
+    name: "manhattan-skyglow-overcast",
+    city: "manhattan",
+    lat: 40.7440, lon: -74.0010, altM: 300, hdgDeg: 48, pitchDeg: 22,
+    t: D("2025-06-22T02:30:00Z"),
+    wx: "low:0.92:700:1500,mid:0:3800:5000,high:0:8500:9400,precip:0",
+    what: "a low overcast over Midtown at night",
+  },
+  {
+    // The rural control: the Grand Canyon has no building pack, so no city
+    // light. 3000 m puts the far rim under two degrees of elevation.
+    name: "grandcanyon-night",
+    city: "grandcanyon",
+    lat: 36.0570, lon: -112.1400, altM: 3000, hdgDeg: 48, pitchDeg: 22,
+    t: D("2025-06-22T06:30:00Z"), // 23:30 MST
+    wx: CLEAR,
+    what: "the night sky over the Grand Canyon, no city",
+  },
+  {
     // The same kerb by day, for the awnings, signs and window variety.
     name: "manhattan-shops-day",
     city: "manhattan",

@@ -55,6 +55,7 @@ import { Beacon } from "./render/beacon";
 import { loadCityPack } from "./data/citypack-load";
 import { Buildings, flattenParts } from "./render/buildings";
 import { hourFactors } from "./render/facade";
+import { updateSkyglow } from "./render/skyglow";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { buildRoadMask, emptyRoadMask, type RoadMask } from "./render/roadmask";
 import { loadLandPack } from "./data/landcover-load";
@@ -1434,6 +1435,8 @@ async function main() {
 
   // Live tuning scale, driven from the console while looking at the scene.
   let exposureScale = 1;
+  const noSkyglow = gateFlag("noskyglow");
+  const cityUplight = new THREE.Color();
 
   // Frame timing, smoothed. A raw per-frame number is unreadable.
   let smoothedMs = 16;
@@ -1913,6 +1916,10 @@ async function main() {
     const localHour =
       (now.getUTCHours() + now.getUTCMinutes() / 60 + city.lon / 15 + 24) % 24;
     const hf = hourFactors(localHour);
+    // The city's own light on its sky and cloud base; ?noskyglow=1 is the
+    // pitch-black sky the skyglow gate's probe renders.
+    updateSkyglow(urban.glow, camera.position.x, camera.position.z, light.night, hf.residential,
+      noSkyglow, wx.low.cover > 0.03 ? wx.low.base : wx.mid.base, cityUplight);
     // ?nodetail=1: no camera-centred detail layer, a probe for the gates.
     if (!noDetail) buildings?.updateDetail(camera.position.x, camera.position.z);
     for (const b of buildingUniformSets) {
@@ -2294,7 +2301,7 @@ async function main() {
 
     // Pass 2 + 3: clouds raymarched at half resolution against that target's
     // depth, then a full-resolution present that folds them in and tone maps.
-    composite.update(camera, wx, light, elapsed, skyProbe.sh);
+    composite.update(camera, wx, light, elapsed, skyProbe.sh, cityUplight);
     composite.presentUniforms.uExposure.value = light.exposure * exposureScale;
     composite.presentUniforms.uNight.value = light.night;
     composite.brightUniforms.uExposure.value = light.exposure * exposureScale;

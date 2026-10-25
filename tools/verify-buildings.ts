@@ -126,7 +126,14 @@ async function shoot(outDir: string, query: string, poses: string[], port: numbe
   }
   const args = ["tools/shots.ts", "--only", poses.join(","), "--out", outDir,
     "--port", String(port), "--debug-port", String(dbg), "--profile", profile];
-  if (query) args.push("--query", query);
+  // Every variant without the city's skyglow (render/skyglow.ts). It is an
+  // additive veil over the night facades (their median went 15.3 -> 21.0 on
+  // manhattan-night), and the night claims divide by the facade's mean and
+  // median: the veil cut the unmipped twinkle probe from 0.128 to 0.098 and
+  // the lit share from 15% to 10% with not one window changed. These claims
+  // are about the windows; tools/verify-skyglow.ts gates the veil. By day the
+  // glow is zero and the flag changes nothing.
+  args.push("--query", query ? `${query}&noskyglow=1` : "noskyglow=1");
   if (nudge) args.push("--nudge", String(nudge));
   const p = Bun.spawn(["bun", ...args], {
     cwd: new URL("..", import.meta.url).pathname, stdout: "inherit", stderr: "inherit",
