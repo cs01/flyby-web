@@ -22,7 +22,7 @@
 
 import { CITIES, cityById, type City } from "../src/cities";
 import { Origin } from "../src/geo";
-import { CITY_MAGIC, encodeCityPack, type PackedBuilding } from "../src/data/citypack";
+import { CITY_MAGIC, CITY_VERSION, encodeCityPack, tailBytes, type PackedBuilding } from "../src/data/citypack";
 import { buildingsFromOsm, buildingsQuery } from "../src/data/osmbuildings";
 import type { OsmBbox, OsmElement, OverpassResponse } from "../src/data/osm";
 
@@ -227,7 +227,7 @@ function decode(bytes: Uint8Array): Decoded {
   const magic = dv.getUint32(o, true); o += 4;
   if (magic !== CITY_MAGIC) throw new Error(`bad magic 0x${magic.toString(16)}`);
   const version = dv.getUint32(o, true); o += 4;
-  if (version !== 1) throw new Error(`bad version ${version}`);
+  if (version !== CITY_VERSION) throw new Error(`bad version ${version}`);
   const lat0 = dv.getFloat64(o, true); o += 8;
   const lon0 = dv.getFloat64(o, true); o += 8;
   const radiusM = dv.getFloat32(o, true); o += 4;
@@ -249,6 +249,11 @@ function decode(bytes: Uint8Array): Decoded {
       dx[v] = dv.getInt16(o, true); o += 2;
       dz[v] = dv.getInt16(o, true); o += 2;
     }
+    // The tail is walked by its flag bits alone: one byte per bit set, as
+    // many as the format says each field takes, independently of tailBytes.
+    const flags = dv.getUint8(o); o += 1;
+    const widths = [4, 1, 3, 3, 1, 2, 1, 2];
+    for (let bit = 0; bit < 8; bit++) if (flags & (1 << bit)) o += widths[bit];
     const rec: PackedBuilding = { cx, cz, baseM, topM, kind, roof, dx, dz };
     if (i === 0) first = rec;
     if (i === count - 1) last = rec;
@@ -363,7 +368,7 @@ async function bake(job: Job, force: boolean): Promise<boolean> {
   const elements = await fetchCells(job.key, bbox, force);
   console.log(`  ${elements.length} unique OSM elements`);
 
-  const { buildings, skips } = buildingsFromOsm(elements, origin, job.radius);
+  const { buildings, skips, parts } = buildingsFromOsm(elements, origin, job.radius);
   const bytes = encodeCityPack(buildings, job.lat, job.lon, job.radius);
   await Bun.write(job.out, bytes);
   const onDiskSize = Bun.file(job.out).size;
@@ -376,6 +381,13 @@ async function bake(job: Job, force: boolean): Promise<boolean> {
   console.log(`  skipped     ${skips.total()}`);
   for (const [reason, n] of skips.entries()) console.log(`      ${n.toString().padStart(7)}  ${reason}`);
   console.log(`  file        ${job.out}  ${onDiskSize} bytes`);
+  const tails = buildings.reduce((a, b) => a + tailBytes(b), 0);
+  const tagged = buildings.filter((b) => b.tags).length;
+  console.log(
+    `  parts       ${parts.grouped} grouped under outlines; ${parts.dropped} outlines dropped, ` +
+      `${parts.clipped} cut to a podium`,
+  );
+  console.log(`  tags        ${tagged} records carry OSM evidence; record tails ${tails} bytes`);
   console.log(
     `  height      p50 ${p50.toFixed(1)}  p90 ${percentile(heights, 90).toFixed(1)}` +
       `  p99 ${percentile(heights, 99).toFixed(1)}  max ${(heights[heights.length - 1] ?? 0).toFixed(1)} m`,

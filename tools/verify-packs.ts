@@ -42,8 +42,24 @@ for (const f of files) {
   // on every pack at once by a constant per-record amount -- which is what a
   // wrong ORACLE looks like, as opposed to a real corruption, which would hit
   // one file and by an arbitrary amount.
+  //
+  // Version 2 adds a tail per record: one flag byte and then each field the
+  // record carries, at the width the format gives it. Counted here from the
+  // PARSED fields, not from citypack's own tailBytes, so a reader and writer
+  // that agreed on a wrong width would still come out a byte off per field.
+  const version = new DataView(buf).getUint32(4, true);
   let expected = 32;
-  for (const b of pack.buildings) expected += 20 + (b.ring.length / 2) * 4;
+  let tailed = 0, grouped = 0;
+  for (const b of pack.buildings) {
+    expected += 20 + (b.ring.length / 2) * 4;
+    if (version < 2) continue;
+    const t = b.tags;
+    expected += 1 + (b.group !== undefined ? 4 : 0) + (t?.material ? 1 : 0) + (t?.colour ? 3 : 0)
+      + (t?.roofColour ? 3 : 0) + (t?.roofMaterial ? 1 : 0) + (t?.year !== undefined ? 2 : 0)
+      + (t?.levels !== undefined ? 1 : 0) + (b.roofM !== undefined ? 2 : 0);
+    if (t) tailed++;
+    if (b.group !== undefined) grouped++;
+  }
   if (expected !== buf.byteLength) {
     problems.push(`size mismatch: records account for ${expected} of ${buf.byteLength} bytes`);
   }
@@ -79,7 +95,8 @@ for (const f of files) {
     console.log(
       `ok   ${id.padEnd(12)} ${String(pack.buildings.length).padStart(7)} buildings  ` +
       `p50 ${p50.toFixed(0).padStart(3)} m  max ${maxH.toFixed(0).padStart(4)} m  ` +
-      `${(buf.byteLength / 1048576).toFixed(1)} MB` +
+      `${(buf.byteLength / 1048576).toFixed(1)} MB  v${version}` +
+      (version >= 2 ? `  ${tailed} tagged, ${grouped} in part groups` : "") +
       // Not a failure: packs baked before the mast filter still contain these,
       // and the loader drops them. It is reported so a re-bake can be seen to
       // have actually removed them rather than assumed to have.

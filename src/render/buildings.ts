@@ -175,13 +175,18 @@ function solveLod(pack: CityPack, triangleBudget: number, tankAt: (i: number) =>
       const b = pack.buildings[i];
       const h = b.topM - b.baseM;
       const dist = Math.hypot(b.cx, b.cz);
-      if (h < minHeightAt(dist, k)) continue;
+      // The far-field cut is on the TOP, not the record's own height: a 20 m
+      // setback stage at 290 m is part of the skyline, and cutting it as if it
+      // were a 20 m house left a gap in the tower.
+      if (b.topM < minHeightAt(dist, k)) continue;
       const n = b.ring.length / 2;
       tris += triangleCost(n);
       // The tent, when this footprint gets one. A hip is 4 to 6 and a gable is
       // 6, so 8 deliberately overestimates: the pitch itself also depends on
       // the OBB fill test, which is far too expensive to run inside this loop.
       if (b.roof === RoofShape.Pitched && h >= 4.0 && h <= 20.0) tris += 8;
+      if (b.roof === RoofShape.Dome) tris += n * 8;
+      else if (b.roof === RoofShape.Pyramid || b.roof === RoofShape.Tapered) tris += n * 2;
       if (dist < PARAPET_M / k) {
         tris += extrasCost(n, roofExtras(dist, k, h, Math.abs(signedArea(b.ring)), b.kind, b.roof));
       }
@@ -245,6 +250,12 @@ export const PART_GABLE = 5;
  * uv.y >= 0 the staves (uv = metres round, metres up) and the cone (isRoof).
  */
 export const PART_TANK = 6;
+/**
+ * A spire, a crown pyramid or a dome over a building:part: the Chrysler's
+ * stainless needle, the Empire State's mast stage, the Transamerica's cap.
+ * Metal or the trim stone, never shingle and never a window grid.
+ */
+export const PART_SPIRE = 7;
 
 // --- What ONE lit window looks like ------------------------------------------
 //
@@ -511,7 +522,21 @@ void main() {
   // has to be pulled back out of it.
   bool gableEnd = part > 4.5 && part < 5.5;
 
-  if (part > 5.5) {
+  if (part > 6.5) {
+    // --- Spire, crown pyramid or dome --------------------------------------
+    // A Deco crown is stainless steel or aluminium over the trim stone; a
+    // glass tower's cap is its own metal panel. Vertical ribs every 1.2 m (the
+    // seams of the cladding), filtered out with the pixel footprint.
+    float hS = hash11(fp.seed * 43.0 + 7.0);
+    float metal = fp.family < 0.5 || hS < 0.55 ? 1.0 : 0.0;
+    albedo = mix(fp.trim * 0.9, vec3(0.46, 0.47, 0.50), metal);
+    float rib = vUv.x / 1.2;
+    float rw = max(fwidth(rib), 1e-3);
+    albedo *= 1.0 - 0.22 * (1.0 - smoothstep(0.0, max(0.1, rw), fract(rib))) * (1.0 - clamp(rw * 1.6, 0.0, 1.0));
+    roughness = mix(0.75, 0.28, metal);
+    glassMask = 0.45 * metal;
+    skyOcc = 1.0;
+  } else if (part > 5.5) {
     // --- Water tank -------------------------------------------------------
     // Cedar staves gone silver-brown, bound with dark steel hoops every half
     // metre or so, a tar-black lid, on a black steel stand. uv.y < 0 is the
@@ -2574,8 +2599,10 @@ export function addBuilding(
   const height = top - base;
   if (height <= 0.5) return;
 
-  // Sink the base so the walls meet sloping terrain instead of hovering.
-  const sunk = base - 3.0;
+  // Sink the base so the walls meet sloping terrain instead of hovering. A
+  // part standing on another part only needs to close the seam with the roof
+  // under it: three metres would hang below a sky bridge or an overhang.
+  const sunk = base - (b.baseM > 1.0 ? 0.3 : 3.0);
 
   const seed = params ? params.seed * 4096 : bidx;
   const pitch = pitchFor(b, height, seed);
@@ -2593,19 +2620,28 @@ export function addBuilding(
   // The ridge takes the building's existing top, so the eave is where the WALL
   // now stops. Flat roofs keep eaveY === top and every number below is
   // unchanged from what it was.
-  const eaveY = pitch ? top - pitch.rise : top;
-  const wallTop = pitch ? eaveY : top + parapetM;
+  const shaped = pitch ? null : shapedRoofFor(b, height);
+  const eaveY = pitch ? top - pitch.rise : shaped ? top - shaped.rise : top;
+  const wallTop = pitch || shaped ? eaveY : top + parapetM;
 
   // What the shader calls bldH, and it is the top of the WALL, not of the
   // building: it drives the ground-storey clamp, the `capped` that stops the
   // window grid, and the cornice band, and all three want the eave. Passing the
   // full height on a pitched building is what would put a row of windows in the
   // roof.
-  const wallH = eaveY - base;
+  //
+  // Measured from the GROUND, not from this record's own base. A building:part
+  // that starts at 115 m is a setback of the tower under it, and with v from
+  // its own base it grew a shopfront, a plinth and street grime 115 m up. From
+  // the ground, every part of one tower shares one storey grid and only the
+  // record that actually reaches the street has a ground storey. For a record
+  // with baseM = 0 (all but the parts) nothing changes.
+  const wallH = eaveY - groundY;
 
   const pushInfo = (isRoof: number, part: number) => s.info.push(bidx, wallH, isRoof, part);
 
   // --- Walls ---
+  const wallsFrom = s.idx.length;
   let run = 0;
   for (let i = 0; i < n; i++) {
     const j = (i + 1) % n;
@@ -2622,9 +2658,9 @@ export function addBuilding(
     const v0 = s.pos.length / 3;
     s.pos.push(x0, sunk, z0,  x1, sunk, z1,  x1, wallTop, z1,  x0, wallTop, z0);
     for (let k = 0; k < 4; k++) s.nrm.push(nx, 0, nz);
-    // v runs from 0 at the true base (not the sunk base) so the storey grid
+    // v runs from 0 at the ground (not the sunk base) so the storey grid
     // lines up with the visible building rather than with the buried part.
-    const vBot = sunk - base;
+    const vBot = sunk - groundY;
     const vTop = wallH + parapetM;
     s.uv.push(run, vBot, run + len, vBot, run + len, vTop, run, vTop);
     for (let k = 0; k < 4; k++) pushInfo(0, PART_WALL);
@@ -2646,7 +2682,7 @@ export function addBuilding(
       const p0 = s.pos.length / 3;
       s.pos.push(x0, top, z0,  x1, top, z1,  x1, wallTop, z1,  x0, wallTop, z0);
       for (let k = 0; k < 4; k++) s.nrm.push(-nx, 0, -nz);
-      s.uv.push(run, height, run + len, height, run + len, vTop, run, vTop);
+      s.uv.push(run, top - groundY, run + len, top - groundY, run + len, vTop, run, vTop);
       for (let k = 0; k < 4; k++) pushInfo(0, PART_PARAPET);
       // Reversed against the outer wall, because the normal is.
       s.idx.push(p0, p0 + 1, p0 + 2, p0, p0 + 2, p0 + 3);
@@ -2681,7 +2717,10 @@ export function addBuilding(
     params.roofHalfL = (u1 - u0) / 2;
     params.roofHalfW = (w1 - w0) / 2;
   }
-  const tri = triangulate(b.ring);
+  // A spire that is the whole record has no wall and no slab: it starts on
+  // the roof of the part under it.
+  if (shaped && eaveY - base < 0.5) s.idx.length = wallsFrom;
+  const tri = shaped ? [] : triangulate(b.ring);
   if (tri.length) {
     const v0 = s.pos.length / 3;
     for (let i = 0; i < n; i++) {
@@ -2708,8 +2747,12 @@ export function addBuilding(
     }
   }
 
+  if (shaped) {
+    addShapedRoof(s, b, shaped, eaveY, top, bidx, wallH);
+    return;
+  }
   if (pitch) {
-    addTent(s, pitch, eaveY, top, base, bidx, wallH);
+    addTent(s, pitch, eaveY, top, groundY, bidx, wallH);
   } else if (extras.boxes > 0 || extras.overrun) {
     // Plant first, tank after: a tank that lands on a chiller is caught by the
     // tank's own inside test only against the ring, so the order just decides
@@ -2800,6 +2843,108 @@ function buildFacadeTexture(params: FacadeParams[]): THREE.DataTexture {
   return tex;
 }
 
+/** A pyramid, spire or dome standing on a record's walls. */
+export interface ShapedRoof {
+  shape: RoofShape;
+  rise: number;
+}
+
+/**
+ * Whether a record gets a shaped roof, and how tall.
+ *
+ * OSM's height includes the roof, so the rise comes off the wall exactly as a
+ * pitched roof's does. roof:height is believed when it was mapped. Without it:
+ * a spire on a part standing above the ground, or on a footprint under 16 m
+ * across, is the whole record (that is how the Chrysler's needle and most
+ * crown stages are mapped); a pyramid or dome rises at 45 degrees off the
+ * shorter half-width, at most half the record.
+ *
+ * The fan is built from the centroid, so it is only honest on a ring that is
+ * star-shaped about it; anything else stays flat rather than folding over.
+ */
+export function shapedRoofFor(b: Building, height: number): ShapedRoof | null {
+  const shape = b.roof;
+  if (shape !== RoofShape.Pyramid && shape !== RoofShape.Tapered && shape !== RoofShape.Dome) return null;
+  const n = b.ring.length / 2;
+  if (n < 3 || n > 160 || height < 1.5) return null;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = b.ring[i * 2] - b.cx, az = b.ring[i * 2 + 1] - b.cz;
+    const bx = b.ring[j * 2] - b.cx, bz = b.ring[j * 2 + 1] - b.cz;
+    if (ax * bz - az * bx <= 0) return null;
+  }
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (let i = 0; i < n; i++) {
+    x0 = Math.min(x0, b.ring[i * 2]); x1 = Math.max(x1, b.ring[i * 2]);
+    z0 = Math.min(z0, b.ring[i * 2 + 1]); z1 = Math.max(z1, b.ring[i * 2 + 1]);
+  }
+  const halfW = Math.min(x1 - x0, z1 - z0) / 2;
+  let rise: number;
+  if (b.roofM !== undefined) rise = b.roofM;
+  else if (shape === RoofShape.Tapered && (b.baseM > 1 || halfW < 8)) rise = height;
+  else rise = Math.min(halfW, 0.5 * height);
+  rise = Math.min(rise, height);
+  if (rise < 0.8) return null;
+  return { shape, rise };
+}
+
+/**
+ * The shaped roof itself: the ring drawn in towards its centroid as it rises,
+ * linearly for a pyramid or spire, on a quarter circle for a dome (four bands).
+ */
+function addShapedRoof(s: Scratch, b: Building, r: ShapedRoof, eaveY: number, top: number, bidx: number, wallH: number): void {
+  const n = b.ring.length / 2;
+  const bands = r.shape === RoofShape.Dome ? 4 : 1;
+  const at = (k: number): [number, number] => {
+    const t = k / bands;
+    return r.shape === RoofShape.Dome
+      ? [Math.cos((t * Math.PI) / 2), eaveY + (top - eaveY) * Math.sin((t * Math.PI) / 2)]
+      : [1 - t, eaveY + (top - eaveY) * t];
+  };
+  let run = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = b.ring[i * 2], az = b.ring[i * 2 + 1], bx = b.ring[j * 2], bz = b.ring[j * 2 + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    for (let k = 0; k < bands; k++) {
+      const [s0, y0] = at(k), [s1, y1] = at(k + 1);
+      const p = (x: number, z: number, sc: number, y: number): number[] =>
+        [b.cx + (x - b.cx) * sc, y, b.cz + (z - b.cz) * sc];
+      const A = p(ax, az, s0, y0), B = p(bx, bz, s0, y0), C = p(bx, bz, s1, y1), D = p(ax, az, s1, y1);
+      // Face normal from the band's own slope: out along the edge normal, up
+      // by how far the ring drew in over the rise.
+      const ex = bx - ax, ez = bz - az;
+      let nx = ez / Math.max(len, 1e-6), nz = -ex / Math.max(len, 1e-6);
+      const mx = (ax + bx) / 2 - b.cx, mz = (az + bz) / 2 - b.cz;
+      const dist = Math.abs(mx * nx + mz * nz);
+      const inward = dist * (s0 - s1), up = y1 - y0;
+      const l = Math.hypot(inward, up) || 1;
+      const ny = inward / l;
+      nx *= up / l; nz *= up / l;
+      quad(s, A, B, C, D, [nx, ny, nz], [run, y0 - eaveY, run + len, y0 - eaveY, run + len, y1 - eaveY, run, y1 - eaveY],
+        bidx, wallH, 1, PART_SPIRE);
+    }
+    run += len;
+  }
+}
+
+/**
+ * The building:part groups in a pack: for each group id, the record that
+ * speaks for the whole tower (its tallest) and the tower's top. See
+ * Building.group.
+ */
+export function partGroups(bs: readonly Building[]): Map<number, { lead: number; top: number }> {
+  const out = new Map<number, { lead: number; top: number }>();
+  for (let i = 0; i < bs.length; i++) {
+    const id = bs[i].group;
+    if (id === undefined) continue;
+    const g = out.get(id);
+    if (!g) out.set(id, { lead: i, top: bs[i].topM });
+    else if (bs[i].topM > g.top) { g.lead = i; g.top = bs[i].topM; }
+  }
+  return out;
+}
+
 export interface BuildingStats {
   drawn: number;
   skippedFar: number;
@@ -2850,9 +2995,12 @@ export class Buildings {
       const c = choices?.[i];
       if (!c) return false;
       const b = pack.buildings[i];
-      return wantsWaterTank(ARCHETYPES[c.archetype], b.topM - b.baseM, i);
+      // The top above the street, not the record's own height: a tank is on a
+      // six-to-twenty storey roof, wherever the part that carries it starts.
+      return wantsWaterTank(ARCHETYPES[c.archetype], b.topM, i);
     };
     const lodK = solveLod(pack, budget.buildingTriangleBudget, tankAt);
+    const groups = partGroups(pack.buildings);
     const cells = new Map<string, Scratch>();
     const params: FacadeParams[] = [];
     const families: number[] = new Array(5).fill(0);
@@ -2871,7 +3019,7 @@ export class Buildings {
       const b = pack.buildings[i];
       const dist = Math.hypot(b.cx, b.cz);
       const h = b.topM - b.baseM;
-      if (h < minHeightAt(dist, lodK)) { skippedFar++; continue; }
+      if (b.topM < minHeightAt(dist, lodK)) { skippedFar++; continue; }
 
       // Drop enormous near-flat footprints.
       //
@@ -2884,7 +3032,7 @@ export class Buildings {
       // the pair of conditions is narrow: 50 of Manhattan's 187k, 7 of San
       // Francisco's 62k.
       const area = Math.abs(signedArea(b.ring));
-      if (h < 8 && area > 20000) { skippedFlat++; continue; }
+      if (b.topM < 8 && area > 20000) { skippedFlat++; continue; }
 
       // Winding must be counter-clockwise for the wall normals and the ear
       // clipper to agree. The baker normalises it, but a pack from an older
@@ -2909,7 +3057,14 @@ export class Buildings {
 
       // The seed is the building's index in the pack, so a facade is stable
       // across runs and traceable back to one record.
-      const fp = facadeFor(b.kind, h, i, choices?.[i]);
+      //
+      // Parts of one tower (b.group) take the seed, kind and height of the
+      // whole tower, so its setbacks are one stone with one storey grid rather
+      // than a stack of differently coloured boxes.
+      const g = b.group !== undefined ? groups.get(b.group) : undefined;
+      const fp = g
+        ? facadeFor(pack.buildings[g.lead].kind, g.top, g.lead, choices?.[g.lead])
+        : facadeFor(b.kind, h, i, choices?.[i]);
       const bidx = params.length;
       params.push(fp);
       families[fp.family]++;
