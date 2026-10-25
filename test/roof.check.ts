@@ -61,7 +61,7 @@ for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
     const choice = i % 2 ? { archetype: relief[(i >> 1) % 2], district: 0, cluster: i } : null;
     const fp = facadeFor(b.kind, b.topM - b.baseM, i, choice);
     addBuilding(s, b, 0, i, extras, fp);
-    addDetail(s, b, 0, i, fp, true, true);
+    addDetail(s, b, 0, i, fp, true, true, true);
   }
 
   let roofUp = 0, roofDown = 0, wallOut = 0, wallIn = 0, degenerate = 0;

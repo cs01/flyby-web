@@ -572,6 +572,16 @@ export const POSES: Pose[] = [
     what: "Victorian row houses on Steiner Street",
   },
   {
+    // The same block from 22 m off one walk-up front, looking at its fire
+    // escape and windows: the near-range steel and the per-window variety.
+    name: "manhattan-walkup-front",
+    city: "manhattan",
+    lat: 40.72627, lon: -73.98431, altM: 9, hdgDeg: 29, pitchDeg: 22,
+    t: D("2025-06-21T21:00:00Z"),
+    wx: CLEAR,
+    what: "an East Village walk-up front with its fire escape",
+  },
+  {
     // Willis and the Loop from 600 m, north-west of the river.
     name: "chicago-willis-600",
     city: "chicago",

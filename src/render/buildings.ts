@@ -43,7 +43,7 @@ import {
   packFacade,
   type FacadeParams,
 } from "./facade";
-import { ARCHETYPES, WindowStyle, assignArchetypes, regionAt, wantsWaterTank } from "./archetype";
+import { ARCHETYPES, FIRE_ESCAPE, WindowStyle, assignArchetypes, regionAt, wantsWaterTank } from "./archetype";
 import { FACADE_DETAIL_GLSL } from "./facadedetail.glsl";
 import { WATER_SSR_GLSL, WATER_SSR_UNIFORMS, type WaterSsrUniforms } from "./waterssr";
 import { SIGN_COLS, SIGN_COUNT, SIGN_ROWS, buildSignAtlas } from "./signs";
@@ -265,6 +265,10 @@ export const PART_AWNING = 8;
  * soffit and -2 on its top.
  */
 export const PART_CORNICE = 9;
+/** Fire escape steel; uv.y >= 0 a railing (metres up it), -1 solid, -2 a stair. */
+export const PART_ESCAPE = 10;
+/** Fire escapes are geometry inside this, metres from the camera. */
+const ESCAPE_M = 380;
 /** Cornices and bay windows are geometry inside this, metres from the camera. */
 const RELIEF_M = 900;
 /**
@@ -402,6 +406,8 @@ uniform float uFlatFacade;
 uniform float uOneRoof;
 // ?flatshop=1: the ground storey before shop rooms, signs and shutters.
 uniform float uFlatShop;
+// Where the fire escapes are geometry: centre x, z and radius (negative: none).
+uniform vec3 uEscapeAt;
 // The fascia lettering atlas (render/signs.ts); uSignReady is 0 until it is built.
 uniform sampler2D uSignAtlas;
 uniform float uSignReady;
@@ -590,7 +596,25 @@ void main() {
   // has to be pulled back out of it.
   bool gableEnd = part > 4.5 && part < 5.5;
 
-  if (part > 8.5) {
+  if (part > 9.5) {
+    // --- Fire escape steel ---------------------------------------------------
+    // Black painted steel. A railing face is mostly holes: a top rail, a
+    // bottom rail and a baluster every 120 mm; a stair is treads every 250 mm.
+    // The balusters go when they fall under a pixel and only the rails stay,
+    // so the railing never sparkles; a solid plate would read as a panel.
+    albedo = vec3(0.028, 0.028, 0.030);
+    roughness = 0.55;
+    if (vUv.y > -0.5) {
+      float bp = vUv.x / 0.12;
+      float bw = fwidth(bp);
+      bool railBar = vUv.y > 0.88 || vUv.y < 0.05 || abs(vUv.y - 0.47) < 0.025;
+      bool baluster = bw < 0.6 && fract(bp) < 0.22;
+      if (!railBar && !baluster) discard;
+    } else if (vUv.y < -1.5) {
+      if (fwidth(vUv.x / 0.25) < 0.6 && fract(vUv.x / 0.25) > 0.55) discard;
+    }
+    skyOcc = 0.8;
+  } else if (part > 8.5) {
     // --- Cornice (and a bay's cap and soffit) ------------------------------
     // The trim stone or the painted timber of the archetype. Dentils on the
     // lower part of the front face, the soffit in its own shade, the top a
@@ -1334,7 +1358,10 @@ void main() {
         // 0.36: the retail room's mean shaded value, so far away the bay is
         // the mean it was and only the near field gains the room.
         shopRoom = mix(vec3(0.36), room.rgb, detailX * detailY);
-        seeIn = mix(seeIn, shopRoom * 0.75 * glassMask * (1.0 - uNight), detailX);
+        // 0.45: the share of the daylight a shop interior sends back out
+        // through glass a few metres from its back wall. At 0.75 a parade
+        // read as a row of pale grey panels from across the street.
+        seeIn = mix(seeIn, shopRoom * 0.45 * glassMask * (1.0 - uNight), detailX);
 
         // The sign: inset on the fascia inside the piers, one per unit.
         float signLo = headY + 0.08, signHi = groundH - 0.10;
@@ -1417,6 +1444,10 @@ void main() {
       stair *= step(0.0, sx) * step(sx, run);
       float steel = max(max(platform, rail), max(baluster, stair));
       fireEsc = inEsc * steel * mix(0.6, 1.0, detailY);
+      // Inside the detail layer's radius the steel is real geometry; the
+      // painting fades out over the last 60 m so the hand-over does not pop.
+      inEsc *= smoothstep(uEscapeAt.z - 60.0, uEscapeAt.z, length(vWorld.xz - uEscapeAt.xy));
+      fireEsc *= smoothstep(uEscapeAt.z - 60.0, uEscapeAt.z, length(vWorld.xz - uEscapeAt.xy));
       // The grating's shadow under each platform, when the sun is on the wall.
       float under = smoothstep(-0.45, -0.05, fy - fp.storeyM) * step(fy - fp.storeyM, 0.0);
       revealShade *= 1.0 - 0.5 * inEsc * under * step(0.02, dot(uSunDir, n));
@@ -2319,6 +2350,8 @@ export interface BuildingUniforms extends SunShadowUniforms, AoUniforms, WaterSs
   /** 1 gives every flat roof one cover and colour; `?oneroof=1`, the roof gate's probe. */
   uOneRoof: THREE.IUniform<number>;
   uFlatShop: THREE.IUniform<number>;
+  /** Detail layer centre (x, z) and its fire-escape radius; see ESCAPE_M. */
+  uEscapeAt: THREE.IUniform<THREE.Vector3>;
   uSignAtlas: THREE.IUniform<THREE.Texture | null>;
   uSignReady: THREE.IUniform<number>;
   /** Non-zero while the terrain draws a debug mask; buildings then draw black. */
@@ -2381,6 +2414,7 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uFlatFacade: { value: 0 },
     uOneRoof: { value: 0 },
     uFlatShop: { value: 0 },
+    uEscapeAt: { value: new THREE.Vector3(0, 0, -1) },
     uSignAtlas: { value: null },
     uSignReady: { value: 0 },
     uMatNoMip: { value: 0 },
@@ -3171,6 +3205,7 @@ export function flattenParts(bs: readonly Building[]): Building[] {
  */
 export function addDetail(
   s: Scratch, b: Building, groundY: number, bidx: number, p: FacadeParams, street: boolean, relief: boolean,
+  escape = false, occupied: (x: number, z: number) => boolean = () => false,
 ): void {
   if (b.baseM > 1.0) return;
   const n = b.ring.length / 2;
@@ -3182,22 +3217,120 @@ export function addDetail(
   const top = groundY + b.topM;
   const eaveY = pitch ? top - pitch.rise : top;
   const wallH = eaveY - groundY;
+  // A wall is OPEN when the ground two metres out from its middle is not
+  // inside another building. Most of a city block is party walls, and an
+  // awning, a bay or a fire escape on one is buried in the neighbour: measured
+  // over the East Village, the first fire escapes built were nearly all there.
+  const open = (i: number): boolean => {
+    const j = (i + 1) % n;
+    const ax = b.ring[i * 2], az = b.ring[i * 2 + 1];
+    const dx = b.ring[j * 2] - ax, dz = b.ring[j * 2 + 1] - az;
+    const len = Math.hypot(dx, dz) || 1;
+    return !occupied(ax + dx * 0.5 + (dz / len) * 2, az + dz * 0.5 - (dx / len) * 2);
+  };
   if (street && p.shopfront > 0.5 && !p.house) {
     for (let i = 0; i < n; i++) {
       const j = (i + 1) % n;
       const x0 = b.ring[i * 2], z0 = b.ring[i * 2 + 1];
       const dx = b.ring[j * 2] - x0, dz = b.ring[j * 2 + 1] - z0;
       const len = Math.hypot(dx, dz);
-      if (len < 3.0) continue;
+      if (len < 3.0 || !open(i)) continue;
       addAwning(s, p, x0, z0, dx / len, dz / len, dz / len, -dx / len, len, groundY, bidx, wallH, seed + i * 31);
     }
   }
+  if (escape && (p.roofFeatures & FIRE_ESCAPE) && !p.house && !pitch) addFireEscapes(s, b, p, groundY, wallH, bidx, seed, open);
   if (!relief) return;
   // A bay runs up to the eave whatever the roof: the Painted Ladies are
   // gabled. A cornice only crowns a flat roof; a pitched one has its eave.
   if (p.corniceM > 0.01 && !pitch) addCornice(s, b, p, top, bidx, wallH);
   if (p.windowStyle === WindowStyle.Bay) {
-    addBays(s, b, p, groundY, pitch ? eaveY + 0.45 + 0.75 * p.corniceM : top, bidx, wallH, seed);
+    addBays(s, b, p, groundY, pitch ? eaveY + 0.45 + 0.75 * p.corniceM : top, bidx, wallH, seed, open);
+  }
+}
+
+/**
+ * FIRE ESCAPES AS STEEL. The shader paints one on the wall plane, which from
+ * the far pavement is right and from across a narrow street is a drawing:
+ * the real thing stands a metre off the wall, its platforms throw slatted
+ * shadows down the brick, and the stairs zig-zag in depth. So inside
+ * ESCAPE_M it is built: a platform and a railing at each floor, two window
+ * columns wide, a stair between each pair, on one or two of the building's
+ * longer walls, lined up with the window grid the shader draws.
+ */
+function addFireEscapes(
+  s: Scratch, b: Building, p: FacadeParams, groundY: number, wallH: number, bidx: number, seed: number,
+  open: (edge: number) => boolean,
+): void {
+  const n = b.ring.length / 2;
+  const groundH = Math.min(p.groundStoreyM, Math.max(1.2, wallH * 0.92));
+  const floors = Math.floor((wallH - groundH) / p.storeyM);
+  if (floors < 2) return;
+  const D = 1.0;
+  // A walk-up is a narrow deep lot, so its street front and its back are the
+  // two SHORT walls (the long ones are party walls, where an escape would be
+  // inside the neighbour). Anything squarer takes any wall long enough.
+  const obb = n <= 64 ? footprintObb(b.ring) : null;
+  const narrow = obb !== null && obb.halfL > obb.halfW * 1.4;
+  let run = 0, placed = 0;
+  for (let i = 0; i < n && placed < 2; i++) {
+    const j = (i + 1) % n;
+    const ax = b.ring[i * 2], az = b.ring[i * 2 + 1];
+    const dx = b.ring[j * 2] - ax, dz = b.ring[j * 2 + 1] - az;
+    const len = Math.hypot(dx, dz);
+    if (len < 0.05) continue;
+    const runHere = run;
+    run += len;
+    if (len < 5.0 || !open(i)) continue;
+    if (narrow && Math.abs((dx * obb!.ux + dz * obb!.uz) / len) > 0.35) continue;
+    if (hash3(seed, 0xfe, i) > (narrow ? 0.75 : 0.4)) continue;
+    const ux = dx / len, uz = dz / len, nx = dz / len, nz = -dx / len;
+    // On the window grid where the wall is wide enough: start on a column
+    // line, two columns wide. On a 7.6 m front it is most of the front.
+    const W = Math.min(2 * p.columnM, len - 1.0);
+    const first = Math.ceil(runHere / p.columnM) * p.columnM - runHere;
+    const cols = Math.floor((len - first - 0.5) / p.columnM) - 1;
+    const a0 = cols >= 1 ? first + p.columnM * Math.floor(hash3(seed, 0xff, i) * cols) : 0.5 * (len - W);
+    if (a0 + W > len - 0.3) continue;
+    const a1 = a0 + W;
+    const P = (a: number, d: number, y: number): number[] => [ax + ux * a + nx * d, y, az + uz * a + nz * d];
+    const steel = (A: number[], B: number[], C: number[], Dd: number[], nrm: number[], uvs: number[]): void =>
+      quad(s, A, B, C, Dd, nrm, uvs, bidx, wallH, 0, PART_ESCAPE);
+    const solid = [0, -1, 1, -1, 1, -1, 0, -1];
+    // A platform at every upper floor, the first one over the shop fascia
+    // (where the drop ladder hangs from), the last at the top storey.
+    for (let f = 0; f < floors; f++) {
+      const y = groundY + groundH + f * p.storeyM + 0.02;
+      // The platform: a grating on its top and bottom faces and a front edge.
+      steel(P(a0, 0.05, y), P(a1, 0.05, y), P(a1, D, y), P(a0, D, y), [0, 1, 0], solid);
+      steel(P(a0, 0.05, y - 0.06), P(a1, 0.05, y - 0.06), P(a1, D, y - 0.06), P(a0, D, y - 0.06), [0, -1, 0], solid);
+      // The railing, front and ends, both faces of the front so it reads
+      // from the wall side looking along it too.
+      const rail = (A: number[], B: number[], len2: number, nrm: number[]): void => {
+        const up = (q: number[]): number[] => [q[0], q[1] + 0.95, q[2]];
+        steel(A, B, up(B), up(A), nrm, [0, 0, len2, 0, len2, 0.95, 0, 0.95]);
+        steel(B, A, up(A), up(B), [-nrm[0], 0, -nrm[2]], [len2, 0, 0, 0, 0, 0.95, len2, 0.95]);
+      };
+      rail(P(a0, D, y), P(a1, D, y), W, [nx, 0, nz]);
+      rail(P(a0, 0.05, y), P(a0, D, y), D, [-ux, 0, -uz]);
+      rail(P(a1, D, y), P(a1, 0.05, y), D, [ux, 0, uz]);
+      // The stair down to the platform below, alternating ends.
+      const yb = y - p.storeyM;
+      if (f > 0) {
+        const left = f % 2 === 0;
+        const s0 = left ? a0 + 0.3 : a1 - 0.3, s1 = left ? a1 - 1.0 : a0 + 1.0;
+        // Two faces, up and down. The normal stands off the stair's own run:
+        // it rises (s1 - s0) along the wall over (y - yb).
+        const ex = s1 - s0, ey = y - yb;
+        const l = Math.hypot(ex, ey);
+        const st = (d0: number, d1: number, up: number): void => {
+          const nn = [-ux * ey * Math.sign(ex) / l * up, Math.abs(ex) / l * up, -uz * ey * Math.sign(ex) / l * up];
+          steel(P(s0, d0, yb), P(s0, d1, yb), P(s1, d1, y), P(s1, d0, y), nn, [0, -2, 0, -2, l, -2, l, -2]);
+        };
+        st(0.35, 0.95, 1);
+        st(0.95, 0.35, -1);
+      }
+    }
+    placed++;
   }
 }
 
@@ -3314,7 +3447,10 @@ function addCornice(s: Scratch, b: Building, p: FacadeParams, top: number, bidx:
  * scaled so each face is exactly one window column: a canted bay is glazed
  * on all three faces, and the facade's own window grid draws them.
  */
-function addBays(s: Scratch, b: Building, p: FacadeParams, groundY: number, top: number, bidx: number, wallH: number, seed: number): void {
+function addBays(
+  s: Scratch, b: Building, p: FacadeParams, groundY: number, top: number, bidx: number, wallH: number, seed: number,
+  open: (edge: number) => boolean,
+): void {
   const n = b.ring.length / 2;
   if (n < 4 || n > 24) return;
   const obb = footprintObb(b.ring);
@@ -3330,7 +3466,7 @@ function addBays(s: Scratch, b: Building, p: FacadeParams, groundY: number, top:
     const len = Math.hypot(dx, dz);
     // A short side: across the lot, so parallel to the OBB's SHORT axis.
     const along = Math.abs((dx * obb.ux + dz * obb.uz) / Math.max(len, 1e-6));
-    if (len < 4.5 || len > 12 || along > 0.35) continue;
+    if (len < 4.5 || len > 12 || along > 0.35 || !open(i)) continue;
     const ux = dx / len, uz = dz / len, nx = dz / len, nz = -dx / len;
     const W = Math.min(len - 1.2, 3.4 + 0.8 * hash3(seed, 0xba, i));
     const depth = 0.75;
@@ -3503,6 +3639,7 @@ export class Buildings {
   /** Detail radii; a phone gets a little over half of each. */
   private streetM = STREET_M;
   private reliefM = RELIEF_M;
+  private escapeM = ESCAPE_M;
 
   constructor(
     pack: CityPack,
@@ -3518,6 +3655,7 @@ export class Buildings {
     if (reduced) {
       this.streetM = 400;
       this.reliefM = 500;
+      this.escapeM = 220;
     }
     this.uniforms.uMatCheap.value = reduced ? 1 : 0;
     void loadMaterialTextures(reduced, reduced ? 2 : 8).then((m) => {
@@ -3662,6 +3800,25 @@ export class Buildings {
     };
   }
 
+  /** Whether (x, z) is inside some drawn building's footprint. */
+  private readonly occupied = (x: number, z: number): boolean => {
+    const pack = this.pack;
+    if (!pack) return false;
+    // The 3 x 3 cells round the point: a footprint is filed under its
+    // centroid's cell and can reach up to a cell beyond it.
+    const gx = Math.floor(x / DETAIL_CELL_M), gz = Math.floor(z / DETAIL_CELL_M);
+    for (let ox = -1; ox <= 1; ox++) {
+      for (let oz = -1; oz <= 1; oz++) {
+        for (const k of this.detailCells.get(`${gx + ox},${gz + oz}`) ?? []) {
+          const b = pack.buildings[this.detailOf[k]];
+          if (Math.abs(b.cx - x) > 120 || Math.abs(b.cz - z) > 120) continue;
+          if (insideRing(b.ring, x, z)) return true;
+        }
+      }
+    }
+    return false;
+  };
+
   /**
    * AIRCRAFT WARNING LIGHTS. Every structure past 150 m carries red
    * obstruction lights at its top corners (FAA AC 70/7460-1, L-810/L-864),
@@ -3747,7 +3904,8 @@ export class Buildings {
         const b = this.pack.buildings[i];
         const d = Math.hypot(b.cx - job.x, b.cz - job.z);
         if (d > r) continue;
-        addDetail(job.s, b, this.groundYOf.get(i) ?? 0, bidx, this.params[bidx], d < this.streetM, d < this.reliefM);
+        addDetail(job.s, b, this.groundYOf.get(i) ?? 0, bidx, this.params[bidx], d < this.streetM, d < this.reliefM,
+          d < this.escapeM, this.occupied);
       }
       if (!job.sync && performance.now() - t0 > DETAIL_SLICE_MS) return;
     }
@@ -3760,6 +3918,8 @@ export class Buildings {
     this.detail.clear();
     const mesh = buildMesh(job.s, this.uniforms);
     this.detailTriangles = job.s.idx.length / 3;
+    // The painted escapes stand down where the built ones now are.
+    this.uniforms.uEscapeAt.value.set(job.x, job.z, this.escapeM);
     if (mesh) {
       mesh.layers.enable(SHADOW_CASTER_LAYER);
       this.detail.add(mesh);
