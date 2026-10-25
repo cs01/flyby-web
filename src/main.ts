@@ -1923,6 +1923,7 @@ async function main() {
       b.uFlatRefl.value = flatRefl ? 1 : 0;
       b.uFlatFacade.value = flatFacade ? 1 : 0;
       b.uOneRoof.value = oneRoof ? 1 : 0;
+      b.uOnePalette.value = gateFlag("onepalette") ? 1 : 0;
       b.uFlatShop.value = gateFlag("flatshop") ? 1 : 0;
       b.uMatNoMip.value = noMip ? 1 : 0;
       b.uTerrainDebug.value = terrainDebug || 0;

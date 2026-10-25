@@ -421,6 +421,8 @@ uniform float uFlatRefl;
 uniform float uFlatFacade;
 // ?oneroof=1: every flat roof the same cover and colour; see the roof branch.
 uniform float uOneRoof;
+// ?onepalette=1: every wall in one colour, the far-colour gate's probe.
+uniform float uOnePalette;
 // ?flatshop=1: the ground storey before shop rooms, signs and shutters.
 uniform float uFlatShop;
 // Where the fire escapes are geometry: centre x, z and radius (negative: none).
@@ -558,6 +560,7 @@ void main() {
   }
 
   Facade fp = readFacade(bidx);
+  if (uOnePalette > 0.5) { fp.colour = vec3(0.30, 0.29, 0.27); fp.glassTint = vec3(0.03); }
 
   // Everything the archetype work added is behind detailOn, so ?flatfacade=1
   // is the old facade exactly; and the photographs are additionally behind
@@ -2312,6 +2315,12 @@ void main() {
       // without the march, 0.0383 with it out to 2.5 km, 0.0378 to 1.5 km.
       skyRefl = mix(skyRefl, hit.rgb * revealOcc, hit.a * (1.0 - smoothstep(500.0, 900.0, vViewDist)));
     }
+    // A coated curtain wall reflects in its own hue: the blue-green of a
+    // teal tower and the brown of a bronze one are in the reflection as much
+    // as in the glass. The tint over its own luminance, half strength, on the
+    // glass family only, so a punched sash still reflects the street neutral.
+    vec3 coat = fp.glassTint / max(dot(fp.glassTint, vec3(0.2126, 0.7152, 0.0722)), 1e-3);
+    skyRefl *= mix(vec3(1.0), coat, 0.5 * step(fp.family, 0.5) * detailOn);
     lit = mix(lit, skyRefl, reflW);
   }
 
@@ -2358,6 +2367,12 @@ void main() {
     // ?buildingDebug=5: only the facade fragments inside the GROUND storey:
     // the shopfront band the night shopfront claim measures over.
     if (uBuildingDebug > 4.5) fragColor = vec4(0.0, groundMarker, 0.0, 1.0);
+    // ?buildingDebug=6: the facade fragments 300 to 1500 m out, the far
+    // field tools/verify-farcolour.ts measures colour variety over. Walls
+    // only: the roofs have their own gate, and over the whole building the
+    // roof cover's spread measured as large as the walls' did with every
+    // wall painted one red.
+    if (uBuildingDebug > 5.5) fragColor = vec4(0.0, facadeMarker * step(300.0, vViewDist) * step(vViewDist, 1500.0), 0.0, 1.0);
   }
 }
 `;
@@ -2383,6 +2398,7 @@ export interface BuildingUniforms extends SunShadowUniforms, AoUniforms, WaterSs
   uFlatFacade: THREE.IUniform<number>;
   /** 1 gives every flat roof one cover and colour; `?oneroof=1`, the roof gate's probe. */
   uOneRoof: THREE.IUniform<number>;
+  uOnePalette: THREE.IUniform<number>;
   uFlatShop: THREE.IUniform<number>;
   /** Detail layer centre (x, z) and its fire-escape radius; see ESCAPE_M. */
   uEscapeAt: THREE.IUniform<THREE.Vector3>;
@@ -2451,6 +2467,7 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uFlatRefl: { value: 0 },
     uFlatFacade: { value: 0 },
     uOneRoof: { value: 0 },
+    uOnePalette: { value: 0 },
     uFlatShop: { value: 0 },
     uEscapeAt: { value: new THREE.Vector3(0, 0, -1) },
     uTankNear: { value: 0 },
