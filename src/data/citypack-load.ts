@@ -36,6 +36,7 @@ export async function loadCityPack(cityId: string): Promise<CityPack | null> {
       console.info(`[flyby] ${cityId}: dropped ${dropped} mast-shaped records of ${pack.buildings.length}`);
       pack.buildings = kept;
     }
+    pack.buildings.forEach((b, i) => { b.seed = i; });
     return pack;
   } catch (err) {
     console.error(`[flyby] building pack at ${url} is unreadable (${buf.byteLength} bytes):`, err);

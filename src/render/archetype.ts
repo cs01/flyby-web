@@ -109,6 +109,8 @@ export interface FootprintLike {
   tags?: BuildingTags;
   /** building:part group id; see citypack's Building.group. */
   group?: number;
+  /** The record's index as loaded; see citypack's Building.seed. */
+  seed?: number;
 }
 
 export function footprintArea(ring: Float32Array): number {
@@ -1142,7 +1144,7 @@ export function assignArchetypes(pack: PackLike, opts: AssignOptions = {}): Arch
     const root = clusters ? clusters[g ? g.lead : i] : g ? g.lead : i;
     let pick = pool[0];
     if (total > 0) {
-      let r = hashU(root, 0xa2c4) * total;
+      let r = hashU(bs[root].seed ?? root, 0xa2c4) * total;
       for (let k = 0; k < pool.length; k++) {
         r -= w[k];
         if (r <= 0) { pick = pool[k]; break; }

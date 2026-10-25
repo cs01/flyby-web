@@ -211,6 +211,16 @@ export interface Building {
    * filters records (masts) and an index would point at the wrong one after.
    */
   group?: number;
+  /**
+   * The record's index in the pack as loaded (after the mast filter), which
+   * seeds its archetype and palette draw. Set by citypack-load.ts so that a
+   * record dropped LATER (a landmark bridge's tower parts, ?flatparts) does
+   * not re-roll every building after it: the Brooklyn and Queensboro towers
+   * going in 2d047fd moved every Midtown facade along by a few indices and
+   * changed what the glass gate's 7th Avenue pose is looking at. Absent on a
+   * pack from the pure parser, where the array index is the same number.
+   */
+  seed?: number;
   /** roof:height, metres: how much of the record's height is its roof. */
   roofM?: number;
   /**

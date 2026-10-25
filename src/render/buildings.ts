@@ -3961,16 +3961,17 @@ export class Buildings {
       let s = cells.get(key);
       if (!s) { s = emptyScratch(); cells.set(key, s); }
 
-      // The seed is the building's index in the pack, so a facade is stable
-      // across runs and traceable back to one record.
+      // The seed is the building's index in the pack as loaded (b.seed, see
+      // citypack.ts), so a facade is stable across runs, traceable back to one
+      // record, and not moved by a record filtered out after loading.
       //
       // Parts of one tower (b.group) take the seed, kind and height of the
       // whole tower, so its setbacks are one stone with one storey grid rather
       // than a stack of differently coloured boxes.
       const g = b.group !== undefined ? groups.get(b.group) : undefined;
       const fp = g
-        ? facadeFor(pack.buildings[g.lead].kind, g.top, g.lead, choices?.[g.lead])
-        : facadeFor(b.kind, h, i, choices?.[i]);
+        ? facadeFor(pack.buildings[g.lead].kind, g.top, pack.buildings[g.lead].seed ?? g.lead, choices?.[g.lead])
+        : facadeFor(b.kind, h, b.seed ?? i, choices?.[i]);
       const bidx = params.length;
       params.push(fp);
       families[fp.family]++;
