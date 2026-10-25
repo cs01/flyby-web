@@ -16,6 +16,7 @@ import { routePlausible } from "../data/livetraffic";
 import { airlineOf } from "../data/aircrafttypes";
 import { framed, Hold, Logbook, rarityOf, spotRangeM, TIER_POINTS, type Spot, type Store, type Tier } from "../data/spotting";
 import { planesApi } from "./airtraffic";
+import type { TransitBlip } from "./transit";
 
 /**
  * Radar ranges, metres to the rim. The smallest that holds the nearest
@@ -63,6 +64,9 @@ export class SpotGame {
   private blips: { hex: string; px: number; py: number }[] = [];
   private ndc = new THREE.Vector3();
   private visible = true;
+
+  /** Trains and boats, drawn under the aircraft as small squares. */
+  transit: TransitBlip[] = [];
 
   /** The aircraft for the minimap's own close-range layer. */
   readonly near: { x: number; z: number; headingDeg: number; target: boolean }[] = [];
@@ -376,6 +380,19 @@ export class SpotGame {
     g.textAlign = "center";
     g.textBaseline = "middle";
     g.fillText("N", c + Math.sin(na) * (R - 14), c - Math.cos(na) * (R - 14));
+
+    // Trains and boats first, so an aircraft blip is never under one.
+    for (const t of this.transit) {
+      const dx = t.x - me.x;
+      const dz = t.z - me.z;
+      if (dx * dx + dz * dz > RADAR_M * RADAR_M) continue;
+      const px = c + (dx * cos - dz * sin) * k;
+      const py = c + (dx * sin + dz * cos) * k;
+      g.fillStyle = t.color;
+      g.globalAlpha = t.under ? 0.45 : 0.9;
+      g.fillRect(px - 2.5, py - 2.5, 5, 5);
+    }
+    g.globalAlpha = 1;
 
     this.blips.length = 0;
     const near = tracks
