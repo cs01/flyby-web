@@ -316,6 +316,7 @@ export class CityCollision {
     if (!Number.isFinite(px0) || !Number.isFinite(py0) || !Number.isFinite(pz0)) return;
     if (!(radius > 0)) return;
 
+    let lastHits = 0;
     for (let iter = 0; iter < ITERATIONS; iter++) {
       const m = this.gather(position.x, position.z, radius);
       if (m === 0) return;
@@ -331,6 +332,7 @@ export class CityCollision {
         }
       }
       if (hits === 0) return;
+      lastHits = hits;
 
       // Deepest first. Insertion sort because `hits` is single digits in
       // practice -- even wedged into a corner it is three or four -- and a
@@ -366,7 +368,22 @@ export class CityCollision {
         }
       }
     }
-    this.escapeOverlap(position, radius);
+    // Only reached when every iteration still found a contact: the loop
+    // returns as soon as one finds none, so the common frame never pays.
+    // Cheap test first, on the last iteration's few contacts only: is the
+    // CENTRE still inside one of them (not merely within the radius of a
+    // wall, which is every frame of a skim)? A vanishing radius makes
+    // contact() a point-in-volume test.
+    let stuck = false;
+    for (let k = 0; k < lastHits && !stuck; k++) {
+      if (this.contact(this.order[k], position.x, position.y, position.z, 1e-3) > 0) stuck = true;
+    }
+    // And only when the iterations made no headway: a centre deep in one
+    // tower is pushed metres per call and is out in a frame or two, while a
+    // centre between two overlapping footprints is pushed back to where it
+    // started. Marching on every inside call took the 20k-resolve benchmark
+    // from 23 ms to 230 ms; this keeps the march for the ping-pong only.
+    if (stuck && Math.hypot(position.x - px0, position.z - pz0) < radius) this.escapeOverlap(position, radius);
   }
 
   /**
@@ -377,25 +394,16 @@ export class CityCollision {
    * one-frame penetrations never got out though open street was within 8 m.
    * So when the iterations end still inside something, march out across the
    * UNION instead: the nearest of sixteen horizontal directions that clears
-   * every building, half a metre at a time, out to 30 m. Rare, so the
-   * brute force costs nothing in a frame.
+   * every building, a metre at a time, out to 16 m (the gate's "room
+   * nearby" looks 8 m out).
    */
   private escapeOverlap(position: THREE.Vector3, radius: number): void {
-    // Only a CENTRE inside a footprint is stuck: a drone skimming a wall is
-    // within its radius of it every frame and must be left to slide. A
-    // vanishing radius makes contact() a point-in-volume test.
-    const inside = (x: number, y: number, z: number): boolean => {
-      const m = this.gather(x, z, 1e-3);
-      for (let k = 0; k < m; k++) if (this.contact(this.cand[k], x, y, z, 1e-3) > 0) return true;
-      return false;
-    };
-    if (!inside(position.x, position.y, position.z)) return;
     const blocked = (x: number, y: number, z: number): boolean => {
       const m = this.gather(x, z, radius);
       for (let k = 0; k < m; k++) if (this.contact(this.cand[k], x, y, z, radius) > 0) return true;
       return false;
     };
-    for (let t = 0.5; t <= 30; t += 0.5) {
+    for (let t = 1; t <= 16; t += 1) {
       for (let a = 0; a < 16; a++) {
         const x = position.x + Math.cos((a * Math.PI) / 8) * t;
         const z = position.z + Math.sin((a * Math.PI) / 8) * t;
