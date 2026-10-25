@@ -126,10 +126,12 @@ vec3 sunTransmittance(vec3 p, vec3 sunDir, float turbidity) {
   return exp(-(BETA_R * odR + BETA_M * turbidity * 1.11 * odM + BETA_O * odO));
 }
 
-// The glow march takes the shader's own budget: a surface 2 km off needs no
-// more samples of the lit air in front of it than of the sunlit air.
+// Four by default: what lies in front of a surface is at most a few km of
+// smoothly lit air, and every building, terrain and road fragment pays it at
+// night. The sky dome defines 12 (sky.ts), where a horizon ray crosses the
+// whole lit volume and the quadratic spacing needs them.
 #ifndef ATMO_GLOW_STEPS
-#define ATMO_GLOW_STEPS ATMO_STEPS
+#define ATMO_GLOW_STEPS 4
 #endif
 
 /**
