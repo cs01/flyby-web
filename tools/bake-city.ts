@@ -22,7 +22,7 @@
 
 import { CITIES, cityById, type City } from "../src/cities";
 import { Origin } from "../src/geo";
-import { CITY_MAGIC, encodeCityPack, type PackedBuilding } from "../src/data/citypack";
+import { CITY_MAGIC, CITY_VERSION, encodeCityPack, tailBytes, type PackedBuilding } from "../src/data/citypack";
 import { buildingsFromOsm, buildingsQuery } from "../src/data/osmbuildings";
 import type { OsmBbox, OsmElement, OverpassResponse } from "../src/data/osm";
 
@@ -109,9 +109,9 @@ async function politeGap(): Promise<void> {
  * Overpass answers 406 unless the body is form-encoded AND an Accept header is
  * present. Both halves have bitten this tool before; neither is optional.
  */
-async function overpass(query: string): Promise<OverpassResponse> {
+async function overpass(query: string, attempts = MAX_ATTEMPTS): Promise<OverpassResponse> {
   let lastErr = "";
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const endpoint = ENDPOINTS[attempt % ENDPOINTS.length];
     await politeGap();
     try {
@@ -148,7 +148,43 @@ async function overpass(query: string): Promise<OverpassResponse> {
     process.stdout.write(`    retry in ${(backoff / 1000).toFixed(0)}s (${lastErr})\n`);
     await sleep(backoff);
   }
-  throw new Error(`overpass failed after ${MAX_ATTEMPTS} attempts: ${lastErr}`);
+  throw new Error(`overpass failed after ${attempts} attempts: ${lastErr}`);
+}
+
+/**
+ * One cell, and if the public instances keep timing out on it, its four
+ * quarters instead (twice over at most). A 2 km cell of Midtown is about
+ * 30,000 elements, and on a loaded afternoon overpass-api.de answers it with
+ * a 504 every time while answering a 1 km quarter in under a minute. The
+ * quarters are cached on their own so a retry resumes, and the merged answer
+ * is written under the cell's own name, so the cache keeps one file per cell
+ * whichever way it was fetched.
+ */
+async function fetchSplitting(cell: OsmBbox, path: string, depth: number): Promise<OverpassResponse> {
+  try {
+    return await overpass(buildingsQuery(cell), depth < 2 ? 3 : MAX_ATTEMPTS);
+  } catch (e) {
+    if (depth >= 2) throw e;
+  }
+  process.stdout.write(`\n    splitting into quarters (depth ${depth + 1})...`);
+  const midLat = (cell.s + cell.n) / 2, midLon = (cell.w + cell.e) / 2;
+  const quarters: OsmBbox[] = [
+    { s: cell.s, n: midLat, w: cell.w, e: midLon }, { s: cell.s, n: midLat, w: midLon, e: cell.e },
+    { s: midLat, n: cell.n, w: cell.w, e: midLon }, { s: midLat, n: cell.n, w: midLon, e: cell.e },
+  ];
+  const byId = new Map<string, OsmElement>();
+  for (let q = 0; q < 4; q++) {
+    const qPath = `${path}-q${q}.json`;
+    let body: OverpassResponse | null = null;
+    try {
+      body = JSON.parse(await Bun.file(qPath).text()) as OverpassResponse;
+    } catch {
+      body = await fetchSplitting(quarters[q], `${path}-q${q}`, depth + 1);
+      await Bun.write(qPath, JSON.stringify(body));
+    }
+    for (const el of body.elements ?? []) byId.set(`${el.type}/${el.id}`, el);
+  }
+  return { elements: [...byId.values()] } as OverpassResponse;
 }
 
 async function fetchCells(key: string, bbox: OsmBbox, force: boolean): Promise<OsmElement[]> {
@@ -185,7 +221,7 @@ async function fetchCells(key: string, bbox: OsmBbox, force: boolean): Promise<O
       }
       if (body === null) {
         process.stdout.write(`  cell ${index + 1}/${total} fetching...`);
-        body = await overpass(buildingsQuery(cell));
+        body = await fetchSplitting(cell, cachePath.replace(/\.json$/, ""), 0);
         await Bun.write(cachePath, JSON.stringify(body));
         process.stdout.write(` ${(body.elements ?? []).length} elements\n`);
       } else {
@@ -227,7 +263,7 @@ function decode(bytes: Uint8Array): Decoded {
   const magic = dv.getUint32(o, true); o += 4;
   if (magic !== CITY_MAGIC) throw new Error(`bad magic 0x${magic.toString(16)}`);
   const version = dv.getUint32(o, true); o += 4;
-  if (version !== 1) throw new Error(`bad version ${version}`);
+  if (version !== CITY_VERSION) throw new Error(`bad version ${version}`);
   const lat0 = dv.getFloat64(o, true); o += 8;
   const lon0 = dv.getFloat64(o, true); o += 8;
   const radiusM = dv.getFloat32(o, true); o += 4;
@@ -249,6 +285,11 @@ function decode(bytes: Uint8Array): Decoded {
       dx[v] = dv.getInt16(o, true); o += 2;
       dz[v] = dv.getInt16(o, true); o += 2;
     }
+    // The tail is walked by its flag bits alone: one byte per bit set, as
+    // many as the format says each field takes, independently of tailBytes.
+    const flags = dv.getUint8(o); o += 1;
+    const widths = [4, 1, 3, 3, 1, 2, 1, 2];
+    for (let bit = 0; bit < 8; bit++) if (flags & (1 << bit)) o += widths[bit];
     const rec: PackedBuilding = { cx, cz, baseM, topM, kind, roof, dx, dz };
     if (i === 0) first = rec;
     if (i === count - 1) last = rec;
@@ -363,7 +404,7 @@ async function bake(job: Job, force: boolean): Promise<boolean> {
   const elements = await fetchCells(job.key, bbox, force);
   console.log(`  ${elements.length} unique OSM elements`);
 
-  const { buildings, skips } = buildingsFromOsm(elements, origin, job.radius);
+  const { buildings, skips, parts } = buildingsFromOsm(elements, origin, job.radius);
   const bytes = encodeCityPack(buildings, job.lat, job.lon, job.radius);
   await Bun.write(job.out, bytes);
   const onDiskSize = Bun.file(job.out).size;
@@ -376,6 +417,13 @@ async function bake(job: Job, force: boolean): Promise<boolean> {
   console.log(`  skipped     ${skips.total()}`);
   for (const [reason, n] of skips.entries()) console.log(`      ${n.toString().padStart(7)}  ${reason}`);
   console.log(`  file        ${job.out}  ${onDiskSize} bytes`);
+  const tails = buildings.reduce((a, b) => a + tailBytes(b), 0);
+  const tagged = buildings.filter((b) => b.tags).length;
+  console.log(
+    `  parts       ${parts.grouped} grouped under outlines; ${parts.dropped} outlines dropped, ` +
+      `${parts.clipped} cut to a podium`,
+  );
+  console.log(`  tags        ${tagged} records carry OSM evidence; record tails ${tails} bytes`);
   console.log(
     `  height      p50 ${p50.toFixed(1)}  p90 ${percentile(heights, 90).toFixed(1)}` +
       `  p99 ${percentile(heights, 99).toFixed(1)}  max ${(heights[heights.length - 1] ?? 0).toFixed(1)} m`,

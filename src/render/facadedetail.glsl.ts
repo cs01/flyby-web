@@ -237,6 +237,11 @@ vec4 roomColour(vec3 p, vec3 v, vec2 cellM, float depth, float kind, float seed,
   vec3 floorC = k == 1 ? vec3(0.12, 0.13, 0.15)                                        // carpet tile
               : k == 2 ? vec3(0.22, 0.21, 0.20)                                         // concrete
               : mix(vec3(0.24, 0.14, 0.07), vec3(0.35, 0.24, 0.14), h2);                // timber
+  // Retail (kind 3): white walls under the stock, a pale tiled floor.
+  if (k == 3) {
+    wallC = vec3(0.46, 0.44, 0.40);
+    floorC = mix(vec3(0.42, 0.41, 0.38), vec3(0.30, 0.27, 0.24), h2);
+  }
   vec3 ceilC = vec3(0.70, 0.70, 0.68);
   vec3 c;
   float lampLit = 0.0;
@@ -246,7 +251,18 @@ vec4 roomColour(vec3 p, vec3 v, vec2 cellM, float depth, float kind, float seed,
     // office, a sofa or a bookcase at home. Blocks of a single darker value,
     // because at the distance anyone sees a room from that is what they are.
     float fx = h.x / cellM.x;
-    if (k == 1) {
+    if (k == 3) {
+      // Shelving to head height: a shelf edge every 0.4 m and the stock on
+      // it as blocks of colour a few tens of centimetres wide, which is what
+      // a shop's back wall is from across the pavement.
+      float shelf = step(h.y, 2.1) * step(0.15, h.y);
+      vec2 sc = floor(vec2(h.x / 0.28, h.y / 0.4));
+      float r = fract(sin(dot(sc, vec2(12.9898, 78.233)) + seed * 3.1) * 43758.5);
+      vec3 stock = r < 0.25 ? vec3(0.55, 0.12, 0.08) : r < 0.45 ? vec3(0.70, 0.62, 0.30)
+                 : r < 0.6 ? vec3(0.12, 0.25, 0.45) : r < 0.75 ? vec3(0.65, 0.65, 0.62) : vec3(0.18, 0.30, 0.15);
+      float edge = step(fract(h.y / 0.4), 0.08);
+      c = mix(c, mix(stock, vec3(0.10), edge), shelf);
+    } else if (k == 1) {
       float desk = step(0.72, h.y) * step(h.y, 1.25);
       c = mix(c, vec3(0.18, 0.19, 0.21), desk * step(0.1, fract(fx * 2.0 + h3)));
     } else if (k == 0) {
@@ -266,7 +282,7 @@ vec4 roomColour(vec3 p, vec3 v, vec2 cellM, float depth, float kind, float seed,
       // a flat has one fitting in the middle of the room.
       vec2 cp = h.xz;
       float lamp;
-      if (k == 1) {
+      if (k == 1 || k == 3) {
         vec2 g = abs(fract(cp / vec2(1.8, 2.4)) - 0.5);
         lamp = step(g.x, 0.17) * step(g.y, 0.25);
       } else {

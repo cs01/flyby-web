@@ -53,7 +53,7 @@ import { Minimap } from "./app/minimap";
 import { Timebar, LocalClock } from "./app/timebar";
 import { Beacon } from "./render/beacon";
 import { loadCityPack } from "./data/citypack-load";
-import { Buildings } from "./render/buildings";
+import { Buildings, flattenParts } from "./render/buildings";
 import { hourFactors } from "./render/facade";
 import { buildUrbanMask, emptyUrbanMask, type UrbanMask } from "./render/urbanmask";
 import { buildRoadMask, emptyRoadMask, type RoadMask } from "./render/roadmask";
@@ -462,6 +462,11 @@ async function main() {
   // reading 0.59 and sent an afternoon after an atmosphere bug that was not
   // there.
   const buildingsOff = new URLSearchParams(location.search).has("nobuildings");
+  // `?flatparts=1`: towers back to boxes, the probe for the skyline claim in
+  // tools/verify-buildings.ts. Dev builds only, like every gate flag.
+  if (pack && import.meta.env.DEV && new URLSearchParams(location.search).get("flatparts") === "1") {
+    pack.buildings = flattenParts(pack.buildings);
+  }
   if (pack && !buildingsOff) {
     buildings = new Buildings(pack, terrain.heightAt, sunShadow.uniforms, budget);
     scene.add(buildings.group);
@@ -1822,6 +1827,7 @@ async function main() {
       b.uFlatRefl.value = flatRefl ? 1 : 0;
       b.uFlatFacade.value = flatFacade ? 1 : 0;
       b.uOneRoof.value = oneRoof ? 1 : 0;
+      b.uFlatShop.value = gateFlag("flatshop") ? 1 : 0;
       b.uMatNoMip.value = noMip ? 1 : 0;
       b.uTerrainDebug.value = terrainDebug || 0;
       b.uUrban.value = urban.texture;

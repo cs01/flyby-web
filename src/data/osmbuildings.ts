@@ -15,7 +15,10 @@
 // PURE: no fetch, no cache, no DOM, no Bun.
 
 import { Origin } from "../geo";
-import { BuildingKind, RoofShape, isNeedle, type BuildingTags, type PackedBuilding } from "./citypack";
+import {
+  BuildingKind, MATERIAL_CODES, ROOF_MATERIAL_CODES, RoofShape, isNeedle, quantiseColour, quantiseLevels,
+  quantiseRoofHeight, type BuildingTags, type PackedBuilding,
+} from "./citypack";
 import { bboxFilter, Skips, type OsmBbox, type OsmElement, type OsmPt } from "./osm";
 
 // --- tunables ---------------------------------------------------------------
@@ -210,24 +213,30 @@ export function parseOsmColour(raw: string | undefined): [number, number, number
   return rgb.map((c) => Math.min(0.75, Math.max(0.03, srgbToLinear(c)))) as [number, number, number];
 }
 
-/** The material evidence on one element, or null when it has none. */
+/**
+ * The material evidence on one element, or null when it has none.
+ *
+ * Every value is snapped to what a .city pack can hold (a material in the code
+ * table, a colour on the sRGB byte grid, half-storey levels), on the live path
+ * too, so a live city and a baked one carry exactly the same evidence.
+ */
 export function materialTags(tags: Record<string, string>): BuildingTags | null {
   const out: BuildingTags = {};
   const material = (tags["building:material"] ?? tags["building:facade:material"] ?? "").trim().toLowerCase();
-  if (material) out.material = material;
+  if ((MATERIAL_CODES as readonly string[]).includes(material)) out.material = material;
   const colour = parseOsmColour(tags["building:colour"] ?? tags["building:facade:colour"]);
-  if (colour) out.colour = colour;
+  if (colour) out.colour = quantiseColour(colour);
   const roofColour = parseOsmColour(tags["roof:colour"]);
-  if (roofColour) out.roofColour = roofColour;
+  if (roofColour) out.roofColour = quantiseColour(roofColour);
   const roofMaterial = (tags["roof:material"] ?? "").trim().toLowerCase();
-  if (roofMaterial) out.roofMaterial = roofMaterial;
+  if ((ROOF_MATERIAL_CODES as readonly string[]).includes(roofMaterial)) out.roofMaterial = roofMaterial;
   const year = /(\d{4})/.exec(tags["start_date"] ?? tags["construction_date"] ?? "");
   if (year) {
     const y = Number(year[1]);
     if (y >= 1600 && y <= 2100) out.year = y;
   }
   const levels = parseLevels(tags["building:levels"]);
-  if (levels !== null && levels >= 1) out.levels = levels;
+  if (levels !== null && levels >= 1) out.levels = quantiseLevels(levels);
   return Object.keys(out).length ? out : null;
 }
 
@@ -436,6 +445,166 @@ export function isBuildingElement(el: OsmElement): boolean {
 export interface BuildingConversion {
   buildings: PackedBuilding[];
   skips: Skips;
+  parts: PartStats;
+}
+
+// --- building:part massing ------------------------------------------------------
+//
+// OSM's Simple 3D Buildings scheme maps a setback tower twice: an OUTLINE
+// (`building=*`) carrying the whole footprint at the full height, and inside it
+// the `building:part` volumes, each with its own min_height, height and roof.
+// The parts were always in the query and always in the packs; what made every
+// tower a box is that the outline was extruded too, at 443 m over the whole
+// Empire State footprint, and every setback stood inside it unseen.
+//
+// The scheme says a renderer that draws parts should not draw the outline. Real
+// data needs a softer rule, because the parts are often incomplete: the Empire
+// State's parts start at 16 m, so the podium below them exists only as the
+// outline. So the outline is DROPPED where its ground-standing parts cover it,
+// and otherwise CLIPPED to the lowest part base above it, which leaves exactly
+// the podium the parts stand on.
+
+/** Ground cover by base-level parts above which the outline is dropped. */
+export const PART_COVER_DROP = 0.8;
+/** A part standing within this of the ground counts as ground cover, metres. */
+export const PART_GROUND_M = 1.0;
+
+export interface PartStats {
+  /** Outlines replaced outright by their parts. */
+  dropped: number;
+  /** Outlines cut down to the podium under their parts. */
+  clipped: number;
+  /** Parts that found the outline they belong to. */
+  grouped: number;
+}
+
+/** Point in a quantised ring (offsets from cx, cz in QUANT units). */
+function insidePacked(b: PackedBuilding, x: number, z: number): boolean {
+  const n = b.dx.length;
+  const px = (x - b.cx) / QUANT, pz = (z - b.cz) / QUANT;
+  let inside = false;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = b.dx[i], zi = b.dz[i], xj = b.dx[j], zj = b.dz[j];
+    if (zi > pz !== zj > pz && px < ((xj - xi) * (pz - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
+}
+
+function packedArea(b: PackedBuilding): number {
+  let a2 = 0;
+  const n = b.dx.length;
+  for (let i = 0; i < n; i++) {
+    const j = i + 1 === n ? 0 : i + 1;
+    a2 += b.dx[i] * b.dz[j] - b.dx[j] * b.dz[i];
+  }
+  return Math.abs(a2 / 2) * QUANT * QUANT;
+}
+
+function packedBox(b: PackedBuilding): [number, number, number, number] {
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (let i = 0; i < b.dx.length; i++) {
+    x0 = Math.min(x0, b.dx[i]); x1 = Math.max(x1, b.dx[i]);
+    z0 = Math.min(z0, b.dz[i]); z1 = Math.max(z1, b.dz[i]);
+  }
+  return [b.cx + x0 * QUANT, b.cx + x1 * QUANT, b.cz + z0 * QUANT, b.cz + z1 * QUANT];
+}
+
+/**
+ * Resolve outlines against their parts. Returns the kept records (in order)
+ * and the flags that ride alongside them.
+ *
+ * @param isPart per record, true when it came from a `building:part` element.
+ */
+export function resolveParts(
+  buildings: PackedBuilding[],
+  isPart: readonly boolean[],
+  roofTagged: readonly boolean[],
+): { buildings: PackedBuilding[]; roofTagged: boolean[]; stats: PartStats } {
+  const stats: PartStats = { dropped: 0, clipped: 0, grouped: 0 };
+  const CELL = 50;
+  const cells = new Map<string, number[]>();
+  for (let i = 0; i < buildings.length; i++) {
+    if (!isPart[i]) continue;
+    const k = `${Math.floor(buildings[i].cx / CELL)},${Math.floor(buildings[i].cz / CELL)}`;
+    const l = cells.get(k);
+    if (l) l.push(i); else cells.set(k, [i]);
+  }
+  if (cells.size === 0) return { buildings, roofTagged: [...roofTagged], stats };
+
+  // Smallest outline first, so a part inside a building inside a campus
+  // outline belongs to the building.
+  const outlines: { i: number; area: number }[] = [];
+  for (let i = 0; i < buildings.length; i++) if (!isPart[i]) outlines.push({ i, area: packedArea(buildings[i]) });
+  outlines.sort((a, b) => a.area - b.area);
+
+  const owner = new Int32Array(buildings.length).fill(-1);
+  const drop = new Uint8Array(buildings.length);
+  for (const { i, area } of outlines) {
+    const o = buildings[i];
+    const [x0, x1, z0, z1] = packedBox(o);
+    const mine: number[] = [];
+    for (let gx = Math.floor(x0 / CELL); gx <= Math.floor(x1 / CELL); gx++) {
+      for (let gz = Math.floor(z0 / CELL); gz <= Math.floor(z1 / CELL); gz++) {
+        for (const j of cells.get(`${gx},${gz}`) ?? []) {
+          if (owner[j] >= 0) continue;
+          const p = buildings[j];
+          if (p.cx < x0 || p.cx > x1 || p.cz < z0 || p.cz > z1) continue;
+          if (!insidePacked(o, p.cx, p.cz)) continue;
+          // A "part" bigger than the outline is a neighbour's, not this one's.
+          if (packedArea(p) > area * 1.1) continue;
+          mine.push(j);
+        }
+      }
+    }
+    if (!mine.length) continue;
+    for (const j of mine) owner[j] = i;
+    stats.grouped += mine.length;
+
+    // How much of the footprint the ground-standing parts cover, on a 12 x 12
+    // grid of samples inside it.
+    let inside = 0, covered = 0;
+    for (let a = 0; a < 12; a++) {
+      for (let b = 0; b < 12; b++) {
+        const x = x0 + ((a + 0.5) / 12) * (x1 - x0);
+        const z = z0 + ((b + 0.5) / 12) * (z1 - z0);
+        if (!insidePacked(o, x, z)) continue;
+        inside++;
+        for (const j of mine) {
+          const p = buildings[j];
+          if (p.baseM - o.baseM <= PART_GROUND_M && insidePacked(p, x, z)) { covered++; break; }
+        }
+      }
+    }
+    const group = i;
+    for (const j of mine) buildings[j].group = group;
+    if (inside > 0 && covered / inside >= PART_COVER_DROP) {
+      drop[i] = 1;
+      stats.dropped++;
+      continue;
+    }
+    let lowest = Infinity;
+    for (const j of mine) {
+      const b = buildings[j].baseM;
+      if (b - o.baseM > PART_GROUND_M && b < lowest) lowest = b;
+    }
+    o.group = group;
+    if (Number.isFinite(lowest) && lowest < o.topM) {
+      // The podium. At least a storey, or what is left is a sliver of roof.
+      o.topM = Math.max(o.baseM + 3, lowest);
+      o.roof = RoofShape.Flat;
+      delete o.roofM;
+      stats.clipped++;
+    }
+  }
+
+  const kept: PackedBuilding[] = [];
+  const keptRoof: boolean[] = [];
+  for (let i = 0; i < buildings.length; i++) {
+    if (drop[i]) continue;
+    kept.push(buildings[i]);
+    keptRoof.push(roofTagged[i]);
+  }
+  return { buildings: kept, roofTagged: keptRoof, stats };
 }
 
 // --- zoning inference -------------------------------------------------------
@@ -593,6 +762,7 @@ export function buildingsFromOsm(
   // outer ring per member, and an array built per element would slip out of
   // alignment the first time one did.
   const roofTagged: boolean[] = [];
+  const isPart: boolean[] = [];
 
   for (const el of elements) {
     const tags = el.tags ?? {};
@@ -709,15 +879,26 @@ export function buildingsFromOsm(
       }
 
       const evidence = materialTags(tags);
+      // roof:height only means something on a shaped roof: it is how much of
+      // the record is spire, dome or pyramid rather than wall.
+      const roofH = roof !== RoofShape.Flat ? parseLength(tags["roof:height"]) : null;
+      const roofM = roofH !== null && roofH > 0 && roofH < heights.topM - heights.baseM
+        ? quantiseRoofHeight(roofH) : undefined;
       buildings.push({
         cx, cz, baseM: heights.baseM, topM: heights.topM, kind, roof, dx, dz,
         ...(evidence ? { tags: evidence } : {}),
+        ...(roofM !== undefined ? { roofM } : {}),
       });
       roofTagged.push(taggedRoof);
+      // An element tagged both ways is drawn as a part: it is a volume, and
+      // treating it as an outline could drop it in favour of itself.
+      isPart.push(tags["building:part"] !== undefined);
     }
   }
 
-  inferResidential(buildings, roofTagged);
+  const resolved = resolveParts(buildings, isPart, roofTagged);
+  if (resolved.stats.dropped) skips.add("outline replaced by its building:part massing", resolved.stats.dropped);
+  inferResidential(resolved.buildings, resolved.roofTagged);
 
-  return { buildings, skips };
+  return { buildings: resolved.buildings, skips, parts: resolved.stats };
 }

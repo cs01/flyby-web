@@ -107,6 +107,8 @@ export interface FootprintLike {
   kind: number;
   ring: Float32Array;
   tags?: BuildingTags;
+  /** building:part group id; see citypack's Building.group. */
+  group?: number;
 }
 
 export function footprintArea(ring: Float32Array): number {
@@ -1083,24 +1085,41 @@ export function assignArchetypes(pack: PackLike, opts: AssignOptions = {}): Arch
   const mPerDegLon = 111320 * Math.cos((pack.lat0 * Math.PI) / 180);
   const out: ArchetypeChoice[] = new Array(n);
   const w = new Float64Array(pool.length);
+  // A tower mapped as building:part volumes is ONE building: every part draws
+  // with the whole tower's height, its biggest footprint and its tallest
+  // record's seed, so the 20 m crown stage of a 443 m tower is not weighed as
+  // a 20 m walk-up and the stack comes out in one stone.
+  const groups = new Map<number, { lead: number; top: number; area: number }>();
+  for (let i = 0; i < n; i++) {
+    const id = bs[i].group;
+    if (id === undefined) continue;
+    const g = groups.get(id);
+    if (!g) groups.set(id, { lead: i, top: bs[i].topM, area: areas[i] });
+    else {
+      if (bs[i].topM > g.top) { g.lead = i; g.top = bs[i].topM; }
+      g.area = Math.max(g.area, areas[i]);
+    }
+  }
   for (let i = 0; i < n; i++) {
     const b = bs[i];
+    const g = b.group !== undefined ? groups.get(b.group) : undefined;
+    const lead = g ? bs[g.lead] : b;
     const x: WeightInput = {
-      kind: b.kind,
-      heightM: b.topM - b.baseM,
-      areaM2: areas[i],
-      district: districts[i] as District,
+      kind: lead.kind,
+      heightM: g ? g.top : b.topM - b.baseM,
+      areaM2: g ? g.area : areas[i],
+      district: districts[g ? g.lead : i] as District,
       // ENU: x is east, z is SOUTH in this repo's frame (see geo.ts toWorld).
-      lat: pack.lat0 - b.cz / mPerDegLat,
-      lon: pack.lon0 + b.cx / mPerDegLon,
-      tags: b.tags,
+      lat: pack.lat0 - lead.cz / mPerDegLat,
+      lon: pack.lon0 + lead.cx / mPerDegLon,
+      tags: lead.tags ?? b.tags,
     };
     let total = 0;
     for (let k = 0; k < pool.length; k++) {
       w[k] = archetypeWeight(ARCHETYPES[pool[k]], x);
       total += w[k];
     }
-    const root = clusters ? clusters[i] : i;
+    const root = clusters ? clusters[g ? g.lead : i] : g ? g.lead : i;
     let pick = pool[0];
     if (total > 0) {
       let r = hashU(root, 0xa2c4) * total;

@@ -18,9 +18,138 @@
 
 
 export const CITY_MAGIC = 0x43495459;
-const CITY_VERSION = 1;
+/**
+ * 2 adds a variable tail to every record: a flag byte, then the fields it
+ * names (see encodeTail). Version 1 packs (the cities nobody has re-baked)
+ * still parse; they simply have no tail.
+ */
+export const CITY_VERSION = 2;
 const CITY_HEADER_BYTES = 32;
 const CITY_RECORD_BYTES = 20;
+
+// --- the version 2 record tail ------------------------------------------------
+//
+// building:part massing and the OSM evidence the archetype assignment reads.
+// A flag byte per record and nothing else for the ~93% that carry none of it,
+// so the tail costs about one byte a building.
+
+export const TAIL_GROUP = 1;
+export const TAIL_MATERIAL = 2;
+export const TAIL_COLOUR = 4;
+export const TAIL_ROOF_COLOUR = 8;
+export const TAIL_ROOF_MATERIAL = 16;
+export const TAIL_YEAR = 32;
+export const TAIL_LEVELS = 64;
+export const TAIL_ROOF_HEIGHT = 128;
+
+/**
+ * building:material values a pack can carry, by code. A value not in this
+ * table is dropped by the converter on BOTH paths (see materialTags), so a live
+ * city and a baked one hold the same evidence. Covers every key the archetype
+ * table reads plus the common spellings mappers use beside them.
+ */
+export const MATERIAL_CODES = [
+  "brick", "stone", "limestone", "sandstone", "granite", "concrete", "plaster", "stucco",
+  "wood", "timber_framing", "glass", "metal", "steel", "terracotta", "marble", "cement_block",
+  "masonry", "mirror", "tiles", "panels", "reinforced_concrete", "vinyl", "aluminium",
+] as const;
+/** roof:material values, likewise. Every key of facade.ts ROOF_TAG is here. */
+export const ROOF_MATERIAL_CODES = [
+  "tar_paper", "asphalt", "roofing_felt", "gravel", "concrete", "grass", "plants", "metal",
+  "copper", "roof_tiles", "tile", "slate", "wood", "eternit", "glass", "stone", "thatch",
+  "asbestos", "plastic", "metal_sheet", "pebblestone",
+] as const;
+
+const srgbByteToLinear = (q: number): number => {
+  const v = q / 255;
+  return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
+};
+const linearToSrgbByte = (c: number): number => {
+  const v = c <= 0.0031308 ? c * 12.92 : 1.055 * c ** (1 / 2.4) - 0.055;
+  return Math.max(0, Math.min(255, Math.round(v * 255)));
+};
+
+/**
+ * A linear colour snapped to the sRGB byte the pack stores. The converter
+ * applies it, so a colour that has been through a pack and one that has not
+ * are the same float (a byte -> linear -> byte round trip is exact).
+ */
+export function quantiseColour(c: readonly [number, number, number]): [number, number, number] {
+  return [
+    srgbByteToLinear(linearToSrgbByte(c[0])),
+    srgbByteToLinear(linearToSrgbByte(c[1])),
+    srgbByteToLinear(linearToSrgbByte(c[2])),
+  ];
+}
+/** building:levels as the pack stores it: half-storey steps, at most 127.5. */
+export const quantiseLevels = (l: number): number => Math.round(Math.min(127.5, l) * 2) / 2;
+/** roof:height as the pack stores it: decimetres, at most 6553.5 m. */
+export const quantiseRoofHeight = (m: number): number => Math.round(Math.min(6553.5, m) * 10) / 10;
+
+/** Bytes the tail of one record takes. verify-packs re-derives this on its own. */
+export function tailBytes(b: { group?: number; roofM?: number; tags?: BuildingTags }): number {
+  const t = b.tags;
+  return 1 + (b.group !== undefined ? 4 : 0) + (t?.material !== undefined ? 1 : 0)
+    + (t?.colour ? 3 : 0) + (t?.roofColour ? 3 : 0) + (t?.roofMaterial !== undefined ? 1 : 0)
+    + (t?.year !== undefined ? 2 : 0) + (t?.levels !== undefined ? 1 : 0) + (b.roofM !== undefined ? 2 : 0);
+}
+
+function encodeTail(dv: DataView, o: number, b: PackedBuilding): number {
+  const t = b.tags;
+  const mat = t?.material !== undefined ? MATERIAL_CODES.indexOf(t.material as (typeof MATERIAL_CODES)[number]) : -1;
+  const rmat = t?.roofMaterial !== undefined
+    ? ROOF_MATERIAL_CODES.indexOf(t.roofMaterial as (typeof ROOF_MATERIAL_CODES)[number]) : -1;
+  if (t?.material !== undefined && mat < 0) throw new Error(`material "${t.material}" has no code`);
+  if (t?.roofMaterial !== undefined && rmat < 0) throw new Error(`roof material "${t.roofMaterial}" has no code`);
+  const flags = (b.group !== undefined ? TAIL_GROUP : 0) | (mat >= 0 ? TAIL_MATERIAL : 0)
+    | (t?.colour ? TAIL_COLOUR : 0) | (t?.roofColour ? TAIL_ROOF_COLOUR : 0)
+    | (rmat >= 0 ? TAIL_ROOF_MATERIAL : 0) | (t?.year !== undefined ? TAIL_YEAR : 0)
+    | (t?.levels !== undefined ? TAIL_LEVELS : 0) | (b.roofM !== undefined ? TAIL_ROOF_HEIGHT : 0);
+  dv.setUint8(o, flags); o += 1;
+  if (b.group !== undefined) { dv.setUint32(o, b.group, true); o += 4; }
+  if (mat >= 0) { dv.setUint8(o, mat); o += 1; }
+  for (const c of [t?.colour, t?.roofColour]) {
+    if (!c) continue;
+    for (let k = 0; k < 3; k++) { dv.setUint8(o, linearToSrgbByte(c[k])); o += 1; }
+  }
+  if (rmat >= 0) { dv.setUint8(o, rmat); o += 1; }
+  if (t?.year !== undefined) { dv.setUint16(o, t.year, true); o += 2; }
+  if (t?.levels !== undefined) { dv.setUint8(o, Math.round(t.levels * 2)); o += 1; }
+  if (b.roofM !== undefined) { dv.setUint16(o, Math.round(b.roofM * 10), true); o += 2; }
+  return o;
+}
+
+interface Tail { group?: number; roofM?: number; tags?: BuildingTags }
+
+function decodeTail(dv: DataView, o: number, out: Tail): number {
+  const flags = dv.getUint8(o); o += 1;
+  if (flags & TAIL_GROUP) { out.group = dv.getUint32(o, true); o += 4; }
+  const tags: BuildingTags = {};
+  if (flags & TAIL_MATERIAL) {
+    const m = MATERIAL_CODES[dv.getUint8(o)]; o += 1;
+    if (m === undefined) throw new Error("material code out of range");
+    tags.material = m;
+  }
+  const rgb = (): [number, number, number] => {
+    const c: [number, number, number] = [
+      srgbByteToLinear(dv.getUint8(o)), srgbByteToLinear(dv.getUint8(o + 1)), srgbByteToLinear(dv.getUint8(o + 2)),
+    ];
+    o += 3;
+    return c;
+  };
+  if (flags & TAIL_COLOUR) tags.colour = rgb();
+  if (flags & TAIL_ROOF_COLOUR) tags.roofColour = rgb();
+  if (flags & TAIL_ROOF_MATERIAL) {
+    const m = ROOF_MATERIAL_CODES[dv.getUint8(o)]; o += 1;
+    if (m === undefined) throw new Error("roof material code out of range");
+    tags.roofMaterial = m;
+  }
+  if (flags & TAIL_YEAR) { tags.year = dv.getUint16(o, true); o += 2; }
+  if (flags & TAIL_LEVELS) { tags.levels = dv.getUint8(o) / 2; o += 1; }
+  if (flags & TAIL_ROOF_HEIGHT) { out.roofM = dv.getUint16(o, true) / 10; o += 2; }
+  if (Object.keys(tags).length) out.tags = tags;
+  return o;
+}
 
 /** Quarter-metre fixed point for footprint vertices, relative to the centroid. */
 const VERT_SCALE = 0.25;
@@ -74,6 +203,16 @@ export interface Building {
   /** Ring vertices in local ENU metres, absolute (centroid already added). */
   ring: Float32Array;
   tags?: BuildingTags;
+  /**
+   * building:part massing. Every record cut from one OSM outline (its parts,
+   * and the podium left of the outline when the parts do not cover it) shares
+   * this id, so the renderer can draw them as ONE building: one archetype, one
+   * palette draw, one storey grid. An id, not an index, because the loader
+   * filters records (masts) and an index would point at the wrong one after.
+   */
+  group?: number;
+  /** roof:height, metres: how much of the record's height is its roof. */
+  roofM?: number;
 }
 
 export interface CityPack {
@@ -103,8 +242,10 @@ export interface PackedBuilding {
   /** i16 units of VERT_SCALE metres, offsets from the centroid. */
   dx: Int16Array;
   dz: Int16Array;
-  /** Not written to a pack file: the live path carries it straight through. */
+  /** Written to the version 2 tail; see Building. */
   tags?: BuildingTags;
+  group?: number;
+  roofM?: number;
 }
 
 /**
@@ -119,7 +260,7 @@ export function encodeCityPack(
   radiusM: number,
 ): Uint8Array {
   let size = CITY_HEADER_BYTES;
-  for (const b of buildings) size += CITY_RECORD_BYTES + 4 * b.dx.length;
+  for (const b of buildings) size += CITY_RECORD_BYTES + 4 * b.dx.length + tailBytes(b);
 
   const buf = new ArrayBuffer(size);
   const dv = new DataView(buf);
@@ -143,7 +284,9 @@ export function encodeCityPack(
       dv.setInt16(o, b.dx[i], true); o += 2;
       dv.setInt16(o, b.dz[i], true); o += 2;
     }
+    o = encodeTail(dv, o, b);
   }
+  if (o !== size) throw new Error(`encoder wrote ${o} of ${size} bytes`);
   return new Uint8Array(buf);
 }
 
@@ -179,6 +322,8 @@ export function unpackBuildings(packed: readonly PackedBuilding[]): Building[] {
       roof: p.roof,
       ring,
       ...(p.tags ? { tags: p.tags } : {}),
+      ...(p.group !== undefined ? { group: p.group } : {}),
+      ...(p.roofM !== undefined ? { roofM: p.roofM } : {}),
     };
   }
   return out;
@@ -193,7 +338,7 @@ export function parseCityPack(buf: ArrayBuffer): CityPack {
     throw new Error(`not a .city pack (magic 0x${magic.toString(16)})`);
   }
   const version = dv.getUint32(o, true); o += 4;
-  if (version !== CITY_VERSION) throw new Error(`unsupported .city version ${version}`);
+  if (version !== 1 && version !== CITY_VERSION) throw new Error(`unsupported .city version ${version}`);
 
   const lat0 = dv.getFloat64(o, true); o += 8;
   const lon0 = dv.getFloat64(o, true); o += 8;
@@ -215,8 +360,11 @@ export function parseCityPack(buf: ArrayBuffer): CityPack {
       ring[v * 2] = cx + dv.getInt16(o, true) * VERT_SCALE; o += 2;
       ring[v * 2 + 1] = cz + dv.getInt16(o, true) * VERT_SCALE; o += 2;
     }
-    buildings[i] = { cx, cz, baseM, topM, kind, roof, ring };
+    const b: Building = { cx, cz, baseM, topM, kind, roof, ring };
+    if (version >= 2) o = decodeTail(dv, o, b);
+    buildings[i] = b;
   }
+  if (o !== buf.byteLength) throw new Error(`trailing bytes: read ${o} of ${buf.byteLength}`);
 
   return { lat0, lon0, radiusM, buildings };
 }
