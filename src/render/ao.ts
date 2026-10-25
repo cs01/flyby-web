@@ -378,6 +378,14 @@ export class AoPass {
   private readonly blurUniforms: Record<string, THREE.IUniform>;
   /** Width and height of the frame the last render() was fitted to. */
   private frameSize = new THREE.Vector2(1, 1);
+  /**
+   * The main camera with its far plane pulled in to just past the fade, so the
+   * prepass culls every cell beyond it (most of the city from cruise height)
+   * instead of drawing depth the pass would treat as open anyway. Cleared depth
+   * reads as sky, which is shaded exactly as past-the-fade is, and a sample
+   * farther than uRadius from its centre carries no weight.
+   */
+  private readonly prepassCamera = new THREE.PerspectiveCamera();
   /** Kept across calls so measure() does not allocate a megabyte per sample. */
   private readback: Uint16Array | null = null;
 
@@ -501,7 +509,16 @@ export class AoPass {
     const prevTarget = renderer.getRenderTarget();
     const prevOverride = scene.overrideMaterial;
     const prevAutoClear = renderer.autoClear;
-    const prevLayers = camera.layers.mask;
+    const view = camera;
+    camera = this.prepassCamera;
+    camera.copy(view, false);
+    // From the world matrix: the copy's local transform is the original's
+    // relative to its parent, and this camera has none.
+    view.matrixWorld.decompose(camera.position, camera.quaternion, camera.scale);
+    const fade = this.uniforms.uFade.value as THREE.Vector2;
+    camera.far = Math.min(view.far, fade.y + 4 * (this.uniforms.uRadius.value as number));
+    camera.updateProjectionMatrix();
+    camera.updateMatrixWorld(true);
 
     scene.overrideMaterial = this.depthMaterial;
     renderer.autoClear = false;
@@ -523,7 +540,6 @@ export class AoPass {
       for (const e of extra) renderer.render(e, camera);
     }
 
-    camera.layers.mask = prevLayers;
     scene.overrideMaterial = prevOverride;
     renderer.autoClear = prevAutoClear;
 
