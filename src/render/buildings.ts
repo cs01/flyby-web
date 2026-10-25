@@ -845,6 +845,13 @@ void main() {
     float detailX = 1.0 - clamp(w.x * 1.6, 0.0, 1.0);
     float detailY = 1.0 - clamp(w.y * 1.6, 0.0, 1.0);
     float detail = min(detailX, detailY);
+    // Whether any single window can still show, by the day filter above or
+    // the night one below (1.3 footprints, or ?nomip). Past it every
+    // per-window term is weighted by a detail factor that is exactly zero, so
+    // the blocks that only feed those terms are skipped, not evaluated and
+    // multiplied away: from cruise height that is most building pixels, and
+    // sub-pixel triangles shade whole 2x2 quads of this shader.
+    bool winSeen = max(w.x, w.y) < 1.0 / 1.3 || uMatNoMip * detailOn > 0.5;
     float winMeanX = fp.win.y - fp.win.x;
     float winMeanY = fp.win.w - fp.win.z;
     float winMean = winMeanX * winMeanY;
@@ -1029,7 +1036,7 @@ void main() {
     float curtainCov = 0.0;
     float blindCov = 0.0;
     vec3 blindC = vec3(0.0);
-    if (detailOn > 0.5 && pane > 0.001) {
+    if (detailOn > 0.5 && pane > 0.001 && winSeen) {
       // The view ray in the wall's own frame, z INTO the building.
       vec3 vT = vec3(dot(-eyeDir, uDir), dot(-eyeDir, upDir), dot(eyeDir, n));
       vec3 rp = vec3(pcell.x * fp.columnM, pcell.y * fp.storeyM, 0.0);
@@ -1073,7 +1080,7 @@ void main() {
     // acRate is per archetype: through-the-window units are a New York and
     // Chicago thing, almost absent in San Francisco's climate.
     float winObj = 0.0;
-    if (detailOn > 0.5 && pane > 0.001 && fp.interior < 0.5) {
+    if (detailOn > 0.5 && pane > 0.001 && fp.interior < 0.5 && detail > 0.0) {
       float wh = hash21(vec2(colIdx * 3.71 + fp.seed * 1.9, floorIdx * 2.03 + 77.0));
       float hasAc = step(wh, acRate(fp.archetype));
       vec2 acSz = min(vec2(0.66, 0.40) / max(winSz, vec2(0.3)), vec2(0.9));
@@ -1112,20 +1119,24 @@ void main() {
     // fragment is looking at the SIDE of the hole -- a jamb, a head or a sill.
     // A flat facade has no pixels for that surface at all, which is the whole
     // defect: there is nothing there to shade.
-    float apertureDeep = winX * winY;
-    float apertureFlat = winRect(grid, fp.win, w);
-    float jamb = clamp(apertureFlat - apertureDeep, 0.0, 1.0) * capped * step(groundH, vUv.y);
-    float sunReach = winRect(grid + parPx + shdPx, fp.win, w);
-    // Everything inside the opening the sun cannot see into.
-    float aperture = clamp(apertureDeep + jamb, 0.0, 1.0);
-    float inShade = (1.0 - sunReach) * aperture
-                  * sunFacing * capped * step(groundH, vUv.y);
-    // The same construction with the ZENITH in place of the sun: the band the
-    // head keeps the sky out of. This one has no sunFacing gate, because it is
-    // there on the north elevation at midnight as much as at noon.
+    // Only read through mix(mean, x, detail) below, so not evaluated at detail 0.
     float skyShd = revealM / fp.storeyM;
-    float skyReach = winRect(grid + parPx + vec2(0.0, skyShd * detailY), fp.win, w);
-    float headBlock = (1.0 - skyReach) * aperture * capped * step(groundH, vUv.y);
+    float jamb = 0.0, inShade = 0.0, headBlock = 0.0;
+    if (detail > 0.0) {
+      float apertureDeep = winX * winY;
+      float apertureFlat = winRect(grid, fp.win, w);
+      jamb = clamp(apertureFlat - apertureDeep, 0.0, 1.0) * capped * step(groundH, vUv.y);
+      float sunReach = winRect(grid + parPx + shdPx, fp.win, w);
+      // Everything inside the opening the sun cannot see into.
+      float aperture = clamp(apertureDeep + jamb, 0.0, 1.0);
+      inShade = (1.0 - sunReach) * aperture
+              * sunFacing * capped * step(groundH, vUv.y);
+      // The same construction with the ZENITH in place of the sun: the band the
+      // head keeps the sky out of. This one has no sunFacing gate, because it is
+      // there on the north elevation at midnight as much as at noon.
+      float skyReach = winRect(grid + parPx + vec2(0.0, skyShd * detailY), fp.win, w);
+      headBlock = (1.0 - skyReach) * aperture * capped * step(groundH, vUv.y);
+    }
 
     // AND WHAT IT AVERAGES TO, for when the reveal is under a pixel.
     //
@@ -1784,7 +1795,8 @@ void main() {
       // Correlated occupancy: cores, then floors, then tenancies, then the
       // individual window. See facade.ts -- an independent coin per cell is
       // exactly what produced a checkerboard.
-      float litPattern = facadeLit(fp, colIdx, floorIdx, heightFade) * profile * openPick * capped;
+      // Read only through detailN, which is zero wherever !winSeen.
+      float litPattern = winSeen ? facadeLit(fp, colIdx, floorIdx, heightFade) * profile * openPick * capped : 0.0;
       float occ = facadeMeanOccupancy(fp, heightFade);
       // Same treatment as the window pattern: resolve individual lit windows
       // up close, converge to the average glow of a lit building far away. The
@@ -1818,19 +1830,22 @@ void main() {
       // at either edge of the footprint are both evaluated and weighted by how
       // much of the pixel each covers, so a floor line crossing a pixel fades
       // across it instead of snapping from one floor's state to the next.
-      float y0 = grid.y - 0.5 * w.y, y1 = grid.y + 0.5 * w.y;
-      float x0 = grid.x - 0.5 * w.x, x1 = grid.x + 0.5 * w.x;
-      float fA = floor(y0), fB = floor(y1);
-      float cA = floor(x0), cB = floor(x1);
-      float wy1 = fB > fA ? clamp((y1 - fB) / max(w.y, 1e-4), 0.0, 1.0) : 0.0;
-      float wx1 = cB > cA ? clamp((x1 - cB) / max(w.x, 1e-4), 0.0, 1.0) : 0.0;
-      wy1 *= 1.0 - sharpN; wx1 *= 1.0 - sharpN;
-      float bAA = facadeLitBlock(fp, cA, fA, heightFade), bBA = facadeLitBlock(fp, cB, fA, heightFade);
-      float bAB = facadeLitBlock(fp, cA, fB, heightFade), bBB = facadeLitBlock(fp, cB, fB, heightFade);
-      float blockF = mix(mix(bAA, bBA, wx1), mix(bAB, bBB, wx1), wy1);
-      float blockLit = blockF * winMean * openMean * capped;
       float detailBlock = (1.0 - smoothstep(0.45, 0.9, w.y)) * (1.0 - smoothstep(0.45, 0.9, w.x / fp.tenantW));
       detailBlock = mix(detailBlock, 1.0, sharpN);
+      float blockLit = 0.0;
+      if (detailBlock * detailOn > 0.0) {
+        float y0 = grid.y - 0.5 * w.y, y1 = grid.y + 0.5 * w.y;
+        float x0 = grid.x - 0.5 * w.x, x1 = grid.x + 0.5 * w.x;
+        float fA = floor(y0), fB = floor(y1);
+        float cA = floor(x0), cB = floor(x1);
+        float wy1 = fB > fA ? clamp((y1 - fB) / max(w.y, 1e-4), 0.0, 1.0) : 0.0;
+        float wx1 = cB > cA ? clamp((x1 - cB) / max(w.x, 1e-4), 0.0, 1.0) : 0.0;
+        wy1 *= 1.0 - sharpN; wx1 *= 1.0 - sharpN;
+        float bAA = facadeLitBlock(fp, cA, fA, heightFade), bBA = facadeLitBlock(fp, cB, fA, heightFade);
+        float bAB = facadeLitBlock(fp, cA, fB, heightFade), bBB = facadeLitBlock(fp, cB, fB, heightFade);
+        float blockF = mix(mix(bAA, bBA, wx1), mix(bAB, bBB, wx1), wy1);
+        blockLit = blockF * winMean * openMean * capped;
+      }
       // At 0.75, not 1: a tenancy seen as one block of solid light reads as a
       // white rectangle, where a real distant floor is a row of windows with
       // dark mullions and dark rooms in it. Its mean is still occ.
