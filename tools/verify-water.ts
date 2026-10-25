@@ -213,6 +213,9 @@ async function shoot(outDir: string, query: string, port: number, dbg: number, p
     "--out", outDir,
     "--port", String(port),
     "--debug-port", String(dbg),
+    // Forwarded so a gate run beside another agent's can keep its own Chrome
+    // profile; two Chromes on one profile directory refuse to start.
+    ...(arg("profile", "") ? ["--profile", arg("profile", "")] : []),
   ];
   if (query) args.push("--query", query);
   // See tools/verify-ground.ts: a profile of one's own on a shared GPU.

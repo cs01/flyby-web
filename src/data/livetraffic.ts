@@ -50,6 +50,8 @@ export interface PlaneReport {
   seen: number | null;
   sq?: string;
   ground: boolean;
+  /** The server's dbFlags military bit. */
+  mil?: boolean;
 }
 
 export interface PlaneFeed {
@@ -93,6 +95,7 @@ export function parseFeed(body: unknown): PlaneFeed | null {
       seen: num(r.seen),
       sq: str(r.sq),
       ground: r.ground === true,
+      mil: r.mil === true,
     });
   }
   return { ac, now };
@@ -257,6 +260,7 @@ export interface TrackInfo {
   gsKt: number | null;
   vrFpm: number | null;
   ground: boolean;
+  mil: boolean;
 }
 
 export class Track {
@@ -388,6 +392,7 @@ export class LiveTraffic {
         gsKt: r.gs,
         vrFpm: r.vr,
         ground: r.ground,
+        mil: r.mil === true,
       };
       const prev = this.tracks.get(r.hex);
       // A parked aircraft reports no track. Keep the heading it last moved on

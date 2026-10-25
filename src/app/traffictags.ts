@@ -46,6 +46,9 @@ export class TrafficTags {
   private routeQueue: string[] = [];
   private inFlight = 0;
   private selected: string | null = null;
+  get selectedHex(): string | null {
+    return this.selected;
+  }
   private cardHex: string | null = null;
   /**
    * Screen boxes of the tags drawn last frame, centre x/y in CSS px, so the
@@ -100,14 +103,15 @@ export class TrafficTags {
     return this.pool[i];
   }
 
-  private select(hex: string | null): void {
+  /** Open (or with null, close) the card for an aircraft: a tag tap, or a radar blip. */
+  select(hex: string | null): void {
     this.selected = hex;
     this.cardHex = null;
     if (!hex) this.card.style.display = "none";
   }
 
   /** The route for a callsign, fetched at most once per session. */
-  private route(cs: string): Route | null {
+  route(cs: string): Route | null {
     if (!cs) return null;
     const r = this.routes.get(cs);
     if (r === undefined) {
