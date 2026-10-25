@@ -445,7 +445,7 @@ export function footprintGroundY(b: Building, heightAt: (x: number, z: number) =
 
 /**
  * footprintGroundY for every record, with each building:part group anchored at
- * ONE ground: the lowest under any of its records. Each part sampled on its
+ * ONE ground: the one under its biggest footprint. Each part sampled on its
  * own footprint sat its podium and its setbacks a metre or two apart on a
  * slope, which opens a crack between the stages of a tower and gives the
  * drone's collider overlapping volumes to be pushed back and forth between.
@@ -453,15 +453,25 @@ export function footprintGroundY(b: Building, heightAt: (x: number, z: number) =
  */
 export function packGroundY(bs: readonly Building[], heightAt: (x: number, z: number) => number): Float64Array {
   const out = new Float64Array(bs.length);
-  const low = new Map<number, number>();
+  // The anchor is the ground under the group's BIGGEST footprint, its podium,
+  // not the lowest under any record: on the Hudson and East River fronts one
+  // part reaching over the water sampled the river bed, and the minimum sank
+  // the whole tower 40 m.
+  const anchor = new Map<number, { area: number; y: number }>();
   for (let i = 0; i < bs.length; i++) {
     out[i] = footprintGroundY(bs[i], heightAt);
     const g = bs[i].group;
-    if (g !== undefined) low.set(g, Math.min(low.get(g) ?? Infinity, out[i]));
+    if (g === undefined) continue;
+    let a2 = 0;
+    const r = bs[i].ring, n = r.length / 2;
+    for (let v = 0, w = n - 1; v < n; w = v++) a2 += r[w * 2] * r[v * 2 + 1] - r[v * 2] * r[w * 2 + 1];
+    const area = Math.abs(a2);
+    const cur = anchor.get(g);
+    if (!cur || area > cur.area) anchor.set(g, { area, y: out[i] });
   }
   for (let i = 0; i < bs.length; i++) {
     const g = bs[i].group;
-    if (g !== undefined) out[i] = low.get(g)!;
+    if (g !== undefined) out[i] = anchor.get(g)!.y;
   }
   return out;
 }

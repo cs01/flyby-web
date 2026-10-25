@@ -489,6 +489,7 @@ if (!tower || !helipad || !wall) {
 {
   interface Near { ring: Float32Array; minX: number; minZ: number; maxX: number; maxZ: number; baseY: number; topY: number }
   const dense: Near[] = [];
+  const sampled: Near[] = [];
   // The collider's ground, not each footprint's own: parts of one tower share
   // one (citypack packGroundY).
   const grounds = packGroundY(pack.buildings, heightAt);
@@ -499,7 +500,11 @@ if (!tower || !helipad || !wall) {
     // nothing draws and nothing can be pushed out of.
     if (b.ring.length < 6) continue;
     if (b.topM - b.baseM <= MIN_HEIGHT_M) continue;
-    if (Math.hypot(b.cx - tower.cx, b.cz - tower.cz) > 500) continue;
+    // Obstacles out to 560 m, samples only from the 500 m inside it: a wall
+    // sampled at the edge of the set has neighbours past it, and an oracle
+    // that cannot see them calls a party wall "room nearby" (it did, once
+    // the building:part re-bake moved the tallest tower to a dense block).
+    if (Math.hypot(b.cx - tower.cx, b.cz - tower.cz) > 560) continue;
     const a = Math.abs(ringArea(b.ring));
     if (b.topM - b.baseM < SLAB_MAX_HEIGHT_M && a > SLAB_MIN_AREA_M2) continue;
     const per = ringPerimeter(b.ring);
@@ -513,6 +518,7 @@ if (!tower || !helipad || !wall) {
     }
     const gy = grounds[bi];
     dense.push({ ring: b.ring, minX, minZ, maxX, maxZ, baseY: gy + b.baseM, topY: gy + b.topM });
+    if (Math.hypot(b.cx - tower.cx, b.cz - tower.cz) <= 500) sampled.push(dense[dense.length - 1]);
   }
 
   /** Nearest distance from a point to the ring, ignoring inside/outside. */
@@ -569,7 +575,7 @@ if (!tower || !helipad || !wall) {
   let trials = 0, stuckOnce = 0, stuckAfterEight = 0, noRoom = 0, attempts = 0;
   while (trials < 4000 && attempts < 400000) {
     attempts++;
-    const b = dense[Math.floor(rnd() * dense.length)];
+    const b = sampled[Math.floor(rnd() * sampled.length)];
     const n = b.ring.length / 2;
     const i = Math.floor(rnd() * n), j = (i + 1) % n;
     const x0 = b.ring[i * 2], z0 = b.ring[i * 2 + 1];
