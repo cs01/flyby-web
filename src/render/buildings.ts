@@ -46,6 +46,7 @@ import {
 import { ARCHETYPES, FIRE_ESCAPE, WindowStyle, assignArchetypes, regionAt, wantsWaterTank } from "./archetype";
 import { FACADE_DETAIL_GLSL } from "./facadedetail.glsl";
 import { WATER_SSR_GLSL, WATER_SSR_UNIFORMS, type WaterSsrUniforms } from "./waterssr";
+import { STREET_LIGHT_GLSL, streetLightUniforms, type StreetLightUniforms } from "./streetlight";
 import { SIGN_COLS, SIGN_COUNT, SIGN_ROWS, buildSignAtlas } from "./signs";
 import { loadMaterialTextures } from "./materialtex";
 import { Mat, MAT_COUNT } from "./materials";
@@ -377,6 +378,7 @@ ${FACADE_GLSL}
 ${FACADE_DETAIL_GLSL}
 #define SSR_FACADE 1
 ${WATER_SSR_GLSL}
+${STREET_LIGHT_GLSL}
 
 uniform vec3  uCameraPos;
 // The scene sky probe: prefiltered radiance for the glass, roughness to mip.
@@ -2182,6 +2184,12 @@ void main() {
   // and the base of every sunlit elevation would read as a row of light boxes.
   vec3 lit = albedo * (beam + ambientTotal) + seeIn * (ambientTotal + beam * 0.10)
            + emissive;
+  // The street lamps and the player car's headlights (render/streetlight.ts):
+  // the lower storeys of a street at night are lit from the pavement, and a
+  // wall you drive at catches your own beams. Zero by day and past the
+  // lamp grid round the camera, so the far city and the night shimmer gate's
+  // aerial frames are untouched.
+  lit += albedo * streetLight(vWorld, n);
 
   vec3 v = normalize(uCameraPos - vWorld);
 
@@ -2328,7 +2336,7 @@ void main() {
 }
 `;
 
-export interface BuildingUniforms extends SunShadowUniforms, AoUniforms, WaterSsrUniforms {
+export interface BuildingUniforms extends SunShadowUniforms, AoUniforms, WaterSsrUniforms, StreetLightUniforms {
   uCameraPos: THREE.IUniform<THREE.Vector3>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -2397,6 +2405,8 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     // By reference, like the terrain's: one history and one matrix for every
     // shader that marches it.
     ...WATER_SSR_UNIFORMS,
+    // Shared by reference too: one lamp grid round one camera.
+    ...streetLightUniforms,
     uCameraPos: { value: new THREE.Vector3() },
     // The hemispherical ambient the shader ran before the probe existed, so a
     // frame drawn before the first capture is the old picture, not a black one.
