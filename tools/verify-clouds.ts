@@ -42,6 +42,20 @@
 //       10 s, which must clear it, so the measure can see cloud motion at all.
 //   (e) the same pose rendered twice is BYTE-IDENTICAL: `?shot` determinism
 //       with a temporal march in the loop.
+//   (f) clouds-gate-up30 again. CAULIFLOWER, NOT PILLOWS: the length of the
+//       cloud silhouette (pixels where opacity crosses 0.5) over the square
+//       root of the cloud area, which is scale-free and grows as the outline
+//       breaks into billows. Probe: ?cloudprobe=oldshape, the previous
+//       erosion, whose outlines were smooth domes.
+//   (g) clouds-sf-cumulus-golden, into a sun 6 deg up. BACKLIT CUMULUS ARE DARK
+//       WITH BRIGHT RIMS: beauty luminance of opaque cloud 2 to 6 px inside
+//       the silhouette over that of cloud more than 24 px inside it. Probe:
+//       ?cloudprobe=oldlight, whose octaves lit the core from inside and
+//       turned it muddy brown.
+//   (h) clouds-manhattan-stratocumulus, a 70% deck from 400 m. A CELLULAR SHEET
+//       WITH BREAKS: the fraction of the top 300 rows (from ~12 to ~36 deg up)
+//       that is open sky. Probe: ?cloudprobe=oldshape, whose streaky sheet had
+//       almost none.
 //
 //   bun run clouds
 //   bun tools/verify-clouds.ts --out shots/clouds/gate --reuse   (measure only)
@@ -87,6 +101,9 @@ function probe(label: string, checkerSaidOk: boolean, detail: string): void {
 //   (c)    cover80       cloud fraction, rows 0..640     0.892    0.120    0.80..0.97
 //   (d)    morning       mean |dL| after 1/60 s, 0..255  0.0054   1.97     <= 0.1
 //                        (probe: after a further 10 s)
+//   (f)    up30          silhouette px / sqrt(area)      36.77    24.44    >= 30
+//   (g)    sf golden     rim / core beauty luminance     2.530    2.002    >= 2.25
+//   (h)    manhattan Sc  open sky, top 300 rows          0.0770   0.0000   >= 0.03
 //
 // The (a) probe is the same renderer with the weather map switched off, so
 // coverage is a threshold on the 3D noise alone: it covers 0.52 of the frame
@@ -102,12 +119,17 @@ const BASE_BAND: [number, number] = [1400, 1490];
 const COVER20: [number, number] = [0.07, 0.2];
 const COVER80: [number, number] = [0.8, 0.97];
 const STEP_CEIL = 0.1;
+const ROUGH_FLOOR = 30;
+const RIM_FLOOR = 2.25;
+const GAP_FLOOR = 0.03;
 
 const UP = "clouds-gate-up30";
 const SIDE = "clouds-gate-side";
 const C20 = "clouds-gate-cover20";
 const C80 = "clouds-gate-cover80";
 const MOTION = "clouds-manhattan-cumulus-morning";
+const GOLDEN = "clouds-sf-cumulus-golden";
+const SC = "clouds-manhattan-stratocumulus";
 
 async function shoot(outDir: string, query: string, poses: string[], extra: string[] = []): Promise<void> {
   const args = [
@@ -195,6 +217,55 @@ function baseSpread(f: Debug): [number, number, number, number] {
   return [q(0.1), q(0.5), q(0.9), alts.length];
 }
 
+/** (f): silhouette pixels over the square root of the cloud area, rows [0, rows). */
+function roughness(f: Debug, rows: number): number {
+  let area = 0;
+  let edge = 0;
+  for (let y = 0; y < rows - 1; y++) {
+    for (let x = 0; x < f.w - 1; x++) {
+      const i = y * f.w + x;
+      const c = f.op[i] > 0.5;
+      if (c) area++;
+      if (c !== f.op[i + 1] > 0.5 || c !== f.op[i + f.w] > 0.5) edge++;
+    }
+  }
+  return area ? edge / Math.sqrt(area) : 0;
+}
+
+/**
+ * (g): mean beauty luminance of opaque cloud (opacity >= 0.95) 2..6 px from
+ * clear sky, over that of opaque cloud 24 px or more from it. The distance is
+ * a two-pass city-block transform of the debug frame's clear pixels.
+ */
+function rimOverCore(mask: Debug, beautyPath: string): number {
+  const b = decodePng(beautyPath);
+  const { w, h } = mask;
+  const dist = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) dist[i] = mask.op[i] < 0.3 ? 0 : 1e9;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (x > 0) dist[i] = Math.min(dist[i], dist[i - 1] + 1);
+      if (y > 0) dist[i] = Math.min(dist[i], dist[i - w] + 1);
+    }
+  }
+  for (let y = h - 1; y >= 0; y--) {
+    for (let x = w - 1; x >= 0; x--) {
+      const i = y * w + x;
+      if (x < w - 1) dist[i] = Math.min(dist[i], dist[i + 1] + 1);
+      if (y < h - 1) dist[i] = Math.min(dist[i], dist[i + w] + 1);
+    }
+  }
+  let rim = 0, rn = 0, core = 0, cn = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (mask.op[i] < 0.95) continue;
+    const l = 0.2126 * b.data[i * 4] + 0.7152 * b.data[i * 4 + 1] + 0.0722 * b.data[i * 4 + 2];
+    if (dist[i] >= 2 && dist[i] <= 6) { rim += l; rn++; }
+    else if (dist[i] >= 24 && dist[i] < 1e9) { core += l; cn++; }
+  }
+  return rn && cn ? rim / rn / (core / cn) : 0;
+}
+
 /** Mean absolute difference of Rec.601 luminance, 0..255. */
 function frameDiff(a: string, b: string): number {
   const A = decodePng(a);
@@ -214,7 +285,12 @@ async function main(): Promise<void> {
   mkdirSync(out, { recursive: true });
   if (!has("reuse")) {
     console.log("rendering the measurement frames (?clouddebug=1) ...");
-    await shoot(`${out}/debug`, "clouddebug=1", [UP, SIDE, C20, C80]);
+    await shoot(`${out}/debug`, "clouddebug=1", [UP, SIDE, C20, C80, GOLDEN, SC]);
+    console.log("rendering the previous-erosion probe (?cloudprobe=oldshape) ...");
+    await shoot(`${out}/oldshape`, "clouddebug=1&cloudprobe=oldshape", [UP, SC]);
+    console.log("rendering the backlit frame and its previous-lighting probe ...");
+    await shoot(`${out}/beauty`, "", [GOLDEN]);
+    await shoot(`${out}/oldlight`, "cloudprobe=oldlight", [GOLDEN]);
     console.log("rendering the uniform-coverage probe (?cloudwm=0) ...");
     await shoot(`${out}/uniform`, "clouddebug=1&cloudwm=0", [UP]);
     console.log("rendering the old-base probe (?cloudflatbase=0) ...");
@@ -248,6 +324,16 @@ async function main(): Promise<void> {
 
   const d1 = frameDiff(`${out}/motion/${MOTION}.png`, `${out}/motion/${MOTION}-step0.png`);
   const d10 = frameDiff(`${out}/motion/${MOTION}.png`, `${out}/motion/${MOTION}-step1.png`);
+  const rough = roughness(up, ROWS);
+  const roughO = roughness(debugFrame(`${out}/oldshape/${UP}.png`), ROWS);
+  console.log(`(f) ${UP}: silhouette / sqrt(area) ${rough.toFixed(2)}, ?cloudprobe=oldshape ${roughO.toFixed(2)}`);
+  const gm = debugFrame(`${out}/debug/${GOLDEN}.png`);
+  const rim = rimOverCore(gm, `${out}/beauty/${GOLDEN}.png`);
+  const rimO = rimOverCore(gm, `${out}/oldlight/${GOLDEN}.png`);
+  console.log(`(g) ${GOLDEN}: rim / core luminance ${rim.toFixed(3)}, ?cloudprobe=oldlight ${rimO.toFixed(3)}`);
+  const gap = 1 - coverage(debugFrame(`${out}/debug/${SC}.png`), 300);
+  const gapO = 1 - coverage(debugFrame(`${out}/oldshape/${SC}.png`), 300);
+  console.log(`(h) ${SC}: open sky in the top 300 rows ${gap.toFixed(4)}, ?cloudprobe=oldshape ${gapO.toFixed(4)}`);
   console.log(`(d) ${MOTION}: one frame of cloud time ${d1.toFixed(4)}/255, a further 10 s ${d10.toFixed(4)}/255`);
   console.log("");
 
@@ -267,6 +353,12 @@ async function main(): Promise<void> {
   probe("(c) 80% band, measured on the 20% frame", in80(c20), `${c20.toFixed(3)} in ${COVER80.join("..")}`);
   check("(d) one frame of cloud time is invisible", d1 <= STEP_CEIL, `${d1.toFixed(4)} <= ${STEP_CEIL}`);
   probe("(d) ten seconds of cloud time", d10 <= STEP_CEIL, `${d10.toFixed(4)} <= ${STEP_CEIL}`);
+  check("(f) cumulus outlines break into billows", rough >= ROUGH_FLOOR, `${rough.toFixed(2)} >= ${ROUGH_FLOOR}`);
+  probe("(f) previous erosion (?cloudprobe=oldshape)", roughO >= ROUGH_FLOOR, `${roughO.toFixed(2)} >= ${ROUGH_FLOOR}`);
+  check("(g) backlit rims outshine the core", rim >= RIM_FLOOR, `${rim.toFixed(3)} >= ${RIM_FLOOR}`);
+  probe("(g) previous octaves (?cloudprobe=oldlight)", rimO >= RIM_FLOOR, `${rimO.toFixed(3)} >= ${RIM_FLOOR}`);
+  check("(h) stratocumulus has breaks", gap >= GAP_FLOOR, `${gap.toFixed(4)} >= ${GAP_FLOOR}`);
+  probe("(h) streaky sheet (?cloudprobe=oldshape)", gapO >= GAP_FLOOR, `${gapO.toFixed(4)} >= ${GAP_FLOOR}`);
   const same = Buffer.from(readFileSync(`${out}/motion/${MOTION}.png`)).equals(
     Buffer.from(readFileSync(`${out}/motion/${MOTION}-repeat.png`)),
   );

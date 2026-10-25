@@ -136,10 +136,37 @@ float sunScatter(float od, float cosSun) {
   float a = 0.57;
   float b = 1.0;
   float k = 1.0;
+  if (uCloudFlags.w < 0.5) {
+    // The previous octaves, kept only as tools/verify-clouds.ts's probe.
+    for (int i = 0; i < 3; i++) {
+      s += a * (cloudPhase(cosSun, k) * 4.0 + 0.5) * exp(-SIGMA_LIGHT * b * od);
+      a *= 0.5;
+      b *= 0.22;
+      k *= 0.6;
+    }
+    return s;
+  }
+  // BACKLIT, A CUMULUS IS DARK WITH A SILVER RIM. Each octave above is two
+  // things: the phase-shaped part (light still travelling roughly along the
+  // beam) and the 0.5 isotropic floor (light scattered so often it has
+  // forgotten the beam). With both keeping 0.22 of the last octave's
+  // extinction, the third octave's FORWARD part still got e^-0.4 of the beam
+  // through a 1 km cumulus core, and looking toward a golden-hour sun that
+  // part is 3x the floor: the core glowed orange from inside and read as
+  // muddy brown. Light that has crossed a kilometre of cloud has no direction
+  // left, so for a cumulus the forward part keeps only 0.34 per octave and
+  // dies in the core, leaving the sky-lit blue-grey of a backlit photograph,
+  // while the thin edge still transmits the beam through the forward lobe as
+  // the rim. The isotropic floor keeps 0.22: it is what lights a sunlit
+  // cumulus's sides and an overcast's base, and neither of those was wrong.
+  float bf = 1.0;
+  float kf = mix(0.22, 0.4, uLow.w);
+  float kb = mix(0.22, 0.36, uLow.w);
   for (int i = 0; i < 3; i++) {
-    s += a * (cloudPhase(cosSun, k) * 4.0 + 0.5) * exp(-SIGMA_LIGHT * b * od);
+    s += a * (cloudPhase(cosSun, k) * 4.0 * exp(-SIGMA_LIGHT * bf * od) + 0.5 * exp(-SIGMA_LIGHT * b * od));
     a *= 0.5;
-    b *= 0.22;
+    b *= kb;
+    bf *= kf;
     k *= 0.6;
   }
   return s;
@@ -712,6 +739,13 @@ export interface CompositeOptions {
   uniformCoverage?: boolean;
   /** `?cloudflatbase=0`: the old wandering base profile (a gate probe). */
   oldBase?: boolean;
+  /**
+   * `?cloudprobe=a,b`: restore one piece of the previous model so
+   * tools/verify-clouds.ts can show its measure fails without the change.
+   * noshadow: no cloud shadow on the ground. oldshape: the previous erosion
+   * and streaky stratocumulus. oldlight: the previous scattering octaves.
+   */
+  probe?: string;
 }
 
 function fullscreenGeometry(): THREE.BufferGeometry {
@@ -818,6 +852,7 @@ export class Composite {
   private sunUniforms: SunShadowUniforms | null = null;
 
   private readonly benchRepeats: number;
+  private readonly noShadow: boolean;
   private readonly shapeNoise: THREE.Data3DTexture;
   private readonly detailNoise: THREE.Data3DTexture;
   private readonly weatherMap: THREE.DataTexture;
@@ -833,6 +868,8 @@ export class Composite {
 
     const reduced = opts.tier === "reduced";
     this.benchRepeats = opts.benchRepeats ?? 0;
+    const probes = new Set((opts.probe ?? "").split(",").filter(Boolean));
+    this.noShadow = probes.has("noshadow");
     this.uniforms = {
       uDepth: { value: null },
       uInvProj: { value: new THREE.Matrix4() },
@@ -850,7 +887,7 @@ export class Composite {
       uHighBase: { value: 9000 },
       uWind: { value: new THREE.Vector2() },
       uPrecip: { value: 0 },
-      uCloudFlags: { value: new THREE.Vector4(opts.uniformCoverage ? 0 : 1, opts.oldBase ? 0 : 1, 0, 0) },
+      uCloudFlags: { value: new THREE.Vector4(opts.uniformCoverage ? 0 : 1, opts.oldBase ? 0 : 1, probes.has("oldshape") ? 0 : 1, probes.has("oldlight") ? 0 : 1) },
       uSunDir: { value: new THREE.Vector3(0, 1, 0) },
       uSunColor: { value: new THREE.Color(1, 1, 1) },
       uSunIntensity: { value: 16 },
@@ -1203,7 +1240,7 @@ export class Composite {
     this.shadowOn = (lowOn || midOn) && light.sunDir.y > 0.02;
     const su = this.sunUniforms;
     if (su) {
-      su.uCloudShadow.value.set(this.shadowOn && this.historyValid ? 1 : 0, gain, 0, 0);
+      su.uCloudShadow.value.set(this.shadowOn && this.historyValid && !this.noShadow ? 1 : 0, gain, 0, 0);
       if (this.shadowOn) {
         const lo = Math.min(lowOn ? wx.low.base - 0.1 * (wx.low.top - wx.low.base) : 1e9,
           midOn ? wx.mid.base - 0.1 * (wx.mid.top - wx.mid.base) : 1e9);

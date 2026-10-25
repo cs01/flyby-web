@@ -31,6 +31,8 @@ uniform float uTime;
 uniform float uPrecip;      // 0..1, thickens and darkens the low deck
 // x: 1 weather map, 0 the uniform-coverage probe (tools/verify-clouds.ts).
 // y: 1 the flat cumulus base, 0 the probe that restores the old wandering one.
+// z: 1 billow erosion and cellular stratocumulus, 0 the previous erosion.
+// w: 1 the backlit lighting, 0 the previous octaves (composite.ts).
 uniform vec4  uCloudFlags;
 
 const float WM_SCALE = 1.0 / 48000.0;
@@ -170,21 +172,83 @@ float deckDensity(vec3 p, vec4 deck, bool isMid, float lod, bool cheap) {
   float thr = uCloudFlags.x > 0.5 ? 1.0 - env : 1.0 - cover;
   float d = sat(remap(shape, thr, 1.0, 0.0, 1.0)) * env * deckBase(h, type);
 
-  // Erosion at the edges only: the interior is opaque and pays for nothing it
-  // cannot show. Wispy (inverted Worley) at the base, billowy above, which is
-  // Schneider's switch and the difference between a ragged bottom and a
-  // cauliflower top.
-  if (!cheap && d > 0.0 && d < 0.35) {
+  if (uCloudFlags.z < 0.5) {
+    // The previous erosion, kept only as tools/verify-clouds.ts's probe.
+    if (!cheap && d > 0.0 && d < 0.35) {
+      vec3 t = texture(uDetail, q * DETAIL_SCALE).rgb;
+      float detail = t.r * 0.625 + t.g * 0.25 + t.b * 0.125;
+      float ero = mix(1.0 - detail, detail, sat(h * 6.0));
+      d = sat(remap(d, ero * 0.5, 1.0, 0.0, 1.0));
+    }
+    return d * mix(1.0, 2.2, type) * (isMid ? 0.6 : 1.0 + uPrecip * 0.6);
+  }
+
+  // STRATOCUMULUS IS A SHEET OF CELLS. Between the cumulus field and the
+  // stratus deck the sky is a lumpy layer broken into rolls and cells with
+  // blue between them, and the shape noise alone draws that as long streaky
+  // waves: its Perlin octave seen at a grazing angle. A Worley slice at
+  // ~700 m cells cuts the gaps along the cell walls; the threshold falls
+  // with cover so a 70% deck keeps about a third of the sky open.
+  float scW = sat(1.0 - abs(type - 0.4) * 3.0);
+  if (scW > 0.0) {
+    // Warped by the shape noise, or the Voronoi walls of the slice are
+    // straight lines and every break in the deck is a polygon.
+    vec2 cuv = xz * (1.0 / 2900.0) + (vec2(shape, wm.b) - 0.5) * 0.18;
+    vec4 c4 = texture(uShape, vec3(cuv, 0.53));
+    float cell = c4.g * 0.7 + c4.b * 0.3;
+    // The cell value's 10th to 90th percentiles are 0.28 and 0.64 on this
+    // slice, so 0.66 - 0.42 * cover leaves ~30% of a 70% deck in gaps and
+    // ~20% of an 80% one.
+    float gap = 0.72 - 0.42 * cover;
+    // Each cell is a LENS, thickest at its centre and thinning to nothing at
+    // its wall, top and bottom both. A slab cut by vertical gaps only showed
+    // its sunlit walls through them, since from below a 700 m gap in a 900 m
+    // deck is seen edge-on above about 35 degrees; a lens is what gives a
+    // stratocumulus its dark cell centres, bright thin rims and blue breaks.
+    float lens = smoothstep(gap, gap + 0.2, cell);
+    float inLens = sat((lens - abs(h - 0.45) * 2.0) / 0.15);
+    env *= mix(1.0, inLens, scW);
+    d = sat(remap(shape, 1.0 - env, 1.0, 0.0, 1.0)) * env * deckBase(h, type);
+    if (d <= 0.0) return 0.0;
+  }
+
+  // EROSION, at the edges and where it shows. Worley billows eat the outer
+  // part of every cloud so the silhouette is cauliflower and not a pillow.
+  // The switch is Schneider's: the inverted Worley fbm at the base, where it
+  // leaves ragged wisps, and its complement above, where what it removes is
+  // the CREASES between cells and what is left is packed round billows. The
+  // two were the other way round before, which carved dimples into every
+  // dome and was most of why a cumulus read as smooth.
+  // Two scales: 300 m cells for the lobes and a 110 m octave for the
+  // cauliflower on the lobes, which only near clouds resolve; past ~6 km the
+  // fine octave is below a half-res pixel and skipped.
+  if (!cheap && d < 0.6) {
     vec3 t = texture(uDetail, q * DETAIL_SCALE).rgb;
     float detail = t.r * 0.625 + t.g * 0.25 + t.b * 0.125;
-    float ero = mix(1.0 - detail, detail, sat(h * 6.0));
-    d = sat(remap(d, ero * 0.5, 1.0, 0.0, 1.0));
+    float ero = mix(detail, 1.0 - detail, sat(h * 8.0));
+    float k = mix(0.35, 0.7, type);
+    if (lod < 1.5) {
+      float f = texture(uDetail, q * (DETAIL_SCALE * 2.7) + 0.37).r;
+      ero = mix(ero, mix(f, 1.0 - f, sat(h * 8.0)), 0.3 * (1.0 - lod / 1.5));
+    }
+    d = sat(remap(d, ero * k, 1.0, 0.0, 1.0));
+    // A HARD EDGE. The remap leaves a fringe of density 0..0.15 tens of
+    // metres deep round every billow, which reads as fur. A cumulus has none:
+    // its edge is where the updraft's air reaches saturation, and past it the
+    // droplets evaporate within metres. So any density above 0.03 is lifted to
+    // at least 0.15, and the boundary sits on that one iso-surface.
+    d = mix(d, max(d, 0.15 * smoothstep(0.01, 0.04, d)), type);
   }
-  // Cumulus are denser than a stratus sheet: liquid water content climbs with
-  // the updraft. It is also what gives a cumulus its hard edge against the
-  // blue; at the stratus density its rim was a soft gradient and every cloud
-  // read as a pillow.
-  return d * mix(1.0, 2.2, type) * (isMid ? 0.6 : 1.0 + uPrecip * 0.6);
+  // Cumulus are far denser than a stratus sheet: liquid water content climbs
+  // with the updraft. It is also what makes a cumulus edge HARD: at 3x the
+  // stratus density the visible boundary is a few tens of metres deep
+  // instead of a 250 m fade, and its underside goes dark under the dome.
+  // The light march and the shadow map take less of that: 1.8x, not 3x. A
+  // view step is 30 to 40 m, so the first sample in a sunlit flank already
+  // sits up to a step deep, and at 3x the beam to it was e^-2.7 of what the
+  // surface gets. The flank came out as grey as the underside and the cloud
+  // had no lit side at all.
+  return d * mix(1.0, cheap ? 1.8 : 3.0, type * type) * (isMid ? 0.6 : 1.0 + uPrecip * 0.6);
 }
 
 float cloudDensity(vec3 p, float lod, bool cheap) {
