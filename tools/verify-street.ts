@@ -78,14 +78,14 @@
 // it. Taken over all ground the same pair reads 25.56 and 4.06, which flatters
 // the bounce and indicts the drape, and is not what this file claims.
 //
-// THAT BAKED DRAPE SHADOW IS A SEPARATE, STILL-OPEN DEFECT. It is why the
-// near-black ceiling below is 0.50 and not 0.05: with the bounce in, 24.6% of
-// the street floor is still under 4 of 255, and essentially all of it is drape
-// whose REFLECTANCE is that dark. The illumination on those same pixels is now
-// correct -- their sunlit-over-shadowed ratio went 17.55 to 2.45 -- so a
-// brighter bounce would only over-light the tarmac to compensate for a texture,
-// which is measurable: at a target of 0.9 the carriageway ratio collapses to
-// 1.46, half a stop, and the street stops reading as shadowed at all.
+// THAT BAKED DRAPE SHADOW WAS A FLIPPED DRAPE. It was why the near-black
+// ceiling was 0.50 and not 0.05: with the bounce in, 24.6% of the street floor
+// was still under 4 of 255, all of it drape whose REFLECTANCE was that dark. A
+// brighter bounce would only have over-lit the tarmac to compensate for a
+// texture: at a target of 0.9 the carriageway ratio collapses to 1.46, half a
+// stop, and the street stops reading as shadowed at all. c2bc47c found the
+// drape upside down, and the right way up that lot is a pale roof; the near-
+// black and floor claims now leave the drape out (see the bounds below).
 //
 // A TEST THAT WAS WRITTEN AND REJECTED. The first ratio assertion was taken
 // over ALL ground pixels with a ceiling of 6.0, and it is vacuous in the
@@ -135,8 +135,8 @@ function probe(label: string, checkerSaidOk: boolean, detail: string): void {
 //
 //   pose                  measure                    flat     bounce   bound
 //   chicago-lasalle-kerb  shadowed road mean          5.78    25.50    >= 16
-//   chicago-lasalle-kerb  shadowed ground mean        2.52    15.94    >= 10
-//   chicago-lasalle-kerb  shadowed ground under 4    0.868    0.234    <= 0.50
+//   chicago-lasalle-kerb  shadowed paved floor mean   5.94    35.43    >= 18
+//   chicago-lasalle-kerb  shadowed paved under 4     0.569    0.000    <= 0.05
 //   chicago-lasalle-kerb  sunlit road / shadowed    10.777    2.459    <= 4.0
 //   sf-street             ground mean, on over off     --    1.0041    <= 1.04
 //   chicago-loop-night    ground mean, on over off     --    1.0000    <= 1.001
@@ -148,6 +148,20 @@ function probe(label: string, checkerSaidOk: boolean, detail: string): void {
 // for looking reasonable, it is the number the claim is made of, and both
 // measurements are far from it: 2.46 with the bounce and 10.77 (3.4 stops)
 // without.
+//
+// THE PAVED FLOOR IS CARRIAGEWAY PLUS FOOTWAY, NOT THE DRAPE (2026-10-25).
+// These two claims were taken over all three surfaces, drape included, with
+// bounds of >= 10 and <= 0.50 against a flat frame of 2.52 and 0.868. Then
+// c2bc47c turned the satellite drape the right way up, and the shadowed lot in
+// the foreground of this pose went from a near-black texel to a pale roof
+// photograph: the flat frame read 23.17 and 0.225 and passed both claims,
+// with not one lighting term changed (the carriageway read 5.78 -> 25.45
+// either side of that commit, as before it). A mean over the drape is a mean
+// over its albedo, which the header already says about the ratio. Over the
+// paved surfaces alone the pair is 5.88 / 34.44 and 0.589 / 0.000 before that
+// commit and 5.94 / 35.43 and 0.569 / 0.000 after, so the claim no longer
+// moves with the photograph; and with the drape out, the near-black ceiling
+// can be the 0.05 it always should have been.
 //
 // THE TWO FLOORS have the separation the effect deserves -- the road floor is
 // 37% under the measurement and 2.8x over the flat frame -- because this is not
@@ -176,9 +190,9 @@ interface Gate {
   name: string;
   /** Floor on mean luminance over shadowed CARRIAGEWAY pixels, 0..255. */
   roadFloor?: number;
-  /** Floor on mean luminance over all shadowed ground pixels, 0..255. */
+  /** Floor on mean luminance over shadowed carriageway and footway pixels, 0..255. */
   groundFloor?: number;
-  /** Ceiling on the fraction of shadowed ground under NEAR_BLACK. */
+  /** Ceiling on the fraction of shadowed carriageway and footway under NEAR_BLACK. */
   blackCeil?: number;
   /** Ceiling on sunlit over shadowed mean luminance, carriageway only. */
   stopsCeil?: number;
@@ -190,8 +204,8 @@ const GATES: Gate[] = [
   {
     name: "chicago-lasalle-kerb",
     roadFloor: 16,
-    groundFloor: 10,
-    blackCeil: 0.5,
+    groundFloor: 18,
+    blackCeil: 0.05,
     stopsCeil: 4.0,
   },
   { name: "sf-street", gainCeil: 1.04 },
@@ -303,6 +317,8 @@ async function main(): Promise<void> {
     await shoot(`${outDir}/mask`, "groundDebug=1", port, dbg);
     console.log("rendering the carriageway mask (?groundDebug=2) ...");
     await shoot(`${outDir}/road`, "groundDebug=2", port, dbg);
+    console.log("rendering the footway mask (?groundDebug=3) ...");
+    await shoot(`${outDir}/walk`, "groundDebug=3", port, dbg);
     console.log("");
   }
 
@@ -310,6 +326,7 @@ async function main(): Promise<void> {
     g: Gate;
     ground: Mask;
     road: Mask;
+    paved: Mask;
     on: Float32Array;
     off: Float32Array;
     gainOn: number;
@@ -320,10 +337,12 @@ async function main(): Promise<void> {
   for (const g of GATES) {
     const ground = groundMask(`${outDir}/mask/${g.name}.png`);
     const road = groundMask(`${outDir}/road/${g.name}.png`);
+    const walk = groundMask(`${outDir}/walk/${g.name}.png`);
+    const paved = { shadow: [...road.shadow, ...walk.shadow], sunlit: [...road.sunlit, ...walk.sunlit] };
     const on = luminance(`${outDir}/on/${g.name}.png`);
     const off = luminance(`${outDir}/off/${g.name}.png`);
     const all = [...ground.shadow, ...ground.sunlit];
-    measured.push({ g, ground, road, on, off, gainOn: mean(on, all), gainOff: mean(off, all) });
+    measured.push({ g, ground, road, paved, on, off, gainOn: mean(on, all), gainOff: mean(off, all) });
 
     console.log(
       `${g.name.padEnd(22)} ground ${String(all.length).padStart(6)} px ` +
@@ -343,7 +362,7 @@ async function main(): Promise<void> {
   const probeGain = gainOf(measured.find((m) => m.g.name === GAIN_PROBE_POSE)!);
 
   for (const m of measured) {
-    const { g, ground, road, on, off } = m;
+    const { g, road, paved, on, off } = m;
 
     if (g.roadFloor !== undefined) {
       // THE STREET IS NOT BLACK. On one material, so this is light and not
@@ -355,12 +374,12 @@ async function main(): Promise<void> {
     }
 
     if (g.groundFloor !== undefined) {
-      // AND NOR IS THE REST OF THE STREET FLOOR. Carriageway, footway and drape
-      // together: the defect was reported about the whole frame, not the tarmac.
-      check(`${g.name}: shadowed ground is lit`, mean(on, ground.shadow) >= g.groundFloor,
-        `${mean(on, ground.shadow).toFixed(2)} >= ${g.groundFloor}`);
-      probe(`${g.name}: shadowed ground, ?flatbounce`, mean(off, ground.shadow) >= g.groundFloor,
-        `${mean(off, ground.shadow).toFixed(2)} >= ${g.groundFloor}`);
+      // AND NOR IS THE FOOTWAY. Carriageway and footway together, and not the
+      // drape: its mean is its photograph's albedo (see the bounds above).
+      check(`${g.name}: shadowed paved floor is lit`, mean(on, paved.shadow) >= g.groundFloor,
+        `${mean(on, paved.shadow).toFixed(2)} >= ${g.groundFloor}`);
+      probe(`${g.name}: shadowed paved floor, ?flatbounce`, mean(off, paved.shadow) >= g.groundFloor,
+        `${mean(off, paved.shadow).toFixed(2)} >= ${g.groundFloor}`);
     }
 
     if (g.blackCeil !== undefined) {
@@ -368,12 +387,12 @@ async function main(): Promise<void> {
       // uniformly dim street from a bright road beside a black hole, and the
       // frame this was reported from was the second: at the coefficient this
       // repo shipped, mean shadowed ground read 28.09 with 75% of it under 4.
-      check(`${g.name}: street floor under ${NEAR_BLACK} of 255`,
-        blackFrac(on, ground.shadow) <= g.blackCeil,
-        `${blackFrac(on, ground.shadow).toFixed(3)} <= ${g.blackCeil}`);
+      check(`${g.name}: paved floor under ${NEAR_BLACK} of 255`,
+        blackFrac(on, paved.shadow) <= g.blackCeil,
+        `${blackFrac(on, paved.shadow).toFixed(3)} <= ${g.blackCeil}`);
       probe(`${g.name}: near-black fraction, ?flatbounce`,
-        blackFrac(off, ground.shadow) <= g.blackCeil,
-        `${blackFrac(off, ground.shadow).toFixed(3)} <= ${g.blackCeil}`);
+        blackFrac(off, paved.shadow) <= g.blackCeil,
+        `${blackFrac(off, paved.shadow).toFixed(3)} <= ${g.blackCeil}`);
     }
 
     if (g.stopsCeil !== undefined) {
