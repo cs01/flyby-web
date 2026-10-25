@@ -301,6 +301,9 @@ function under test before searching it; and add a **vacuity probe** for every
 assertion, feeding it a case it must reject, then prove the probe itself can go
 red. Break every assertion's subject, watch it fail, restore, watch it pass.
 
+Every gate, what it claims, and `bun run gates` to run them all serially:
+[gates.md](gates.md).
+
 `test/` is currently type-checked by **neither** tsconfig, so `noUnusedLocals`
 has never seen a single check file. Mixing `bun-types` with the DOM lib
 conflicts on event signatures; this needs a proper pass, not a quick one.
