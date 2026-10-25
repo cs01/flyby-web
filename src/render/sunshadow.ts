@@ -595,6 +595,13 @@ export class SunShadow {
     u.z = cam.far - cam.near;
   }
 
+  /** World metres a texel of the city map, or Infinity until it holds the city. */
+  private cityTexelWorld(): number {
+    const city = this.city;
+    if (!city || !this.cityEnabled || Number.isNaN(city.sun.x)) return Infinity;
+    return this.uniforms.uCityShadow.value.y;
+  }
+
   /** Redraw the city map if the sun has moved enough to show. */
   private updateCity(renderer: THREE.WebGLRenderer, scene: THREE.Scene, sunDir: THREE.Vector3): void {
     const city = this.city;
@@ -651,10 +658,16 @@ export class SunShadow {
     // The outermost cascade is the one that draws the whole city three times
     // over, and it is also the one carrying the least visible detail, so it is
     // what goes first when there is no frame time for it.
-    const count = Math.min(
+    let count = Math.min(
       this.maxCascades,
       lowTier ? Math.min(this.budget.shadowCascadeCount, 2) : this.budget.shadowCascadeCount,
     );
+    // The outer cascade's sphere is about 14 km across, 7.2 m a texel at 2048,
+    // and over Manhattan the city map is 4.3 m: the cascade was a full-city
+    // depth pass (3.3M triangles every other frame) that only made the
+    // shadows past 1.4 km coarser. Wherever the city map is at least as fine,
+    // it takes over from the second cascade's far edge instead.
+    if (count > 2 && this.cityTexelWorld() <= (2 * sliceRadius(camera, 2)) / this.size) count = 2;
 
     // The outer cascades take turns: cascade 0 every frame, then 1 and 2 on
     // alternate frames (1 every other frame when there are only two). Each
@@ -734,29 +747,7 @@ export class SunShadow {
    * constant radius is the precondition for the texel snapping below.
    */
   private fit(c: Cascade, camera: THREE.PerspectiveCamera, sunDir: THREE.Vector3, index: number): void {
-    const near = index === 0 ? camera.near : CASCADE_FAR[index - 1];
-    const far = CASCADE_FAR[index];
-
-    const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
-    const tanH = tanV * camera.aspect;
-    const k2 = tanH * tanH + tanV * tanV;
-
-    let zCentre: number;
-    let radius: number;
-    if (k2 >= (far - near) / (far + near)) {
-      // Wide slice: the far corners are the extremes, so the sphere sits on the
-      // far plane.
-      zCentre = -far;
-      radius = far * Math.sqrt(k2);
-    } else {
-      zCentre = -0.5 * (far + near) * (1 + k2);
-      radius = 0.5 * Math.sqrt(
-        (far - near) * (far - near) +
-        2 * (far * far + near * near) * k2 +
-        (far + near) * (far + near) * k2 * k2,
-      );
-    }
-
+    const { zCentre, radius } = sliceSphere(camera, index);
     _centre.set(0, 0, zCentre).applyMatrix4(camera.matrixWorld);
 
     // The light's ORIENTATION, built about the world origin rather than about
@@ -828,6 +819,34 @@ export class SunShadow {
     this.depthMaterial.dispose();
     this.cityDepthMaterial.dispose();
   }
+}
+
+/** A cascade slice's bounding sphere: view-space z of its centre, and its radius. */
+function sliceSphere(camera: THREE.PerspectiveCamera, index: number): { zCentre: number; radius: number } {
+  const near = index === 0 ? camera.near : CASCADE_FAR[index - 1];
+  const far = CASCADE_FAR[index];
+
+  const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
+  const tanH = tanV * camera.aspect;
+  const k2 = tanH * tanH + tanV * tanV;
+
+  if (k2 >= (far - near) / (far + near)) {
+    // Wide slice: the far corners are the extremes, so the sphere sits on the
+    // far plane.
+    return { zCentre: -far, radius: far * Math.sqrt(k2) };
+  }
+  return {
+    zCentre: -0.5 * (far + near) * (1 + k2),
+    radius: 0.5 * Math.sqrt(
+      (far - near) * (far - near) +
+      2 * (far * far + near * near) * k2 +
+      (far + near) * (far + near) * k2 * k2,
+    ),
+  };
+}
+
+function sliceRadius(camera: THREE.PerspectiveCamera, index: number): number {
+  return sliceSphere(camera, index).radius;
 }
 
 /**
