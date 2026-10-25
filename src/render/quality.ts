@@ -89,6 +89,8 @@ const COMFORTABLE_MS = { full: 12, reduced: 22 };
 const MIN_DEVICE_PER_CSS = 1.0;
 
 const DOWN_FRAMES = 30;
+/** Smoothed frame time this many times the target drops two steps, not one. */
+const FAR_OVER = 1.6;
 const UP_FRAMES = 180;
 /** A step up that proves too slow within this long doubles the next wait. */
 const BOUNCE_S = 6;
@@ -229,7 +231,12 @@ export class AdaptiveQuality {
       // Slow straight after a step up: that step does not fit, so the next
       // attempt waits twice as long. A step that held for a while resets it.
       if (this.sinceUp < BOUNCE_S) this.upWait = Math.min(MAX_UP_FRAMES, this.upWait * 2);
-      this.index++;
+      // Far over budget, two steps at once. Each step costs half a second of
+      // slow frames and a cooldown, and a laptop that loads Manhattan at 50 ms
+      // would otherwise spend the first ten seconds of the flight walking
+      // down a ladder one rung at a time.
+      const far = smoothedMs > this.targetMs * FAR_OVER;
+      this.index = Math.min(this.ladder.length - 1, this.index + (far ? 2 : 1));
       this.slowFrames = 0;
       this.cooldown = 1.5;
       return true;

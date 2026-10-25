@@ -122,5 +122,16 @@ function run(q: AdaptiveQuality, ms: number, n: number, refreshMs = ms): number 
   check("  probe: unpinned, the same trace walks the ladder", free.level > 2, `level ${free.level}`);
 }
 
+// 6. Far over budget it drops two steps at a time, so a heavy start converges
+//    in a few seconds. Probe: 25 ms (under 1.6x the target) still goes one.
+{
+  const far = new AdaptiveQuality(renderer(1.5), "full", FULL);
+  run(far, 50, 31);
+  const near = new AdaptiveQuality(renderer(1.5), "full", FULL);
+  run(near, 25, 31);
+  check("50 ms frames drop two steps at once", far.level === 2, `level ${far.level}`);
+  check("  probe: 25 ms frames drop one", near.level === 1, `level ${near.level}`);
+}
+
 console.log(failures === 0 ? "\nquality: all checks passed" : `\nquality: ${failures} FAILED`);
 if (failures) process.exit(1);
