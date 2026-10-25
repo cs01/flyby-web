@@ -42,16 +42,16 @@ import { buildCarMesh, CAR_ARCHETYPES, CAR_TRIANGLES, LOD_FAR, LOD_SHADOW } from
 import { CAR_BUCKET_HEADROOM, type Budget } from "./budget";
 import {
   addParked,
-  addTraffic,
   indexWaysByTile,
   tilesAround,
   STREET_TILE_M,
   type ParkedInstance,
   type StreetWorld,
-  type TrafficInstance,
 } from "../data/streetfurniture";
 import { RoadClass, ROAD_TUNNEL, type Road, type RoadPack } from "../data/roadpack";
-import { CLASS_COUNT } from "../data/trafficmodel";
+import { CLASS_COUNT, type TrafficState } from "../data/trafficmodel";
+import type { RoadGraph } from "../data/roadgraph";
+import { TrafficSim, type Pose } from "../sim/trafficsim";
 
 /**
  * Where the traffic stops, in metres from the camera.
@@ -76,9 +76,6 @@ const SHADOW_FADE_M = 170;
 
 const FADE_FRACTION = 0.88;
 
-/** Fraction of a run over which a car shrinks in at the start and out at the
- *  end. At 0.04 of a 200 m run that is eight metres, which is two car lengths. */
-const RUN_END_FADE = 0.04;
 
 /**
  * Body colours. Measured from what is actually on a street rather than chosen:
@@ -122,10 +119,11 @@ vec3 bodyColour(float tint) {
 /**
  * The shared vertex half.
  *
- * `iRoute` is (x0, z0, x1, z1) of the stretch and `iDrive` is (phase, speed
- * over length, y0, y1). A PARKED car is the degenerate case with speed zero and
- * the two ends equal, so both fields use exactly the same shader and there is
- * no second copy of the placement to drift.
+ * Every car, moving or parked, is a POSE: `iRoute` is (x, z, dirX, dirZ) and
+ * `iDrive` is (y, brake 0..1, visible scale 0..1, lights 0..1). The moving
+ * field writes it every frame from sim/trafficsim.ts; the parked field writes
+ * it once per tile. One layout, so there is no second copy of the placement
+ * to drift.
  */
 const VERT_COMMON = /* glsl */ `
 precision highp float;
@@ -133,10 +131,9 @@ in vec3 position;
 in vec3 normal;
 in vec4 aPart;   // see CarMesh.aPart: part id, u, v, axle inset
 
-in vec4 iRoute;  // x0, z0, x1, z1
-in vec4 iDrive;  // phase 0..1 (a parked car packs its heading here), turns per
-                 // second, y at each end of the run
-in vec4 iLook;   // tint 0..1, archetype 0..1, road class, thinning rank 0..1
+in vec4 iRoute;  // x, z, unit heading x, unit heading z
+in vec4 iDrive;  // y, brake, scale, lights
+in vec4 iLook;   // tint 0..1, archetype 0..1, unused, unused
 
 uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
@@ -146,26 +143,8 @@ uniform vec2 uFade;
  *  instances and differ only in which band they answer for; see
  *  InstancedField.derive. */
 uniform vec2 uLodBand;
-uniform float uTime;
-/**
- * The hour of the day, per road class: (fraction of the placed cars that are
- * out, integrated clock in seconds).
- *
- * WHY A CLOCK AND NOT A SPEED. A car is at fract(phase + clock * rate), so
- * scaling the RATE at time T moves every car on that class at once: the
- * scrubber would teleport the whole city on a drag. The CPU integrates the speed
- * scale into a per-class clock instead (see main.ts), so slowing down changes
- * only the DERIVATIVE and every car stays exactly where it was.
- */
-uniform vec2 uClassTraffic[${CLASS_COUNT}];
 
 ${INSTANCE_GLSL}
-
-const float RUN_END_FADE = ${RUN_END_FADE};
-const int CLASS_COUNT = ${CLASS_COUNT};
-/** Rank band a car shrinks out over as the hour thins the street. Same width as
- *  RUN_END_FADE for the same reason: cars fade here, they never pop. */
-const float DUTY_FADE = 0.04;
 
 struct Placed {
   vec3 world;
@@ -179,60 +158,21 @@ Placed placeVertex() {
   o.yawCS = vec2(1.0, 0.0);
   o.culled = true;
 
-  vec2 a = iRoute.xy;
-  vec2 b = iRoute.zw;
-  vec2 d = b - a;
-  float len = length(d);
-  bool moving = len > 1e-4;
-
-  // A parked car carries a class of -1 and must never index the table; it is
-  // also the not-moving case, so the same guard answers both. The
-  // fallback is the identity hour -- every car out, driving on the plain
-  // animation clock -- so a class the table has no entry for still behaves the
-  // way this field did before there was a table.
-  int cls = int(iLook.z);
-  vec2 tc = (moving && cls >= 0 && cls < CLASS_COUNT)
-          ? uClassTraffic[cls] : vec2(1.0, uTime);
-
-  // Where along the run. Time is the SIMULATION clock, held at zero in shot
-  // mode, so two runs of the same pinned pose put every car in the same place.
-  // The class clock is integrated FROM that same clock, so it is held too.
-  float s = moving ? fract(iDrive.x + tc.y * iDrive.y) : 0.5;
-  vec2 p = moving ? a + d * s : a;
-  float y = mix(iDrive.z, iDrive.w, s);
-
-  // instanceToWorld maps local +x to (cos yaw, -sin yaw), so a heading already
-  // given as a direction in the xz plane becomes (dir.x, -dir.z) with no
-  // trigonometry at all. A PARKED car is a run of zero length and has no
-  // direction to read, so it packs its yaw into the phase slot as turns; that
-  // is the only difference between the two fields inside this shader.
-  vec2 yawCS;
-  if (moving) {
-    vec2 dir = d / len;
-    yawCS = vec2(dir.x, -dir.y);
-  } else {
-    float th = iDrive.x * 6.2831853;
-    yawCS = vec2(cos(th), sin(th));
-  }
-
+  vec2 p = iRoute.xy;
+  float y = iDrive.x;
   float dist = distance(vec3(p.x, y, p.y), uCameraPos);
   if (dist < uLodBand.x || dist >= uLodBand.y) return o;
   float ringFade = 1.0 - smoothstep(uFade.x, uFade.y, dist);
-  // Shrunk in at the start of the run and out at the end, so a car arrives and
-  // leaves rather than appearing. Constant 1 for a parked car, whose s is
-  // pinned at the middle.
-  float endFade = smoothstep(0.0, RUN_END_FADE, s) * smoothstep(1.0, 1.0 - RUN_END_FADE, s);
-  // THE HOUR OF THE DAY, and it thins rather than deletes. Every car carries a
-  // stable rank and the hour carries a threshold; a car above the threshold is
-  // off the road. Crossing it is a shrink over a narrow band of rank, not a
-  // switch, so scrubbing from 20:00 to 03:00 drains the street continuously
-  // instead of dropping a third of it between two frames.
-  float duty = 1.0 - smoothstep(tc.x - DUTY_FADE, tc.x, iLook.w);
-  float fade = ringFade * endFade * duty;
+  // The sim's own scale: grown in on spawn, shrunk out when the hour thins
+  // the street or the car leaves the populated ring.
+  float fade = ringFade * iDrive.z;
   if (fade <= 0.0) return o;
 
   o.culled = false;
-  o.yawCS = yawCS;
+  // instanceToWorld maps local +x to (cos yaw, -sin yaw), so a heading given
+  // as a direction in the xz plane becomes (dir.x, -dir.z) with no
+  // trigonometry at all.
+  o.yawCS = vec2(iRoute.z, -iRoute.w);
   // Scaled about the car's own middle, which is where its origin already is
   // horizontally; the vertical origin is the road, so a shrinking car sinks
   // into it rather than floating.
@@ -251,7 +191,7 @@ out vec3 vWorld;
 // smear of fractional ids that every step() test below reads as neither.
 flat out float vPartId;
 out vec3 vPartUv;
-out vec2 vLook;
+out vec4 vLook; // tint, archetype, brake, lights
 out float vViewDist;
 
 void main() {
@@ -261,9 +201,7 @@ void main() {
   vWorld = pl.world;
   vPartId = aPart.x;
   vPartUv = aPart.yzw;
-  // Only the two the fragment shader has any use for. The class and the rank
-  // are placement bookkeeping and stop at the vertex stage.
-  vLook = iLook.xy;
+  vLook = vec4(iLook.xy, iDrive.y, iDrive.w);
   vViewDist = distance(pl.world, uCameraPos);
   gl_Position = projectionMatrix * modelViewMatrix * vec4(pl.world, 1.0);
 }
@@ -288,7 +226,7 @@ in vec3 vNormal;
 in vec3 vWorld;
 flat in float vPartId;
 in vec3 vPartUv;
-in vec2 vLook;
+in vec4 vLook;
 in float vViewDist;
 out vec4 fragColor;
 
@@ -310,10 +248,6 @@ uniform vec3  uMoonDir;
 uniform vec3  uMoonLight;
 uniform float uNight;
 uniform vec3  uNightGlow;
-/** 1 for moving traffic, 0 for a parked car: only one of them has its lights
- *  on, and a street of parked cars with headlights blazing is a car park at a
- *  drive-in rather than a street. */
-uniform float uMoving;
 
 void main() {
   vec3 n = normalize(vNormal);
@@ -540,12 +474,21 @@ void main() {
   // differently is geometry: you see the fronts of the oncoming stream and the
   // backs of the one going away, so a boulevard splits into a white river and a
   // red one. That happens by itself here, from the direction the cars face.
-  float on = uNight * uMoving;
+  //
+  // Lights are per INSTANCE (1 moving, 0 parked): a street of parked cars with
+  // headlights blazing is a car park at a drive-in rather than a street.
+  float lights = vLook.w;
+  float brake = vLook.z;
+  float on = uNight * lights;
   lit += vec3(1.0, 0.94, 0.82) * isHead * on * 7.0;
-  lit += vec3(1.0, 0.10, 0.045) * isTail * on * 3.5;
+  // A brake lamp is about five times a tail lamp (FMVSS 108 puts the stop
+  // function at 80-300 cd against 2-18 for the tail), so a queue pulling up at
+  // a red reads as a red wave down the street. Daytime too: brake lamps are
+  // not a night thing.
+  lit += vec3(1.0, 0.10, 0.045) * isTail * (on * (3.5 + 9.0 * brake) + lights * brake * (1.0 - uNight) * 2.5);
   // Daytime running lamps, dim, so a car in a shadowed canyon at noon still has
   // a point of light where its lamps are.
-  lit += vec3(1.0, 0.96, 0.90) * isHead * uMoving * (1.0 - uNight) * 0.20;
+  lit += vec3(1.0, 0.96, 0.90) * isHead * lights * (1.0 - uNight) * 0.20;
 
   vec3 ro = atmoOrigin(uCamAltitude);
   vec3 rd = normalize(vWorld - uCameraPos);
@@ -560,11 +503,6 @@ export interface TrafficUniforms extends SunShadowUniforms, AoUniforms {
   uSH: THREE.IUniform<Float32Array>;
   uFade: THREE.IUniform<THREE.Vector2>;
   uLodBand: THREE.IUniform<THREE.Vector2>;
-  uTime: THREE.IUniform<number>;
-  /** (frac, clock) per RoadClass, flat. See the GLSL declaration for why the
-   *  second half is an integrated clock and not a speed. */
-  uClassTraffic: THREE.IUniform<Float32Array>;
-  uMoving: THREE.IUniform<number>;
   uSunDir: THREE.IUniform<THREE.Vector3>;
   uSunColor: THREE.IUniform<THREE.Color>;
   uSunIntensity: THREE.IUniform<number>;
@@ -579,21 +517,7 @@ export interface TrafficUniforms extends SunShadowUniforms, AoUniforms {
   uMultiScatter: THREE.IUniform<number>;
 }
 
-/**
- * Every class at full density and a stopped clock.
- *
- * The state a field is in before main.ts has pushed an hour into it, and the
- * state it stays in for anything that drives the fields without a clock (the
- * gates, and any future offline capture). Full density rather than empty on
- * purpose: a missing update must leave the city as it was, not empty it.
- */
-function identityClassTraffic(): Float32Array {
-  const a = new Float32Array(CLASS_COUNT * 2);
-  for (let c = 0; c < CLASS_COUNT; c++) a[c * 2] = 1;
-  return a;
-}
-
-function makeTrafficUniforms(shadow: SunShadowUniforms, moving: boolean, ringM: number): TrafficUniforms {
+function makeTrafficUniforms(shadow: SunShadowUniforms, ringM: number): TrafficUniforms {
   return {
     ...shadow,
     ...aoUniforms(),
@@ -601,9 +525,6 @@ function makeTrafficUniforms(shadow: SunShadowUniforms, moving: boolean, ringM: 
     uSH: { value: shHemispherical([0.28, 0.36, 0.5], 0.55, 0.45) },
     uFade: { value: new THREE.Vector2(ringM * FADE_FRACTION, ringM) },
     uLodBand: { value: new THREE.Vector2(0, 1e9) },
-    uTime: { value: 0 },
-    uClassTraffic: { value: identityClassTraffic() },
-    uMoving: { value: moving ? 1 : 0 },
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunColor: { value: new THREE.Color(1, 1, 1) },
     uSunIntensity: { value: 22 },
@@ -640,14 +561,13 @@ interface Bucket {
   count: number;
 }
 
+/** Floats per instance in the flat form: iRoute (4), iDrive (4), iLook (4). */
+const STRIDE = 12;
+
 /**
- * The common machinery of the two fields.
- *
- * Moving traffic and parked cars differ in three things -- which ways they go
- * on, how far out they are drawn, and whether their lights are on -- and in
- * nothing else. They share the mesh, the shaders, the tile ring, the archetype
- * buckets and the budget accounting, so they share a class and the differences
- * arrive as arguments.
+ * The common machinery of the two fields: the mesh, the shaders, the archetype
+ * buckets and the budget accounting. Where the instances come from is the
+ * subclass's business.
  */
 abstract class CarField {
   readonly group = new THREE.Group();
@@ -659,28 +579,12 @@ abstract class CarField {
     byArchetype: CAR_ARCHETYPES.map(() => 0),
   };
 
-  protected readonly pack: RoadPack;
-  protected readonly world: StreetWorld;
   protected readonly ringM: number;
   private readonly buckets: Bucket[] = [];
-  private readonly byTile: Map<string, number[]>;
-  private readonly cache = new Map<string, Float32Array>();
-  private atX = Number.NaN;
-  private atZ = Number.NaN;
 
-  constructor(
-    pack: RoadPack,
-    world: StreetWorld,
-    shadow: SunShadowUniforms,
-    accept: (r: Road) => boolean,
-    capacity: number,
-    ringM: number,
-    moving: boolean,
-  ) {
-    this.pack = pack;
-    this.world = world;
+  constructor(shadow: SunShadowUniforms, capacity: number, ringM: number) {
     this.ringM = ringM;
-    this.uniforms = makeTrafficUniforms(shadow, moving, ringM);
+    this.uniforms = makeTrafficUniforms(shadow, ringM);
 
     // ONE MESH, AND THE RING IS WHAT PAYS FOR IT.
     //
@@ -689,13 +593,7 @@ abstract class CarField {
     // band in the vertex shader, does NOT save the vertex work. The shader
     // still runs for every instance of both meshes and only then discards, so
     // the fine body cost its full vertex rate over all five thousand cars and
-    // the frame went from 11.7 ms to 26.3. A real near level needs its own
-    // small instance buffer, which is a rebuild pass this class does not have
-    // yet.
-    //
-    // So there is one body, and the budget for it was bought by shortening the
-    // traffic ring instead: a car at 1.5 km is a sub-pixel dot, and spending
-    // its triangles on the ones you can actually see is the better trade.
+    // the frame went from 11.7 ms to 26.3.
     const beauty = new THREE.RawShaderMaterial({
       vertexShader: VERT,
       fragmentShader: FRAG,
@@ -718,12 +616,9 @@ abstract class CarField {
       colorWrite: false,
     });
 
-    // Capacity is split evenly BUT WITH HEADROOM, and the headroom is the
-    // interesting part. The archetype is a hash, so the four buckets fill at
-    // very nearly the same rate -- which is precisely why an even split clips:
-    // a multinomial lands a couple of per cent either side of the mean and half
-    // the buckets end up over a cap set at exactly the mean. See
-    // CAR_BUCKET_HEADROOM, which the memory estimate counts as well.
+    // Capacity is split evenly BUT WITH HEADROOM: the archetype is a hash, so
+    // the buckets fill at nearly the same rate and an even split clips half of
+    // them. See CAR_BUCKET_HEADROOM, which the memory estimate counts as well.
     const per = Math.max(
       64,
       Math.ceil((capacity * CAR_BUCKET_HEADROOM) / CAR_ARCHETYPES.length),
@@ -738,7 +633,6 @@ abstract class CarField {
         return g;
       };
       const far = buildCarMesh(a, LOD_FAR);
-
       const field = new InstancedField(toGeometry(far), per, [
         { name: "iRoute", itemSize: 4 },
         { name: "iDrive", itemSize: 4 },
@@ -750,101 +644,54 @@ abstract class CarField {
       drawn.frustumCulled = false;
       this.group.add(drawn);
 
-      // THE CASTER GETS ITS OWN, MUCH COARSER BODY, sharing the same instances.
-      //
-      // This is where the frame time actually is. A car is drawn five times:
-      // once for the picture, three times into the sun's cascades and once into
-      // the ambient-occlusion depth prepass. Four fifths of every triangle on
-      // it is therefore spent on a silhouette that has no beltline, no arch lip
-      // and no rim, and drawing the lofted body into all five cost 23.6 ms a
-      // frame against 11.7 before it.
+      // THE CASTER GETS ITS OWN, MUCH COARSER BODY, sharing the same
+      // instances: a car is drawn five times (picture, three cascades, the AO
+      // prepass) and four of those only need a silhouette. Drawing the lofted
+      // body into all five cost 23.6 ms a frame against 11.7 before it.
       const caster = new THREE.Mesh(field.derive(toGeometry(buildCarMesh(a, LOD_SHADOW))), depthMat);
       caster.frustumCulled = false;
       caster.layers.enable(SHADOW_CASTER_LAYER);
       this.depthScene.add(caster);
     }
-
-    this.byTile = indexWaysByTile(pack.roads, accept);
-    this.stats.indexedTiles = this.byTile.size;
   }
 
-  /**
-   * Place one tile's cars, packed flat.
-   *
-   * Flat rather than an array of objects because a dense tile is a few thousand
-   * of them and the cache holds a ring of tiles: 40 bytes of Float32Array per
-   * car against a JS object per car is the difference between a megabyte and a
-   * garbage collection.
-   */
-  protected abstract place(ways: readonly number[]): Float32Array;
-
-  /** Floats per instance in the flat form: iRoute (4), iDrive (4), iLook (4). */
-  protected static readonly STRIDE = 12;
-
-  update(camX: number, camZ: number): void {
-    const tx = Math.floor(camX / STREET_TILE_M);
-    const tz = Math.floor(camZ / STREET_TILE_M);
-    if (tx === this.atX && tz === this.atZ) return;
-    this.atX = tx;
-    this.atZ = tz;
-
-    const t0 = performance.now();
-    const wanted = tilesAround(this.byTile, camX, camZ, this.ringM);
+  /** Start a fill: every bucket empty. */
+  protected begin(): void {
     for (const b of this.buckets) b.count = 0;
-    const keep = new Set<string>();
-    let clipped = 0;
-    let count = 0;
+    this.stats.clipped = 0;
+  }
 
-    for (const w of wanted) {
-      let flat = this.cache.get(w.key);
-      if (!flat) {
-        flat = this.place(this.byTile.get(w.key) ?? []);
-        this.cache.set(w.key, flat);
-      }
-      keep.add(w.key);
-      const stride = CarField.STRIDE;
-      for (let i = 0; i + stride <= flat.length; i += stride) {
-        // The archetype is the last float, hashed at placement time.
-        const a = Math.min(CAR_ARCHETYPES.length - 1, Math.floor(flat[i + 9] * CAR_ARCHETYPES.length));
-        const bucket = this.buckets[a];
-        if (bucket.count >= bucket.field.capacity) { clipped++; continue; }
-        const p4 = bucket.count * 4;
-        const route = bucket.field.arrays.iRoute;
-        const drive = bucket.field.arrays.iDrive;
-        const look = bucket.field.arrays.iLook;
-        route[p4] = flat[i];
-        route[p4 + 1] = flat[i + 1];
-        route[p4 + 2] = flat[i + 2];
-        route[p4 + 3] = flat[i + 3];
-        drive[p4] = flat[i + 4];
-        drive[p4 + 1] = flat[i + 5];
-        drive[p4 + 2] = flat[i + 6];
-        drive[p4 + 3] = flat[i + 7];
-        look[p4] = flat[i + 8];
-        look[p4 + 1] = flat[i + 9];
-        look[p4 + 2] = flat[i + 10];
-        look[p4 + 3] = flat[i + 11];
-        bucket.count++;
-        count++;
-      }
+  /** Append one instance, flat, at `flat[i .. i + STRIDE)`. */
+  protected push(flat: ArrayLike<number>, i: number): boolean {
+    // The archetype is iLook.y, hashed at placement time.
+    const a = Math.min(CAR_ARCHETYPES.length - 1, Math.floor(flat[i + 9] * CAR_ARCHETYPES.length));
+    const bucket = this.buckets[a];
+    if (bucket.count >= bucket.field.capacity) { this.stats.clipped++; return false; }
+    const p4 = bucket.count * 4;
+    const route = bucket.field.arrays.iRoute;
+    const drive = bucket.field.arrays.iDrive;
+    const look = bucket.field.arrays.iLook;
+    for (let k = 0; k < 4; k++) {
+      route[p4 + k] = flat[i + k];
+      drive[p4 + k] = flat[i + 4 + k];
+      look[p4 + k] = flat[i + 8 + k];
     }
+    bucket.count++;
+    return true;
+  }
 
-    for (const key of this.cache.keys()) if (!keep.has(key)) this.cache.delete(key);
-
+  /** Publish the fill to the GPU. */
+  protected end(): void {
     let triangles = 0;
+    let count = 0;
     for (const b of this.buckets) {
       b.field.upload(b.count);
       triangles += b.count * b.triangles;
+      count += b.count;
       this.stats.byArchetype[b.archetype] = b.count;
     }
-
-    this.stats.tiles = keep.size;
     this.stats.count = count;
     this.stats.triangles = triangles;
-    this.stats.clipped = clipped;
-    this.stats.lastBuildMs = performance.now() - t0;
-    this.stats.worstBuildMs = Math.max(this.stats.worstBuildMs, this.stats.lastBuildMs);
-    this.stats.rebuilds++;
   }
 
   dispose(): void {
@@ -854,54 +701,72 @@ abstract class CarField {
   }
 }
 
-/** True for a way that can carry moving traffic at all. */
-function driveable(r: Road): boolean {
-  return (r.flags & ROAD_TUNNEL) === 0 && r.cls < RoadClass.Pedestrian;
-}
-
+/**
+ * The moving traffic, from sim/trafficsim.ts.
+ *
+ * WHY EVERY FRAME. The sim moves every car every frame, and the pose is 48
+ * bytes: at the desktop budget's measured few thousand cars in the ring that
+ * is ~100-150 kB a frame through a DynamicDraw buffer, against the analytic
+ * vertex-shader motion it replaced, which could not stop for a light, follow a
+ * car or turn a corner.
+ */
 export class Traffic extends CarField {
-  private readonly densityScale: number;
+  readonly sim: TrafficSim;
+  private readonly flat = new Float32Array(STRIDE);
+  private readonly pose: Pose = { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 };
 
-  constructor(pack: RoadPack, world: StreetWorld, shadow: SunShadowUniforms, budget: Budget) {
+  constructor(graph: RoadGraph, world: StreetWorld, shadow: SunShadowUniforms, budget: Budget) {
     const mobile = budget.tier === "reduced";
-    super(
-      pack, world, shadow, driveable,
+    super(shadow, budget.trafficInstanceBudget, mobile ? MOBILE_TRAFFIC_RING_M : TRAFFIC_RING_M);
+    this.sim = new TrafficSim(
+      {
+        graph,
+        heightAt: world.groundY,
+        deckOf: world.deckOf ?? null,
+      },
       budget.trafficInstanceBudget,
-      mobile ? MOBILE_TRAFFIC_RING_M : TRAFFIC_RING_M,
-      true,
     );
-    // A phone gets fewer cars as well as a shorter ring, because the ring alone
-    // would leave the near field as dense as a desktop's and the near field is
-    // where the fragments are.
-    this.densityScale = mobile ? 0.55 : 1;
+    // A phone gets fewer cars as well as a shorter ring, because the ring
+    // alone would leave the near field as dense as a desktop's and the near
+    // field is where the fragments are.
+    this.sim.densityScale = mobile ? 0.55 : 1;
+    this.stats.indexedTiles = 0;
   }
 
-  protected place(ways: readonly number[]): Float32Array {
-    const cars: TrafficInstance[] = [];
-    for (const i of ways) addTraffic(cars, this.pack.roads[i], i, this.world, this.densityScale);
-    const out = new Float32Array(cars.length * CarField.STRIDE);
-    for (let k = 0; k < cars.length; k++) {
-      const c = cars[k];
-      const len = Math.hypot(c.x1 - c.x0, c.z1 - c.z0);
-      const p = k * CarField.STRIDE;
-      out[p] = c.x0;
-      out[p + 1] = c.z0;
-      out[p + 2] = c.x1;
-      out[p + 3] = c.z1;
-      out[p + 4] = c.phase;
-      // Turns per second: the vertex shader multiplies by the clock and takes
-      // the fractional part, so the division happens here, once.
-      out[p + 5] = len > 1e-4 ? c.speedMs / len : 0;
-      out[p + 6] = c.y0;
-      out[p + 7] = c.y1;
-      out[p + 8] = c.tint;
-      out[p + 9] = c.archetype;
-      // The class the shader looks the hour up under, and this car's place in
-      // the queue for it; see data/trafficmodel.ts.
-      out[p + 10] = c.cls;
-      out[p + 11] = c.rank;
+  /**
+   * Advance the traffic by `dt` seconds of scene time and redraw it.
+   *
+   * `dt` is the delta of the animation clock, which `?shot` holds at zero, so
+   * a pinned pose photographs the field exactly as it was placed.
+   */
+  update(camX: number, camZ: number, dt: number, state: TrafficState | null): void {
+    const t0 = performance.now();
+    if (state) {
+      for (let c = 0; c < CLASS_COUNT; c++) {
+        this.sim.frac[c] = state.frac[c];
+        this.sim.speedScale[c] = state.speed[c];
+      }
     }
-    return out;
+    const before = this.sim.stats.activeEdges;
+    this.sim.setRing(camX, camZ, this.ringM);
+    if (this.sim.stats.activeEdges !== before) this.stats.rebuilds++;
+    this.sim.step(dt);
+
+    this.begin();
+    const f = this.flat;
+    const p = this.pose;
+    for (const c of this.sim.cars) {
+      if (c.scale <= 0.001) continue;
+      this.sim.pose(c, p);
+      f[0] = p.x; f[1] = p.z; f[2] = p.dirX; f[3] = p.dirZ;
+      f[4] = p.y; f[5] = c.brake; f[6] = c.scale; f[7] = 1;
+      f[8] = c.tint; f[9] = c.archetype; f[10] = c.cls; f[11] = c.rank;
+      this.push(f, 0);
+    }
+    this.end();
+    this.stats.tiles = this.sim.stats.activeEdges;
+    this.stats.lastBuildMs = performance.now() - t0;
+    this.stats.worstBuildMs = Math.max(this.stats.worstBuildMs, this.stats.lastBuildMs);
   }
 }
 
@@ -912,44 +777,76 @@ function parkable(r: Road): boolean {
   return (r.flags & ROAD_TUNNEL) === 0 && r.cls < RoadClass.Pedestrian;
 }
 
+/** The parked cars: placed per 400 m tile, cached, re-laid when the camera
+ *  crosses a tile. They do not move, so nothing is uploaded between rebuilds. */
 export class ParkedCars extends CarField {
+  private readonly pack: RoadPack;
+  private readonly world: StreetWorld;
+  private readonly byTile: Map<string, number[]>;
+  private readonly cache = new Map<string, Float32Array>();
+  private atX = Number.NaN;
+  private atZ = Number.NaN;
+
   constructor(pack: RoadPack, world: StreetWorld, shadow: SunShadowUniforms, budget: Budget) {
     const mobile = budget.tier === "reduced";
-    super(
-      pack, world, shadow, parkable,
-      budget.parkedInstanceBudget,
-      mobile ? MOBILE_PARKED_RING_M : PARKED_RING_M,
-      false,
-    );
+    super(shadow, budget.parkedInstanceBudget, mobile ? MOBILE_PARKED_RING_M : PARKED_RING_M);
+    this.pack = pack;
+    this.world = world;
+    this.byTile = indexWaysByTile(pack.roads, parkable);
+    this.stats.indexedTiles = this.byTile.size;
   }
 
-  protected place(ways: readonly number[]): Float32Array {
+  private place(ways: readonly number[]): Float32Array {
     const cars: ParkedInstance[] = [];
     for (const i of ways) addParked(cars, this.pack.roads[i], i, this.world);
-    const out = new Float32Array(cars.length * CarField.STRIDE);
+    const out = new Float32Array(cars.length * STRIDE);
     for (let k = 0; k < cars.length; k++) {
       const c = cars[k];
-      const p = k * CarField.STRIDE;
-      // A parked car is a run of zero length. The shader reads its heading out
-      // of the phase slot instead, as turns; see placeVertex.
+      const p = k * STRIDE;
+      const th = c.yawTurns * Math.PI * 2;
+      // yawCS = (cos th, sin th) = (dir.x, -dir.z); see placeVertex.
       out[p] = c.x;
       out[p + 1] = c.z;
-      out[p + 2] = c.x;
-      out[p + 3] = c.z;
-      out[p + 4] = c.yawTurns;
+      out[p + 2] = Math.cos(th);
+      out[p + 3] = -Math.sin(th);
+      out[p + 4] = c.y;
       out[p + 5] = 0;
-      out[p + 6] = c.y;
-      out[p + 7] = c.y;
+      out[p + 6] = 1;
+      out[p + 7] = 0;
       out[p + 8] = c.tint;
       out[p + 9] = c.archetype;
-      // A parked car has no hour: it is off the traffic model entirely, which
-      // is what -1 says. Rank 0 with it, so that even if some future reader
-      // does apply the duty gate here the car survives every threshold. Parked
-      // density by time of day is a different change; see data/trafficmodel.ts.
       out[p + 10] = -1;
       out[p + 11] = 0;
     }
     return out;
+  }
+
+  update(camX: number, camZ: number): void {
+    const tx = Math.floor(camX / STREET_TILE_M);
+    const tz = Math.floor(camZ / STREET_TILE_M);
+    if (tx === this.atX && tz === this.atZ) return;
+    this.atX = tx;
+    this.atZ = tz;
+
+    const t0 = performance.now();
+    const wanted = tilesAround(this.byTile, camX, camZ, this.ringM);
+    const keep = new Set<string>();
+    this.begin();
+    for (const w of wanted) {
+      let flat = this.cache.get(w.key);
+      if (!flat) {
+        flat = this.place(this.byTile.get(w.key) ?? []);
+        this.cache.set(w.key, flat);
+      }
+      keep.add(w.key);
+      for (let i = 0; i + STRIDE <= flat.length; i += STRIDE) this.push(flat, i);
+    }
+    for (const key of this.cache.keys()) if (!keep.has(key)) this.cache.delete(key);
+    this.end();
+    this.stats.tiles = keep.size;
+    this.stats.lastBuildMs = performance.now() - t0;
+    this.stats.worstBuildMs = Math.max(this.stats.worstBuildMs, this.stats.lastBuildMs);
+    this.stats.rebuilds++;
   }
 }
 

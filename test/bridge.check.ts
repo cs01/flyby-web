@@ -36,7 +36,8 @@ import {
 import { buildRoadGraph, isDriveable, type RoadEdge } from "../src/data/roadgraph";
 import { ORPHAN_EDGE_MARGIN_M, buildBridgeDecks, deckYAt } from "../src/data/bridgedeck";
 import { Origin } from "../src/geo";
-import { addTraffic, type StreetWorld, type TrafficInstance } from "../src/data/streetfurniture";
+import { type StreetWorld } from "../src/data/streetfurniture";
+import { TrafficSim, trafficable } from "../src/sim/trafficsim";
 import {
   axisOf,
   densifyLandmarkWays,
@@ -416,10 +417,10 @@ function stepsAt(y: (e: RoadEdge, n: number) => number): { steps: number; joins:
 // were at YBI hill height and at SoMa street height, and every car between was
 // a straight line through the air above a deck it never touched.
 //
-// Measured where the CAR is, not where the run ends are: each car's straight
-// line is sampled along its length and compared with the deck at that point's
-// arc length along its way, so a run that cuts the corner of a bent deck fails
-// here too and not only a run with wrong ends.
+// Measured where the CAR is: every lane path the traffic drives on a bridge is
+// sampled along its length and compared with the deck at that point's arc
+// length along its way, so a lane that cuts the corner of a bent deck fails
+// here too and not only one with wrong ends.
 // ---------------------------------------------------------------------------
 
 /** Arc length along the polyline of the point on it nearest (x, z). */
@@ -445,25 +446,37 @@ function carsOffDeck(
   world: StreetWorld,
   boundM: number,
 ): { samples: number; over: number; worst: number } {
+  // The lane paths sim/trafficsim.ts drives every car along. A car's height is
+  // the path's, interpolated, so sampling each path segment at five points is
+  // sampling every height a car can have on a bridge.
+  const sim = new TrafficSim(
+    { graph, heightAt: world.groundY, deckOf: world.deckOf ? (w) => world.deckOf!(w) : null },
+    1,
+  );
   let samples = 0;
   let over = 0;
   let worst = 0;
-  for (let i = 0; i < roads.length; i++) {
-    const r = roads[i];
-    if ((r.flags & ROAD_BRIDGE) === 0) continue;
-    const d = decksOf.deck[i];
+  for (let e = 0; e < graph.edges.length; e++) {
+    const edge = graph.edges[e];
+    if ((edge.flags & ROAD_BRIDGE) === 0 || !trafficable(edge)) continue;
+    const d = decksOf.deck[edge.wayIndex];
     if (!d) continue;
-    const cars: TrafficInstance[] = [];
-    addTraffic(cars, r, i, world);
-    for (const c of cars) {
-      for (const q of [0, 0.25, 0.5, 0.75, 1]) {
-        const x = c.x0 + (c.x1 - c.x0) * q;
-        const z = c.z0 + (c.z1 - c.z0) * q;
-        const y = c.y0 + (c.y1 - c.y0) * q;
-        const e = Math.abs(y - deckYAt(d, arcAt(r.pts, x, z)));
-        samples++;
-        if (e > boundM) over++;
-        if (e > worst) worst = e;
+    const r = roads[edge.wayIndex];
+    for (let dir = 0; dir < (edge.oneway ? 1 : 2); dir++) {
+      const he = e * 2 + dir;
+      for (let lane = 0; lane < sim.lanesOf(he).length; lane++) {
+        const p = sim.path(he, lane);
+        for (let i = 0; i + 1 < p.xs.length; i++) {
+          for (const q of [0, 0.25, 0.5, 0.75, 1]) {
+            const x = p.xs[i] + (p.xs[i + 1] - p.xs[i]) * q;
+            const z = p.zs[i] + (p.zs[i + 1] - p.zs[i]) * q;
+            const y = p.ys[i] + (p.ys[i + 1] - p.ys[i]) * q;
+            const err = Math.abs(y - deckYAt(d, arcAt(r.pts, x, z)));
+            samples++;
+            if (err > boundM) over++;
+            if (err > worst) worst = err;
+          }
+        }
       }
     }
   }

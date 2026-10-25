@@ -34,6 +34,7 @@ import { rateLimit } from "./touch";
 import { RoadIndex } from "../data/trees";
 import { laneOffsetM, type RoadEdge, type RoadGraph, type HalfEdge } from "../data/roadgraph";
 import { deckYAt, type Deck } from "../data/bridgedeck";
+import { laneLayoutCached, runningRangeForTravel } from "../data/lanes";
 import { roadWidthM, roadLiftM, ROAD_BRIDGE } from "../data/roadpack";
 
 const DEG = Math.PI / 180;
@@ -137,6 +138,24 @@ const DEAD_END_PENALTY_DEG = 400;
 /** Edges one frame may cross. A 200 m step across 5 m edges is 40; the cap is
  *  a guard against a zero-length edge cycle, not a budget. */
 const MAX_EDGE_STEPS = 256;
+
+/**
+ * The traffic round the car, as the car needs it: what is ahead in a band
+ * along a heading, as a bumper gap and its speed along that heading. Satisfied
+ * by sim/trafficsim.ts; an interface so test/car.check.ts can drive the car
+ * against a scripted obstacle.
+ */
+export interface CarTraffic {
+  ahead(
+    x: number, z: number, dirX: number, dirZ: number,
+    halfBandM: number, rangeM: number, selfHalfAlongM?: number,
+  ): { gap: number; v: number } | null;
+}
+
+/** Bumper gap the car stops at behind traffic, metres. */
+export const CAR_STOP_GAP_M = 1.5;
+/** Half the car's length, for the gaps, metres. */
+const CAR_HALF_LENGTH_M = 2.4;
 
 export interface CarInput {
   /** -1..1, positive accelerates, negative brakes and then reverses. */
@@ -277,7 +296,8 @@ export class Car {
   get lateralM(): number {
     const e = this.edge;
     if (!e) return 0;
-    return this.clampLateral(laneOffsetM(e) + this.q, e);
+    const fwd = this.where!.half.forward;
+    return this.clampLateral(laneOffsetM(e, fwd) + this.q, e, fwd);
   }
 
   /** Eye point for the camera. */
@@ -347,7 +367,39 @@ export class Car {
     return true;
   }
 
-  update(input: CarInput, dt: number, heightAt: (x: number, z: number) => number): void {
+  /** The car as the traffic sees it: where, which way, how fast. */
+  obstacle(): { x: number; z: number; dirX: number; dirZ: number; speed: number } | null {
+    if (!this.where) return null;
+    const h = this.headingDeg * DEG;
+    return { x: this.position.x, z: this.position.z, dirX: Math.sin(h), dirZ: -Math.cos(h), speed: this.speed };
+  }
+
+  /** Cap the speed so the car stops CAR_STOP_GAP_M behind whatever is ahead. */
+  private yieldToTraffic(traffic: CarTraffic, dt: number): void {
+    if (Math.abs(this.speed) < 1e-3 && this.throttleAxis === 0) return;
+    const d = this.direction();
+    const back = this.speed < 0 || (this.speed === 0 && this.throttleAxis < 0);
+    const dx = back ? -d.x : d.x;
+    const dz = back ? -d.z : d.z;
+    const v = Math.abs(this.speed);
+    const range = Math.max(12, (v * v) / (2 * BRAKE) + 15);
+    const hit = traffic.ahead(this.position.x, this.position.z, dx, dz, CAR_HALF_WIDTH_M + 0.25, range, CAR_HALF_LENGTH_M);
+    if (!hit) return;
+    // The speed from which the brakes stop the car at the gap, or the leader's
+    // own speed once following it, whichever is higher; and never more than
+    // what closes the gap past HARD in one frame.
+    const room = Math.max(0, hit.gap - CAR_STOP_GAP_M);
+    let cap = Math.max(Math.sqrt(2 * BRAKE * 0.6 * room), Math.min(Math.max(0, hit.v), room));
+    cap = Math.min(cap, Math.max(0, hit.gap - 0.4) / Math.max(dt, 1e-3));
+    if (v > cap) this.speed = (back ? -1 : 1) * cap;
+  }
+
+  update(
+    input: CarInput,
+    dt: number,
+    heightAt: (x: number, z: number) => number,
+    traffic: CarTraffic | null = null,
+  ): void {
     if (!(dt > 0) || !this.where) return;
 
     // --- Controls ---------------------------------------------------------
@@ -378,6 +430,14 @@ export class Car {
     if (this.cornerLimit < Infinity) this.cornerLimit += ACCEL * dt;
     if (this.cornerLimit > CAR_BOOST_SPEED) this.cornerLimit = Infinity;
 
+    // --- Traffic ------------------------------------------------------------
+    // SOFT COLLISIONS. Nothing here is a crash: the car brakes for what is in
+    // front of it, in its own band, the way the traffic brakes for it (see
+    // sim/trafficsim.ts), and it cannot steer into a car alongside. A body that
+    // could pass through another one is the single loudest thing a street-level
+    // view can get wrong.
+    if (traffic) this.yieldToTraffic(traffic, dt);
+
     // --- Along the road ---------------------------------------------------
     this.advance(this.speed * dt);
 
@@ -391,12 +451,24 @@ export class Car {
       const back = -Math.sign(this.q) * Math.min(Math.abs(this.q) / Math.max(dt, 1e-3), RECENTRE_MS);
       lateralRate = back * Math.min(1, Math.abs(this.speed) / STEER_SPEED_M);
     }
+    if (traffic && Math.abs(lateralRate) > 1e-3) {
+      // Into an adjacent lane only if it is free alongside: a car level with
+      // this one on the side it is moving toward stops the lane change.
+      const d = this.direction();
+      const side = Math.sign(lateralRate);
+      const sx = -d.z * side, sz = d.x * side;
+      const beside = traffic.ahead(
+        this.position.x, this.position.z, sx, sz, CAR_HALF_LENGTH_M + 0.6, 1.0, CAR_HALF_WIDTH_M,
+      );
+      if (beside && beside.gap < 0.35 + Math.abs(lateralRate) * dt) lateralRate = 0;
+    }
     this.q += lateralRate * dt;
     // Re-derived from the clamped result rather than clamped in place, so the
     // offset cannot wind up against the kerb and then take a second of steering
     // to unwind.
-    const lane = laneOffsetM(edge);
-    this.q = this.clampLateral(lane + this.q, edge) - lane;
+    const fwd = this.where.half.forward;
+    const lane = laneOffsetM(edge, fwd);
+    this.q = this.clampLateral(lane + this.q, edge, fwd) - lane;
 
     // --- Attitude ---------------------------------------------------------
     const dir = this.direction();
@@ -457,11 +529,15 @@ export class Car {
     return { x: e.pts[0], z: e.pts[1] };
   }
 
-  /** Lateral offset the carriageway will actually accept. */
-  private clampLateral(lat: number, e: RoadEdge): number {
-    const room = roadWidthM(e.cls, e.lanes, e.flags) * 0.5 - CAR_HALF_WIDTH_M;
-    if (room <= 0) return 0;
-    return clamp(lat, -room, room);
+  /**
+   * Lateral offset the carriageway will actually accept: the RUNNING surface,
+   * right of travel. Not kerb to kerb any more, because the strip between the
+   * running surface and the kerb is a row of parked cars and steering into it
+   * was driving through them.
+   */
+  private clampLateral(lat: number, e: RoadEdge, forward: boolean): number {
+    const r = runningRangeForTravel(laneLayoutCached(e), forward);
+    return clamp(lat, r.lo, r.hi);
   }
 
   /** Write the world position from the current rail state. */
@@ -469,7 +545,8 @@ export class Car {
     const e = this.graph.edges[this.where!.half.edge];
     const c = this.centreline();
     const dir = this.direction();
-    const lat = this.clampLateral(laneOffsetM(e) + this.q, e);
+    const fwd = this.where!.half.forward;
+    const lat = this.clampLateral(laneOffsetM(e, fwd) + this.q, e, fwd);
     // Right of the direction of travel, which is what makes one formula cover
     // both a one-way and either end of a two-way.
     const x = c.x + -dir.z * lat;

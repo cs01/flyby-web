@@ -40,10 +40,6 @@ import { readFileSync } from "node:fs";
 import {
   addLamps,
   addParked,
-  addTraffic,
-  runsFor,
-  straightRuns,
-  trafficLaneOffsetsM,
   PointIndex,
   LAMP_GLSL,
   LAMP_HEIGHT_M,
@@ -53,8 +49,8 @@ import {
   type LampInstance,
   type ParkedInstance,
   type StreetWorld,
-  type TrafficInstance,
 } from "../src/data/streetfurniture";
+import { laneLayout } from "../src/data/lanes";
 import { isCarriageway, KERB_HEIGHT_M } from "../src/data/pavement";
 import {
   parseRoadPack,
@@ -650,166 +646,13 @@ check(
 }
 
 // ===========================================================================
-// 5. A moving car never leaves the carriageway.
+// 5. Moving traffic: see test/trafficmodel.check.ts.
 // ===========================================================================
 //
-// Sampled along the run rather than at its ends, because a car drives the CHORD
-// while the carriageway follows its own centreline: the worst excursion is in
-// the middle of a bend, which is precisely where the run merge decided to cut a
-// corner. The measurement is against the ORIGINAL polyline, found by nearest
-// point, and it is compared to the width table.
-
-console.log("\n--- a car stays between the kerbs, and faces the right way ---");
-
-function placeTraffic(ways: readonly number[]): TrafficInstance[] {
-  const out: TrafficInstance[] = [];
-  for (const i of ways) addTraffic(out, sf.roads[i], i, plainWorld);
-  return out;
-}
-
-const cars = placeTraffic(sfNear);
-
-/** Worst perpendicular excursion past the kerb over a set of cars, in metres. */
-function worstOverhang(set: readonly TrafficInstance[], lateralBias = 0): number {
-  let worst = -Infinity;
-  for (const c of set) {
-    const r = sf.roads[c.road];
-    const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
-    const dx = c.x1 - c.x0;
-    const dz = c.z1 - c.z0;
-    const len = Math.hypot(dx, dz);
-    if (len <= 0) continue;
-    // Push the car sideways off its own run, for the probe.
-    const bx = (dz / len) * lateralBias;
-    const bz = (-dx / len) * lateralBias;
-    for (let k = 0; k <= 8; k++) {
-      const s = k / 8;
-      const x = c.x0 + dx * s + bx;
-      const z = c.z0 + dz * s + bz;
-      worst = Math.max(worst, nearestOn(r.pts, x, z).distanceM + CAR_HALF_M - half);
-    }
-  }
-  return worst;
-}
-
-const overhang = worstOverhang(cars);
-check(
-  "no moving car ever reaches past the kerb of its own road",
-  cars.length >= MIN_SAMPLE && overhang <= OVERHANG_EPS_M,
-  `${cars.length} cars, worst flank ${overhang.toFixed(3)} m past the kerb`,
-);
-// Displaced BOTH ways, and this is not fussiness. A one-way carries traffic on
-// one side of its centreline only, so a bias applied in one fixed direction
-// moves every car on it INWARD and the probe passes while proving nothing --
-// which is exactly what it did the first time it was run.
-const displaced = Math.max(worstOverhang(cars, 1.5), worstOverhang(cars, -1.5));
-probe(
-  "the kerb test rejects the same cars pushed 1.5 m sideways",
-  displaced <= OVERHANG_EPS_M,
-  `worst flank when displaced either way is ${displaced.toFixed(2)} m past the kerb`,
-);
-blind(
-  "the kerb test accepts the cars where they are",
-  overhang <= OVERHANG_EPS_M,
-  `worst flank ${overhang.toFixed(3)} m`,
-);
-
-// One-way. The run direction against the direction of the centreline segment it
-// is closest to; on a one-way the two must point the same way, always.
-{
-  const onOneway = cars.filter((c) => (sf.roads[c.road].flags & ROAD_ONEWAY) !== 0);
-  const withIt = (set: readonly TrafficInstance[], reverse: boolean): number => {
-    let n = 0;
-    for (const c of set) {
-      const r = sf.roads[c.road];
-      let dx = c.x1 - c.x0;
-      let dz = c.z1 - c.z0;
-      if (reverse) { dx = -dx; dz = -dz; }
-      const len = Math.hypot(dx, dz);
-      if (len <= 0) continue;
-      const on = nearestOn(r.pts, (c.x0 + c.x1) * 0.5, (c.z0 + c.z1) * 0.5);
-      if ((dx / len) * on.dirX + (dz / len) * on.dirZ > 0) n++;
-    }
-    return n;
-  };
-  const right = withIt(onOneway, false);
-  check(
-    "every car on a one-way is travelling with it",
-    onOneway.length >= MIN_SAMPLE && right / onOneway.length >= ONEWAY_SHARE,
-    `${right} of ${onOneway.length} one-way cars going the right way`,
-  );
-  const mirrored = withIt(onOneway, true);
-  probe(
-    "the one-way test rejects the same cars driven backwards",
-    onOneway.length > 0 && mirrored / onOneway.length >= ONEWAY_SHARE,
-    `${mirrored} of ${onOneway.length} accepted when reversed`,
-  );
-  blind(
-    "the one-way test accepts the cars as placed",
-    right === onOneway.length,
-    `${right} of ${onOneway.length}`,
-  );
-}
-
-// The run merge itself: the corridor it is allowed to cut off the centreline.
-// Asserted directly, because everything above measures the result and this
-// measures the mechanism that could break it on a city with sharper bends than
-// San Francisco has.
-{
-  // A quarter circle of radius 40 m, digitised every 5 degrees: a real curve, of
-  // the kind no way within the measurement radius happens to have.
-  const n = 19;
-  const arc = new Float32Array(n * 2);
-  for (let i = 0; i < n; i++) {
-    const th = (i / (n - 1)) * (Math.PI / 2);
-    arc[i * 2] = Math.cos(th) * 40;
-    arc[i * 2 + 1] = Math.sin(th) * 40;
-  }
-  const DEV = 0.5;
-  const runs = straightRuns(arc, DEV, 1);
-  let worstDev = 0;
-  for (const run of runs) {
-    for (let i = 0; i < n; i++) {
-      const px = arc[i * 2];
-      const pz = arc[i * 2 + 1];
-      // Only the vertices this run actually spans.
-      const t = ((px - run.x0) * run.dirX + (pz - run.z0) * run.dirZ) / run.lengthM;
-      if (t < -1e-6 || t > 1 + 1e-6) continue;
-      worstDev = Math.max(
-        worstDev,
-        Math.abs((px - run.x0) * run.dirZ - (pz - run.z0) * run.dirX),
-      );
-    }
-  }
-  check(
-    "a straight run never cuts more corner than it is allowed",
-    runs.length >= 2 && worstDev <= DEV + 1e-6,
-    `${runs.length} runs over a 40 m quarter circle, worst deviation ${worstDev.toFixed(3)} m against ${DEV} m`,
-  );
-  probe(
-    "the corridor test rejects a run merged at ten times the corridor",
-    (() => {
-      const loose = straightRuns(arc, DEV * 10, 1);
-      let w = 0;
-      for (const run of loose) {
-        for (let i = 0; i < n; i++) {
-          const px = arc[i * 2];
-          const pz = arc[i * 2 + 1];
-          const t = ((px - run.x0) * run.dirX + (pz - run.z0) * run.dirZ) / run.lengthM;
-          if (t < -1e-6 || t > 1 + 1e-6) continue;
-          w = Math.max(w, Math.abs((px - run.x0) * run.dirZ - (pz - run.z0) * run.dirX));
-        }
-      }
-      return w <= DEV + 1e-6;
-    })(),
-    "a 5 m corridor cuts more than 0.5 m of corner",
-  );
-  blind(
-    "the corridor test accepts the run merge as configured",
-    worstDev <= DEV + 1e-6,
-    `worst deviation ${worstDev.toFixed(3)} m`,
-  );
-}
+// The cars used to be placed here, on straight runs cut from each way, and
+// this section measured the runs. They are a simulation on the road graph now
+// (sim/trafficsim.ts), and the lane, heading, kerb, one-way, signal and gap
+// assertions over it live with the rest of the traffic model.
 
 // ===========================================================================
 // 6. Parked cars are at the kerb, not in a lane.
@@ -834,8 +677,11 @@ function parkedFaults(set: readonly ParkedInstance[], bias = 0): { over: number;
     const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
     const offset = Math.abs(p.offsetM) + bias;
     over = Math.max(over, offset + CAR_HALF_M - half);
-    const lanes = trafficLaneOffsetsM(r);
-    const inner = lanes.length ? Math.max(...lanes) : 0;
+    // The traffic lane nearest this kerb, from either direction: on the right
+    // the most positive lane centre, on the left the most negative.
+    const lay = laneLayout(r);
+    const all = [...lay.forward, ...lay.backward];
+    const inner = p.offsetM > 0 ? Math.max(...all) : -Math.min(...all);
     // The nearest traffic lane's outer flank against the parked car's inner one.
     intrude = Math.max(intrude, inner + CAR_HALF_M + PARKED_LANE_GAP_M - (offset - CAR_HALF_M));
   }
@@ -876,9 +722,14 @@ blind(
   const withParking = sf.roads.filter((r) => parkingStripM(r) > 0);
   const clears = withParking.filter((r) => {
     const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
-    // The player's flank against the parked car's inner flank.
-    const parkedInner = half - parkingStripM(r) - 0 + 0;
-    return laneOffsetM(r) + CAR_HALF_M <= parkedInner + 1e-6;
+    const lay = laneLayout(r);
+    // The player's flank against the parked car's inner flank, on the kerb to
+    // the right of each direction it can drive. A kerb with no parking on it
+    // (one side of a narrow two-way) is the kerb itself.
+    const fwd = laneOffsetM(r, true) + CAR_HALF_M <= half - lay.parkRightM + 1e-6;
+    const back = (r.flags & ROAD_ONEWAY) !== 0
+      || laneOffsetM(r, false) + CAR_HALF_M <= half - lay.parkLeftM + 1e-6;
+    return fwd && back;
   }).length;
   check(
     "the player's own lane clears the parked row on every street that has one",
@@ -901,7 +752,12 @@ blind(
     `${clears} of ${withParking.length}`,
   );
 
-  const strips = withParking.map(parkingStripM);
+  // The strips cars are actually parked in, after a narrow two-way has given
+  // one of its kerbs back to the traffic.
+  const strips = withParking.flatMap((r) => {
+    const lay = laneLayout(r);
+    return [lay.parkLeftM, lay.parkRightM].filter((w) => w > 0);
+  });
   const stripBad = strips.filter((s) => s < PARK_STRIP_MIN_M || s > PARK_STRIP_MAX_M).length;
   check(
     "every parking strip is wide enough for a car and no wider than a lane",
@@ -981,42 +837,8 @@ blind(
   "the real table",
 );
 
-// And measured on the city, which is the half that catches a table that is
-// monotone and a placement that ignores it.
-{
-  const lengthByClass = new Float64Array(14);
-  for (const i of sfNear) {
-    const r = sf.roads[i];
-    let m = 0;
-    for (let v = 2; v < r.pts.length; v += 2) {
-      m += Math.hypot(r.pts[v] - r.pts[v - 2], r.pts[v + 1] - r.pts[v - 1]);
-    }
-    lengthByClass[r.cls] += m;
-  }
-  const carsByClass = new Float64Array(14);
-  for (const c of cars) carsByClass[c.cls]++;
-  const perKm = (c: RoadClass): number =>
-    lengthByClass[c] > 0 ? carsByClass[c] / (lengthByClass[c] / 1000) : 0;
-
-  const arterial = perKm(RoadClass.Primary);
-  const street = perKm(RoadClass.Residential);
-  const alley = perKm(RoadClass.Service);
-  check(
-    "measured on the city, a primary carries more than a residential, and a residential more than a service road",
-    arterial > street && street > alley,
-    `primary ${arterial.toFixed(1)}/km, residential ${street.toFixed(1)}/km, service ${alley.toFixed(1)}/km`,
-  );
-  probe(
-    "the measured test rejects the comparison run backwards",
-    alley > street && street > arterial,
-    "service does not carry more than primary",
-  );
-  blind(
-    "the measured test accepts the city as placed",
-    arterial > street && street > alley,
-    `${arterial.toFixed(1)} > ${street.toFixed(1)} > ${alley.toFixed(1)}`,
-  );
-}
+// Measured on the city as well, from the simulation: see
+// test/trafficmodel.check.ts.
 
 // ===========================================================================
 // 8. The .street pack survives a round trip, and the bake asks for it.
@@ -1200,35 +1022,17 @@ console.log("\n--- and the same over Chicago ---");
     nearestMeasuredLamp: null,
   };
   const chiLamps: LampInstance[] = [];
-  const chiCars: TrafficInstance[] = [];
   const chiParked: ParkedInstance[] = [];
   for (const i of chiNear) {
     addLamps(chiLamps, chi.roads[i], i, world);
-    addTraffic(chiCars, chi.roads[i], i, world);
     addParked(chiParked, chi.roads[i], i, world);
   }
 
-  let worstChiOverhang = -Infinity;
-  for (const c of chiCars) {
-    const r = chi.roads[c.road];
-    const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
-    const dx = c.x1 - c.x0;
-    const dz = c.z1 - c.z0;
-    for (let k = 0; k <= 8; k++) {
-      const s = k / 8;
-      worstChiOverhang = Math.max(
-        worstChiOverhang,
-        nearestOn(r.pts, c.x0 + dx * s, c.z0 + dz * s).distanceM + CAR_HALF_M - half,
-      );
-    }
-  }
   const chiInside = chiLamps.filter((l) => chiFootprints.occupied(l.x, l.z)).length;
   check(
-    "Chicago: every column is clear of the buildings and every car is between the kerbs",
-    chiLamps.length >= MIN_SAMPLE && chiCars.length >= MIN_SAMPLE &&
-      chiInside === 0 && worstChiOverhang <= OVERHANG_EPS_M,
-    `${chiLamps.length} lamps (${chiInside} inside a building), ${chiCars.length} cars ` +
-      `(worst flank ${worstChiOverhang.toFixed(3)} m), ${chiParked.length} parked`,
+    "Chicago: every column is clear of the buildings",
+    chiLamps.length >= MIN_SAMPLE && chiInside === 0,
+    `${chiLamps.length} lamps (${chiInside} inside a building), ${chiParked.length} parked`,
   );
 
   // Every instance sits on the height field rather than at zero. The cheapest
@@ -1299,46 +1103,7 @@ console.log("\n--- and the same over Chicago ---");
     `${parkedOnDeck} parked, ${lampsOnKerb} lamps`,
   );
 
-  // Runs on a real city, so `runsFor` is exercised against digitised geometry
-  // rather than the synthetic arc above.
-  let longest = 0;
-  let runCount = 0;
-  for (const i of chiNear) {
-    for (const run of runsFor(chi.roads[i])) {
-      runCount++;
-      longest = Math.max(longest, run.lengthM);
-    }
-  }
-  check(
-    "the run merge produces stretches a car can actually drive down",
-    runCount >= MIN_SAMPLE && longest >= 150,
-    `${runCount} runs, longest ${longest.toFixed(0)} m`,
-  );
-  // The probe is a zigzag rather than the city with the corridor turned down,
-  // because a genuinely straight avenue merges at ANY corridor including zero:
-  // the corridor decides what curves through, not what is already a line. A
-  // sawtooth of 30 m teeth is geometry no merge is allowed to straighten.
-  probe(
-    "the run-length test rejects a road no merge can straighten",
-    (() => {
-      const n = 60;
-      const saw = new Float32Array(n * 2);
-      for (let i = 0; i < n; i++) {
-        saw[i * 2] = i * 30;
-        saw[i * 2 + 1] = i % 2 === 0 ? 0 : 14;
-      }
-      const runs = straightRuns(saw, 0.8, 22);
-      let l = 0;
-      for (const r of runs) l = Math.max(l, r.lengthM);
-      return runs.length >= MIN_SAMPLE && l >= 150;
-    })(),
-    "a 30 m sawtooth produces no run of 150 m",
-  );
-  blind(
-    "the run-length test accepts the merge as configured",
-    runCount >= MIN_SAMPLE && longest >= 150,
-    `longest ${longest.toFixed(0)} m`,
-  );
+
 }
 
 // ===========================================================================

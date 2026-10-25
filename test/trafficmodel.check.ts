@@ -40,8 +40,11 @@ import {
   type TrafficState,
 } from "../src/data/trafficmodel";
 import { RoadClass } from "../src/data/roadpack";
-import { addTraffic, hash1, type StreetWorld, type TrafficInstance } from "../src/data/streetfurniture";
-import { ROAD_ONEWAY, type Road, type RoadPack } from "../src/data/roadpack";
+import { hash1, type StreetWorld } from "../src/data/streetfurniture";
+import { ROAD_ONEWAY, parseRoadPack, roadWidthM, type Road, type RoadPack } from "../src/data/roadpack";
+import { buildRoadGraph, type RoadGraph } from "../src/data/roadgraph";
+import { laneLayout, lanesForTravel } from "../src/data/lanes";
+import { TrafficSim, trafficable, CAR_LENGTH_M, HARD_GAP_M, type Pose, type Vehicle } from "../src/sim/trafficsim";
 import type { Weather } from "../src/data/weather";
 
 // --- literal bounds ---------------------------------------------------------
@@ -413,9 +416,17 @@ function syntheticPack(): { pack: RoadPack; world: StreetWorld } {
 }
 
 const { pack: synthPack, world: synthWorld } = syntheticPack();
-const cars: TrafficInstance[] = [];
-for (let i = 0; i < synthPack.roads.length; i++) {
-  addTraffic(cars, synthPack.roads[i], i, synthWorld);
+interface Placed { rank: number; tint: number; phase: number }
+const cars: Placed[] = [];
+{
+  // Every class at full density, so the ranks are the whole queue.
+  const sim = new TrafficSim({ graph: buildRoadGraph(synthPack.roads), heightAt: synthWorld.groundY }, 100000);
+  sim.setRing(600, 1200, 5000);
+  for (const c of sim.cars) {
+    // Where along its lane the car was placed, 0..1: what `phase` was when a
+    // car was a point on a run, and what an emptied head of a lane would show.
+    cars.push({ rank: c.rank, tint: c.tint, phase: c.path ? c.s / c.path.length : 0 });
+  }
 }
 
 function pearson(xs: number[], ys: number[]): number {
@@ -476,7 +487,7 @@ blind(
 
 // And the thing the correlation is a proxy for: the shader keeps every car
 // whose rank is under the threshold, so the share kept must BE the threshold.
-function keptShare(threshold: number, rankOf: (c: TrafficInstance) => number): number {
+function keptShare(threshold: number, rankOf: (c: Placed) => number): number {
   let kept = 0;
   for (const c of cars) if (rankOf(c) < threshold) kept++;
   return kept / cars.length;
@@ -512,6 +523,499 @@ blind(
     hi = Math.max(hi, v);
   }
   check("the rank hash stays inside 0..1", lo >= 0 && hi < 1, `${lo.toFixed(5)}..${hi.toFixed(5)}`);
+}
+
+// --- lane discipline, on the real cities ------------------------------------
+//
+// THE OWNER'S REPORT, from the driver's seat in the Loop at dusk: "why are cars
+// all over the road, including middle of road". Measured before the fix, on the
+// committed packs: the commonest street in every city (7 m kerb to kerb, a
+// 2.0 m parking strip each side, two-way) carried each direction 0.5 m off the
+// centreline, so opposing cars overlapped by 0.8 m down the middle of 648 km
+// of Chicago, 587 km of Manhattan and 471 km of San Francisco. Every one-way
+// carried its lanes on its right half only.
+//
+// Measured here from the SIMULATION, after it has run for a while, so a car is
+// wherever the lanes, the junction connectors, the lights and the queues have
+// put it, not wherever it was first placed. Lateral and heading are taken
+// against the edge's own CENTRELINE by nearest point, which is independent of
+// the lane paths the sim builds; the expected lane centres come from
+// data/lanes.ts, which is the layout under test elsewhere (street.check,
+// car.check).
+
+/** Worst distance from a car's centre to the nearest lane centre of its own
+ *  direction, metres. The mitre offset is exact, so this is float slack plus
+ *  the hairpin cap; the old placement was out by 0.4 to 2.8 m. */
+const LANE_ERROR_MAX_M = 0.15;
+/** Worst angle between a car and the centreline tangent, degrees. */
+const HEADING_ERROR_MAX_DEG = 3;
+/** Least distance a car's centre keeps from the line between the two
+ *  directions on a two-way, metres. Half a car's width plus 0.1 m: its flank
+ *  never crosses the centre line. The old placement ran at 0.5 m. */
+const OPPOSING_MIN_M = 1.0;
+/** Least bumper gap between consecutive cars in one lane, metres. */
+const LANE_GAP_MIN_M = 0.45;
+/** Simulated seconds, and the sampling after a warm-up. */
+const SIM_SECONDS = 90;
+const WARMUP_SECONDS = 10;
+const SIM_DT = 1 / 30;
+/** Fraction of the field allowed to be stood still at the peak hour. Lights
+ *  and queues hold about half of it (measured 0.51 in the Loop); a locked grid
+ *  is all of it. */
+const STOPPED_MAX_SHARE = 0.7;
+/** Mean speed the field must keep at the peak hour, m/s. */
+const MEAN_SPEED_MIN_MS = 2.0;
+
+const CITIES_DIR = new URL("../public/cities/", import.meta.url).pathname;
+const { CITIES } = await import("../src/cities");
+const { Origin } = await import("../src/geo");
+
+async function loadRoads(id: string): Promise<RoadPack> {
+  return parseRoadPack(await Bun.file(`${CITIES_DIR}${id}.roads`).arrayBuffer());
+}
+
+/** Nearest point on a polyline, its travel tangent, and the signed lateral of
+ *  (x, z) right of that tangent. */
+/**
+ * Whether (x, z) is inside the zone round a centreline vertex where the road
+ * turns by 3 degrees or more: a hinge the sim rounds off, with no tangent to
+ * measure a heading against. The zone is the half width (an outside lane is
+ * that far from the vertex before it has turned at all) plus 3 m plus
+ * 6 tan(angle / 2), so a 90 degree corner on a 7 m street is 12.5 m and a
+ * 5 degree kink 6.8 m.
+ */
+function inBend(pts: Float32Array, x: number, z: number, halfW: number): boolean {
+  for (let k = 2; k + 2 < pts.length; k += 2) {
+    const ax = pts[k] - pts[k - 2], az = pts[k + 1] - pts[k - 1];
+    const bx = pts[k + 2] - pts[k], bz = pts[k + 3] - pts[k + 1];
+    const c = (ax * bx + az * bz) / ((Math.hypot(ax, az) * Math.hypot(bx, bz)) || 1);
+    const th = Math.acos(Math.max(-1, Math.min(1, c)));
+    if (th < 3 * Math.PI / 180) continue;
+    if (Math.hypot(x - pts[k], z - pts[k + 1]) < halfW + 3 + 6 * Math.tan(th / 2)) return true;
+  }
+  return false;
+}
+
+function onCentreline(pts: Float32Array, x: number, z: number, forward: boolean): { lat: number; tx: number; tz: number; d: number } {
+  let best = Infinity, bl = 0, btx = 1, btz = 0;
+  for (let k = 2; k < pts.length; k += 2) {
+    const ax = pts[k - 2], az = pts[k - 1], bx = pts[k], bz = pts[k + 1];
+    const dx = bx - ax, dz = bz - az;
+    const l2 = dx * dx + dz * dz;
+    if (l2 <= 0) continue;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+    const qx = ax + t * dx, qz = az + t * dz;
+    const d = Math.hypot(x - qx, z - qz);
+    if (d < best) {
+      const L = Math.sqrt(l2);
+      const tx = (forward ? dx : -dx) / L, tz = (forward ? dz : -dz) / L;
+      best = d; btx = tx; btz = tz;
+      bl = (x - qx) * -tz + (z - qz) * tx;
+    }
+  }
+  return { lat: bl, tx: btx, tz: btz, d: best };
+}
+
+/** The lane offsets the analytic traffic used before this change: the running
+ *  HALF width split into lanes, clamped to keep a flank off the parking. The
+ *  vacuity probe for the opposing-lane and lane-error gates. */
+function oldLaneOffsets(r: Road): number[] {
+  const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
+  const lay = laneLayout(r);
+  const strip = Math.max(lay.parkLeftM, lay.parkRightM) > 0
+    ? Math.min(2.2, (2 * half - 3.0) * 0.5) : 0;
+  const running = Math.max(0, half - (strip >= 1.9 ? strip : 0));
+  const n = Math.max(1, Math.floor(running / 3.5));
+  const limit = running - 0.9 - 0.1;
+  const out: number[] = [];
+  for (let k = 0; k < n; k++) out.push(Math.min(limit, (running * (2 * (n - 1 - k) + 1)) / (2 * n)));
+  return out;
+}
+
+interface LaneSample {
+  lat: number;
+  laneErr: number;
+  headErrDeg: number;
+  /** Signed distance to the divider into the car's own half, or null on a one-way. */
+  ownSide: number | null;
+  /** Same with the old offsets, for the probe. */
+  oldOwnSide: number | null;
+  oldLaneErr: number;
+  /** Flank past the running surface edge (positive is into the parking or kerb). */
+  flankOut: number;
+  oneway: boolean;
+  withWay: boolean;
+  /**
+   * Inside a bend's zone (see inBend). The lane and heading bounds are
+   * asserted on the STRAIGHT road outside it; through it the car is held to
+   * the tarmac and to a continuous heading instead (the flank and yaw-step
+   * checks), because the centreline there is a hinge with no tangent.
+   */
+  nearBend: boolean;
+  info: string;
+  dirX: number; dirZ: number; tx: number; tz: number;
+}
+
+interface CityRun {
+  id: string;
+  g: RoadGraph;
+  sim: TrafficSim;
+  lane: LaneSample[];
+  /** Worst metres a connector centre sits outside every carriageway at its junction. */
+  connOut: number;
+  connSamples: number;
+  connOutBowed: number;
+  minLaneGap: number;
+  redRuns: number;
+  redApproaches: number;
+  stoppedShare: number;
+  meanSpeed: number;
+  overlapsOutsideJunctions: number;
+  overlapsInJunctions: number;
+  maxYawStepDeg: number;
+  yawInfo?: string;
+}
+
+function cubic(k: { p0x: number; p0z: number; c1x: number; c1z: number; c2x: number; c2z: number; p1x: number; p1z: number }, t: number): [number, number] {
+  const u = 1 - t;
+  return [
+    u * u * u * k.p0x + 3 * u * u * t * k.c1x + 3 * u * t * t * k.c2x + t * t * t * k.p1x,
+    u * u * u * k.p0z + 3 * u * u * t * k.c1z + 3 * u * t * t * k.c2z + t * t * t * k.p1z,
+  ];
+}
+
+function runCity(id: string, pack: RoadPack, lat: number, lon: number, signals = true): CityRun {
+  const city = (CITIES as { id: string; lat: number; lon: number }[]).find((c) => c.id === id)!;
+  const o = new Origin(city.lat, city.lon);
+  const at = o.toWorld(lat, lon);
+  const g = buildRoadGraph(pack.roads);
+  const sim = new TrafficSim({ graph: g, heightAt: () => 0 }, 9000);
+  sim.signalsEnabled = signals;
+  sim.setRing(at.x, at.z, 950);
+  const run: CityRun = {
+    id, g, sim, lane: [], connOut: -Infinity, connSamples: 0, connOutBowed: -Infinity,
+    minLaneGap: Infinity, redRuns: 0, redApproaches: 0, stoppedShare: 0, meanSpeed: 0,
+    overlapsOutsideJunctions: 0, overlapsInJunctions: 0, maxYawStepDeg: 0,
+  };
+  const pose: Pose = { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 };
+  const lastYaw = new Map<number, number>();
+  const lastInfo = new Map<number, string>();
+  const lastToLine = new Map<number, number>();
+  let stopped = 0, seen = 0, vSum = 0;
+  const steps = Math.round(SIM_SECONDS / SIM_DT);
+  for (let i = 0; i <= steps; i++) {
+    const tSim = i * SIM_DT;
+    // Red-light running: a car that was more than 3 m short of its line on a
+    // red and is past it one step later, without having been committed.
+    for (const c of sim.cars) {
+      if (!c.path || c.s < 0) continue;
+      const sig = sim.signalAt(c.path.he);
+      const toLine = c.path.length - c.s - CAR_LENGTH_M / 2;
+      if (sig === 2) {
+        // Armed when the car is first seen under this red with more than
+        // 3 m to its line and able to stop in it at under 3 m/s^2 (a car
+        // that could not was committed on amber); a red run is an armed car
+        // past its line while still red.
+        if (!lastToLine.has(c.id)) lastToLine.set(c.id, c.v * c.v / (2 * Math.max(0.1, toLine)) < 3 ? toLine : -Infinity);
+        if (lastToLine.get(c.id)! > 3 && toLine < 0) { run.redRuns++; lastToLine.set(c.id, -Infinity); }
+      } else lastToLine.delete(c.id);
+    }
+    if (tSim >= WARMUP_SECONDS) {
+      for (const c of sim.cars) {
+        sim.pose(c, pose);
+        const yaw = Math.atan2(pose.dirX, -pose.dirZ);
+        const ly = lastYaw.get(c.id);
+        if (ly !== undefined) {
+          let d = Math.abs(yaw - ly) * 180 / Math.PI;
+          if (d > 180) d = 360 - d;
+          if (d > run.maxYawStepDeg) {
+            run.maxYawStepDeg = d;
+            run.yawInfo = `car ${c.id} s ${c.s.toFixed(2)} path ${c.path?.he}/${c.path?.lane} len ${c.path?.length.toFixed(1)} conn ${c.conn ? c.conn.length.toFixed(1) : "-"} at ${pose.x.toFixed(1)},${pose.z.toFixed(1)} prev ${lastInfo.get(c.id)}`;
+          }
+        }
+        lastYaw.set(c.id, yaw);
+        lastInfo.set(c.id, `s ${c.s.toFixed(2)} path ${c.path?.he}/${c.path?.lane} at ${pose.x.toFixed(1)},${pose.z.toFixed(1)}`);
+      }
+    }
+    const sampleNow = tSim >= WARMUP_SECONDS && Math.abs(tSim - Math.round(tSim)) < SIM_DT / 2;
+    if (sampleNow) {
+      const poses: { p: Pose; c: Vehicle }[] = [];
+      for (const c of sim.cars) {
+        if (!c.path || c.scale < 1) continue;
+        const p = sim.pose(c, { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 });
+        poses.push({ p, c });
+        seen++;
+        vSum += c.v;
+        if (c.v < 0.3) stopped++;
+        const he = c.path.he;
+        const e = g.edges[he >> 1];
+        const forward = (he & 1) === 0;
+        if (c.s >= 0) {
+          const on = onCentreline(e.pts, p.x, p.z, forward);
+          const lay = laneLayout(e);
+          const lanes = lanesForTravel(lay, forward);
+          const laneErr = Math.min(...lanes.map((l) => Math.abs(on.lat - l)));
+          const cosh = Math.max(-1, Math.min(1, p.dirX * on.tx + p.dirZ * on.tz));
+          const div = lay.dividerM === null ? null : (forward ? lay.dividerM : -lay.dividerM);
+          const old = oldLaneOffsets(e);
+          const oldLat = old[Math.min(c.path.lane, old.length - 1)];
+          const runLo = forward ? lay.runLeftM : -lay.runRightM;
+          const runHi = forward ? lay.runRightM : -lay.runLeftM;
+          run.lane.push({
+            lat: on.lat,
+            laneErr,
+            headErrDeg: Math.acos(cosh) * 180 / Math.PI,
+            ownSide: div === null ? null : on.lat - div,
+            oldOwnSide: div === null ? null : oldLat,
+            oldLaneErr: Math.min(...lanes.map((l) => Math.abs(oldLat - l))),
+            flankOut: Math.max(on.lat + 0.9 - runHi, runLo - (on.lat - 0.9)),
+            oneway: e.oneway,
+            withWay: forward,
+            nearBend: inBend(e.pts, p.x, p.z, lay.widthM / 2),
+            info: `he ${he} lane ${c.path.lane} s ${c.s.toFixed(1)}/${c.path.length.toFixed(1)} edgeLen ${e.lengthM.toFixed(1)} nPts ${e.pts.length / 2} at ${p.x.toFixed(1)},${p.z.toFixed(1)} car ${c.id}`,
+            dirX: p.dirX, dirZ: p.dirZ, tx: on.tx, tz: on.tz,
+          });
+        } else if (c.conn) {
+          // A connector: every point on it must be on the tarmac of a road
+          // meeting at its junction.
+          const node = forward ? e.a : e.b;
+          const incident = [...g.out[node], ...g.into[node]].map((h) => g.edges[h.edge]);
+          const outside = (x: number, z: number): number => {
+            let worst = Infinity;
+            for (const ie of incident) {
+              const d = onCentreline(ie.pts, x, z, true).d - roadWidthM(ie.cls, ie.lanes, ie.flags) / 2;
+              worst = Math.min(worst, d);
+            }
+            return worst;
+          };
+          for (let q = 0; q <= 8; q++) {
+            const [x, z] = cubic(c.conn, q / 8);
+            run.connOut = Math.max(run.connOut, outside(x, z));
+            // The probe: the same connector with its handles thrown outward.
+            const k = c.conn;
+            const bowed = {
+              ...k,
+              c1x: k.p0x - (k.c1x - k.p0x) * 2, c1z: k.p0z - (k.c1z - k.p0z) * 2,
+              c2x: k.p1x - (k.c2x - k.p1x) * 2, c2z: k.p1z - (k.c2z - k.p1z) * 2,
+            };
+            const [bx, bz] = cubic(bowed, q / 8);
+            run.connOutBowed = Math.max(run.connOutBowed, outside(bx, bz));
+            run.connSamples++;
+          }
+        }
+      }
+      // Gaps within each lane.
+      const byPath = new Map<number, Vehicle[]>();
+      for (const { c } of poses) {
+        if (!c.path) continue;
+        const a = byPath.get(c.path.key) ?? [];
+        a.push(c);
+        byPath.set(c.path.key, a);
+      }
+      for (const a of byPath.values()) {
+        a.sort((x, y) => x.s - y.s);
+        for (let k = 1; k < a.length; k++) run.minLaneGap = Math.min(run.minLaneGap, a[k].s - a[k - 1].s - CAR_LENGTH_M);
+      }
+      // Any two bodies overlapping, as oriented rectangles (separating axes).
+      const cell = new Map<string, number[]>();
+      poses.forEach(({ p }, idx) => {
+        const key = `${Math.floor(p.x / 6)},${Math.floor(p.z / 6)}`;
+        const b = cell.get(key) ?? [];
+        b.push(idx);
+        cell.set(key, b);
+      });
+      for (let a = 0; a < poses.length; a++) {
+        const A = poses[a].p;
+        for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+          for (const b of cell.get(`${Math.floor(A.x / 6) + dx},${Math.floor(A.z / 6) + dz}`) ?? []) {
+            if (b <= a) continue;
+            const B = poses[b].p;
+            if (obbOverlap(A, B)) {
+              const inJ = poses[a].c.s < 0 || poses[b].c.s < 0;
+              if (inJ) run.overlapsInJunctions++; else run.overlapsOutsideJunctions++;
+              if (!inJ && process.env.DEBUG && run.overlapsOutsideJunctions <= 4) {
+                const ca = poses[a].c, cb = poses[b].c;
+                console.log("    overlap", ca.id, ca.path!.he, ca.path!.lane, ca.s.toFixed(1), "|", cb.id, cb.path!.he, cb.path!.lane, cb.s.toFixed(1), "at", A.x.toFixed(1), A.z.toFixed(1));
+              }
+            }
+          }
+        }
+      }
+    }
+    sim.step(SIM_DT);
+  }
+  for (let he = 0; he < g.edges.length * 2; he++) if (sim.signalAt(he) !== null) run.redApproaches++;
+  run.stoppedShare = seen ? stopped / seen : 0;
+  run.meanSpeed = seen ? vSum / seen : 0;
+  return run;
+}
+
+/** Two 4.6 x 1.8 m car bodies, centre and heading each, overlapping? */
+function obbOverlap(A: Pose, B: Pose, len = 4.6, wid = 1.8): boolean {
+  const axes = [[A.dirX, A.dirZ], [-A.dirZ, A.dirX], [B.dirX, B.dirZ], [-B.dirZ, B.dirX]];
+  const dx = B.x - A.x, dz = B.z - A.z;
+  for (const [ax, az] of axes) {
+    const ra = (len / 2) * Math.abs(A.dirX * ax + A.dirZ * az) + (wid / 2) * Math.abs(-A.dirZ * ax + A.dirX * az);
+    const rb = (len / 2) * Math.abs(B.dirX * ax + B.dirZ * az) + (wid / 2) * Math.abs(-B.dirZ * ax + B.dirX * az);
+    if (Math.abs(dx * ax + dz * az) > ra + rb) return false;
+  }
+  return true;
+}
+
+console.log("\n--- lane discipline, junctions, lights and gaps, on the real cities ---");
+
+const CITY_POSES: [string, number, number][] = [
+  ["chicago", 41.8800, -87.63233],
+  ["manhattan", 40.75284, -73.98928],
+  ["sf", 37.7885, -122.4222],
+];
+for (const [id, lat, lon] of CITY_POSES) {
+  const pack = await loadRoads(id);
+  const t0 = performance.now();
+  const r = runCity(id, pack, lat, lon);
+  const ms = performance.now() - t0;
+  const all = r.lane;
+  const L = all.filter((x) => !x.nearBend);
+  const worstLane = Math.max(...L.map((x) => x.laneErr));
+  const worstHead = Math.max(...L.map((x) => x.headErrDeg));
+  const two = L.filter((x) => x.ownSide !== null);
+  const worstOwn = Math.min(...two.map((x) => x.ownSide!));
+  const worstFlank = Math.max(...all.map((x) => x.flankOut));
+  console.log(`  ${id}: ${r.sim.cars.length} cars, ${L.length} straight-lane samples (${all.length - L.length} in bends), ${r.connSamples} connector samples, ` +
+    `${(ms / 1000).toFixed(1)} s for ${SIM_SECONDS} simulated s; mean step ${r.sim.stats.lastStepMs.toFixed(2)} ms last`);
+
+  check(`${id}: every moving car is within ${LANE_ERROR_MAX_M} m of a lane centre of its direction`,
+    L.length >= MIN_SAMPLE && worstLane <= LANE_ERROR_MAX_M, `worst ${worstLane.toFixed(3)} m over ${L.length}`);
+  const oldWorst = Math.max(...L.map((x) => x.oldLaneErr));
+  probe(`${id}: the lane test rejects the old run offsets`, oldWorst <= LANE_ERROR_MAX_M, `old placement worst ${oldWorst.toFixed(2)} m`);
+
+  if (process.env.DEBUG) for (const x of L.filter((q) => q.headErrDeg > HEADING_ERROR_MAX_DEG).slice(0, 5)) console.log("    head", x.headErrDeg.toFixed(1), x.info);
+  if (process.env.DEBUG) for (const x of L.filter((q) => q.laneErr > LANE_ERROR_MAX_M).slice(0, 3)) console.log("    lane", x.laneErr.toFixed(2), x.info);
+  check(`${id}: every moving car faces along its lane within ${HEADING_ERROR_MAX_DEG} deg`,
+    worstHead <= HEADING_ERROR_MAX_DEG, `worst ${worstHead.toFixed(2)} deg`);
+  {
+    // Probes on the same samples: the owner's sideways car, and a car only a
+    // little off.
+    const sideways = Math.max(...L.map((x) => Math.acos(Math.max(-1, Math.min(1, -x.dirZ * x.tx + x.dirX * x.tz))) * 180 / Math.PI));
+    probe(`${id}: the heading test rejects every car turned sideways`, sideways <= HEADING_ERROR_MAX_DEG, `worst ${sideways.toFixed(0)} deg`);
+    const c5 = Math.cos(5 * Math.PI / 180), s5 = Math.sin(5 * Math.PI / 180);
+    const off5 = Math.max(...L.map((x) => {
+      const dx = x.dirX * c5 - x.dirZ * s5, dz = x.dirX * s5 + x.dirZ * c5;
+      return Math.acos(Math.max(-1, Math.min(1, dx * x.tx + dz * x.tz))) * 180 / Math.PI;
+    }));
+    probe(`${id}: and every car turned 5 deg`, off5 <= HEADING_ERROR_MAX_DEG, `worst ${off5.toFixed(1)} deg`);
+  }
+
+  check(`${id}: no car on a two-way is within ${OPPOSING_MIN_M} m of the opposing lane`,
+    two.length >= MIN_SAMPLE / 2 && worstOwn >= OPPOSING_MIN_M, `worst ${worstOwn.toFixed(2)} m from the divider over ${two.length}`);
+  {
+    const oldOwn = Math.min(...two.map((x) => x.oldOwnSide!));
+    probe(`${id}: the opposing-lane test rejects the old offsets`, oldOwn >= OPPOSING_MIN_M, `old placement ${oldOwn.toFixed(2)} m from the centreline`);
+  }
+  check(`${id}: no moving car's flank leaves the running surface`, worstFlank <= 0.01,
+    `worst flank ${worstFlank.toFixed(3)} m past it (into parking or kerb)`);
+  probe(`${id}: the flank test rejects every car moved 1.5 m toward its kerb`,
+    Math.max(...L.map((x) => x.flankOut + 1.5)) <= 0.01, "displaced");
+  {
+    const ow = L.filter((x) => x.oneway);
+    const wrong = ow.filter((x) => !x.withWay).length;
+    check(`${id}: every car on a one-way is travelling with it`, ow.length >= MIN_SAMPLE / 2 && wrong === 0, `${wrong} of ${ow.length} against`);
+  }
+  check(`${id}: a car through a junction stays on the tarmac of the roads meeting there`,
+    r.connSamples >= MIN_SAMPLE && r.connOut <= 0.05, `worst centre ${r.connOut.toFixed(2)} m outside every carriageway`);
+  probe(`${id}: the junction test rejects connectors bowed outward`, r.connOutBowed <= 0.05, `bowed worst ${r.connOutBowed.toFixed(1)} m outside`);
+  if (process.env.DEBUG) console.log("    yaw", r.yawInfo);
+  check(`${id}: no car's heading jumps more than 20 deg in one 1/30 s step`, r.maxYawStepDeg <= 20, `worst ${r.maxYawStepDeg.toFixed(1)} deg`);
+
+  check(`${id}: consecutive cars in a lane keep at least ${LANE_GAP_MIN_M} m`, r.minLaneGap >= LANE_GAP_MIN_M,
+    `closest bumper gap ${r.minLaneGap.toFixed(2)} m`);
+  probe(`${id}: the gap test rejects two cars placed 2 m apart centre to centre`, 2 - CAR_LENGTH_M >= LANE_GAP_MIN_M, "-2.8 m");
+  check(`${id}: no two cars overlap outside a junction`, r.overlapsOutsideJunctions === 0,
+    `${r.overlapsOutsideJunctions} pairs; ${r.overlapsInJunctions} inside junction boxes`);
+  probe(`${id}: the overlap test rejects two cars side by side 1 m apart`,
+    !obbOverlap({ x: 0, y: 0, z: 0, dirX: 1, dirZ: 0 }, { x: 0, y: 0, z: 1, dirX: 1, dirZ: 0 }), "1 m apart");
+
+  check(`${id}: no car runs a red it could have stopped for`, r.redApproaches > 50 && r.redRuns === 0,
+    `${r.redRuns} red runs, ${r.redApproaches} signalised approaches in the ring`);
+  check(`${id}: the field flows at the peak hour`,
+    r.stoppedShare <= STOPPED_MAX_SHARE && r.meanSpeed >= MEAN_SPEED_MIN_MS,
+    `${(r.stoppedShare * 100).toFixed(0)}% stood still, mean ${r.meanSpeed.toFixed(1)} m/s`);
+  if (id === "chicago") {
+    // The same counter, on a sim with the lights switched off, judged by
+    // the lit sim's phase table: it must see cars crossing on red.
+    const noLights = runCity(id, pack, lat, lon, false);
+    const lit = new TrafficSim({ graph: noLights.g, heightAt: () => 0 }, 1);
+    const unlit = noLights.sim;
+    const armed = new Map<number, number>();
+    let crossings = 0;
+    for (let i = 0; i < 60 * 30; i++) {
+      lit.time = unlit.time;
+      for (const c of unlit.cars) {
+        if (!c.path || c.s < 0) continue;
+        const sig = lit.signalAt(c.path.he);
+        const toLine = c.path.length - c.s - CAR_LENGTH_M / 2;
+        if (sig === 2) {
+          if (!armed.has(c.id)) armed.set(c.id, c.v * c.v / (2 * Math.max(0.1, toLine)) < 3 ? toLine : -Infinity);
+          if (armed.get(c.id)! > 3 && toLine < 0) { crossings++; armed.set(c.id, -Infinity); }
+        } else armed.delete(c.id);
+      }
+      unlit.step(SIM_DT);
+    }
+    probe(`${id}: the red-light test sees red runs when the lights are off`, crossings === 0, `${crossings} crossings on red`);
+  }
+}
+
+// --- the player is an obstacle -----------------------------------------------
+//
+// SOFT COLLISIONS, from the traffic's side: a player's car standing in a lane
+// is driven up to and queued behind, never through. Probe: the same scenario
+// with the player hidden from the sim, where the stream drives straight
+// through the spot.
+{
+  const pack = await loadRoads("chicago");
+  const g = buildRoadGraph(pack.roads);
+  const city = (CITIES as { id: string; lat: number; lon: number }[]).find((c) => c.id === "chicago")!;
+  const at = new Origin(city.lat, city.lon).toWorld(41.8800, -87.63233);
+  const measure = (withPlayer: boolean): { overlaps: number; closest: number } => {
+    const sim = new TrafficSim({ graph: g, heightAt: () => 0 }, 9000);
+    sim.setRing(at.x, at.z, 950);
+    // Stand the player in the middle of the busiest lane in the ring.
+    let best: { p: ReturnType<TrafficSim["path"]>; n: number } | null = null;
+    for (const c of sim.cars) {
+      const p = c.path!;
+      if (p.length > 60 && (!best || p.cars.length > best.n)) best = { p, n: p.cars.length };
+    }
+    const p = best!.p;
+    const mid = p.xs.length >> 1;
+    const i0 = Math.max(0, mid - 1);
+    const dx = p.xs[i0 + 1] - p.xs[i0], dz = p.zs[i0 + 1] - p.zs[i0];
+    const L = Math.hypot(dx, dz);
+    const player = { x: (p.xs[i0] + p.xs[i0 + 1]) / 2, z: (p.zs[i0] + p.zs[i0 + 1]) / 2, dirX: dx / L, dirZ: dz / L, speed: 0 };
+    // Clear the lane round the player first: it stands where nobody already is.
+    for (const c of sim.cars) {
+      const q = sim.pose(c, { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 });
+      if (Math.hypot(q.x - player.x, q.z - player.z) < 8) c.dead = true;
+    }
+    sim.player = withPlayer ? player : null;
+    let overlaps = 0, closest = Infinity;
+    const pp: Pose = { x: player.x, y: 0, z: player.z, dirX: player.dirX, dirZ: player.dirZ };
+    for (let i = 0; i < 60 * 30; i++) {
+      sim.step(SIM_DT);
+      for (const c of sim.cars) {
+        const q = sim.pose(c, { x: 0, y: 0, z: 0, dirX: 0, dirZ: 0 });
+        const d = Math.hypot(q.x - player.x, q.z - player.z);
+        closest = Math.min(closest, d);
+        if (d < 6 && obbOverlap(q, pp)) overlaps++;
+      }
+    }
+    return { overlaps, closest };
+  };
+  const yes = measure(true);
+  const no = measure(false);
+  check("traffic queues behind a player standing in its lane and never overlaps it",
+    yes.overlaps === 0 && yes.closest < 12, `${yes.overlaps} overlapping car-frames, closest centre ${yes.closest.toFixed(1)} m`);
+  probe("the overlap test sees the stream drive through an unseen player", no.overlaps === 0,
+    `${no.overlaps} overlapping car-frames with the player hidden`);
 }
 
 // --- the longitude fallback -------------------------------------------------

@@ -38,17 +38,15 @@
 // counted per city rather than claimed.
 
 import {
-  LANE_WIDTH_M,
-  parkingStripM,
   roadLiftM,
   roadWidthM,
   RoadClass,
   ROAD_BRIDGE,
-  ROAD_ONEWAY,
   ROAD_TUNNEL,
   type Road,
 } from "./roadpack";
 import { KERB_HEIGHT_M } from "./pavement";
+import { laneLayoutCached } from "./lanes";
 import { deckYAt, type Deck } from "./bridgedeck";
 
 // --- tiling -----------------------------------------------------------------
@@ -480,199 +478,6 @@ export function addLamps(
   return placed;
 }
 
-// --- straight runs ----------------------------------------------------------
-
-/**
- * A stretch of a way straight enough for a car to drive it as one line.
- *
- * WHY RUNS AND NOT SEGMENTS OR EDGES. The motion lives in the vertex shader as
- * a route parameter against a time uniform, so an instance can carry a START
- * and an END and nothing in between; a curve would need a texture lookup per
- * vertex to interpolate. Driving raw OSM segments instead would work and would
- * look wrong, because a digitised straight avenue is thirty segments of forty
- * metres and every car would fade out and back in twice a second.
- *
- * So consecutive segments are merged while the polyline stays inside a corridor
- * about the chord. That corridor is the reason this is gate-able: the car
- * drives the CHORD and the carriageway follows the CENTRELINE, so the merge is
- * exactly the thing that can put a car through a kerb.
- */
-export interface StraightRun {
-  x0: number;
-  z0: number;
-  x1: number;
-  z1: number;
-  lengthM: number;
-  /** Unit direction from (x0,z0) to (x1,z1). */
-  dirX: number;
-  dirZ: number;
-  /** The way's vertex indices the run starts and ends on, so a consumer can
-   *  reach the way's own arc length at either end. */
-  i0: number;
-  i1: number;
-}
-
-/** Runs shorter than this carry no traffic worth drawing. */
-export const RUN_MIN_LENGTH_M = 22;
-
-/**
- * Widest corridor a run may cut off its own centreline, in metres.
- *
- * A ceiling, not the operating value: `runsFor` passes the smaller of this and
- * whatever the carriageway can actually spare once the car's own width and the
- * lane offset are taken out, so a narrow street gets a tighter merge than a
- * boulevard rather than the same one.
- */
-export const RUN_MAX_DEVIATION_M = 0.8;
-
-/** Clearance kept between a car's flank and the kerb, in metres. */
-export const CARRIAGEWAY_MARGIN_M = 0.10;
-
-/** Half the width of every car archetype, in metres. A real car is 1.8 wide. */
-export const CAR_HALF_WIDTH_M = 0.9;
-
-/** Perpendicular distance from point p to the infinite line through a, b. */
-function deviation(
-  ax: number, az: number, dx: number, dz: number, px: number, pz: number,
-): number {
-  return Math.abs((px - ax) * dz - (pz - az) * dx);
-}
-
-/**
- * Split a centreline into straight runs, none deviating from its own polyline
- * by more than `maxDeviationM`.
- *
- * Greedy and forward-only: extend the current run one vertex at a time, and
- * whenever the extension would push ANY vertex already in the run outside the
- * corridor about the NEW chord, close the run at the previous vertex and start
- * again from it. Re-testing the whole run rather than only the new vertex is
- * what makes the corridor a real bound: a gentle curve passes every incremental
- * test and ends up a long way off its own chord.
- */
-export function straightRuns(
-  pts: Float32Array,
-  maxDeviationM: number,
-  minLengthM = RUN_MIN_LENGTH_M,
-): StraightRun[] {
-  const out: StraightRun[] = [];
-  const n = pts.length / 2;
-  if (n < 2 || !(maxDeviationM >= 0)) return out;
-
-  let start = 0;
-  let end = 1;
-  const close = (a: number, b: number): void => {
-    const x0 = pts[a * 2];
-    const z0 = pts[a * 2 + 1];
-    const x1 = pts[b * 2];
-    const z1 = pts[b * 2 + 1];
-    const len = Math.hypot(x1 - x0, z1 - z0);
-    if (len >= minLengthM) {
-      out.push({ x0, z0, x1, z1, lengthM: len, dirX: (x1 - x0) / len, dirZ: (z1 - z0) / len, i0: a, i1: b });
-    }
-  };
-
-  while (end < n) {
-    const candidate = end + 1;
-    if (candidate >= n) break;
-    const x0 = pts[start * 2];
-    const z0 = pts[start * 2 + 1];
-    const cx = pts[candidate * 2];
-    const cz = pts[candidate * 2 + 1];
-    const len = Math.hypot(cx - x0, cz - z0);
-    let ok = len > 1e-6;
-    if (ok) {
-      const dx = (cx - x0) / len;
-      const dz = (cz - z0) / len;
-      for (let i = start + 1; i <= end; i++) {
-        if (deviation(x0, z0, dx, dz, pts[i * 2], pts[i * 2 + 1]) > maxDeviationM) {
-          ok = false;
-          break;
-        }
-      }
-    }
-    if (ok) {
-      end = candidate;
-    } else {
-      close(start, end);
-      start = end;
-      end = start + 1;
-    }
-  }
-  close(start, end);
-  return out;
-}
-
-// --- lanes ------------------------------------------------------------------
-
-/**
- * Half the running surface, in metres: what is left of the carriageway once the
- * kerbside parking has been taken out of both sides.
- */
-export function runningHalfWidthM(r: Road): number {
-  return Math.max(0, roadWidthM(r.cls, r.lanes, r.flags) * 0.5 - parkingStripM(r));
-}
-
-/**
- * Narrowest carriageway that carries moving traffic, as a half width.
- *
- * A single-track service road is 3.5 m kerb to kerb, and a 1.8 m car in the
- * middle of it has 850 mm each side. That is a real alley and a real car and
- * drawing it would be defensible; the reason it is excluded is that the run
- * corridor then has nothing left to spend, so every service road would carry
- * traffic pinned to a corridor of a few centimetres and most of them would
- * produce no runs at all.
- */
-export const TRAFFIC_MIN_HALF_WIDTH_M = 2.6;
-
-/**
- * Where the traffic lanes are, in metres from the centreline, nearest kerb
- * first, for ONE direction of travel.
- *
- * Lanes are spread evenly across the running half width rather than laid out at
- * a fixed 3.5 m pitch, because the width table's `lanes` is a total for both
- * directions and dividing it up twice would leave gaps down the middle of every
- * road that has an odd number.
- *
- * Every offset is clamped so the car's flank stays inside the RUNNING surface,
- * not merely inside the carriageway. That distinction is the whole of "a parked
- * car is never in a traffic lane": on a 7 m residential street with 2 m of
- * parking each side there are three metres left, and a lane centred in half of
- * that puts a 1.8 m car five centimetres into the row of parked cars. Measured,
- * and caught by the gate rather than by reading. The clamp is what makes both
- * invariants true by construction, which is why the gate measures the RESULT of
- * driving rather than re-deriving this formula.
- */
-export function trafficLaneOffsetsM(r: Road): number[] {
-  const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
-  if (half < TRAFFIC_MIN_HALF_WIDTH_M) return [];
-  const running = runningHalfWidthM(r);
-  if (!(running > 0)) return [];
-  const n = Math.max(1, Math.floor(running / LANE_WIDTH_M));
-  const limit = running - CAR_HALF_WIDTH_M - CARRIAGEWAY_MARGIN_M;
-  if (!(limit > 0)) return [];
-  const out: number[] = [];
-  for (let k = 0; k < n; k++) {
-    out.push(Math.min(limit, (running * (2 * (n - 1 - k) + 1)) / (2 * n)));
-  }
-  return out;
-}
-
-/** Corridor a run may cut off its centreline on this road, in metres. */
-export function runDeviationM(r: Road): number {
-  const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
-  const lanes = trafficLaneOffsetsM(r);
-  if (!lanes.length) return 0;
-  const worst = Math.max(...lanes.map(Math.abs));
-  return Math.max(0, Math.min(RUN_MAX_DEVIATION_M, half - worst - CAR_HALF_WIDTH_M - CARRIAGEWAY_MARGIN_M));
-}
-
-/** The straight runs of one way, at that way's own corridor. */
-export function runsFor(r: Road): StraightRun[] {
-  const dev = runDeviationM(r);
-  if (!(dev > 0)) return [];
-  return straightRuns(r.pts, dev);
-}
-
 // --- moving traffic ---------------------------------------------------------
 
 /**
@@ -722,42 +527,9 @@ export const TRAFFIC_SPEED_MS: number[] = [
   0, 0, 0, 0,
 ];
 
-/** One car on the road, as the instance buffer wants it. */
-export interface TrafficInstance {
-  /** Ends of the run it drives, and the lane offset already applied. */
-  x0: number;
-  y0: number;
-  z0: number;
-  x1: number;
-  y1: number;
-  z1: number;
-  /** Where along the run it starts, 0..1. */
-  phase: number;
-  /** Metres per second along the run. */
-  speedMs: number;
-  /** Body archetype and colour seed, both 0..1. */
-  archetype: number;
-  tint: number;
-  /**
-   * Which cars are on the road first, 0..1.
-   *
-   * The field is placed once at the busiest hour and thinned by a uniform (see
-   * data/trafficmodel.ts), so every car needs a stable place in the queue: the
-   * shader keeps the ones whose rank is below the hour's fraction. It has to be
-   * INDEPENDENT of everything else the instance carries. Ranking by `phase`
-   * would empty the start of every run and leave the tail full, which is a
-   * street with a gap in it rather than a quiet street; ranking by `tint` would
-   * take all the red cars off the road first. Hence its own hash multiplier,
-   * and a gate in test/trafficmodel.check.ts that measures the correlation.
-   */
-  rank: number;
-  cls: RoadClass;
-  road: number;
-}
-
 /**
- * A deterministic hash, so the same street has the same traffic on it every
- * time the ring is rebuilt around a camera that came back.
+ * A deterministic hash, so the same street has the same cars on it every time
+ * a ring is rebuilt around a camera that came back.
  *
  * A field that re-randomised on every rebuild would pop a whole block of cars
  * to new places every time the camera crossed a tile boundary, which is far
@@ -766,173 +538,6 @@ export interface TrafficInstance {
 export function hash1(n: number): number {
   const s = Math.sin(n * 12.9898 + 78.233) * 43758.5453;
   return s - Math.floor(s);
-}
-
-/** One straight stretch a car drives, with the carriageway height at each end. */
-interface RunPiece {
-  x0: number;
-  z0: number;
-  y0: number;
-  x1: number;
-  z1: number;
-  y1: number;
-  lengthM: number;
-}
-
-/**
- * How far a car may leave a bridge deck between the two ends of its piece, in
- * metres.
- *
- * A car is a straight line in the shader, `mix(y0, y1, s)`, and the deck is
- * piecewise linear between its breakpoints. A run that spans a breakpoint
- * would cut the corner of the deck, so a bridge run is split wherever the deck
- * bends more than this from the chord. 5 cm is far under the 0.33 m wheel
- * radius that makes a car read as floating or buried.
- */
-const DECK_PIECE_TOL_M = 0.05;
-
-function plainPiece(run: StraightRun, world: StreetWorld, r: Road): RunPiece {
-  const lift = roadLiftM(r.flags, r.layer);
-  return {
-    x0: run.x0, z0: run.z0, y0: world.groundY(run.x0, run.z0) + lift,
-    x1: run.x1, z1: run.z1, y1: world.groundY(run.x1, run.z1) + lift,
-    lengthM: run.lengthM,
-  };
-}
-
-/**
- * A bridge run split at the deck's bends, each piece's ends ON the deck.
- *
- * The ends are the way's own vertices, so a piece's height is the deck at that
- * vertex's arc length, which is exactly the height render/roads.ts gives the
- * ribbon there. Greedy: extend while every vertex in between is within
- * DECK_PIECE_TOL_M of the chord, which leaves a straight deck as one piece.
- */
-function deckPieces(pts: Float32Array, arc: Float64Array, deck: Deck, run: StraightRun): RunPiece[] {
-  const out: RunPiece[] = [];
-  const piece = (a: number, b: number): void => {
-    const x0 = pts[a * 2], z0 = pts[a * 2 + 1], x1 = pts[b * 2], z1 = pts[b * 2 + 1];
-    const len = Math.hypot(x1 - x0, z1 - z0);
-    if (len < 1e-3) return;
-    out.push({ x0, z0, y0: deckYAt(deck, arc[a]), x1, z1, y1: deckYAt(deck, arc[b]), lengthM: len });
-  };
-  let a = run.i0;
-  while (a < run.i1) {
-    let b = a + 1;
-    while (b < run.i1) {
-      const c = b + 1;
-      const ya = deckYAt(deck, arc[a]);
-      const span = arc[c] - arc[a];
-      const yc = deckYAt(deck, arc[c]);
-      let ok = span > 1e-6;
-      for (let k = a + 1; ok && k < c; k++) {
-        const lerp = ya + (yc - ya) * ((arc[k] - arc[a]) / span);
-        if (Math.abs(deckYAt(deck, arc[k]) - lerp) > DECK_PIECE_TOL_M) ok = false;
-      }
-      if (!ok) break;
-      b = c;
-    }
-    piece(a, b);
-    a = b;
-  }
-  return out;
-}
-
-/**
- * Populate one way with moving traffic.
- *
- * Direction: a one-way is driven in the way's own vertex order and in no other,
- * which needs no flag test downstream because the reverse direction is simply
- * never emitted. The baker already reversed the geometry of an `oneway=-1`, so
- * vertex order IS the direction of travel; see osmroads.ts.
- */
-export function addTraffic(
-  out: TrafficInstance[],
-  r: Road,
-  roadIndex: number,
-  world: StreetWorld,
-  densityScale = 1,
-): number {
-  if ((r.flags & ROAD_TUNNEL) !== 0) return 0;
-  if (r.cls >= RoadClass.Pedestrian) return 0;
-  const perKm = (TRAFFIC_PER_KM_LANE[r.cls] ?? 0) * densityScale;
-  const speed = TRAFFIC_SPEED_MS[r.cls] ?? 0;
-  if (!(perKm > 0) || !(speed > 0)) return 0;
-  const lanes = trafficLaneOffsetsM(r);
-  if (!lanes.length) return 0;
-
-  // THE CARRIAGEWAY IS NOT THE TERRAIN. render/roads.ts draws the deck at
-  // roadLiftM above the ground under it, so a vehicle placed at groundY sits
-  // 0.35 m BELOW the tarmac it is supposed to be standing on -- and a road
-  // wheel is 0.33 m in radius, which is why every car in every city was buried
-  // to its axles and looked like it was wading. On a bridge the carriageway is
-  // not the terrain at all but the solved deck; see carriagewayY.
-  const deck = (r.flags & ROAD_BRIDGE) !== 0 && world.deckOf ? world.deckOf(roadIndex) : null;
-  const arc = deck ? arcLengths(r.pts) : null;
-
-  const oneway = (r.flags & ROAD_ONEWAY) !== 0;
-  const runs = runsFor(r);
-  let placed = 0;
-  let seed = roadIndex * 7919 + 13;
-
-  for (let ri = 0; ri < runs.length; ri++) {
-    const run = runs[ri];
-    // The ribbon's v=0 side; the same normal the lamps use.
-    const nx = run.dirZ;
-    const nz = -run.dirX;
-    const pieces = deck && arc ? deckPieces(r.pts, arc, deck, run) : [plainPiece(run, world, r)];
-    for (let dir = 0; dir < (oneway ? 1 : 2); dir++) {
-      // Right-hand traffic: travelling in the way's own direction puts the car
-      // on the v=1 side of the centreline, and travelling against it puts the
-      // car on the v=0 side. Both are the driver's right, which is the only
-      // convention any city with a .roads pack uses; the same statement that
-      // roadgraph.ts's laneOffsetM makes about the player's car.
-      const forward = dir === 0;
-      const sideSign = forward ? -1 : 1;
-      for (let li = 0; li < lanes.length; li++) {
-        const offset = lanes[li] * sideSign;
-        const ox = nx * offset;
-        const oz = nz * offset;
-        for (const pc of pieces) {
-          const ax = (forward ? pc.x0 : pc.x1) + ox;
-          const az = (forward ? pc.z0 : pc.z1) + oz;
-          const bx = (forward ? pc.x1 : pc.x0) + ox;
-          const bz = (forward ? pc.z1 : pc.z0) + oz;
-          const ay = forward ? pc.y0 : pc.y1;
-          const by = forward ? pc.y1 : pc.y0;
-          // Cars on this lane of this piece, from its length and the class density.
-          const want = (pc.lengthM / 1000) * perKm;
-          // The fractional part becomes a probability rather than a rounding, or
-          // every residential street in the city would carry exactly zero cars.
-          seed = seed + 1;
-          const n = Math.floor(want) + (hash1(seed * 1.7) < want - Math.floor(want) ? 1 : 0);
-          for (let c = 0; c < n; c++) {
-            seed = seed + 1;
-            const h = hash1(seed * 3.1);
-            out.push({
-              x0: ax,
-              y0: ay,
-              z0: az,
-              x1: bx,
-              y1: by,
-              z1: bz,
-              // Spread evenly and then jittered, so a lane is a stream with gaps
-              // in it rather than a comb.
-              phase: (c + 0.35 * h) / Math.max(1, n),
-              speedMs: speed * (0.82 + 0.36 * hash1(seed * 5.3)),
-              archetype: hash1(seed * 9.7),
-              tint: hash1(seed * 11.3),
-              rank: hash1(seed * 13.9),
-              cls: r.cls,
-              road: roadIndex,
-            });
-            placed++;
-          }
-        }
-      }
-    }
-  }
-  return placed;
 }
 
 // --- parked cars ------------------------------------------------------------
@@ -960,7 +565,8 @@ export interface ParkedInstance {
   tint: number;
   cls: RoadClass;
   road: number;
-  /** Perpendicular distance from the centreline, for the gate. */
+  /** Signed distance from the centreline, right of the way's vertex order,
+   *  for the gate. */
   offsetM: number;
 }
 
@@ -979,11 +585,11 @@ export function addParked(
   occupancy = PARKING_OCCUPANCY,
 ): number {
   if ((r.flags & ROAD_TUNNEL) !== 0) return 0;
-  const strip = parkingStripM(r);
-  if (!(strip > 0)) return 0;
-  const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
-  // The middle of the parking strip, which runs from the kerb inward.
-  const offset = half - strip * 0.5;
+  // Which kerbs have parking, and how wide, from the one lane layout: a narrow
+  // two-way keeps its parking on one side only so two cars can pass.
+  const lay = laneLayoutCached(r);
+  if (!(lay.parkRightM > 0) && !(lay.parkLeftM > 0)) return 0;
+  const half = lay.widthM * 0.5;
 
   // See addTraffic: the deck is lifted off the terrain and a car stands on
   // the deck.
@@ -997,14 +603,21 @@ export function addParked(
     if (u > total) break;
     const st = stationAt(r.pts, arc, u);
     if (!st) break;
-    const nx = st.dirZ;
-    const nz = -st.dirX;
+    // Right of the way's vertex order, the frame data/lanes.ts works in.
+    const rx = -st.dirZ;
+    const rz = st.dirX;
     for (let s = 0; s < 2; s++) {
+      // s = 0 is the LEFT kerb and s = 1 the right, which keeps the seeds of
+      // the cars that were already there where they were.
+      const strip = s === 0 ? lay.parkLeftM : lay.parkRightM;
+      if (!(strip > 0)) continue;
       const side = s === 0 ? 1 : -1;
       const seed = roadIndex * 131071 + k * 2 + s;
       if (hash1(seed * 1.13 + 0.7) > occupancy) continue;
-      const px = st.x + nx * offset * side;
-      const pz = st.z + nz * offset * side;
+      // The middle of the parking strip, which runs from the kerb inward.
+      const offset = half - strip * 0.5;
+      const px = st.x - rx * offset * side;
+      const pz = st.z - rz * offset * side;
       if (world.occupied && world.occupied(px, pz)) continue;
       if (world.onCarriageway && world.onCarriageway(px, pz, roadIndex)) continue;
       // Facing along the kerb. A parked car points with the traffic on its own
@@ -1022,7 +635,7 @@ export function addParked(
         tint: hash1(seed * 3.9),
         cls: r.cls,
         road: roadIndex,
-        offsetM: offset,
+        offsetM: -offset * side,
       });
       placed++;
     }

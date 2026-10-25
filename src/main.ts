@@ -70,7 +70,6 @@ import {
   trafficState,
   localHour,
   utcOffsetFromLongitude,
-  CLASS_COUNT,
 } from "./data/trafficmodel";
 import { StreetLamps, LAMP_TRIANGLES } from "./render/streetlamps";
 import type { StreetLampUniforms } from "./render/streetlamps";
@@ -382,6 +381,10 @@ async function main() {
   // runs of the same URL is nailed down here in one place.
   const shotMode = new URLSearchParams(location.search).has("shot");
   const shotCam = pinnedCam();
+  const driveFromShot = new URLSearchParams(location.search).has("drive");
+  let driveEntered = false;
+  const _driveFrom = new THREE.Vector3();
+  const _driveStill = new THREE.Vector3();
   const pinScale = Number(new URLSearchParams(location.search).get("scale"));
   if (Number.isFinite(pinScale) && pinScale > 0) {
     quality.pin(pinScale);
@@ -848,11 +851,14 @@ async function main() {
 
     lamps = new StreetLamps(roadPack, streetWorld, sunShadow.uniforms, budget);
     scene.add(lamps.group);
-    traffic = new Traffic(roadPack, streetWorld, sunShadow.uniforms, budget);
-    scene.add(traffic.group);
+    if (roadGraph) {
+      traffic = new Traffic(roadGraph, streetWorld, sunShadow.uniforms, budget);
+      scene.add(traffic.group);
+    }
     parkedCars = new ParkedCars(roadPack, streetWorld, sunShadow.uniforms, budget);
     scene.add(parkedCars.group);
-    streetUniformSets.push(lamps.uniforms, traffic.uniforms, parkedCars.uniforms);
+    streetUniformSets.push(lamps.uniforms, parkedCars.uniforms);
+    if (traffic) streetUniformSets.push(traffic.uniforms);
     console.log(
       `[flyby] street: ${lamps.stats.indexedTiles} tiles of lit carriageway, ` +
       `${surveyedLamps.length} surveyed lamp nodes` +
@@ -1366,15 +1372,8 @@ async function main() {
   let elapsed = 0;
   const bridgeBufferSize = new THREE.Vector2();
 
-  // The traffic model's half of the clock, pushed into the car shaders below.
-  //
-  // `classClock[c]` is seconds of TRAVEL that road class has done, which stops
-  // tracking `elapsed` the moment the class is congested. Kept at double
-  // precision because it is an accumulator that runs for the life of the
-  // session, unlike the frac beside it, which is recomputed from scratch.
+  // The animation clock as of the last traffic step; see the step below.
   let lastElapsed = 0;
-  const classClock = new Float64Array(CLASS_COUNT);
-  const classTraffic = new Float32Array(CLASS_COUNT * 2);
   // The offset the traffic curves are read at, resolved ONCE.
   //
   // Not `timeline?.utcOffsetSeconds ?? 0` at each call site: that makes the
@@ -1408,6 +1407,17 @@ async function main() {
     // drift, the sky and the beacon, and a wall-clock-derived phase is the one
     // thing that would make two runs of the same URL differ.
     if (!shotMode) elapsed += dt;
+
+    // `?drive=1` with a pinned `?cam=`: start IN THE CAR at that pose. The
+    // street-level gates (tools/verify-night.ts) and the before/after shots of
+    // a drive have to photograph what the driver sees, including the car's
+    // own headlights and its lane, and a free camera at eye height has neither.
+    if (driveFromShot && shotCam && car && !carActive && !driveEntered) {
+      driveEntered = true;
+      const w = origin.toWorld(shotCam.lat, shotCam.lon);
+      _driveFrom.set(w.x, shotCam.altM, w.z);
+      if (car.enterFrom(_driveFrom, shotCam.hdgDeg, _driveStill, terrain.heightAt)) carActive = true;
+    }
 
     // --- Which machine is flying ------------------------------------------
     // A tap on the picker is turned into the same toggles V and G raise, so
@@ -1546,7 +1556,7 @@ async function main() {
       // Drained every frame even while paused, for the same reason the drone's
       // is: banked-up mouse travel snaps the view when the pause lets go.
       const ci = input.carAxes();
-      if (!input.paused) car.update(ci, dt, terrain.heightAt);
+      if (!input.paused) car.update(ci, dt, terrain.heightAt, traffic?.sim ?? null);
     }
 
     hud.setLayers(layers.weather);
@@ -1617,7 +1627,7 @@ async function main() {
     // A pinned lens overrides whichever rig just ran. Heading is a COMPASS
     // bearing and the Euler about +y runs the other way, the same sign trap
     // Aircraft.reset carries a note about.
-    if (shotCam) {
+    if (shotCam && !carActive) {
       const w = origin.toWorld(shotCam.lat, shotCam.lon);
       camera.position.set(w.x, shotCam.altM, w.z);
       camera.quaternion.setFromEuler(
@@ -1852,7 +1862,6 @@ async function main() {
     // ring of its own size around the camera; see render/traffic.ts for why the
     // moving cars reach four times further than the parked ones.
     lamps?.update(camera.position.x, camera.position.z);
-    traffic?.update(camera.position.x, camera.position.z);
     parkedCars?.update(camera.position.x, camera.position.z);
     bridges?.update(camera, renderer.getDrawingBufferSize(bridgeBufferSize).y, elapsed);
     for (const u of streetUniformSets) {
@@ -1869,42 +1878,21 @@ async function main() {
       u.uTurbidity.value = light.turbidity;
       u.uCamAltitude.value = camAlt;
     }
-    // THE HOUR OF THE DAY, on the traffic. Two numbers per road class: how much
-    // of the placed peak density is out, and a clock that has been integrated
-    // at that class's own congested speed.
+    // THE HOUR OF THE DAY, on the traffic: how much of the placed peak is out
+    // and how fast it goes, per road class. The sim steps on the delta of
+    // `elapsed`, which `?shot` holds at zero, so a pinned pose photographs the
+    // field exactly as it was placed and two runs of one URL agree.
     //
-    // Integrated against the DELTA OF `elapsed`, which is what keeps `?shot`
-    // reproducible: in shot mode `elapsed` never moves, so `dEl` is zero for
-    // ever and every class clock stays at zero however long the page is open.
-    // Integrating wall clock here, or reading the scene clock directly, would
-    // put the cars somewhere different on every run of the same pinned URL.
-    //
-    // And it is an integral rather than a multiplier because the shader is at
-    // fract(phase + clock * rate): scaling the rate would move every car the
-    // instant the hour changed, which under a dragged scrubber or a 600x
-    // timelapse is the whole city jumping. Changing only the derivative leaves
-    // every car exactly where it was.
-    const dEl = elapsed - lastElapsed;
-    lastElapsed = elapsed;
     // `now` and not a fresh sceneNow(): the same instant the sun was placed at
     // this frame, so a scrubbed 08:00 has both the light and the rush hour of
-    // 08:00. It also saves a Date allocation on every frame.
+    // 08:00.
+    const dEl = elapsed - lastElapsed;
+    lastElapsed = elapsed;
     const ts = trafficState(now, trafficUtcOffset, wx);
     trafficNow = ts;
-    for (let c = 0; c < CLASS_COUNT; c++) {
-      classClock[c] += dEl * ts.speed[c];
-      classTraffic[c * 2] = ts.frac[c];
-      classTraffic[c * 2 + 1] = classClock[c];
-    }
-    for (const u of [traffic, parkedCars]) {
-      if (!u) continue;
-      // The animation clock, and nothing else: the car shader takes its sky
-      // reflection from the SH probe rather than from the prefiltered cube, so
-      // unlike the roads it has no environment map to point at. The animation
-      // clock is what `?shot` holds at zero, so traffic that moved on wall-clock
-      // phase would make two runs of the same pinned URL differ.
-      u.uniforms.uTime.value = elapsed;
-      u.uniforms.uClassTraffic.value.set(classTraffic);
+    if (traffic) {
+      traffic.sim.player = carActive && car ? car.obstacle() : null;
+      traffic.update(camera.position.x, camera.position.z, dEl, ts);
     }
 
     for (const fol of canopies) {

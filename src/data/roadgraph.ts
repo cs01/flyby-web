@@ -50,11 +50,9 @@ import {
   RoadClass,
   ROAD_ONEWAY,
   ROAD_TUNNEL,
-  LANE_WIDTH_M,
-  parkingStripM,
-  roadWidthM,
   type Road,
 } from "./roadpack";
+import { laneLayoutCached, lanesForTravel } from "./lanes";
 
 /**
  * How far apart two vertices may be and still be the same junction, in metres.
@@ -89,34 +87,18 @@ export function isDriveable(r: Road): boolean {
 
 /**
  * Where the car sits across the carriageway, in metres to the RIGHT of the
- * direction of travel.
+ * direction of travel: the centre of the kerb-side traffic lane.
  *
- * The centre of the kerb-side lane, derived from roadpack's width table and
- * lane width and from nothing else, so the tarmac and the car cannot disagree
- * about where the lane is. All four cities with a .roads pack drive on the
- * right; this is the one place that assumption is written down.
+ * Read from data/lanes.ts, the same layout the moving traffic and the parked
+ * cars are placed from, so the player's lane and the traffic's lane are one
+ * lane. `forward` is the half-edge's direction relative to the way's vertex
+ * order; on a one-way only `true` exists.
  *
- * A one-way needs no special case and deliberately does not get one: the offset
- * is relative to the direction of TRAVEL, and on a one-way the direction of
- * travel is the way's own direction, so the same formula puts the car in the
- * kerb lane of a one-way and on the correct side of a two-way whichever end it
- * entered from.
- *
- * A single-track service road comes out at 0, which is right: an alley has one
- * lane and its centre is the centreline.
- *
- * THE KERB LANE IS NOT THE KERBSIDE LANE. On a street with parking, the lane
- * against the kerb is full of parked cars, and the nearside lane a driver can
- * actually use starts inboard of them. Before there were parked cars this file
- * could ignore that; it cannot now, because the player would be steering
- * through a row of stationary vehicles at eye height. So the parking strip
- * comes off first, taken from roadpack.ts, which is the one place a width is
- * decided. On a narrow residential street the answer is zero, which is correct
- * and is what such a street does: traffic runs down the middle and pulls in.
+ * All four cities with a .roads pack drive on the right; data/lanes.ts is
+ * where that assumption is written down.
  */
-export function laneOffsetM(r: Road): number {
-  const half = roadWidthM(r.cls, r.lanes, r.flags) * 0.5;
-  return Math.max(0, half - parkingStripM(r) - LANE_WIDTH_M * 0.5);
+export function laneOffsetM(r: Road, forward = true): number {
+  return lanesForTravel(laneLayoutCached(r), forward)[0];
 }
 
 /**

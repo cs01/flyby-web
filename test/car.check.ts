@@ -56,7 +56,6 @@ import {
   ROAD_TUNNEL,
   ROAD_BRIDGE,
   RoadClass,
-  LANE_WIDTH_M,
   type Road,
   type RoadPack,
 } from "../src/data/roadpack";
@@ -483,8 +482,12 @@ for (const id of ["sf", "manhattan"]) {
     const half = roadWidthM(e.cls, e.lanes, e.flags) * 0.5;
     const want = laneOffsetM(e);
     // The formula, checked against the width table independently of the code
-    // that produced it.
-    if (Math.abs(want - Math.max(0, half - parkStrip(e) - LANE_WIDTH_M * 0.5)) > MAX_LANE_ERROR_M) {
+    // that produced it: a one-way spreads its lanes over the whole running
+    // surface between the two parking strips, at no less than 2.9 m a lane,
+    // and the kerb lane is the rightmost of them.
+    const run = 2 * (half - parkStrip(e));
+    const nLanes = Math.max(1, Math.floor(run / 2.9 + 1e-6));
+    if (Math.abs(want - (half - parkStrip(e) - run / (2 * nLanes))) > MAX_LANE_ERROR_M) {
       wrongWidth++;
     }
 

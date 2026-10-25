@@ -67,7 +67,8 @@ export interface Pose {
    * capture an empty field and report it as the live path working.
    */
   waitFor?: { expr: string; timeoutMs: number; why: string };
-  /** Extra query parameters for this pose alone, e.g. a traffic fixture. */
+  /** Extra query parameters for this pose alone: a traffic fixture, or
+   *  `drive=1` to start in the car at the pinned camera. */
   query?: string;
 }
 
@@ -684,6 +685,41 @@ export const POSES: Pose[] = [
     },
   },
   ...cloudPoses(),
+  {
+    // THE OWNER'S REPORT, reproduced: in the car on LaSalle Street in the Loop
+    // at dusk, looking north up the carriageway. `drive=1` puts the player's
+    // car on the nearest road at this pose, so what is photographed is the
+    // driver's view: its own lane, its own headlights, and the traffic round
+    // it. 20:45 CDT is a quarter of an hour after sunset on the solstice.
+    name: "chicago-drive-dusk",
+    city: "chicago",
+    lat: 41.8800, lon: -87.63233, altM: 190, hdgDeg: 0, pitchDeg: 0,
+    t: D("2025-06-22T01:45:00Z"),
+    wx: CLEAR,
+    what: "Chicago Loop from the driver's seat at dusk",
+    query: "drive=1",
+  },
+  {
+    name: "chicago-drive-night",
+    city: "chicago",
+    lat: 41.8800, lon: -87.63233, altM: 190, hdgDeg: 0, pitchDeg: 0,
+    t: D("2025-06-22T03:30:00Z"), // 22:30 CDT
+    wx: CLEAR,
+    what: "Chicago Loop from the driver's seat at night",
+    query: "drive=1",
+  },
+  {
+    // Seventh Avenue, a three-lane one-way southbound in the pack, from the driver's seat.
+    // The one-way case: every lane carries traffic the same way, so cars have
+    // to fill the whole carriageway rather than the right half of it.
+    name: "manhattan-drive-night",
+    city: "manhattan",
+    lat: 40.75284, lon: -73.98928, altM: 20, hdgDeg: 209, pitchDeg: 0,
+    t: D("2025-06-22T02:30:00Z"), // 22:30 EDT
+    wx: CLEAR,
+    what: "Manhattan's Seventh Avenue from the driver's seat at night",
+    query: "drive=1",
+  },
 ];
 
 /**
