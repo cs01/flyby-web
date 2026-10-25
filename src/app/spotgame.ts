@@ -23,7 +23,7 @@ import { planesApi } from "./airtraffic";
  * airport the forty aircraft on the apron all sat on the centre pixel.
  */
 const RADAR_STEPS = [2000, 5000, 10000, 20000];
-const RADAR_FIT = 8;
+const RADAR_FIT = 5;
 /** Device pixels across the radar canvas; CSS size is set in style.css. */
 const RADAR_PX = 260;
 /** Callsigns printed on the radar: the nearest few, or it becomes a list. */
@@ -149,7 +149,7 @@ export class SpotGame {
       .slice(0, 60)
       .map(
         (s) =>
-          `<li class="t-${s.tier}"><b>${esc(s.flight || s.reg || s.hex)}</b> ${esc(s.type)} <i>${esc(s.airline)}</i>` +
+          `<li class="t-${s.tier}"><b>${esc(s.flight || s.reg || s.hex)}</b> ${esc(s.type)} <i>${esc(s.airlineName || s.airline)}</i>` +
           `<small>${esc(s.city)} · ${new Date(s.t).toLocaleDateString()} · +${s.points}</small></li>`,
       )
       .join("");
@@ -294,7 +294,11 @@ export class SpotGame {
       reg: i.reg,
       type: i.type,
       desc: i.desc,
-      airline: route?.airline || airlineOf(i.flight) || (i.mil ? "military" : "private"),
+      // Keyed by the ICAO prefix so "AAL" from a callsign and "American
+      // Airlines" from a route lookup are one airline in the counts; the name
+      // is kept for display.
+      airline: airlineOf(i.flight) || (i.mil ? "military" : "private"),
+      airlineName: route?.airline || "",
       route: route ? `${route.from.code} → ${route.to.code}` : "",
       altFt: i.altFt ?? 0,
       distM: Math.round(dist),
@@ -318,7 +322,7 @@ export class SpotGame {
       `<div class="spot-tier">${TIER_LABEL[tier]} · +${res.points}</div>` +
       `<h2>${esc(spot.flight || spot.reg || spot.hex.toUpperCase())} <span>${esc(spot.type)}</span></h2>` +
       `<div class="spot-badges">${badges}</div>` +
-      `<div>${spot.airline !== "private" ? esc(spot.airline) : ""}${spot.route ? ` · ${esc(spot.route)}` : ""}</div>` +
+      `<div>${spot.airline !== "private" ? esc(spot.airlineName || spot.airline) : ""}${spot.route ? ` · ${esc(spot.route)}` : ""}</div>` +
       `<small>${esc([spot.reg, spot.desc].filter(Boolean).join(" · "))}</small>` +
       `<small>${spot.altFt.toLocaleString()} ft · ${spot.distM.toLocaleString()} m away · ${new Date(spot.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · ${esc(spot.city)}</small>`;
     this.card.style.display = "";

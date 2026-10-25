@@ -568,8 +568,9 @@ html, body {
    pointer events, and none of them sits where a flying thumb rests. */
 .spot-radar {
   position: absolute;
-  right: 14px;
-  bottom: 202px;
+  /* Beside the minimap, not above it: above it is the throttle's column. */
+  right: 184px;
+  bottom: 34px;
   width: 130px;
   height: 130px;
   border-radius: 50%;
@@ -654,8 +655,8 @@ html, body {
 .spot-badges em.new { color: #ffd166; font-weight: 700; }
 .spot-btn {
   position: absolute;
-  top: calc(56px + env(safe-area-inset-top));
-  right: calc(14px + env(safe-area-inset-right));
+  bottom: 202px;
+  right: 14px;
   padding: 5px 9px;
   border: 1px solid rgba(255, 209, 102, 0.5);
   border-radius: 6px;
@@ -668,7 +669,7 @@ html, body {
   z-index: 6;
 }
 .spot-log {
-  top: 92px;
+  bottom: 236px;
   right: 14px;
   width: 300px;
   max-height: 70vh;
@@ -692,9 +693,10 @@ html, body {
 }
 @media (max-width: 760px), (pointer: coarse) {
   .spot-radar { width: 104px; height: 104px; right: calc(8px + env(safe-area-inset-right)); bottom: calc(134px + env(safe-area-inset-bottom)); }
+  .spot-btn { bottom: auto; top: calc(56px + env(safe-area-inset-top)); right: calc(14px + env(safe-area-inset-right)); }
   /* Clean view has no minimap, so the radar takes its corner. */
   #ui.clean > .spot-radar { bottom: calc(10px + env(safe-area-inset-bottom)); }
-  .spot-log { left: 50%; right: auto; transform: translateX(-50%); width: min(320px, 90vw); }
+  .spot-log { top: 92px; bottom: auto; left: 50%; right: auto; transform: translateX(-50%); width: min(320px, 90vw); }
 }
 
 /* --- The street sign ------------------------------------------------------ */

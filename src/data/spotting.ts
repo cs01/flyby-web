@@ -116,7 +116,10 @@ export interface Spot {
   reg: string;
   type: string;
   desc: string;
+  /** ICAO airline prefix ("DAL"), or "private"/"military": the collection key. */
   airline: string;
+  /** The airline's name when the route lookup knew it, for display. */
+  airlineName?: string;
   route: string;
   altFt: number;
   distM: number;
