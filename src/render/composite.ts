@@ -700,6 +700,14 @@ export interface CompositeOptions {
   tier: "full" | "reduced";
   /** `?clouddebug=1`: present the measurement frame; see PRESENT_FRAG. */
   debug?: boolean;
+  /**
+   * `?cloudbench=N`: draw the cloud passes N extra times a frame, so their
+   * cost stands out of a frame time that other GPU users make noisy:
+   * (ms(N) - ms(0)) / N is the cost of one frame's march and shadow map
+   * (the reconstruct, a half-res copy, is left out: it would read the
+   * buffer it writes).
+   */
+  benchRepeats?: number;
   /** `?cloudwm=0`: uniform coverage instead of the weather map (a gate probe). */
   uniformCoverage?: boolean;
   /** `?cloudflatbase=0`: the old wandering base profile (a gate probe). */
@@ -809,6 +817,7 @@ export class Composite {
   private shadowOn = false;
   private sunUniforms: SunShadowUniforms | null = null;
 
+  private readonly benchRepeats: number;
   private readonly shapeNoise: THREE.Data3DTexture;
   private readonly detailNoise: THREE.Data3DTexture;
   private readonly weatherMap: THREE.DataTexture;
@@ -823,6 +832,7 @@ export class Composite {
     console.log(`[flyby] cloud noise baked in ${(performance.now() - bakeStart).toFixed(0)} ms`);
 
     const reduced = opts.tier === "reduced";
+    this.benchRepeats = opts.benchRepeats ?? 0;
     this.uniforms = {
       uDepth: { value: null },
       uInvProj: { value: new THREE.Matrix4() },
@@ -982,6 +992,14 @@ export class Composite {
     this.uniforms.uDepth.value = depth;
     renderer.setRenderTarget(this.march);
     renderer.render(this.marchScene, this.camera);
+    for (let i = 0; i < this.benchRepeats; i++) {
+      renderer.render(this.marchScene, this.camera);
+      if (this.shadowOn) {
+        renderer.setRenderTarget(this.shadowMap);
+        renderer.render(this.shadowScene, this.camera);
+      }
+      renderer.setRenderTarget(this.march);
+    }
 
     const [read, write] = this.history;
     const ru = this.reconUniforms;

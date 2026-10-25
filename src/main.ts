@@ -356,6 +356,7 @@ async function main() {
     debug: cloudQ.get("clouddebug") === "1",
     uniformCoverage: cloudQ.get("cloudwm") === "0",
     oldBase: cloudQ.get("cloudflatbase") === "0",
+    benchRepeats: Number(cloudQ.get("cloudbench") ?? 0) || 0,
   });
   const target = createSceneTarget(renderer, budget);
   // The previous frame, for the water's screen-space reflections.
