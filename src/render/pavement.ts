@@ -87,6 +87,8 @@ import {
  * uFadeFar costs one comparison and a killed fragment.
  */
 const FADE_NEAR_M = 170;
+/** Most of a frame a tile crossing may spend building pavement, ms. */
+const SLICE_MS = 2;
 const FADE_FAR_M = 330;
 
 /**
@@ -516,17 +518,40 @@ export class Pavement {
    * Follow a camera. Safe to call every frame; it does nothing until the camera
    * has crossed into a different tile, which at 400 m is every eighteen seconds
    * at the car's top speed and never at all in a fixed pose.
+   *
+   * The tiles a crossing brings in are built a few at a time, at most
+   * SLICE_MS of them a frame, nearest first. All at once, a crossing over
+   * Manhattan or the Loop was the longest frame of a flight on the phone
+   * profile (4x and 6x CPU throttle, tools/jank.ts): 170 and 224 ms of the
+   * long frames' CPU went to this one call. The first fill, at load, is still
+   * built in one go, so a `?shot` pose has every kerb before it is captured.
    */
   update(camX: number, camZ: number): void {
     const tx = Math.floor(camX / PAVEMENT_TILE_M);
     const tz = Math.floor(camZ / PAVEMENT_TILE_M);
-    if (tx === this.atX && tz === this.atZ) return;
-    this.atX = tx;
-    this.atZ = tz;
+    if (tx !== this.atX || tz !== this.atZ) {
+      const first = !Number.isFinite(this.atX);
+      this.atX = tx;
+      this.atZ = tz;
+      this.plan(camX, camZ, tx, tz);
+      this.work(first ? Infinity : SLICE_MS);
+      return;
+    }
+    if (this.pending) this.work(SLICE_MS);
+  }
 
-    const t0 = performance.now();
+  /** True while a crossing's tiles are still being built. */
+  get pending(): boolean {
+    return this.queue !== null;
+  }
+
+  private queue: { key: string; x: number; z: number; d2: number }[] | null = null;
+  private queueAt = 0;
+  private keep = new Set<string>();
+  private run = { triangles: 0, ways: 0, clipped: 0, ms: 0 };
+
+  private plan(camX: number, camZ: number, tx: number, tz: number): void {
     const span = Math.ceil(PAVEMENT_RING_M / PAVEMENT_TILE_M) + 1;
-
     // Nearest tile first, so a city denser than the budget loses its outermost
     // ring rather than an arbitrary slice; the same rule render/trees.ts uses.
     const wanted: { key: string; x: number; z: number; d2: number }[] = [];
@@ -544,42 +569,55 @@ export class Pavement {
       }
     }
     wanted.sort((a, b) => a.d2 - b.d2);
+    this.queue = wanted;
+    this.queueAt = 0;
+    this.keep = new Set<string>();
+    this.run = { triangles: 0, ways: 0, clipped: 0, ms: 0 };
+  }
 
-    const keep = new Set<string>();
-    let triangles = 0;
-    let ways = 0;
-    let clipped = 0;
-    for (const w of wanted) {
+  private work(budgetMs: number): void {
+    const q = this.queue;
+    if (!q) return;
+    const t0 = performance.now();
+    const r = this.run;
+    while (this.queueAt < q.length) {
+      const w = q[this.queueAt];
       let tile: Tile | null = this.tiles.get(w.key) ?? null;
       if (!tile) {
         // The budget is checked BEFORE the build, against what is already
         // resident, so a dense city stops adding rings instead of building
         // geometry it then has to throw away.
-        if (triangles >= this.budgetTriangles) { clipped++; continue; }
+        if (r.triangles >= this.budgetTriangles) { r.clipped++; this.queueAt++; continue; }
+        if (performance.now() - t0 >= budgetMs) break;
         tile = this.build(w.key);
+        this.queueAt++;
         if (!tile) continue;
         this.tiles.set(w.key, tile);
         this.group.add(tile.mesh);
+      } else {
+        this.queueAt++;
       }
-      keep.add(w.key);
-      triangles += tile.triangles;
-      ways += tile.ways;
+      this.keep.add(w.key);
+      r.triangles += tile.triangles;
+      r.ways += tile.ways;
     }
+    r.ms += performance.now() - t0;
+    if (this.queueAt < q.length) return;
 
     for (const [key, tile] of this.tiles) {
-      if (keep.has(key)) continue;
+      if (this.keep.has(key)) continue;
       this.group.remove(tile.mesh);
       tile.mesh.geometry.dispose();
       (tile.mesh.material as THREE.Material).dispose();
       this.tiles.delete(key);
     }
-
-    this.stats.tiles = keep.size;
-    this.stats.drawn = ways;
-    this.stats.triangles = triangles;
-    this.stats.clipped = clipped;
-    this.stats.lastBuildMs = performance.now() - t0;
-    this.stats.worstBuildMs = Math.max(this.stats.worstBuildMs, this.stats.lastBuildMs);
+    this.queue = null;
+    this.stats.tiles = this.keep.size;
+    this.stats.drawn = r.ways;
+    this.stats.triangles = r.triangles;
+    this.stats.clipped = r.clipped;
+    this.stats.lastBuildMs = r.ms;
+    this.stats.worstBuildMs = Math.max(this.stats.worstBuildMs, r.ms);
     this.stats.rebuilds++;
   }
 
