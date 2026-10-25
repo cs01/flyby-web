@@ -70,7 +70,22 @@ const STREET_POSES = ["sf-street", "manhattan-7th"];
 // Measured: sf-street 0.0306 (flat 0.0157), manhattan-7th 0.1147 (flat 0.0878;
 // both rose from 0.070 / 0.056 when main's street and traffic work landed in
 // the same frame, which is why the floor is per pose and re-measured).
-const STREET_LC_FLOOR: Record<string, number> = { "sf-street": 0.023, "manhattan-7th": 0.100 };
+// manhattan-7th re-measured 2026-10-25 without the facade reflection (below):
+// 0.0909, flat 0.0666; the floor is 0.080, 20% over the flat facade and 12%
+// under the archetype one. It is lower than 0.100 because the unit changed,
+// not the wall: with the reflection in, the pair was 0.1186 and 0.1065.
+const STREET_LC_FLOOR: Record<string, number> = { "sf-street": 0.023, "manhattan-7th": 0.080 };
+/**
+ * The street-level claim is measured without the facade's screen-space
+ * reflection of the city (?nossr=1), both frames. Re-measured 2026-10-25: the
+ * pack rebake in f04430c re-rolled 7th Avenue's facades, the near walls came
+ * up curtain wall, and the city reflected in them is most of the local
+ * contrast on the pose: 0.1186 with it and 0.0909 without, and on the flat
+ * facade 0.1065 and 0.0666, so ?flatfacade=1 cleared the 0.100 floor and the
+ * claim measured the reflection, not the wall. The reflection has its own
+ * gate (tools/verify-glass.ts); this claim is about brick, joints and sills.
+ */
+const STREET_QUERY = "nossr=1";
 /**
  * Shimmer from the air: mean |frame - frame moved NUDGE_M east| over the
  * facade, divided by the facade's mean luminance. A single frame cannot see
@@ -285,9 +300,11 @@ async function main(): Promise<void> {
   const all = [...STREET_POSES, ...AERIAL_POSES, NIGHT_POSE, ...ROOF_POSES];
   if (!has("reuse")) {
     console.log("rendering the archetype facades ...");
-    await shoot(`${out}/full`, "", all, port, dbg, profile);
+    await shoot(`${out}/full`, "", all.filter((p) => !STREET_POSES.includes(p)), port, dbg, profile);
+    await shoot(`${out}/full`, STREET_QUERY, STREET_POSES, port, dbg, profile);
     console.log("rendering the pre-archetype facades (?flatfacade=1) ...");
-    await shoot(`${out}/flat`, "flatfacade=1", [...STREET_POSES, NIGHT_POSE, ...ROOF_POSES], port, dbg, profile);
+    await shoot(`${out}/flat`, "flatfacade=1", [NIGHT_POSE, ...ROOF_POSES], port, dbg, profile);
+    await shoot(`${out}/flat`, `flatfacade=1&${STREET_QUERY}`, STREET_POSES, port, dbg, profile);
     console.log("rendering the scans without mips (?nomip=1) ...");
     await shoot(`${out}/nomip`, "nomip=1", [...AERIAL_POSES, NIGHT_POSE], port, dbg, profile);
     console.log(`rendering the aerial and night poses ${NUDGE_M} m east, filtered and not ...`);
