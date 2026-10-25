@@ -114,6 +114,34 @@ What exists now, so the next pass starts from it rather than from the plan.
   under a 0.3 m camera move, night lit-window share, roof spread top-down),
   every bound with a probe that runs the old behaviour and fails.
 
-Not done: building:part setbacks (the packs merge no parts), bay windows and
-fire escapes as geometry, geometric cornices, storefront signage, the blind
-Turing score.
+## Second pass, 2026-10-24
+
+- **Massing.** The parts were always in the packs; the outline standing over
+  them was the box. `.city` version 2 (src/data/citypack.ts) adds a record
+  tail: a building:part group id, roof:height, and the OSM material, colour,
+  roof colour, roof material, start_date and levels; the top bit of the kind
+  byte marks a kind inferResidential wrote. osmbuildings.ts `resolveParts`
+  drops an outline its ground-standing parts cover (80%) and otherwise cuts
+  it to the podium under its lowest raised part. A group is one building to
+  the renderer (one archetype, palette and storey grid measured from the
+  ground, one ground anchor shared with the collider). Spires, crown
+  pyramids and domes are geometry. Chicago and San Francisco are re-baked
+  from Overpass; see the bake report in the commit for Manhattan.
+- **Detail layer round the camera** (buildings.ts `updateDetail`), rebuilt
+  every 200 m in 3 ms slices: awnings (700 m), projecting cornices and San
+  Francisco bay windows (900 m), fire escapes as steel (380 m), full water
+  tanks (1.2 km; a 32-triangle far tank stands on every tank roof in the
+  pack). Only on open walls, never in a party wall.
+- **Shopfronts**: a retail room behind the glass, a trade sign per unit from
+  a per-city lettering atlas (render/signs.ts), shutters on closed units at
+  night. **Windows**: air conditioners by archetype, plants, raised sashes.
+- **Night**: floodlit crowns and spires past 150 m, red obstruction lights,
+  street lamps and headlights on facades.
+- **Glass** reflects the city within 900 m through the water's SSR history.
+- **Gates**: verify-buildings adds the setback silhouette (skyline steps
+  over the Empire State, ?flatparts=1 probe) and the night shopfront
+  (ground-storey contrast, ?flatshop=1 probe).
+
+Not done: the blind Turing score; ground floors of residential walk-ups are
+still a plinth and a door (no stoops); fire escapes have no drop ladder; the
+detail layer is not built on live-streamed tiles.

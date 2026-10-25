@@ -101,6 +101,7 @@ const PARAPET_M = 2200;
  * York roof, so the far version stands on every roof that has one.
  */
 const TANK_M = 9000;
+const TANK_M_REDUCED = 2500;
 /**
  * Triangles one tank costs in the STATIC city: the 32-triangle far tank, out
  * to the whole pack (the full 72-triangle one is built round the camera by
@@ -178,7 +179,7 @@ function extrasCost(vertCount: number, e: RoofExtras): number {
  * budget would be a number about walls and the actual triangle count would be
  * whatever the clutter happened to add.
  */
-function solveLod(pack: CityPack, triangleBudget: number, tankAt: (i: number) => boolean): number {
+function solveLod(pack: CityPack, triangleBudget: number, tankAt: (i: number) => boolean, tankM: number): number {
   for (const k of [1, 1.4, 2, 3, 4.5, 7, 11, 18]) {
     let tris = 0;
     for (let i = 0; i < pack.buildings.length; i++) {
@@ -200,7 +201,7 @@ function solveLod(pack: CityPack, triangleBudget: number, tankAt: (i: number) =>
       if (dist < PARAPET_M / k) {
         tris += extrasCost(n, roofExtras(dist, k, h, Math.abs(signedArea(b.ring)), b.kind, b.roof));
       }
-      if (dist < TANK_M / k && b.roof === RoofShape.Flat && tankAt(i)) tris += TANK_TRIS;
+      if (dist < tankM / k && b.roof === RoofShape.Flat && tankAt(i)) tris += TANK_TRIS;
       if (tris > triangleBudget) break;
     }
     if (tris <= triangleBudget) return k;
@@ -3741,7 +3742,11 @@ export class Buildings {
       // six-to-twenty storey roof, wherever the part that carries it starts.
       return wantsWaterTank(ARCHETYPES[c.archetype], b.topM, i);
     };
-    const lodK = solveLod(pack, budget.buildingTriangleBudget, tankAt);
+    // A phone keeps the far tanks inside 2.5 km, where they always were: the
+    // whole pack's 265k triangles moved its LOD solve on Manhattan from k = 3
+    // to 4.5, which drops more buildings than the tanks are worth.
+    const tankM = reduced ? TANK_M_REDUCED : TANK_M;
+    const lodK = solveLod(pack, budget.buildingTriangleBudget, tankAt, tankM);
     const groups = partGroups(pack.buildings);
     const grounds = packGroundY(pack.buildings, groundAt);
     const cells = new Map<string, Scratch>();
@@ -3815,7 +3820,7 @@ export class Buildings {
       // A copy: roofExtras hands back the shared NO_EXTRAS constant, and the
       // tank flag below must not write through it into every building after.
       const extras = { ...roofExtras(dist, lodK, h, area, b.kind, b.roof) };
-      if (dist < TANK_M / lodK && b.roof === RoofShape.Flat && tankAt(i)) {
+      if (dist < tankM / lodK && b.roof === RoofShape.Flat && tankAt(i)) {
         extras.tank = true;
         this.tankOf.add(i);
         tanks++;
