@@ -32,6 +32,11 @@ function arg(name: string, fallback: string): string {
 }
 const has = (name: string): boolean => process.argv.includes(`--${name}`);
 
+/** The bench batches when the page runs `?perfbench`, else the rAF intervals. */
+const TRACE =
+  "(window.flybyShot.benchTrace && window.flybyShot.benchTrace().length) ? " +
+  "window.flybyShot.benchTrace() : window.flybyShot.frameTrace()";
+
 /** This harness's own Chrome profile, which `othersBusy` leaves out. */
 let PROFILE_DIR = "/tmp/flyby-perf-profile";
 
@@ -210,13 +215,23 @@ export async function measure(
   await cdp.waitFor("!(window.__flybyMaterialsPending > 0)", 120_000, `${p.name} materials`);
   // Shader compiles, mip generation and the city shadow map's first draw all
   // land in the first frames after the load; none of them is steady state.
+  // By the clock, not by frames: the camera detail layer builds in 3 ms
+  // slices and streamed materials land over seconds, and a bench batch is six
+  // frames, so 150 frames was under a second of warm-up. Loads of one pose
+  // then disagreed by up to 50%.
   const at = await cdp.eval<number>("window.flybyShot.frames");
-  await cdp.waitFor(`window.flybyShot.frames > ${at + 150}`, 60_000, `${p.name} warm-up`);
+  await cdp.waitFor(`window.flybyShot.frames > ${at + 60}`, 60_000, `${p.name} warm-up`);
+  await Bun.sleep(Number(arg("warmup", "6000")));
   const { load } = await machineLoad(profileDir);
   await cdp.eval("window.flybyShot.resetTiming(); window.flybyShot.resetProfile()");
   await cdp.waitFor(`window.flybyShot.timed > ${frames}`, 120_000, `${p.name} sample`);
-  const frameMs = await cdp.eval<{ mean: number; p99: number; median?: number }>("window.flybyShot.frameMs()");
-  frameMs.median = median(await cdp.eval<number[]>("window.flybyShot.frameTrace()"));
+  const trace = await cdp.eval<number[]>(TRACE);
+  const sorted = [...trace].sort((a, b) => a - b);
+  const frameMs = {
+    mean: trace.reduce((a, b) => a + b, 0) / Math.max(1, trace.length),
+    p99: sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.99))] ?? 0,
+    median: median(trace),
+  };
   const r = await cdp.eval<{ frames: number; gpu: Record<string, number>; cpu: Record<string, number> }>(
     "window.flybyShot.profile()",
   );
@@ -234,21 +249,22 @@ export const TOGGLES = [
 ];
 
 /**
- * Mean frame interval over `frames` frames with `off` switched off: the
- * throughput, which is what decides whether the frame rate holds.
+ * Frame cost with `off` switched off, in ms: the mean of `?perfbench`'s
+ * batches (main.ts), each K frames drawn back to back and drained once.
  *
- * Not the median, and not with the GPU drained (`--sync`, `?perfsync`). Both
- * were tried. Uncapped, frames race and stall, so the median lands in the
- * race. Drained every frame, the GPU idles while the CPU works and the M4 then
- * flips between two clock states for ~15 s at a time: chicago-street read a
- * 20 ms median for one stretch and 54 ms for the next with nothing else on the
- * machine. Undrained, the mean of 3 s windows on the same pose held 16.7 to
- * 17.3 ms over fourteen windows in a row.
+ * Three other measures were tried and each failed on this M4. The median of
+ * uncapped rAF intervals lands in the race between stalls. Draining every
+ * frame idles the GPU while the CPU works, and it then drops to a slow clock
+ * for seconds at a time (chicago-street read a 20 ms median, then 54). The
+ * mean of uncapped intervals is stable over one load but Chrome sometimes
+ * paces a load at exactly half rate (manhattan-cruise 29.7 ms one load, 58.9
+ * the next). Batched, fourteen 3 s windows of manhattan-cruise all read
+ * 29.4 to 30.3 ms. `--raf` goes back to rAF intervals.
  */
 async function frameWith(cdp: Cdp, off: string[], frames: number): Promise<number> {
   await cdp.eval(`window.flybyShot.setOff(${JSON.stringify(off)})`);
   const at = await cdp.eval<number>("window.flybyShot.frames");
-  await cdp.waitFor(`window.flybyShot.frames > ${at + 20}`, 60_000, "toggle settle");
+  await cdp.waitFor(`window.flybyShot.frames > ${at + 12}`, 60_000, "toggle settle");
   // Retried while another agent's Chrome is rendering: its bursts are a few
   // seconds long and doubled this page's frame time for exactly that long
   // (24 ms against 54 ms medians on chicago-cruise, alternating), which a
@@ -257,7 +273,7 @@ async function frameWith(cdp: Cdp, off: string[], frames: number): Promise<numbe
     while (othersBusy(PROFILE_DIR, 1) >= 15) await Bun.sleep(2000);
     await cdp.eval("window.flybyShot.resetTiming()");
     await cdp.waitFor(`window.flybyShot.timed > ${frames}`, 120_000, "toggle sample");
-    const t = await cdp.eval<number[]>("window.flybyShot.frameTrace()");
+    const t = await cdp.eval<number[]>(TRACE);
     const m = t.reduce((a, b) => a + b, 0) / Math.max(1, t.length);
     if (othersBusy(PROFILE_DIR, 1) < 15 || tries >= 5) return m;
   }
@@ -278,27 +294,30 @@ export async function attribute(cdp: Cdp, frames: number, base: string[] = []):
   Promise<{ base: number; drift: number; floor: number; delta: Record<string, number> }> {
   const present = await cdp.eval<string[]>("window.flyby.scene.children.map((c) => c.name)");
   const toggles = TOGGLES.filter((t) => TOGGLES.indexOf(t) < 8 || present.includes(t)).filter((t) => !base.includes(t));
-  // Every toggle is SANDWICHED between two base samples, and kept only when
-  // the two agree within 8%. Something on this machine (the other agent's
-  // Chrome in bursts too short for ps to see, or the GPU changing clock state)
-  // doubles the frame time for seconds at a time, and a sweep that sampled the
-  // base once read deltas of -30 ms for things that cost nothing.
+  // PAIRED, short and many: `pairs` pairs of short windows, base and toggled
+  // side by side (in ABBA order, so a trend cancels), and the median of the
+  // pairwise differences. This is a fanless MacBook Air: under sustained load
+  // the GPU throttles, and the same frame wanders between 30 and 60 ms over a
+  // few seconds. One window of each, seconds apart, read -20 ms for taking the
+  // terrain away; two windows a fraction of a second apart see the same clock.
   const bases: number[] = [];
   const delta: Record<string, number> = {};
+  const pairs = Number(arg("pairs", "6"));
   const sandwich = async (off: string[]): Promise<number> => {
-    let best = { spread: Infinity, d: 0 };
-    for (let tries = 0; tries < 5; tries++) {
-      const a1 = await frameWith(cdp, base, frames);
-      const t = await frameWith(cdp, off, frames);
-      const a2 = await frameWith(cdp, base, frames);
-      const spread = Math.abs(a1 - a2) / Math.min(a1, a2);
-      if (spread < best.spread) best = { spread, d: (a1 + a2) / 2 - t };
-      if (spread < 0.08) {
-        bases.push(a1, a2);
-        break;
+    const d: number[] = [];
+    for (let i = 0; i < pairs; i++) {
+      let a: number, t: number;
+      if (i % 2 === 0) {
+        a = await frameWith(cdp, base, frames);
+        t = await frameWith(cdp, off, frames);
+      } else {
+        t = await frameWith(cdp, off, frames);
+        a = await frameWith(cdp, base, frames);
       }
+      bases.push(a);
+      d.push(a - t);
     }
-    return best.d;
+    return median(d);
   };
   for (const t of toggles) delta[t] = await sandwich([...base, t]);
   const offAll = await sandwich([...base, ...toggles]);
@@ -367,7 +386,7 @@ async function main(): Promise<void> {
   const only = arg("only", "");
   const tier = arg("viewport", "");
   const frames = Number(arg("frames", "180"));
-  const extra = [`gpuprof=${has("objects") ? "objects" : arg("mode", "")}`, has("sync") ? "perfsync" : "", arg("query", "")].filter(Boolean).join("&");
+  const extra = [`gpuprof=${has("objects") ? "objects" : arg("mode", "")}`, has("sync") ? "perfsync" : "", has("raf") ? "" : `perfbench=${arg("bench", "6")}`, arg("query", "")].filter(Boolean).join("&");
   const outFile = arg("out", "");
   const compareFile = arg("compare", "");
   const compare = compareFile ? (JSON.parse(readFileSync(compareFile, "utf8")) as PoseResult[]) : null;
