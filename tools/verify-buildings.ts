@@ -56,8 +56,10 @@ function probe(label: string, checkerSaidOk: boolean, detail: string): void {
 
 /** Street-level relative local contrast over the facade, floor. */
 const STREET_POSES = ["sf-street", "manhattan-7th"];
-// Measured: sf-street 0.0306 (flat 0.0157), manhattan-7th 0.0702 (flat 0.0557).
-const STREET_LC_FLOOR: Record<string, number> = { "sf-street": 0.023, "manhattan-7th": 0.063 };
+// Measured: sf-street 0.0306 (flat 0.0157), manhattan-7th 0.1147 (flat 0.0878;
+// both rose from 0.070 / 0.056 when main's street and traffic work landed in
+// the same frame, which is why the floor is per pose and re-measured).
+const STREET_LC_FLOOR: Record<string, number> = { "sf-street": 0.023, "manhattan-7th": 0.100 };
 /**
  * Shimmer from the air: mean |frame - frame moved NUDGE_M east| over the
  * facade, divided by the facade's mean luminance. A single frame cannot see
@@ -76,6 +78,13 @@ const AERIAL_SHIMMER_CEILING: Record<string, number> = { "chicago-loop-day": 0.0
 const NIGHT_POSE = "manhattan-night";
 // Measured 12.0%; the pre-archetype night 0.76%.
 const NIGHT_LIT_FLOOR = 0.05;
+/**
+ * Night shimmer ceiling: see the aerial shimmer above. Measured 0.0840 with the
+ * box-filtered windows and the softened tenancy blocks (0.1016 before the
+ * softening), 0.1785 point-sampled (?nomip=1). Part of what is left is honest
+ * parallax: the near blocks really do move by a pixel or two.
+ */
+const NIGHT_SHIMMER_CEILING = 0.11;
 /** Roof spread: sd(lum)/mean(lum) of per-roof means, and mean chroma distance. */
 const ROOF_POSES = ["manhattan-topdown", "sf-topdown"];
 // Measured 0.466 Manhattan, 0.445 SF; one cover 0.175 / 0.102; the old roof 0.167 / 0.047.
@@ -227,10 +236,10 @@ async function main(): Promise<void> {
     console.log("rendering the pre-archetype facades (?flatfacade=1) ...");
     await shoot(`${out}/flat`, "flatfacade=1", [...STREET_POSES, NIGHT_POSE, ...ROOF_POSES], port, dbg, profile);
     console.log("rendering the scans without mips (?nomip=1) ...");
-    await shoot(`${out}/nomip`, "nomip=1", AERIAL_POSES, port, dbg, profile);
-    console.log(`rendering the aerial poses ${NUDGE_M} m east, with and without mips ...`);
-    await shoot(`${out}/full-nudge`, "", AERIAL_POSES, port, dbg, profile, NUDGE_M);
-    await shoot(`${out}/nomip-nudge`, "nomip=1", AERIAL_POSES, port, dbg, profile, NUDGE_M);
+    await shoot(`${out}/nomip`, "nomip=1", [...AERIAL_POSES, NIGHT_POSE], port, dbg, profile);
+    console.log(`rendering the aerial and night poses ${NUDGE_M} m east, filtered and not ...`);
+    await shoot(`${out}/full-nudge`, "", [...AERIAL_POSES, NIGHT_POSE], port, dbg, profile, NUDGE_M);
+    await shoot(`${out}/nomip-nudge`, "nomip=1", [...AERIAL_POSES, NIGHT_POSE], port, dbg, profile, NUDGE_M);
     console.log("rendering one roof for every building (?oneroof=1) ...");
     await shoot(`${out}/oneroof`, "oneroof=1", ROOF_POSES, port, dbg, profile);
     console.log("rendering the facade mask (?buildingDebug=1) ...");
@@ -262,6 +271,12 @@ async function main(): Promise<void> {
     const mask = facadeMask(`${out}/mask/${NIGHT_POSE}.png`);
     const full = litShare(load(`${out}/full/${NIGHT_POSE}.png`), mask);
     const flat = litShare(load(`${out}/flat/${NIGHT_POSE}.png`), mask);
+    // Night shimmer: the same 0.3 m move. Lit windows are the brightest small
+    // things in the frame, and a per-cell on/off sampled at a pixel twinkles.
+    const sh = shimmer(load(`${out}/full/${NIGHT_POSE}.png`), load(`${out}/full-nudge/${NIGHT_POSE}.png`), mask);
+    const shSharp = shimmer(load(`${out}/nomip/${NIGHT_POSE}.png`), load(`${out}/nomip-nudge/${NIGHT_POSE}.png`), mask);
+    check(`${NIGHT_POSE}: night windows are steady`, sh <= NIGHT_SHIMMER_CEILING, `${sh.toFixed(4)} <= ${NIGHT_SHIMMER_CEILING} for a ${NUDGE_M} m move`);
+    probe(`${NIGHT_POSE}: point-sampled windows twinkle`, shSharp <= NIGHT_SHIMMER_CEILING, `${shSharp.toFixed(4)} must exceed ${NIGHT_SHIMMER_CEILING}`);
     check(`${NIGHT_POSE}: lit windows`, full >= NIGHT_LIT_FLOOR, `${(100 * full).toFixed(2)}% of the facade >= ${100 * NIGHT_LIT_FLOOR}%`);
     probe(`${NIGHT_POSE}: the old night had few`, flat >= NIGHT_LIT_FLOOR, `${(100 * flat).toFixed(2)}% must fall under ${100 * NIGHT_LIT_FLOOR}%`);
   }

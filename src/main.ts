@@ -1797,6 +1797,7 @@ async function main() {
       b.uFlatFacade.value = flatFacade ? 1 : 0;
       b.uOneRoof.value = oneRoof ? 1 : 0;
       b.uMatNoMip.value = noMip ? 1 : 0;
+      b.uTerrainDebug.value = terrainDebug || 0;
       b.uUrban.value = urban.texture;
       b.uUrbanExtent.value = urban.extent;
       b.uBuildingDebug.value = buildingDebug;

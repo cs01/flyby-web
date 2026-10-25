@@ -24,9 +24,9 @@ uniform vec3 uMatMean[${MAT_COUNT}];
 uniform float uMatReady;
 // 1 on the reduced tier: one tiling sample instead of up to three.
 uniform float uMatCheap;
-// ?nomip=1: sample every scan at its full resolution whatever the distance.
-// The aliasing probe for tools/verify-buildings.ts: a brick course point-
-// sampled from 400 m is a moire, and the gate must see it.
+// ?nomip=1: no footprint filtering on the archetype detail: every scan at its
+// full resolution whatever the distance, and the night window pattern point-
+// sampled. The aliasing probe for tools/verify-buildings.ts, by day and by night.
 uniform float uMatNoMip;
 
 const float MAT_CONTRAST[${MAT_COUNT}] = float[${MAT_COUNT}](${CONTRAST});

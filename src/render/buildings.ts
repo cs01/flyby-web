@@ -343,6 +343,12 @@ uniform float uFlatRefl;
 uniform float uFlatFacade;
 // ?oneroof=1: every flat roof the same cover and colour; see the roof branch.
 uniform float uOneRoof;
+// ?terrainDebug=N: the terrain is drawing one of its own masks, which the water
+// and ground gates read as grey-and-bright. Buildings still have to OCCLUDE
+// what they occlude in the beauty frame, but they must not be grey and bright
+// themselves: a white membrane roof or a pale stucco wall in sun was being
+// counted as water, and as foam. So under a terrain mask they draw black.
+uniform float uTerrainDebug;
 // Built-ness over the city, 0..1, from render/urbanmask.ts. The same coverage
 // grid terrain.ts lights its streets from; here it says how much of what a
 // facade reflects BELOW the horizon is other buildings rather than open ground.
@@ -1445,24 +1451,51 @@ void main() {
       // up close, converge to the average glow of a lit building far away. The
       // far-field term is untouched by the blinds and the spill, which is the
       // whole point of the normaliser above.
-      // NIGHT WINDOWS STAY RESOLVED LONGER THAN DAY ONES. By day a window
-      // under a pixel is a texture and has to converge before it shimmers. At
-      // night it is a point light, and a city at night from the air is points
-      // of light, not a lit wash: converging at the day footprint is what made
-      // Midtown's towers flat grey slabs with their windows averaged away.
-      // 0.9 holds the pattern until a pixel spans about a whole window cell.
-      float detailN = mix(detail, 1.0 - clamp(max(w.x, w.y) * 0.9, 0.0, 1.0), detailOn);
+      // NIGHT WINDOWS ARE BAND-LIMITED LIKE EVERYTHING ELSE.
+      //
+      // Each level of the lit pattern (the single window, then its floor and
+      // tenancy, then the facade mean) hands over to the next as ITS feature
+      // goes under a pixel, never later: a lit window is a hard on/off per
+      // cell, and point-sampling it once a cell is about a pixel wide makes
+      // the night city twinkle as the camera moves (the owner's report: "too
+      // sparkly"). Nothing here depends on time, so a still frame is steady.
+      //
+      // The window level converges at 1.3 pixel footprints per cell, a little
+      // later than the day pattern's 1.6 because a lit window is the brightest
+      // thing in the frame and losing it early leaves towers as flat slabs.
+      // ?nomip=1 removes every one of these filters, the probe for the night
+      // shimmer measure in tools/verify-buildings.ts.
+      float sharpN = uMatNoMip * detailOn;
+      float detailN = mix(mix(detail, 1.0 - clamp(max(w.x, w.y) * 1.3, 0.0, 1.0), detailOn), 1.0, sharpN);
       // AND A LIT FLOOR IS A STRIPE LONG AFTER ITS WINDOWS ARE NOT. Between the
       // single window and the facade mean there is a middle scale: the floor
-      // and the tenancy, which is several metres of lit glass and stays bigger
-      // than a pixel to three or four kilometres. Averaging straight from the
-      // window to the facade mean is what turned every distant tower into one
-      // flat grey-orange slab; real night skylines are banded. This level keeps
-      // the core, floor and tenancy gates and averages only the window's own
-      // coin, so its mean is still facadeMeanOccupancy.
-      float blockLit = facadeLitBlock(fp, colIdx, floorIdx, heightFade) * winMean * openMean * capped;
-      float detailBlock = (1.0 - clamp(w.y * 0.6, 0.0, 1.0)) * (1.0 - clamp(w.x / fp.tenantW * 0.6, 0.0, 1.0));
-      float farLit = mix(occ * winMean * openMean, blockLit, detailBlock * detailOn);
+      // and the tenancy, several metres of lit glass, bigger than a pixel to
+      // three or four kilometres. Averaging straight from the window to the
+      // facade mean turned every distant tower into one flat grey-orange slab.
+      // This level keeps the core, floor and tenancy gates and averages only
+      // the window's own coin, so its mean is still facadeMeanOccupancy.
+      //
+      // It is BOX-FILTERED over the pixel footprint: the floor and the column
+      // at either edge of the footprint are both evaluated and weighted by how
+      // much of the pixel each covers, so a floor line crossing a pixel fades
+      // across it instead of snapping from one floor's state to the next.
+      float y0 = grid.y - 0.5 * w.y, y1 = grid.y + 0.5 * w.y;
+      float x0 = grid.x - 0.5 * w.x, x1 = grid.x + 0.5 * w.x;
+      float fA = floor(y0), fB = floor(y1);
+      float cA = floor(x0), cB = floor(x1);
+      float wy1 = fB > fA ? clamp((y1 - fB) / max(w.y, 1e-4), 0.0, 1.0) : 0.0;
+      float wx1 = cB > cA ? clamp((x1 - cB) / max(w.x, 1e-4), 0.0, 1.0) : 0.0;
+      wy1 *= 1.0 - sharpN; wx1 *= 1.0 - sharpN;
+      float bAA = facadeLitBlock(fp, cA, fA, heightFade), bBA = facadeLitBlock(fp, cB, fA, heightFade);
+      float bAB = facadeLitBlock(fp, cA, fB, heightFade), bBB = facadeLitBlock(fp, cB, fB, heightFade);
+      float blockF = mix(mix(bAA, bBA, wx1), mix(bAB, bBB, wx1), wy1);
+      float blockLit = blockF * winMean * openMean * capped;
+      float detailBlock = (1.0 - smoothstep(0.45, 0.9, w.y)) * (1.0 - smoothstep(0.45, 0.9, w.x / fp.tenantW));
+      detailBlock = mix(detailBlock, 1.0, sharpN);
+      // At 0.75, not 1: a tenancy seen as one block of solid light reads as a
+      // white rectangle, where a real distant floor is a row of windows with
+      // dark mullions and dark rooms in it. Its mean is still occ.
+      float farLit = mix(occ * winMean * openMean, blockLit, 0.75 * detailBlock * detailOn);
       float lit = mix(farLit, litPattern, detailN);
 
       // WHAT IS LIT TOGETHER IS LIT THE SAME.
@@ -1927,6 +1960,7 @@ void main() {
   vec3 inscatter = atmosphere(ro, rd, vViewDist, trans);
 
   fragColor = vec4(lit * trans + inscatter, 1.0);
+  if (uTerrainDebug > 0.5) fragColor = vec4(0.0, 0.0, 0.0, 1.0);
   if (uBuildingDebug > 0.5) {
     // The GEOMETRIC normal, not the relief-perturbed n the Fresnel term uses:
     // this is classifying FACES, and the per-pixel bump would scatter pixels
@@ -1971,6 +2005,8 @@ export interface BuildingUniforms extends SunShadowUniforms, AoUniforms {
   uFlatFacade: THREE.IUniform<number>;
   /** 1 gives every flat roof one cover and colour; `?oneroof=1`, the roof gate's probe. */
   uOneRoof: THREE.IUniform<number>;
+  /** Non-zero while the terrain draws a debug mask; buildings then draw black. */
+  uTerrainDebug: THREE.IUniform<number>;
   /** 1 samples the scans without mips; `?nomip=1`, the aliasing probe. */
   uMatNoMip: THREE.IUniform<number>;
   /** The photographed material arrays; see render/materialtex.ts. Null until loaded. */
@@ -2026,6 +2062,7 @@ function makeUniforms(shadow: SunShadowUniforms): BuildingUniforms {
     uFlatFacade: { value: 0 },
     uOneRoof: { value: 0 },
     uMatNoMip: { value: 0 },
+    uTerrainDebug: { value: 0 },
     uMatAlbedo: { value: null },
     uMatNormal: { value: null },
     uMatRH: { value: null },

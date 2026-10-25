@@ -173,12 +173,22 @@ interface PoseGate {
 
 const GATES: PoseGate[] = [
   { name: "chicago-river-kerb", lc: { kind: "floor", bound: 0.020 }, sd: 0, sdFloor: false, mirror: null },
-  { name: "sydney-harbour", lc: { kind: "ceiling", bound: 0.012 }, sd: 41.5, sdFloor: true, mirror: 1.02 },
+  // mirror 0.98, re-measured 2026-10-24 once buildings stopped counting as
+  // water: under ?terrainDebug the building shader now draws black, because a
+  // white membrane roof or a pale wall in sun is grey and bright and was being
+  // read as water (and as foam). On main with only that change the ratio is
+  // 1.019 (was 1.025 with the contaminated mask); with the archetype facades
+  // 1.017; ?flatwater 0.915.
+  { name: "sydney-harbour", lc: { kind: "ceiling", bound: 0.012 }, sd: 41.5, sdFloor: true, mirror: 0.98 },
 ];
 
 /** The pose the river reflection is asserted on, and its correlation floor. */
 const REFLECT_POSE = "chicago-river-kerb";
-const REFLECT_CORR = 0.15;
+// 0.12, re-measured 2026-10-24: the archetype facades carry fine detail (scans,
+// sills, frames) that the high-passed profile above the waterline sees and the
+// rougher reflection below it blurs, which took the correlation from 0.162 to
+// 0.150. ?nossr measures -0.07, so the floor still separates the two by far.
+const REFLECT_CORR = 0.12;
 /** Rows of scene above, and of water below, the far waterline in each column. */
 const REFLECT_BAND = 40;
 /** Half-width in columns of the box the profiles are high-passed against. */
