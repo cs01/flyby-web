@@ -49,8 +49,8 @@ export const PAVEMENT_CROSSFALL = 0.025;
  */
 export const PAVEMENT_WIDTH_M: number[] = [
   0,   // motorway
-  0,   // trunk
-  4.4, // primary        an urban arterial: Van Ness, Michigan Avenue
+  4.4, // trunk          only beside a building line; see PAVEMENT_NEEDS_WALL
+  4.4, // primary        an urban arterial: Michigan Avenue
   3.8, // secondary
   3.2, // tertiary
   3.0, // residential
@@ -76,7 +76,7 @@ export const PAVEMENT_WIDTH_M: number[] = [
  */
 export const PAVEMENT_RANGE_M: number[] = [
   0,    // motorway
-  0,    // trunk
+  2400, // trunk
   2400, // primary
   2400, // secondary
   2200, // tertiary
@@ -89,6 +89,20 @@ export const PAVEMENT_RANGE_M: number[] = [
   0,    // footway
   0,    // cycleway
   0,    // track
+];
+
+/**
+ * Classes that get a pavement only where a building line is found beside them.
+ *
+ * A trunk road is an expressway out of town and a city street in town: Van
+ * Ness Avenue is US 101 and is tagged trunk. With no pavement at all, the
+ * strip between its kerb and the shopfronts was the satellite drape, which in
+ * the owner's sf-street report was a glossy green band of photographed street
+ * trees lying beside the carriageway. Where a wall stands within
+ * PAVEMENT_MAX_WIDTH_M it is a street and gets one; in open country it does not.
+ */
+export const PAVEMENT_NEEDS_WALL: boolean[] = [
+  false, true, false, false, false, false, false, false, false, false, false, false, false, false,
 ];
 
 /** Never narrower than this, whatever the building line says. */
@@ -407,7 +421,8 @@ export function addPavement(
       // Junction test at the MIDDLE of the strip, not at the kerb: the kerb of
       // this road lies exactly on its own carriageway boundary, and testing
       // there would have every road delete its own pavement.
-      const suppressed = world.onCarriageway(kx + nx * w * 0.5, kz + nz * w * 0.5);
+      const suppressed = world.onCarriageway(kx + nx * w * 0.5, kz + nz * w * 0.5)
+        || (open && PAVEMENT_NEEDS_WALL[r.cls] === true);
 
       row.push({ kx, kz, nx, nz, u: st.u[i], gutterY, topY, w, backY, suppressed, open });
     }
