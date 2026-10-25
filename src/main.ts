@@ -384,7 +384,13 @@ async function main() {
   // Screen-space sky occlusion. Runs before the main pass, because the surface
   // shaders read its result rather than the composite doing so; see render/ao.ts.
   const ao = new AoPass(renderer);
-  const quality = new AdaptiveQuality(renderer, budget.tier);
+  const quality = new AdaptiveQuality(renderer, budget.tier, {
+    ssr: budget.tier !== "reduced",
+    ao: budget.aoEnabled,
+    fullClouds: budget.tier === "full",
+    bigShadows: budget.shadowCascadeCount > 2 || budget.shadowCascadeSize > 1024,
+    msaa: budget.msaaSamples > 0,
+  });
   // Passes and scene groups switched off, by name: `?off=ao,clouds,buildings`
   // or flybyShot.setOff at run time. tools/profile.ts attributes the frame by
   // taking each one away in turn, because the timer queries on this GPU
@@ -425,6 +431,17 @@ async function main() {
     renderer.setSize(canvas.clientWidth || innerWidth, canvas.clientHeight || innerHeight, false);
     resizeTargets();
   }
+  // `?qlevel=N`: hold step N of the quality ladder, features and scale, for
+  // tools/profile.ts. Outranks `?scale`.
+  const qLevel = new URLSearchParams(location.search).get("qlevel");
+  if (qLevel !== null) {
+    quality.force(Number(qLevel));
+    quality.apply(renderer);
+    target.samples = quality.features.msaa ? budget.msaaSamples : 0;
+    target.dispose();
+    renderer.setSize(canvas.clientWidth || innerWidth, canvas.clientHeight || innerHeight, false);
+    resizeTargets();
+  }
   if (shotMode) ui.style.display = "none";
 
   const sky = new Sky();
@@ -448,6 +465,8 @@ async function main() {
   ao.enabled = budget.aoEnabled;
   if (params.get("ao") === "0") ao.enabled = false;
   if (params.get("ao") === "1") ao.enabled = true;
+  // What the tier and the flags allow; the quality ladder may only take away.
+  const aoBase = ao.enabled;
 
   // The plan the drapes were stitched for. Defaulting to CITY_RINGS here gave a
   // reduced-tier device the desktop meshes under its own smaller drapes.
@@ -727,6 +746,7 @@ async function main() {
   // Off on the reduced tier: the history copy and the march cost a phone more
   // than the reflection is worth at its resolution.
   waterHistory.enabled = !gateFlag("nossr") && budget.tier !== "reduced";
+  const ssrBase = waterHistory.enabled;
 
   // `?flatglass=1` restores the facade this repo had before the window reveal:
   // glazing exactly in the plane of the wall, with no parallax and no shadow
@@ -1465,8 +1485,11 @@ async function main() {
   let shotFrames = 0;
   let timedFrames = 0;
   const frameRing = new Float64Array(600);
+  // `?perfbench`'s per-batch costs; see below.
+  let benchTimed = 0;
+  const benchRing = new Float64Array(600);
 
-  renderer.setAnimationLoop(() => {
+  const frameBody = (): void => {
     // The RAW delta is what the frame-cost metric records; `dt` is the clamped
     // one the simulation integrates with. Keeping them separate is the whole
     // point: the clamp exists so one long stall cannot teleport the aeroplane
@@ -2091,6 +2114,14 @@ async function main() {
     // The sky probe, before anything that reads it. It re-renders on its own
     // cadence rather than every frame; see render/skyprobe.ts.
     skyProbe.setSize(quality.scale < 0.8 ? 32 : 64);
+    // The quality ladder's features, read every frame because they are three
+    // assignments and a step can land on any frame.
+    {
+      const f = quality.features;
+      waterHistory.enabled = ssrBase && f.ssr;
+      ao.enabled = aoBase && f.ao;
+      composite.lowClouds = f.lowClouds;
+    }
     // `?off=` hides whole groups for every pass of this frame; restored below.
     if (perfOff.size) {
       perfHidden.length = 0;
@@ -2133,7 +2164,7 @@ async function main() {
     // did until this line stopped being a shorter list than the one above it.
     prof.cpuBegin("sunshadow");
     prof.begin("sunshadow");
-    if (!perfOff.has("shadow")) sunShadow.update(renderer, scene, camera, light.sunDir, quality.scale, shadowCasters);
+    if (!perfOff.has("shadow")) sunShadow.update(renderer, scene, camera, light.sunDir, quality.features.lowShadows ? 0.7 : 1, shadowCasters);
     prof.end();
     prof.cpuEnd("sunshadow");
     // The environment probe renders the city into a cube with its own camera
@@ -2160,7 +2191,7 @@ async function main() {
     }
     prof.cpuBegin("aircraft");
     prof.begin("aircraft");
-    if (!perfOff.has("aircraft")) model.prepare(renderer, scene, quality.scale, (c) => sky.syncCamera(c), camera.position);
+    if (!perfOff.has("aircraft")) model.prepare(renderer, scene, quality.features.lowShadows ? 0.7 : 1, (c) => sky.syncCamera(c), camera.position);
     prof.end();
     prof.cpuEnd("aircraft");
     for (const g of probeHidden) g.visible = true;
@@ -2290,13 +2321,25 @@ async function main() {
     shotFrames++;
 
     smoothedMs += (dt * 1000 - smoothedMs) * 0.06;
-    if (quality.update(smoothedMs, dt)) {
+    if (quality.update(smoothedMs, dt, rawDt * 1000)) {
       quality.apply(renderer);
+      // Multisampling is a property of the target's buffers, so a change
+      // re-creates them; three allocates afresh on the next render into it.
+      const samples = quality.features.msaa ? budget.msaaSamples : 0;
+      if (target.samples !== samples) {
+        target.samples = samples;
+        target.dispose();
+      }
       const w = canvas.clientWidth || innerWidth;
       const h = canvas.clientHeight || innerHeight;
       renderer.setSize(w, h, false);
       resizeTargets();
-      console.log(`[flyby] render scale -> ${quality.scale.toFixed(2)} (${smoothedMs.toFixed(1)} ms)`);
+      const f = quality.features;
+      console.log(
+        `[flyby] quality step ${quality.level}: scale ${quality.scale.toFixed(2)}, ` +
+        `ssr ${f.ssr ? "on" : "off"}, clouds ${f.lowClouds ? "low" : "full"}, ao ${f.ao ? "on" : "off"}, ` +
+        `shadows ${f.lowShadows ? "low" : "full"} (${smoothedMs.toFixed(1)} ms)`,
+      );
     }
     if (showPerf) {
       bandAccum += dt;
@@ -2328,7 +2371,31 @@ async function main() {
       }
       timebar.update(now, solar.sun.altitude);
     }
-  });
+  };
+
+  // `?perfbench=K`: every animation frame draws K frames back to back and
+  // drains the GPU once at the end, and the frame cost recorded is the batch's
+  // wall time over K. tools/profile.ts measures with this because both other
+  // ways failed on this machine. Uncapped, Chrome sometimes paces a page at
+  // exactly half rate: the same build of manhattan-cruise read 29.7 ms on one
+  // load and 58.9 on the next. Drained every frame, the M4's GPU idles while
+  // the CPU works and drops to a slow clock for seconds at a time. A batch
+  // keeps the GPU busy, overlaps CPU and GPU the way a real frame loop does,
+  // and is one task, so nothing paces it.
+  const benchK = Math.max(0, Math.floor(Number(new URLSearchParams(location.search).get("perfbench") ?? 0)));
+  if (benchK > 0) {
+    const gl = renderer.getContext();
+    const px = new Uint8Array(4);
+    renderer.setAnimationLoop(() => {
+      const t0 = performance.now();
+      for (let k = 0; k < benchK; k++) frameBody();
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      const ms = (performance.now() - t0) / benchK;
+      if (benchTimed < benchRing.length) benchRing[benchTimed++] = ms;
+    });
+  } else {
+    renderer.setAnimationLoop(frameBody);
+  }
 
   // Handy for poking at the scene from the console during development.
   const tune = (name: string, value: number) => {
@@ -2441,7 +2508,9 @@ async function main() {
         return Array.from(g.getImageData(0, 0, n, n).data);
       },
       /** Start a fresh timing window, so warm-up frames are not in the sample. */
-      resetTiming: () => { timedFrames = 0; },
+      resetTiming: () => { timedFrames = 0; benchTimed = 0; },
+      /** `?perfbench` batch costs, ms per frame, since resetTiming. */
+      benchTrace: () => Array.from(benchRing.slice(0, benchTimed)),
       /** Per-pass GPU and per-subsystem CPU means; see render/gpuprof.ts. */
       profile: () => prof.report(),
       resetProfile: () => prof.reset(),

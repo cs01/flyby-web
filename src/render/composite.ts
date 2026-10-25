@@ -822,6 +822,16 @@ export class Composite {
   timeOffset = 0;
 
   private readonly marchScene: THREE.Scene;
+  /**
+   * The phone tier's march (fewer view and light steps) on a full-tier
+   * device, for render/quality.ts to drop to; null on the reduced tier, which
+   * has nothing lower. Compiled on the first frame rather than when it is
+   * first needed, so stepping down does not itself cost a frame.
+   */
+  private readonly marchSceneLow: THREE.Scene | null;
+  private lowCompiled = false;
+  /** March with the cheaper scene, when there is one. */
+  lowClouds = false;
   private readonly reconScene: THREE.Scene;
   private readonly shadowScene: THREE.Scene;
   private readonly presentScene: THREE.Scene;
@@ -905,10 +915,12 @@ export class Composite {
     // The phone tier: fewer view and light steps, and a coarser atmosphere
     // integral for the aerial perspective, which only has to get a haze
     // colour right, not a sky.
+    const low = "#define CLOUD_STEPS 40\n#define LIGHT_STEPS 3\n#define ATMO_STEPS 6\n#define ATMO_SUN_STEPS 2\n#define SHADOW_STEPS 6\n";
     const defines = reduced
-      ? "#define CLOUD_STEPS 40\n#define LIGHT_STEPS 3\n#define ATMO_STEPS 6\n#define ATMO_SUN_STEPS 2\n#define SHADOW_STEPS 6\n"
+      ? low
       : "#define CLOUD_STEPS 64\n#define LIGHT_STEPS 5\n#define ATMO_STEPS 10\n#define ATMO_SUN_STEPS 3\n#define SHADOW_STEPS 10\n";
     this.marchScene = pass(MARCH_FRAG, this.uniforms, defines);
+    this.marchSceneLow = reduced ? null : pass(MARCH_FRAG, this.uniforms, low);
 
     this.reconUniforms = {
       uInvProj: this.uniforms.uInvProj,
@@ -1030,8 +1042,13 @@ export class Composite {
     this.uniforms.uPhase.value.set(px, py);
     this.uniforms.uDepth.value = depth;
     const clouds = !this.skip.has("clouds");
+    if (this.marchSceneLow && !this.lowCompiled) {
+      renderer.compile(this.marchSceneLow, this.camera);
+      this.lowCompiled = true;
+    }
+    const march = this.lowClouds && this.marchSceneLow ? this.marchSceneLow : this.marchScene;
     renderer.setRenderTarget(this.march);
-    if (clouds) renderer.render(this.marchScene, this.camera);
+    if (clouds) renderer.render(march, this.camera);
     for (let i = 0; i < this.benchRepeats; i++) {
       renderer.render(this.marchScene, this.camera);
       if (this.shadowOn) {
