@@ -284,8 +284,20 @@ const GATES: PoseGate[] = [
 // pixels by row, not of the frame, so it measures the walls and not how much
 // sky the pose happens to include. Set at 1.32 on 08-31 between 1.1920 and
 // 1.4360; on 2026-10-25 the pair is 1.2731 and 1.7964 (with the facade seeds
-// fixed; 1.3518 and 2.1470 before, which passed the probe), so the floor is
-// 1.50: 18% clear of the flat frame and 16% under the reflecting one.
+// fixed; 1.3518 and 2.1470 before, which passed the probe). Dealt again with
+// the facade seed offset by 1, 2 and 3 (see citypack.ts Building.seed) the
+// pairs are 1.1679 / 1.8866, 1.0318 / 1.4977 and 1.4237 / 2.2252, so 1.46 is
+// the floor that holds on every deal measured: 2.5% clear of the highest flat
+// frame and 2.5% under the lowest reflecting one, 13% and 19% on this deal.
+//
+// THE HEAD AND JAMB FLOORS DO NOT HOLD ACROSS DEALS, and that is recorded here
+// rather than hidden. On the same three deals recessed / flat read head 5.682
+// / 5.331, 5.115 / 4.691, 5.692 / 5.493 and jamb 5.424 / 4.735, 6.100 / 5.478,
+// 5.349 / 5.180: recessed beats flat on every deal, but one deal's flat facade
+// is above another's recessed one, because the measure is dominated by which
+// families 7th Avenue was dealt. The seeds no longer move with a filtered
+// record, so the deal only changes when the Manhattan pack is re-baked; when it
+// does, re-measure these two floors between the numbers the run prints.
 //
 // SQUARE-ON OVER GRAZING is the Fresnel test, in the direction the frames
 // actually support (see the header). At grazing incidence Schlick returns ~1
@@ -314,7 +326,7 @@ interface ReflGate {
 }
 
 const REFL_GATES: ReflGate[] = [
-  { name: "manhattan-7th", vgrad: 1.50 },
+  { name: "manhattan-7th", vgrad: 1.46 },
   { name: "chicago-loop-day", fresnel: 0.67 },
   { name: "sf-residential", gain: 1.02 },
 ];

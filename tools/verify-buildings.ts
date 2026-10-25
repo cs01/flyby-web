@@ -74,6 +74,11 @@ const STREET_POSES = ["sf-street", "manhattan-7th"];
 // 0.0909, flat 0.0666; the floor is 0.080, 20% over the flat facade and 12%
 // under the archetype one. It is lower than 0.100 because the unit changed,
 // not the wall: with the reflection in, the pair was 0.1186 and 0.1065.
+// Dealt again (facade seed offset 1, 2, 3; see citypack.ts Building.seed) the
+// pair is 0.0962 / 0.0705, 0.0936 / 0.0752 and 0.0765 / 0.0489: the archetype
+// wall clears its own flat facade by 22-56% on every deal, but the third deal
+// would fail 0.080, so re-measure this floor when the Manhattan pack is
+// re-baked and 7th Avenue is dealt other families.
 const STREET_LC_FLOOR: Record<string, number> = { "sf-street": 0.023, "manhattan-7th": 0.080 };
 /**
  * The street-level claim is measured without the facade's screen-space
