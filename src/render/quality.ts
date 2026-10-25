@@ -47,8 +47,22 @@ interface Step {
   scale: number;
 }
 
-/** Feature steps, cheapest picture loss per millisecond first. */
-const FEATURE_STEPS: (keyof Features)[] = ["ssr", "lowClouds", "ao", "lowShadows", "msaa"];
+/**
+ * Feature steps, in order. Each step's share of the frame, measured with
+ * `flybyShot.setLevel` in paired 2 s windows on an M4 (median of six pairs;
+ * manhattan-cruise / manhattan-street / sf-street at 1280x720):
+ *
+ *   two small cascades   12% / 7% / 12%   softer near shadows, the city map from 1.4 km
+ *   ambient occlusion    10% / 2% / 10%   contact darkening in the street canyons
+ *   msaa                 25% / 18% / 16%  edge aliasing, least visible at high dpr
+ *   ssr                   2% / 2% / 1%    the city leaves the water and the glass
+ *   phone cloud march     0% under a clear or 30% sky; only an overcast pays it
+ *
+ * MSAA saves the most but costs the most to look at, so the two subtle steps
+ * go first; SSR and the cloud march save so little that they come after it,
+ * just before resolution starts to go.
+ */
+const FEATURE_STEPS: (keyof Features)[] = ["lowShadows", "ao", "msaa", "ssr", "lowClouds"];
 const SCALES = [1.0, 0.85, 0.72, 0.6, 0.5, 0.4];
 
 /**
@@ -75,6 +89,8 @@ const COMFORTABLE_MS = { full: 12, reduced: 22 };
 const MIN_DEVICE_PER_CSS = 1.0;
 
 const DOWN_FRAMES = 30;
+/** Smoothed frame time this many times the target drops two steps, not one. */
+const FAR_OVER = 1.6;
 const UP_FRAMES = 180;
 /** A step up that proves too slow within this long doubles the next wait. */
 const BOUNCE_S = 6;
@@ -215,7 +231,12 @@ export class AdaptiveQuality {
       // Slow straight after a step up: that step does not fit, so the next
       // attempt waits twice as long. A step that held for a while resets it.
       if (this.sinceUp < BOUNCE_S) this.upWait = Math.min(MAX_UP_FRAMES, this.upWait * 2);
-      this.index++;
+      // Far over budget, two steps at once. Each step costs half a second of
+      // slow frames and a cooldown, and a laptop that loads Manhattan at 50 ms
+      // would otherwise spend the first ten seconds of the flight walking
+      // down a ladder one rung at a time.
+      const far = smoothedMs > this.targetMs * FAR_OVER;
+      this.index = Math.min(this.ladder.length - 1, this.index + (far ? 2 : 1));
       this.slowFrames = 0;
       this.cooldown = 1.5;
       return true;

@@ -47,7 +47,7 @@ function run(q: AdaptiveQuality, ms: number, n: number, refreshMs = ms): number 
   check("  probe: the desktop ladder is longer", ladder.length > phone.length, `${ladder.length} against ${phone.length}`);
 }
 
-// 2. A sustained slow run sheds SSR first, a single slow frame sheds nothing.
+// 2. A sustained slow run sheds the cascades first, a single slow frame sheds nothing.
 {
   const q = new AdaptiveQuality(renderer(1.5), "full", FULL);
   run(q, 16.7, 60);
@@ -56,8 +56,8 @@ function run(q: AdaptiveQuality, ms: number, n: number, refreshMs = ms): number 
   check("one slow frame changes nothing", q.level === 0, `level ${q.level}`);
   run(q, 25, 40);
   check(
-    "a sustained 25 ms run sheds SSR and nothing else",
-    q.level === 1 && !q.features.ssr && q.features.ao && q.scale === 1,
+    "a sustained 25 ms run sheds the big cascades and nothing else",
+    q.level === 1 && q.features.lowShadows && q.features.ao && q.features.ssr && q.scale === 1,
     `level ${q.level}, ${JSON.stringify(q.features)}, scale ${q.scale}`,
   );
 }
@@ -120,6 +120,17 @@ function run(q: AdaptiveQuality, ms: number, n: number, refreshMs = ms): number 
   const free = new AdaptiveQuality(renderer(1.5), "full", FULL);
   run(free, 50, 600);
   check("  probe: unpinned, the same trace walks the ladder", free.level > 2, `level ${free.level}`);
+}
+
+// 6. Far over budget it drops two steps at a time, so a heavy start converges
+//    in a few seconds. Probe: 25 ms (under 1.6x the target) still goes one.
+{
+  const far = new AdaptiveQuality(renderer(1.5), "full", FULL);
+  run(far, 50, 31);
+  const near = new AdaptiveQuality(renderer(1.5), "full", FULL);
+  run(near, 25, 31);
+  check("50 ms frames drop two steps at once", far.level === 2, `level ${far.level}`);
+  check("  probe: 25 ms frames drop one", near.level === 1, `level ${near.level}`);
 }
 
 console.log(failures === 0 ? "\nquality: all checks passed" : `\nquality: ${failures} FAILED`);
