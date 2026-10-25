@@ -1846,6 +1846,7 @@ async function main() {
     const localHour =
       (now.getUTCHours() + now.getUTCMinutes() / 60 + city.lon / 15 + 24) % 24;
     const hf = hourFactors(localHour);
+    buildings?.updateDetail(camera.position.x, camera.position.z);
     for (const b of buildingUniformSets) {
       b.uCameraPos.value.copy(camera.position);
       b.uSH.value = skyProbe.sh;
@@ -2386,7 +2387,7 @@ async function main() {
       get streetUnitTriangles() { return [LAMP_TRIANGLES, ...CAR_TRIANGLES]; },
       get triangles() {
         return (
-          (buildings ? buildings.stats.triangles : 0) +
+          (buildings ? buildings.stats.triangles + Math.max(0, buildings.detailTriangles) : 0) +
           (foliage ? foliage.stats.triangles : 0) +
           (shrubs ? shrubs.stats.triangles : 0) +
           (live ? live.stats.triangles : 0) +

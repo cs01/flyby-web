@@ -43,7 +43,7 @@ import {
   packFacade,
   type FacadeParams,
 } from "./facade";
-import { ARCHETYPES, assignArchetypes, regionAt, wantsWaterTank } from "./archetype";
+import { ARCHETYPES, WindowStyle, assignArchetypes, regionAt, wantsWaterTank } from "./archetype";
 import { FACADE_DETAIL_GLSL } from "./facadedetail.glsl";
 import { SIGN_COLS, SIGN_COUNT, SIGN_ROWS, buildSignAtlas } from "./signs";
 import { loadMaterialTextures } from "./materialtex";
@@ -123,8 +123,6 @@ export interface RoofExtras {
   overrun: boolean;
   /** A wooden water tank on a steel stand; see wantsWaterTank. */
   tank?: boolean;
-  /** Street-level detail in range: awnings over the shopfronts. */
-  street?: boolean;
 }
 
 const NO_EXTRAS: RoofExtras = { parapet: false, boxes: 0, overrun: false };
@@ -261,8 +259,27 @@ export const PART_TANK = 6;
 export const PART_SPIRE = 7;
 /** A fabric awning over a shopfront; uv.x metres along it, uv.y 0 at the wall. */
 export const PART_AWNING = 8;
-/** Street-level geometry (awnings) stops here, metres from the pack centre. */
-const STREET_M = 1600;
+/**
+ * A projecting cornice: uv.y >= 0 on its front face (metres up it), -1 on the
+ * soffit and -2 on its top.
+ */
+export const PART_CORNICE = 9;
+/** Cornices and bay windows are geometry inside this, metres from the camera. */
+const RELIEF_M = 900;
+/**
+ * The camera-centred DETAIL LAYER: awnings within STREET_M of the camera,
+ * cornices and bay windows within RELIEF_M, rebuilt when the camera has moved
+ * DETAIL_REBUILD_M from where it was last built.
+ *
+ * Not in the static city mesh, because that mesh is built once around the
+ * PACK centre: Alamo Square is 3.9 km from the San Francisco pack's centre,
+ * and anything ranged from the centre simply never appeared there. Ranged
+ * from the camera, it is wherever you are, and it costs nothing anywhere else.
+ */
+const STREET_M = 700;
+const DETAIL_REBUILD_M = 200;
+/** Time a detail rebuild may take per frame, ms. */
+const DETAIL_SLICE_MS = 3;
 
 // --- What ONE lit window looks like ------------------------------------------
 //
@@ -560,7 +577,30 @@ void main() {
   // has to be pulled back out of it.
   bool gableEnd = part > 4.5 && part < 5.5;
 
-  if (part > 7.5) {
+  if (part > 8.5) {
+    // --- Cornice (and a bay's cap and soffit) ------------------------------
+    // The trim stone or the painted timber of the archetype. Dentils on the
+    // lower part of the front face, the soffit in its own shade, the top a
+    // dirty ledge. Filtered like every other repeat on the building.
+    albedo = fp.trim;
+    if (vUv.y < -1.5) {
+      albedo = fp.trim * 0.55;
+    } else if (vUv.y < -0.5) {
+      albedo = fp.trim * 0.7;
+      skyOcc = 0.45;
+    } else {
+      float dp = vUv.x / 0.22;
+      float dw = max(fwidth(dp), 1e-3);
+      float dent = step(0.5, fract(dp)) * step(vUv.y, 0.22);
+      dent = mix(dent, 0.5 * step(vUv.y, 0.22), clamp(dw * 1.6, 0.0, 1.0));
+      albedo *= 1.0 - 0.4 * dent;
+      // A fillet line two thirds of the way up.
+      float fy = abs(vUv.y - 0.62 * (0.45 + 0.75 * fp.corniceM));
+      albedo *= 1.0 - 0.25 * (1.0 - smoothstep(0.0, max(0.04, fwidth(vUv.y)), fy));
+      albedo *= 1.0 - 0.3 * fp.age * vnoise(vec2(vUv.x * 0.8, vUv.y * 3.0) + fp.seed);
+    }
+    roughness = 0.8;
+  } else if (part > 7.5) {
     // --- Awning ----------------------------------------------------------
     // Canvas in a solid trade colour, or striped, one per shop: the palette
     // is the dyed acrylic awning makers sell, dulled by a few seasons of sun.
@@ -2897,9 +2937,6 @@ export function addBuilding(
       s.idx.push(p0, p0 + 1, p0 + 2, p0, p0 + 2, p0 + 3);
     }
 
-    if (extras.street && params && params.shopfront > 0.5 && !params.house && b.baseM <= 1.0 && len >= 3.0) {
-      addAwning(s, params, x0, z0, dx / len, dz / len, nx, nz, len, groundY, bidx, wallH, seed + i * 31);
-    }
     run += len;
   }
 
@@ -3080,6 +3117,43 @@ export function flattenParts(bs: readonly Building[]): Building[] {
 }
 
 /**
+ * The detail-layer geometry of one building: awnings, a cornice, bay windows.
+ * Everything here is relief that only reads from close by, so it is built
+ * per camera position rather than once; see STREET_M.
+ */
+export function addDetail(
+  s: Scratch, b: Building, groundY: number, bidx: number, p: FacadeParams, street: boolean, relief: boolean,
+): void {
+  if (b.baseM > 1.0) return;
+  const n = b.ring.length / 2;
+  const height = b.topM - b.baseM;
+  if (n < 3 || height <= 0.5) return;
+  const seed = p.seed * 4096;
+  const pitch = pitchFor(b, height, seed);
+  if (shapedRoofFor(b, height)) return;
+  const top = groundY + b.topM;
+  const eaveY = pitch ? top - pitch.rise : top;
+  const wallH = eaveY - groundY;
+  if (street && p.shopfront > 0.5 && !p.house) {
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const x0 = b.ring[i * 2], z0 = b.ring[i * 2 + 1];
+      const dx = b.ring[j * 2] - x0, dz = b.ring[j * 2 + 1] - z0;
+      const len = Math.hypot(dx, dz);
+      if (len < 3.0) continue;
+      addAwning(s, p, x0, z0, dx / len, dz / len, dz / len, -dx / len, len, groundY, bidx, wallH, seed + i * 31);
+    }
+  }
+  if (!relief) return;
+  // A bay runs up to the eave whatever the roof: the Painted Ladies are
+  // gabled. A cornice only crowns a flat roof; a pitched one has its eave.
+  if (p.corniceM > 0.01 && !pitch) addCornice(s, b, p, top, bidx, wallH);
+  if (p.windowStyle === WindowStyle.Bay) {
+    addBays(s, b, p, groundY, pitch ? eaveY + 0.45 + 0.75 * p.corniceM : top, bidx, wallH, seed);
+  }
+}
+
+/**
  * A shop awning on one wall segment, on about a third of them: a sloped
  * fabric deck from just over the shop window head, 1.1 to 1.5 m out, and a
  * valance hanging off its front edge. Geometry because an awning is the one
@@ -3113,8 +3187,127 @@ function addAwning(
   quad(s, D, C, at(a0 + span, out, yVal), at(a0, out, yVal), [nx, 0, nz],
     [a0, sl, a0 + span, sl, a0 + span, sl + 0.28, a0, sl + 0.28], bidx, wallH, 0, PART_AWNING);
   // The two cheeks, so it is not a sheet seen edge-on down the street.
-  quad(s, A, D, D, at(a0, 0.02, yLow), [-ux, 0, -uz], [a0, 0, a0, sl, a0, sl, a0, sl], bidx, wallH, 0, PART_AWNING);
-  quad(s, B, C, C, at(a0 + span, 0.02, yLow), [ux, 0, uz], [a0, 0, a0, sl, a0, sl, a0, sl], bidx, wallH, 0, PART_AWNING);
+  // Triangles, as quads whose last corner repeats: the winding is decided on
+  // the first three, so those have to be the three distinct ones.
+  const wA = at(a0, 0.02, yLow), wB = at(a0 + span, 0.02, yLow);
+  quad(s, A, D, wA, wA, [-ux, 0, -uz], [a0, 0, a0, sl, a0, sl, a0, sl], bidx, wallH, 0, PART_AWNING);
+  quad(s, B, C, wB, wB, [ux, 0, uz], [a0, 0, a0, sl, a0, sl, a0, sl], bidx, wallH, 0, PART_AWNING);
+}
+
+/**
+ * THE CORNICE AS GEOMETRY. The shader paints the band on every building at
+ * every distance; up close the painted band is a stripe, and what a walk-up
+ * or a pre-war office actually has at its roof line is a moulding that
+ * stands out 0.4 to 1.0 m and casts its own shadow down the wall. So inside
+ * RELIEF_M the archetypes with a cornice get one: a soffit, a front face and
+ * a top, run round the ring on a mitred outset so the corners close.
+ * Same height band as the painted one (0.45 + 0.75 x projection), so the
+ * geometry sits exactly on the band the far field draws.
+ */
+function addCornice(s: Scratch, b: Building, p: FacadeParams, top: number, bidx: number, wallH: number): void {
+  const n = b.ring.length / 2;
+  if (n < 3 || n > 96) return;
+  const proj = Math.min(1.0, Math.max(0.3, p.corniceM));
+  const bandH = 0.45 + 0.75 * p.corniceM;
+  const y0 = top - bandH, y1 = top - 0.05;
+  // Outward unit normals per edge, then a mitred offset per vertex.
+  const enx: number[] = [], enz: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = b.ring[j * 2] - b.ring[i * 2], dz = b.ring[j * 2 + 1] - b.ring[i * 2 + 1];
+    const l = Math.hypot(dx, dz) || 1;
+    enx.push(dz / l); enz.push(-dx / l);
+  }
+  const ox: number[] = [], oz: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const h = (i + n - 1) % n;
+    let mx = enx[h] + enx[i], mz = enz[h] + enz[i];
+    const ml = Math.hypot(mx, mz);
+    if (ml < 1e-3) { mx = enx[i]; mz = enz[i]; } else { mx /= ml; mz /= ml; }
+    // 1 / cos(half the turn), capped so a sharp corner does not spike out.
+    const k = Math.min(2.0, 1 / Math.max(0.5, mx * enx[i] + mz * enz[i]));
+    ox.push(b.ring[i * 2] + mx * proj * k);
+    oz.push(b.ring[i * 2 + 1] + mz * proj * k);
+  }
+  let run = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = b.ring[i * 2], az = b.ring[i * 2 + 1], bx = b.ring[j * 2], bz = b.ring[j * 2 + 1];
+    const len = Math.hypot(bx - ax, bz - az);
+    // A short edge between two reflex corners can have its outset run
+    // BACKWARDS (the mitres cross); that piece of moulding would be drawn
+    // inside out, so it is left off and its neighbours close over it.
+    const fold = (ox[j] - ox[i]) * (bx - ax) + (oz[j] - oz[i]) * (bz - az);
+    if (len < 0.3 || fold <= 0) { run += len; continue; }
+    const nx = enx[i], nz = enz[i];
+    // The front leans out a little at the top, the way a crown moulding does.
+    const lean = 0.25 * proj;
+    const fA = [ox[i] - nx * lean, y0, oz[i] - nz * lean], fB = [ox[j] - nx * lean, y0, oz[j] - nz * lean];
+    const tA = [ox[i], y1, oz[i]], tB = [ox[j], y1, oz[j]];
+    const fl = Math.hypot(lean, y1 - y0);
+    quad(s, fA, fB, tB, tA, [nx * (y1 - y0) / fl, -lean / fl, nz * (y1 - y0) / fl],
+      [run, 0, run + len, 0, run + len, bandH, run, bandH], bidx, wallH, 0, PART_CORNICE);
+    quad(s, [ax, y0, az], [bx, y0, bz], fB, fA, [0, -1, 0],
+      [run, -1, run + len, -1, run + len, -1, run, -1], bidx, wallH, 0, PART_CORNICE);
+    quad(s, tA, tB, [bx, y1 + 0.08, bz], [ax, y1 + 0.08, az], [0, 1, 0],
+      [run, -2, run + len, -2, run + len, -2, run, -2], bidx, wallH, 1, PART_CORNICE);
+    run += len;
+  }
+}
+
+/**
+ * SAN FRANCISCO BAY WINDOWS. The Victorian and Edwardian front is a canted
+ * bay two or three storeys tall over the garage, and it is the single shape
+ * that says "San Francisco" from the street. A row house in OSM is a narrow
+ * deep footprint, so its street front is one of its two SHORT sides; each
+ * short side gets a bay (the back gets one too, which real ones often have).
+ *
+ * The faces are ordinary wall as far as the shader is concerned, with uv.x
+ * scaled so each face is exactly one window column: a canted bay is glazed
+ * on all three faces, and the facade's own window grid draws them.
+ */
+function addBays(s: Scratch, b: Building, p: FacadeParams, groundY: number, top: number, bidx: number, wallH: number, seed: number): void {
+  const n = b.ring.length / 2;
+  if (n < 4 || n > 24) return;
+  const obb = footprintObb(b.ring);
+  if (!obb || obb.halfL < obb.halfW * 1.4) return;
+  const groundH = Math.min(p.groundStoreyM, Math.max(1.2, wallH * 0.92));
+  const y0 = groundY + groundH + 0.25;
+  const y1 = top - (0.45 + 0.75 * p.corniceM) - 0.1;
+  if (y1 - y0 < 1.6) return;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const ax = b.ring[i * 2], az = b.ring[i * 2 + 1];
+    const dx = b.ring[j * 2] - ax, dz = b.ring[j * 2 + 1] - az;
+    const len = Math.hypot(dx, dz);
+    // A short side: across the lot, so parallel to the OBB's SHORT axis.
+    const along = Math.abs((dx * obb.ux + dz * obb.uz) / Math.max(len, 1e-6));
+    if (len < 4.5 || len > 12 || along > 0.35) continue;
+    const ux = dx / len, uz = dz / len, nx = dz / len, nz = -dx / len;
+    const W = Math.min(len - 1.2, 3.4 + 0.8 * hash3(seed, 0xba, i));
+    const depth = 0.75;
+    // To one side, the entrance on the other.
+    const a0 = hash3(seed, 0xbb, i) < 0.5 ? 0.5 : len - 0.5 - W;
+    const P = (a: number, d: number, y: number): number[] => [ax + ux * a + nx * d, y, az + uz * a + nz * d];
+    const c0 = a0, c1 = a0 + depth, c2 = a0 + W - depth, c3 = a0 + W;
+    const col = p.columnM;
+    const faces: [number, number, number, number][] = [[c0, 0, c1, depth], [c1, depth, c2, depth], [c2, depth, c3, 0]];
+    for (let k = 0; k < 3; k++) {
+      const [a1, d1, a2, d2] = faces[k];
+      const ex = (a2 - a1) * ux + (d2 - d1) * nx, ez = (a2 - a1) * uz + (d2 - d1) * nz;
+      const el = Math.hypot(ex, ez);
+      const fnx = ez / el, fnz = -ex / el;
+      const u0 = (k + 1) * col, u1 = u0 + col;
+      quad(s, P(a1, d1, y0), P(a2, d2, y0), P(a2, d2, y1), P(a1, d1, y1), [fnx, 0, fnz],
+        [u0, y0 - groundY, u1, y0 - groundY, u1, y1 - groundY, u0, y1 - groundY], bidx, wallH, 0, PART_WALL);
+    }
+    // The bay's own little roof and the soffit under it, in the cornice's
+    // stone: one trapezoid each, the plan of the bay.
+    quad(s, P(c0, 0, y1), P(c3, 0, y1), P(c2, depth, y1), P(c1, depth, y1), [0, 1, 0],
+      [0, -2, 1, -2, 1, -2, 0, -2], bidx, wallH, 1, PART_CORNICE);
+    quad(s, P(c0, 0, y0), P(c3, 0, y0), P(c2, depth, y0), P(c1, depth, y0), [0, -1, 0],
+      [0, -1, 1, -1, 1, -1, 0, -1], bidx, wallH, 0, PART_CORNICE);
+  }
 }
 
 /** A pyramid, spire or dome standing on a record's walls. */
@@ -3237,10 +3430,27 @@ export interface BuildingStats {
   tanks: number;
 }
 
+const DETAIL_CELL_M = 100;
+
 export class Buildings {
   readonly group = new THREE.Group();
   readonly uniforms: BuildingUniforms;
   readonly stats: BuildingStats;
+  /** The camera-centred detail layer; see STREET_M. */
+  readonly detail = new THREE.Group();
+  private pack: CityPack | null = null;
+  private params: FacadeParams[] = [];
+  /** Pairs (pack index, facade index) of every drawn building. */
+  private readonly detailOf: number[] = [];
+  private readonly groundYOf = new Map<number, number>();
+  private readonly detailCells = new Map<string, number[]>();
+  private detailAt: { x: number; z: number } | null = null;
+  private detailJob: { x: number; z: number; cells: number[][]; next: number; s: Scratch; sync: boolean } | null = null;
+  /** Triangles in the detail layer as last built; -1 before the first build. */
+  detailTriangles = -1;
+  /** Detail radii; a phone gets a little over half of each. */
+  private streetM = STREET_M;
+  private reliefM = RELIEF_M;
 
   constructor(
     pack: CityPack,
@@ -3253,6 +3463,10 @@ export class Buildings {
     // and the shader draws the flat facade. A phone gets the 256 px strips and
     // one tiling tap instead of three.
     const reduced = budget.tier === "reduced";
+    if (reduced) {
+      this.streetM = 400;
+      this.reliefM = 500;
+    }
     this.uniforms.uMatCheap.value = reduced ? 1 : 0;
     void loadMaterialTextures(reduced, reduced ? 2 : 8).then((m) => {
       if (!m) return;
@@ -3355,13 +3569,23 @@ export class Buildings {
         extras.tank = true;
         tanks++;
       }
-      extras.street = dist < STREET_M / lodK;
       if (extras.parapet) parapets++;
       plantBoxes += extras.boxes + (extras.overrun ? 1 : 0);
 
       addBuilding(s, b, groundY, bidx, extras, fp);
+      this.detailOf.push(i, bidx);
+      this.groundYOf.set(i, groundY);
       drawn++;
     }
+    this.pack = pack;
+    this.params = params;
+    for (let k = 0; k < this.detailOf.length; k += 2) {
+      const b = pack.buildings[this.detailOf[k]];
+      const key = `${Math.floor(b.cx / DETAIL_CELL_M)},${Math.floor(b.cz / DETAIL_CELL_M)}`;
+      const l = this.detailCells.get(key);
+      if (l) l.push(k); else this.detailCells.set(key, [k]);
+    }
+    this.group.add(this.detail);
 
     const tex = buildFacadeTexture(params);
     this.uniforms.uFacade.value = tex;
@@ -3383,6 +3607,63 @@ export class Buildings {
       drawn, skippedFar, skippedFlat, triangles, cells: cells.size, lod: lodK,
       parapets, plantBoxes, families, tanks,
     };
+  }
+
+  /**
+   * Rebuild the detail layer round the camera when it has moved far enough.
+   *
+   * TIME-SLICED. Building the layer over Midtown is 4,200 buildings and 130k
+   * triangles, and over the Mission 3,800 and 280k; measured under Bun that
+   * is 45 to 65 ms, which in one frame is a hitch every 200 m of flight. So a
+   * rebuild walks its cells DETAIL_SLICE_MS at a time across frames and swaps
+   * the finished mesh in at the end; the old layer stays up meanwhile.
+   */
+  updateDetail(x: number, z: number): void {
+    if (!this.pack) return;
+    const job = this.detailJob;
+    if (!job) {
+      if (this.detailAt && Math.hypot(x - this.detailAt.x, z - this.detailAt.z) < DETAIL_REBUILD_M) return;
+      this.detailAt = { x, z };
+      const r = Math.max(this.streetM, this.reliefM);
+      const cells: number[][] = [];
+      const c0x = Math.floor((x - r) / DETAIL_CELL_M), c1x = Math.floor((x + r) / DETAIL_CELL_M);
+      const c0z = Math.floor((z - r) / DETAIL_CELL_M), c1z = Math.floor((z + r) / DETAIL_CELL_M);
+      for (let cx = c0x; cx <= c1x; cx++) {
+        for (let cz = c0z; cz <= c1z; cz++) {
+          const l = this.detailCells.get(`${cx},${cz}`);
+          if (l) cells.push(l);
+        }
+      }
+      // The first build is done in one go: there is nothing on screen yet to
+      // keep, and a city arriving without its near detail would pop.
+      this.detailJob = { x, z, cells, next: 0, s: emptyScratch(), sync: this.detailTriangles < 0 };
+      return this.updateDetail(x, z);
+    }
+    const t0 = performance.now();
+    const r = Math.max(this.streetM, this.reliefM);
+    while (job.next < job.cells.length) {
+      for (const k of job.cells[job.next++]) {
+        const i = this.detailOf[k], bidx = this.detailOf[k + 1];
+        const b = this.pack.buildings[i];
+        const d = Math.hypot(b.cx - job.x, b.cz - job.z);
+        if (d > r) continue;
+        addDetail(job.s, b, this.groundYOf.get(i) ?? 0, bidx, this.params[bidx], d < this.streetM, d < this.reliefM);
+      }
+      if (!job.sync && performance.now() - t0 > DETAIL_SLICE_MS) return;
+    }
+    this.detailJob = null;
+    for (const child of this.detail.children) {
+      const m = child as THREE.Mesh;
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+    this.detail.clear();
+    const mesh = buildMesh(job.s, this.uniforms);
+    this.detailTriangles = job.s.idx.length / 3;
+    if (mesh) {
+      mesh.layers.enable(SHADOW_CASTER_LAYER);
+      this.detail.add(mesh);
+    }
   }
 
   /**

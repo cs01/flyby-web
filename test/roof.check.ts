@@ -21,11 +21,13 @@
 import { readdirSync } from "node:fs";
 import { parseCityPack } from "../src/data/citypack";
 import { facadeFor } from "../src/render/facade";
+import { ARCHETYPES } from "../src/render/archetype";
 import {
   PART_CLUTTER,
   PART_PARAPET,
   PART_SHINGLE,
   addBuilding,
+  addDetail,
   emptyScratch,
   insideRing,
   pitchFor,
@@ -50,9 +52,16 @@ for (const file of readdirSync(DIR).filter((f) => f.endsWith(".city")).sort()) {
   // faces of every plant box are new windings, they are exactly the kind of
   // thing that comes out inside-out, and backface culling would hide it from
   // anyone not standing in precisely the wrong place.
+  // Street and relief on too, and every other building drawn as a Victorian
+  // or a walk-up, so the awnings, cornices and bay windows (all built at
+  // arbitrary angles off the ring) are in the count.
   const extras: RoofExtras = { parapet: true, boxes: 3, overrun: true, tank: true };
+  const relief = ["sf-victorian", "nyc-walkup"].map((id) => ARCHETYPES.findIndex((a) => a.id === id));
   for (const [i, b] of pack.buildings.slice(0, 3000).entries()) {
-    addBuilding(s, b, 0, i, extras, facadeFor(b.kind, b.topM - b.baseM, i));
+    const choice = i % 2 ? { archetype: relief[(i >> 1) % 2], district: 0, cluster: i } : null;
+    const fp = facadeFor(b.kind, b.topM - b.baseM, i, choice);
+    addBuilding(s, b, 0, i, extras, fp);
+    addDetail(s, b, 0, i, fp, true, true);
   }
 
   let roofUp = 0, roofDown = 0, wallOut = 0, wallIn = 0, degenerate = 0;

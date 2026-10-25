@@ -561,6 +561,17 @@ export const POSES: Pose[] = [
     what: "an East Village walk-up block from the street",
   },
   {
+    // FROM ALAMO SQUARE, eight metres up on the hill, looking east across
+    // Steiner Street at the row of Victorians: bay windows and cornices. Ground
+    // is 69.7 m AMSL here (terrarium z15).
+    name: "sf-victorian-street",
+    city: "sf",
+    lat: 37.7758, lon: -122.4331, altM: 76, hdgDeg: 70, pitchDeg: -3,
+    t: D("2025-06-21T23:00:00Z"), // 16:00 PDT: west sun on the fronts
+    wx: CLEAR,
+    what: "Victorian row houses on Steiner Street",
+  },
+  {
     // Willis and the Loop from 600 m, north-west of the river.
     name: "chicago-willis-600",
     city: "chicago",
