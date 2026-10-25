@@ -32,6 +32,9 @@ function arg(name: string, fallback: string): string {
 }
 const has = (name: string): boolean => process.argv.includes(`--${name}`);
 
+/** This harness's own Chrome profile, which `othersBusy` leaves out. */
+let PROFILE_DIR = "/tmp/flyby-perf-profile";
+
 const D = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
 const CLEAR = "low:0:900:2100,mid:0:3800:5000,high:0:8500:9400,precip:0";
 const CUMULUS = "low:0.3:1400:2300,mid:0:3800:5000,high:0:8500:9400,precip:0";
@@ -159,9 +162,9 @@ export async function startHarness(port: number, debugPort: number, profileDir: 
  * sampled three times a second apart and the highest kept. Its GPU process is
  * in the tree, and a busy GPU process means the GPU is shared.
  */
-function othersBusy(profileDir: string): number {
+export function othersBusy(profileDir: string, samples = 3): number {
   let worst = 0;
-  for (let k = 0; k < 3; k++) {
+  for (let k = 0; k < samples; k++) {
     const ps = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,pcpu=,command="]).stdout.toString().split("\n");
     const roots = new Set<string>();
     const rows = ps.map((l) => l.trim().split(/\s+/, 4)).filter((r) => r.length === 4);
@@ -172,7 +175,7 @@ function othersBusy(profileDir: string): number {
     let sum = 0;
     for (const [pid, ppid, pcpu] of rows) if (roots.has(pid) || roots.has(ppid)) sum += Number(pcpu);
     worst = Math.max(worst, sum);
-    if (k < 2) Bun.sleepSync(1000);
+    if (k < samples - 1) Bun.sleepSync(1000);
   }
   return worst;
 }
@@ -231,20 +234,33 @@ export const TOGGLES = [
 ];
 
 /**
- * Median frame interval over `frames` frames with `off` switched off.
+ * Mean frame interval over `frames` frames with `off` switched off: the
+ * throughput, which is what decides whether the frame rate holds.
  *
- * The median, which tools/shots.ts rightly refuses for an uncapped pipeline,
- * is the right statistic here because `?perfsync` drains the GPU every frame:
- * no frame races ahead on another's account, and the median is then immune
- * to the other agent's Chrome taking the GPU for a few frames.
+ * Not the median, and not with the GPU drained (`--sync`, `?perfsync`). Both
+ * were tried. Uncapped, frames race and stall, so the median lands in the
+ * race. Drained every frame, the GPU idles while the CPU works and the M4 then
+ * flips between two clock states for ~15 s at a time: chicago-street read a
+ * 20 ms median for one stretch and 54 ms for the next with nothing else on the
+ * machine. Undrained, the mean of 3 s windows on the same pose held 16.7 to
+ * 17.3 ms over fourteen windows in a row.
  */
 async function frameWith(cdp: Cdp, off: string[], frames: number): Promise<number> {
   await cdp.eval(`window.flybyShot.setOff(${JSON.stringify(off)})`);
   const at = await cdp.eval<number>("window.flybyShot.frames");
   await cdp.waitFor(`window.flybyShot.frames > ${at + 20}`, 60_000, "toggle settle");
-  await cdp.eval("window.flybyShot.resetTiming()");
-  await cdp.waitFor(`window.flybyShot.timed > ${frames}`, 120_000, "toggle sample");
-  return median(await cdp.eval<number[]>("window.flybyShot.frameTrace()"));
+  // Retried while another agent's Chrome is rendering: its bursts are a few
+  // seconds long and doubled this page's frame time for exactly that long
+  // (24 ms against 54 ms medians on chicago-cruise, alternating), which a
+  // median over one sample cannot see past.
+  for (let tries = 0; ; tries++) {
+    while (othersBusy(PROFILE_DIR, 1) >= 15) await Bun.sleep(2000);
+    await cdp.eval("window.flybyShot.resetTiming()");
+    await cdp.waitFor(`window.flybyShot.timed > ${frames}`, 120_000, "toggle sample");
+    const t = await cdp.eval<number[]>("window.flybyShot.frameTrace()");
+    const m = t.reduce((a, b) => a + b, 0) / Math.max(1, t.length);
+    if (othersBusy(PROFILE_DIR, 1) < 15 || tries >= 5) return m;
+  }
 }
 
 export function median(a: number[]): number {
@@ -320,7 +336,7 @@ function attribTable(results: PoseResult[], compare: PoseResult[] | null): strin
     return `${was === undefined ? "-" : was.toFixed(2)}>${now}`.padStart(w);
   };
   const lines = ["".padEnd(22) + rs.map((r) => r.pose.slice(0, w - 1).padStart(w)).join("")];
-  lines.push("base (median)".padEnd(22) + rs.map((r) => cell(r.attrib!.base, old(r)?.base)).join(""));
+  lines.push("base (mean ms)".padEnd(22) + rs.map((r) => cell(r.attrib!.base, old(r)?.base)).join(""));
   lines.push("drift".padEnd(22) + rs.map((r) => cell(r.attrib!.drift, old(r)?.drift)).join(""));
   lines.push("everything off".padEnd(22) + rs.map((r) => cell(r.attrib!.floor, old(r)?.floor)).join(""));
   for (const t of TOGGLES) {
@@ -334,10 +350,11 @@ async function main(): Promise<void> {
   const port = Number(arg("port", "5205"));
   const debugPort = Number(arg("debug-port", "9541"));
   const profileDir = arg("profile", "/tmp/flyby-perf-profile");
+  PROFILE_DIR = profileDir;
   const only = arg("only", "");
   const tier = arg("viewport", "");
   const frames = Number(arg("frames", "180"));
-  const extra = [`gpuprof=${has("objects") ? "objects" : arg("mode", "")}`, has("nosync") ? "" : "perfsync", arg("query", "")].filter(Boolean).join("&");
+  const extra = [`gpuprof=${has("objects") ? "objects" : arg("mode", "")}`, has("sync") ? "perfsync" : "", arg("query", "")].filter(Boolean).join("&");
   const outFile = arg("out", "");
   const compareFile = arg("compare", "");
   const compare = compareFile ? (JSON.parse(readFileSync(compareFile, "utf8")) as PoseResult[]) : null;
