@@ -115,11 +115,11 @@ interface Livery {
 
 const LIVERY: Record<string, Livery> = {
   // R142/R160/R211: unpainted stainless, a black band round the windows.
-  mta: { body: 0xc8ccd1, roof: 0x8c9196, door: 0xb2b7bd, under: 0x26292c, stripes: [], doors: 4, metal: 0.3 },
+  mta: { body: 0xc8ccd1, roof: 0xa4a9ae, door: 0xb2b7bd, under: 0x26292c, stripes: [], doors: 4, metal: 0.18 },
   // BART's Fleet of the Future: white with the blue band.
   bart: { body: 0xe8ebee, roof: 0x9aa1a8, door: 0x2f6fb8, under: 0x2a2d31, stripes: [[0x1e63b5, 1.5, 1.72]], doors: 3, metal: 0.0 },
   // CTA 5000-series: stainless with red and blue stripes along the sides.
-  cta: { body: 0xc5c9cd, roof: 0x8a8f94, door: 0xb0b5ba, under: 0x26292c, stripes: [[0xc60c30, 1.58, 1.7], [0x00a1de, 1.74, 1.86]], doors: 2, metal: 0.3 },
+  cta: { body: 0xc5c9cd, roof: 0xa9aeb3, door: 0xb0b5ba, under: 0x26292c, stripes: [[0xc60c30, 1.58, 1.7], [0x00a1de, 1.74, 1.86]], doors: 2, metal: 0.18 },
 };
 
 /** One car, nose -z, rail top at y=0. Body and windows apart: the windows glow. */
