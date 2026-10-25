@@ -824,7 +824,10 @@ export class AircraftModel {
     // put back as it was, not forced on: main.ts hides it in the cockpit.
     const wasVisible = this.group.visible;
     this.group.visible = false;
-    this.env.update(renderer, scene, centre, lowTier ? 5 : 2, onFace, this.stale);
+    // A face every 15 frames on a small step: each face is a whole-scene draw
+    // submission, and on the phone profile (6x CPU throttle) every fifth frame
+    // carrying one was the most common long frame after the pavement.
+    this.env.update(renderer, scene, centre, lowTier ? 15 : 2, onFace, this.stale);
     this.group.visible = wasVisible;
     this.stale = false;
     this.filled = true;

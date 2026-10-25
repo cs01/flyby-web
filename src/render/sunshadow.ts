@@ -427,6 +427,8 @@ export class SunShadow {
    * unshadowed as they did before it existed; for A/B timing from the console.
    */
   cityEnabled = true;
+  /** The quality ladder's cap on the cascades drawn (the phone's lean preset draws one). */
+  maxCascades = 3;
   /** Outer cascades on alternate frames; see update(). */
   alternate = true;
   private frame = 0;
@@ -649,9 +651,10 @@ export class SunShadow {
     // The outermost cascade is the one that draws the whole city three times
     // over, and it is also the one carrying the least visible detail, so it is
     // what goes first when there is no frame time for it.
-    const count = lowTier
-      ? Math.min(this.budget.shadowCascadeCount, 2)
-      : this.budget.shadowCascadeCount;
+    const count = Math.min(
+      this.maxCascades,
+      lowTier ? Math.min(this.budget.shadowCascadeCount, 2) : this.budget.shadowCascadeCount,
+    );
 
     // The outer cascades take turns: cascade 0 every frame, then 1 and 2 on
     // alternate frames (1 every other frame when there are only two). Each
@@ -713,8 +716,8 @@ export class SunShadow {
     // both stops it being sampled and moves the outer fade in to meet it.
     u.uCascadeFar.value.set(
       CASCADE_FAR[0],
-      CASCADE_FAR[1],
-      count > 2 ? CASCADE_FAR[2] : CASCADE_FAR[1],
+      count > 1 ? CASCADE_FAR[1] : CASCADE_FAR[0],
+      count > 2 ? CASCADE_FAR[2] : count > 1 ? CASCADE_FAR[1] : CASCADE_FAR[0],
     );
     u.uShadowTexel.value = 1 / this.size;
     u.uShadowStrength.value = strength;
