@@ -515,7 +515,7 @@ export const POSES: Pose[] = [
     // The same bearing from 600 m, the height a sightseeing flight takes.
     name: "manhattan-esb-600",
     city: "manhattan",
-    lat: 40.7330, lon: -74.0040, altM: 600, hdgDeg: 42, pitchDeg: -10,
+    lat: 40.7387, lon: -73.9984, altM: 600, hdgDeg: 44, pitchDeg: -16,
     t: D("2025-06-21T15:30:00Z"),
     wx: CLEAR,
     what: "Midtown from 600 m with the Empire State in frame",
