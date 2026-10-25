@@ -735,6 +735,7 @@ async function main() {
   // `?flatfacade=1`: the pre-archetype facade, the probe for tools/verify-buildings.ts.
   const flatFacade = gateFlag("flatfacade");
   const oneRoof = gateFlag("oneroof");
+  const noDetail = gateFlag("nodetail");
   const noMip = gateFlag("nomip");
 
   // `?flatbounce=1` restores the street floor this repo had before the canyon
@@ -1846,7 +1847,8 @@ async function main() {
     const localHour =
       (now.getUTCHours() + now.getUTCMinutes() / 60 + city.lon / 15 + 24) % 24;
     const hf = hourFactors(localHour);
-    buildings?.updateDetail(camera.position.x, camera.position.z);
+    // ?nodetail=1: no camera-centred detail layer, a probe for the gates.
+    if (!noDetail) buildings?.updateDetail(camera.position.x, camera.position.z);
     for (const b of buildingUniformSets) {
       b.uCameraPos.value.copy(camera.position);
       b.uSH.value = skyProbe.sh;

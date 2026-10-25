@@ -133,6 +133,13 @@ vec4 ssrMarch(vec3 p0, vec3 r, float viewDist, float alpha) {
         // colour they were standing against.
         float spanPx = 0.5 * alpha * hi / max(ch.w * uSsrPixelAngle, 1e-4);
         float lod = clamp(log2(max(spanPx, 1.0)), 0.0, 4.5);
+#ifdef SSR_FACADE
+        // A curtain wall is not optically flat: each unit is a pillow a few
+        // millimetres out of plane, so what it reflects is softened, and a
+        // sharp copy of last frame's window grid shimmered when the camera
+        // moved 0.3 m (tools/verify-buildings.ts, chicago-loop-day).
+        lod = max(lod, 2.0);
+#endif
         return vec4(textureLod(uSsrHistory, uh, lod).rgb, conf);
       }
     }

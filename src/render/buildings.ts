@@ -2278,13 +2278,17 @@ void main() {
     // a glass tower shows. The water's screen-space march runs against the
     // previous frame's colour and depth; off a curtain wall the reflected ray
     // is near horizontal and lands on the facades opposite. Only where the
-    // reflection is worth the march: curtain-wall glass within 2.5 km, where
+    // reflection is worth the march: curtain-wall glass within 900 m, where
     // the Fresnel weight is past 8%. Off on the reduced tier and under
     // ?nossr=1, which turn the history off.
     float reflW = fres * glassMask * (1.0 - roughness * 0.6);
-    if (uSsrOn > 0.5 && reflW > 0.08 && fp.family < 0.5 && vViewDist < 2500.0 && uFlatRefl < 0.5) {
+    if (uSsrOn > 0.5 && reflW > 0.08 && fp.family < 0.5 && vViewDist < 900.0 && uFlatRefl < 0.5) {
       vec4 hit = ssrMarch(vWorld + n * 0.3, refl, vViewDist, max(roughness, 0.02));
-      skyRefl = mix(skyRefl, hit.rgb * revealOcc, hit.a);
+      // Faded out from 500 to 900 m: past that a reflected street is a few
+      // pixels of last frame's colour that slide with every metre the camera
+      // moves; the 0.3 m shimmer measure on chicago-loop-day was 0.0365
+      // without the march, 0.0383 with it out to 2.5 km, 0.0378 to 1.5 km.
+      skyRefl = mix(skyRefl, hit.rgb * revealOcc, hit.a * (1.0 - smoothstep(500.0, 900.0, vViewDist)));
     }
     lit = mix(lit, skyRefl, reflW);
   }
