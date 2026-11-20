@@ -57,6 +57,8 @@ export function tagText(pack: TransitPack, v: Vehicle): { bullet: string; line: 
   if (a.id === "bart") return { bullet, line: `BART ${bullet} to ${to}` };
   if (a.id === "cta") return { bullet, line: `${bullet} Line to ${to}` };
   if (a.kind === "ferry") return { bullet, line: `${a.name}${r.long && a.id !== "siferry" ? ` ${r.long}` : ""} to ${to}` };
+  // "38R Geary Rapid to Ocean Beach", "PH Powell-Hyde Cable Car to Hyde + Beach".
+  if (a.kind === "bus" || a.kind === "tram" || a.kind === "cable") return { bullet, line: `${bullet} ${r.long} to ${to}` };
   return { bullet, line: `to ${to}` };
 }
 

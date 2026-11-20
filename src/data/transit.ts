@@ -45,7 +45,7 @@ import type { Origin } from "../geo";
 /** Service acceleration and braking, m/s^2: R160 and BART both rate ~1.1. */
 export const ACCEL = 1.0;
 /** Mean speeds stop to stop, m/s, for estimating a dropped previous departure. */
-const MEAN_SPEED: Record<string, number> = { subway: 9, rail: 17, ferry: 9 };
+const MEAN_SPEED: Record<string, number> = { subway: 9, rail: 17, ferry: 9, tram: 5, bus: 4, cable: 3 };
 /** A train at its origin terminal shows this long before it leaves. */
 const LAYOVER_S = 240;
 /** And stays this long at the end of the line. */
@@ -589,6 +589,13 @@ export function rollingFor(agency: string, routeId: string): Rolling {
     const cars: Record<string, number> = { Red: 8, Blue: 8, Brn: 8, P: 8, G: 6, Org: 6, Pink: 6, Y: 2 };
     return { len: 14.6, width: 2.84, cars: cars[routeId] ?? 6 };
   }
+  // Muni: 40 ft buses (the 60 ft artics are not told apart in the feed);
+  // Breda/Siemens LRVs, 23 m and mostly two-car; the F's PCCs and Peter
+  // Witts, about 14 m; cable cars, 8.4 m on Powell and 9.2 m on California.
+  if (agency === "sfmta-bus") return { len: 12.2, width: 2.6, cars: 1 };
+  if (agency === "sfmta-tram") return routeId === "F" ? { len: 14.2, width: 2.7, cars: 1 } : { len: 23, width: 2.7, cars: 2 };
+  if (agency === "sfmta-cable") return { len: routeId === "CA" ? 9.2 : 8.4, width: 2.4, cars: 1 };
+  if (agency === "alcatraz") return { len: 40, width: 10, cars: 1 };
   // Hulls: the Staten Island Ferry's Ollis class is 94 m; NYC Ferry's
   // 150-seat boats 26 m; the Bay Ferry's and Golden Gate's 40 and 50 m.
   if (agency === "siferry") return { len: 94, width: 21, cars: 1 };

@@ -17,6 +17,10 @@
 // OSM railway within 20 m that is going the same way, preferring a way that is
 // a member of the route's own OSM relation (Queens Boulevard has the elevated
 // 7 above and the E/F/M/R tunnel below, 0 to 12 m apart in plan).
+//
+// Street vehicles (Muni's buses and cable cars, and the F) take no level from
+// OSM: they run over the subways, and would snap into them. They are at
+// grade except on a landmark bridge or over open water (see `street`).
 
 import { spawn } from "bun";
 import { mkdirSync, existsSync, statSync, writeFileSync } from "node:fs";
@@ -33,16 +37,44 @@ const OUT = new URL("../public/transit/", import.meta.url).pathname;
 interface AgencyCfg {
   id: string;
   name: string;
-  zip: string;
+  /** The static GTFS zip, or a feed built here for an operator with none. */
+  zip: string | (() => SyntheticFeed);
+  /** Cache file name, for agencies split by mode out of one zip. */
+  cache?: string;
   kind: TransitKind;
   live: PackAgency["live"];
   /** GTFS route_type values to keep. */
   types: number[];
-  /** Route ids to drop: BART's bus bridges are route_type 3 anyway. */
   elevatedM: number;
   /** Bake trip ids, for a feed that reports vehicles by trip. */
   tripIds?: boolean;
+  /**
+   * OSM railway values whose tunnel/bridge tags give this agency's levels;
+   * every railway for subway and rail. Empty: the vehicles run in the street.
+   */
+  snap?: string[];
+  /** Routes that run on the street over another line's tunnel (the F over the Market Street subway). */
+  surface?: string[];
+  /**
+   * A trip whose timing is within this many seconds at every stop of a
+   * variant already kept shares it. Muni's buses have a different run time
+   * almost every trip, which made the timetable most of the pack.
+   */
+  timingTolS?: number;
+  /** All-caps route names ("19TH AVENUE RAPID") to title case. */
+  titleCase?: boolean;
+  /**
+   * Patterns with fewer trips than this in the whole timetable are dropped:
+   * Muni's pull-outs, school trippers and one-off short turns were a quarter
+   * of its shapes and 1.3% of its trips.
+   */
+  minTrips?: number;
+  /** Spacing of the points kept between corners on visible track, for the height profile; 30 m by default. */
+  fillM?: number;
 }
+
+/** GTFS tables as rows of column to value, for a feed written here. */
+type SyntheticFeed = Record<string, Record<string, string>[]>;
 
 interface CityCfg {
   tz: string;
@@ -74,6 +106,32 @@ const CITIES: Record<string, CityCfg> = {
       { id: "bart", name: "BART", zip: "https://www.bart.gov/dev/schedules/google_transit.zip", kind: "rail", live: "bart", types: [1], elevatedM: 10 },
       { id: "sfbayferry", name: "San Francisco Bay Ferry", zip: "https://gtfs.sanfranciscobayferry.com/gtfs.zip", kind: "ferry", live: "", types: [4], elevatedM: 0 },
       { id: "ggt", name: "Golden Gate Ferry", zip: "https://realtime.goldengate.org/gtfsstatic/GTFSTransitData.zip", kind: "ferry", live: "", types: [4], elevatedM: 0 },
+      // Muni, one zip split by mode so each pack agency has one kind. The
+      // address is the one sfmta.com/reports/gtfs-transit-data links (read
+      // 2026-11-20); gtfs.sfmta.com/transitdata no longer answers. Muni Metro
+      // takes its levels from OSM light_rail only: BART's subway is under the
+      // same streets. The 1 California and the other trolleybuses are
+      // route_type 3 in this feed, 11 is kept in case that changes.
+      ...(["tram", "cable", "bus"] as const).map((kind): AgencyCfg => ({
+        id: `sfmta-${kind}`,
+        name: "Muni",
+        zip: "https://muni-gtfs.apps.sfmta.com/data/muni_gtfs-current.zip",
+        cache: "sfmta",
+        kind,
+        live: "",
+        types: kind === "tram" ? [0] : kind === "cable" ? [5] : [3, 11],
+        elevatedM: 5,
+        snap: kind === "tram" ? ["light_rail"] : [],
+        surface: ["F"],
+        timingTolS: 120,
+        titleCase: true,
+        minTrips: 20,
+        // A chord 60 m long over a crest that turns from +15% to -15% sags
+        // 2 m below the street; at 30 m Muni's shapes were a third of the pack.
+        // Cable cars climb the steepest blocks and are few: they keep 30 m.
+        fillM: kind === "cable" ? 30 : 60,
+      })),
+      { id: "alcatraz", name: "Alcatraz City Cruises", zip: alcatrazFeed, kind: "ferry", live: "", types: [4], elevatedM: 0 },
     ],
   },
   chicago: {
@@ -85,6 +143,99 @@ const CITIES: Record<string, CityCfg> = {
   },
 };
 
+// --- Alcatraz ----------------------------------------------------------------
+//
+// Alcatraz City Cruises publishes no GTFS, so its feed is written here.
+//
+// TIMETABLE. From the operator's schedule PDF,
+// https://statue-static-content.s3.us-east-1.amazonaws.com/Alcatraz+City+Cruises+-+Schedule.pdf
+// (PDF dated 2026-07-08), which is the only timetable linked from
+// https://alcatrazcitycruises.com/plan-your-visit/schedule/, both read on
+// 2026-11-20. It is the "Summer schedule, March 8 - November 1, 2026" and
+// lists every departure, not a first/last/interval. No low-season timetable
+// was published when this was read; nps.gov/alca/planyourvisit/hours.htm only
+// says "about every half hour from 8:45am" and that hours vary with the
+// season. Past November 1 the service dates are out of range and the app
+// matches by weekday (activeServices), so this timetable is what shows until
+// a newer one is baked. Left out: the Alcatraz + Angel Island combination
+// tour, which ran to October 31 only, and the Bay Discovery cruise, which
+// does not land.
+//
+// The crossing is 15 minutes: the OSM ferry way's duration tag, and the
+// operator's FAQ says "approximately 12-15 minutes".
+//
+// PATH. OSM way 27989500, "Alcatraz - Pier 33 Alcatraz Landing" (route=ferry,
+// operator Alcatraz Cruises, LLC), read from Overpass 2026-11-20; the docks
+// are its end nodes, OSM nodes 3202359193 (Pier 33 Alcatraz Landing) and
+// 1526523486 (Alcatraz Ferry Terminal). Every 10 m of it is water in the sf
+// land pack (test/muni.check.ts).
+const ALCATRAZ = {
+  pier33: [37.8069704, -122.404159] as const,
+  island: [37.8266612, -122.420808] as const,
+  path: [
+    [37.8069704, -122.404159], [37.8069874, -122.4040632], [37.8070399, -122.4039665], [37.8072137, -122.4038167],
+    [37.8076244, -122.4035597], [37.808081, -122.4034337], [37.8084206, -122.4034017], [37.8087629, -122.4034225],
+    [37.809084, -122.4034509], [37.8094213, -122.4035282], [37.8097059, -122.4036339], [37.8101326, -122.4038737],
+    [37.8108196, -122.4043411], [37.811474, -122.4048817], [37.8121365, -122.4055158], [37.8137484, -122.4073261],
+    [37.8246229, -122.417873], [37.8256667, -122.4188075], [37.8262371, -122.4195964], [37.8266018, -122.4203296],
+    [37.8266764, -122.4205699], [37.8266835, -122.420672], [37.8266723, -122.4207726], [37.8266612, -122.420808],
+  ] as [number, number][],
+  crossingS: 15 * 60,
+  from: "20260308",
+  to: "20261101",
+  /** Day tour, every day. */
+  dailyOut: ["8:40", "9:20", "9:40", "10:10", "10:35", "11:00", "11:30", "12:00", "12:30", "13:05", "13:35", "14:15", "14:45", "15:20", "15:50"],
+  dailyBack: ["9:35", "9:55", "10:30", "11:00", "11:25", "11:55", "12:25", "12:55", "13:30", "14:00", "14:40", "15:10", "15:45", "16:15", "16:45", "17:15", "17:55", "18:30"],
+  /** Behind the Scenes (16:20, 17:20) and Night tour (17:55, 18:30, 19:05), Tuesday to Saturday. */
+  tueSatOut: ["16:20", "17:20", "17:55", "18:30", "19:05"],
+  tueSatBack: ["18:55", "19:55", "20:40", "21:25"],
+};
+
+function alcatrazFeed(): SyntheticFeed {
+  const A = ALCATRAZ;
+  const hm = (t: string, plus = 0) => {
+    const [h, m] = t.split(":").map(Number);
+    const s = h * 3600 + m * 60 + plus;
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${p(Math.floor(s / 3600))}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}`;
+  };
+  const feed: SyntheticFeed = {
+    "routes.txt": [{ route_id: "ALC", route_short_name: "ALC", route_long_name: "", route_type: "4", route_color: "1D3B6E", route_text_color: "FFFFFF" }],
+    "stops.txt": [
+      { stop_id: "pier33", stop_name: "Pier 33 Alcatraz Landing", stop_lat: String(A.pier33[0]), stop_lon: String(A.pier33[1]) },
+      { stop_id: "alcatraz", stop_name: "Alcatraz Island", stop_lat: String(A.island[0]), stop_lon: String(A.island[1]) },
+    ],
+    "calendar.txt": [
+      { service_id: "daily", monday: "1", tuesday: "1", wednesday: "1", thursday: "1", friday: "1", saturday: "1", sunday: "1", start_date: A.from, end_date: A.to },
+      { service_id: "tuesat", monday: "0", tuesday: "1", wednesday: "1", thursday: "1", friday: "1", saturday: "1", sunday: "0", start_date: A.from, end_date: A.to },
+    ],
+    "shapes.txt": [],
+    "trips.txt": [],
+    "stop_times.txt": [],
+  };
+  A.path.forEach(([lat, lon], i) => feed["shapes.txt"].push({ shape_id: "out", shape_pt_sequence: String(i), shape_pt_lat: String(lat), shape_pt_lon: String(lon) }));
+  [...A.path].reverse().forEach(([lat, lon], i) => feed["shapes.txt"].push({ shape_id: "back", shape_pt_sequence: String(i), shape_pt_lat: String(lat), shape_pt_lon: String(lon) }));
+  const trip = (svc: string, t: string, out: boolean) => {
+    const id = `${svc}-${out ? "out" : "back"}-${t}`;
+    feed["trips.txt"].push({ route_id: "ALC", service_id: svc, trip_id: id, trip_headsign: out ? "Alcatraz Island" : "Pier 33", shape_id: out ? "out" : "back" });
+    const [a, b] = out ? ["pier33", "alcatraz"] : ["alcatraz", "pier33"];
+    feed["stop_times.txt"].push(
+      { trip_id: id, stop_id: a, stop_sequence: "1", arrival_time: hm(t), departure_time: hm(t) },
+      { trip_id: id, stop_id: b, stop_sequence: "2", arrival_time: hm(t, A.crossingS), departure_time: hm(t, A.crossingS) },
+    );
+  };
+  for (const t of A.dailyOut) trip("daily", t, true);
+  for (const t of A.dailyBack) trip("daily", t, false);
+  for (const t of A.tueSatOut) trip("tuesat", t, true);
+  for (const t of A.tueSatBack) trip("tuesat", t, false);
+  return feed;
+}
+
+/** "19TH AVENUE RAPID" to "19th Avenue Rapid", "O'SHAUGHNESSY" to "O'Shaughnessy". */
+function titleCase(s: string): string {
+  return s.toLowerCase().replace(/(^|[\s\-'/&+(])([a-z])/g, (_, p: string, c: string) => p + c.toUpperCase());
+}
+
 const SAMPLE_M = 10;
 const OSM_NEAR_M = 20;
 /** Douglas-Peucker tolerance. A car is 15 m: half a metre off the curve is invisible. */
@@ -92,9 +243,9 @@ const SIMPLIFY_M = 0.5;
 
 // --- io ----------------------------------------------------------------------
 
-async function ensureZip(a: AgencyCfg, force: boolean): Promise<string> {
+async function ensureZip(a: AgencyCfg & { zip: string }, force: boolean): Promise<string> {
   mkdirSync(CACHE, { recursive: true });
-  const path = `${CACHE}${a.id}.zip`;
+  const path = `${CACHE}${a.cache ?? a.id}.zip`;
   if (!force && existsSync(path) && statSync(path).size > 1000) return path;
   console.log(`  fetch ${a.zip}`);
   const res = await fetch(a.zip, { headers: { "User-Agent": "Mozilla/5.0 (flyby-web bake-transit)" } });
@@ -183,6 +334,8 @@ function hms(t: string): number {
 
 interface OsmWay {
   id: number;
+  /** The railway tag: subway, light_rail, rail... */
+  rail: string;
   lvl: number;
   /** world x,z */
   pts: number[];
@@ -260,7 +413,7 @@ async function osmRail(cityId: string, o: Origin, clip: number, force: boolean):
       const p = o.toWorld(g.lat, g.lon);
       pts.push(p.x, p.z);
     }
-    ways.push({ id: el.id, lvl, pts, refs: refs.get(el.id) ?? new Set() });
+    ways.push({ id: el.id, rail: t.railway ?? "", lvl, pts, refs: refs.get(el.id) ?? new Set() });
   }
   return ways;
 }
@@ -370,9 +523,17 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
   const o = new Origin(city.lat, city.lon);
   const R = cfg.clip;
   const inClip = (x: number, z: number) => Math.hypot(x, z) <= R;
-  const hasRail = cfg.agencies.some((a) => a.kind !== "ferry");
+  const snapsTo = (a: AgencyCfg): string[] | null => a.snap ?? (a.kind === "subway" || a.kind === "rail" ? null : []);
+  const hasRail = cfg.agencies.some((a) => snapsTo(a)?.length !== 0);
   const osm = hasRail ? await osmRail(cityId, o, R, force) : [];
-  const index = new SegIndex(osm);
+  const indexes = new Map<string, SegIndex>();
+  const indexFor = (a: AgencyCfg): SegIndex => {
+    const only = snapsTo(a);
+    const k = only ? only.join(",") : "*";
+    let ix = indexes.get(k);
+    if (!ix) indexes.set(k, (ix = new SegIndex(only ? osm.filter((w) => only.includes(w.rail)) : osm)));
+    return ix;
+  };
   console.log(`  osm: ${osm.length} railway ways (${osm.filter((w) => w.lvl === Level.Tunnel).length} tunnel, ${osm.filter((w) => w.lvl === Level.Elevated).length} bridge)`);
   const landmarks = landmarksFor(cityId, o).filter((l) => l.spec.zone);
   // The city's own WorldCover pack, for putting docked ferries in the water.
@@ -393,17 +554,31 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
   for (const a of cfg.agencies) {
     const ai = pack.agencies.length;
     pack.agencies.push({ id: a.id, name: a.name, kind: a.kind, live: a.live, elevatedM: a.elevatedM });
-    const zip = await ensureZip(a, force);
-    const names = await entries(zip);
+    type Rows = (file: string, row: (get: (col: string) => string) => void, prefilter?: (line: string) => boolean) => Promise<void>;
+    let rows: Rows;
+    if (typeof a.zip === "string") {
+      const zip = await ensureZip({ ...a, zip: a.zip }, force);
+      const names = await entries(zip);
+      rows = (file, row, prefilter) => eachRow(zip, names, file, row, prefilter);
+    } else {
+      const feed = a.zip();
+      rows = async (file, row) => {
+        for (const rec of feed[file] ?? []) row((c) => rec[c] ?? "");
+      };
+    }
+    // Muni writes the apostrophe as a backtick ("Fisherman`s Wharf").
+    const tidy = (s: string) => (a.titleCase ? s.replace(/`/g, "'") : s);
+    const index = indexFor(a);
+    const snap = snapsTo(a)?.length !== 0;
 
     const routes = new Map<string, number>();
     const routeTokens = new Map<string, string[]>();
-    await eachRow(zip, names, "routes.txt", (g) => {
+    await rows("routes.txt", (g) => {
       if (!a.types.includes(Number(g("route_type")))) return;
       const id = g("route_id");
       routes.set(id, pack.routes.length);
       const short = g("route_short_name");
-      const long = g("route_long_name");
+      const long = a.titleCase ? titleCase(g("route_long_name")) : g("route_long_name");
       pack.routes.push([ai, id, short, long, (g("route_color") || "808080").toUpperCase(), (g("route_text_color") || "FFFFFF").toUpperCase()]);
       // Tokens to find the route's OSM relation by: "Q", "Yellow" from
       // BART's "Yellow-S", "Brown" from the CTA's "Brown Line".
@@ -413,15 +588,15 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
 
     interface Trip { route: string; service: string; shape: string; headsign: string; times: number[]; stops: string[]; seq: number[]; id: string }
     const trips = new Map<string, Trip>();
-    await eachRow(zip, names, "trips.txt", (g) => {
+    await rows("trips.txt", (g) => {
       const r = g("route_id");
       if (!routes.has(r)) return;
-      trips.set(g("trip_id"), { route: r, service: g("service_id"), shape: g("shape_id"), headsign: g("trip_headsign"), times: [], stops: [], seq: [], id: g("trip_id") });
+      trips.set(g("trip_id"), { route: r, service: g("service_id"), shape: g("shape_id"), headsign: tidy(g("trip_headsign")), times: [], stops: [], seq: [], id: g("trip_id") });
     });
     console.log(`  ${a.id}: ${routes.size} routes, ${trips.size} trips`);
 
-    await eachRow(
-      zip, names, "stop_times.txt",
+    await rows(
+      "stop_times.txt",
       (g) => {
         const t = trips.get(g("trip_id"));
         if (!t) return;
@@ -442,13 +617,13 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
     );
 
     const stopInfo = new Map<string, { name: string; lat: number; lon: number }>();
-    await eachRow(zip, names, "stops.txt", (g) => {
-      stopInfo.set(g("stop_id"), { name: g("stop_name"), lat: parseFloat(g("stop_lat")), lon: parseFloat(g("stop_lon")) });
+    await rows("stops.txt", (g) => {
+      stopInfo.set(g("stop_id"), { name: tidy(g("stop_name")), lat: parseFloat(g("stop_lat")), lon: parseFloat(g("stop_lon")) });
     });
 
     const shapeRaw = new Map<string, { seq: number; lat: number; lon: number }[]>();
     const usedShapes = new Set([...trips.values()].map((t) => t.shape));
-    await eachRow(zip, names, "shapes.txt", (g) => {
+    await rows("shapes.txt", (g) => {
       const id = g("shape_id");
       if (!usedShapes.has(id)) return;
       let a2 = shapeRaw.get(id);
@@ -468,7 +643,7 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
       return i;
     };
     const usedSvc = new Set([...trips.values()].map((t) => t.service));
-    await eachRow(zip, names, "calendar.txt", (g) => {
+    await rows("calendar.txt", (g) => {
       const id = g("service_id");
       if (!usedSvc.has(id)) return;
       const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"].reduce((m, d, i) => m | (g(d) === "1" ? 1 << i : 0), 0);
@@ -477,7 +652,7 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
       s[3] = Number(g("start_date"));
       s[4] = Number(g("end_date"));
     });
-    await eachRow(zip, names, "calendar_dates.txt", (g) => {
+    await rows("calendar_dates.txt", (g) => {
       const id = g("service_id");
       if (!usedSvc.has(id)) return;
       const s = pack.services[svc(id)];
@@ -505,8 +680,33 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
       }
       const d = densify(w, SAMPLE_M);
       const n = d.length / 2;
+      const street = a.kind !== "ferry" && (!snap || (a.surface ?? []).includes(routeId));
       const lv = new Uint8Array(n).fill(a.kind === "ferry" ? Level.Grade : 255);
-      if (a.kind !== "ferry") {
+      if (street) {
+        // In the street, at grade, except on a landmark bridge's deck (the 25
+        // on the Bay Bridge, whose deck WorldCover maps as built-up, not
+        // water) or where 100 m running is over water. The app puts an
+        // elevated stretch on the landmark's deck where there is one. Shorter
+        // wet runs are the land mask's 10 m cells along the Embarcadero seawall.
+        const onDeck = (x: number, z: number) =>
+          landmarks.some((l) => {
+            const { t, s } = axisOf(l, x, z);
+            const zn = l.spec.zone!;
+            return t >= zn[0] && t <= zn[1] && Math.abs(s) <= l.spec.halfWidthM + 6;
+          });
+        const raised = (i: number) => onDeck(d[i * 2], d[i * 2 + 1]) || wet(d[i * 2], d[i * 2 + 1]);
+        lv.fill(Level.Grade);
+        for (let i = 0; i < n; ) {
+          if (!raised(i)) {
+            i++;
+            continue;
+          }
+          let j = i;
+          while (j < n && raised(j)) j++;
+          if (j - i >= 10) lv.fill(Level.Elevated, i, j);
+          i = j;
+        }
+      } else if (a.kind !== "ferry") {
         const toks = routeTokens.get(routeId) ?? [];
         for (let i = 0; i < n; i++) {
           const x = d[i * 2], z = d[i * 2 + 1];
@@ -556,7 +756,8 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
         const i1 = simple[k + 1];
         if (i1 === undefined || a.kind === "ferry") continue;
         if (lv[i0] === Level.Tunnel && lv[i1] === Level.Tunnel) continue;
-        for (let j = i0 + 3; j < i1 - 1; j += 3) kept.push(j);
+        const step = Math.round((a.fillM ?? 30) / SAMPLE_M);
+        for (let j = i0 + step; j < i1 - 1; j += step) kept.push(j);
       }
       // Quantise first, then measure, so the app recomputes identical s.
       const qp: number[] = [];
@@ -603,20 +804,34 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
     };
 
     // Patterns.
-    const patterns = new Map<string, RawPack["patterns"][number] & { tmKeys: Map<string, number> }>();
+    const patterns = new Map<string, RawPack["patterns"][number] & { tmKeys: Map<string, number>; rels: number[][] }>();
     let dropped = 0;
+    const keyOf = (t: Trip, stopsSorted: string[]) => `${t.route}|${t.shape}|${stopsSorted.join(",")}|${t.headsign}`;
+    const sortedStops = (t: Trip) => t.seq.map((_, i) => i).sort((p, q) => t.seq[p] - t.seq[q]);
+    const tripsPerKey = new Map<string, number>();
+    if (a.minTrips) {
+      for (const t of trips.values()) {
+        const k = keyOf(t, sortedStops(t).map((i) => t.stops[i]));
+        tripsPerKey.set(k, (tripsPerKey.get(k) ?? 0) + 1);
+      }
+    }
+    let rare = 0;
     for (const t of trips.values()) {
       if (t.stops.length < 2) continue;
       // stop_times are not promised to be in sequence order.
-      const order = t.seq.map((_, i) => i).sort((p, q) => t.seq[p] - t.seq[q]);
+      const order = sortedStops(t);
       const stopsSorted = order.map((i) => t.stops[i]);
       const times = order.flatMap((i) => [t.times[i * 2], t.times[i * 2 + 1]]);
+      const key = keyOf(t, stopsSorted);
+      if (a.minTrips && (tripsPerKey.get(key) ?? 0) < a.minTrips) {
+        rare++;
+        continue;
+      }
       const sh = bakeShape(t.shape, t.route);
       if (!sh) {
         dropped++;
         continue;
       }
-      const key = `${t.route}|${t.shape}|${stopsSorted.join(",")}|${t.headsign}`;
       let p = patterns.get(key);
       if (!p) {
         // Each stop's arc length: the nearest point at or past the previous
@@ -680,7 +895,7 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
           }
           for (let i = 1; i < ss.length; i++) ss[i] = Math.max(ss[i], ss[i - 1]);
         }
-        p = { r: routes.get(t.route)!, sh: sh.idx, hs: t.headsign, st: stopsSorted.map(stop), ss, tm: [], tr: [], tmKeys: new Map() };
+        p = { r: routes.get(t.route)!, sh: sh.idx, hs: t.headsign, st: stopsSorted.map(stop), ss, tm: [], tr: [], tmKeys: new Map(), rels: [] };
         if (a.tripIds) p.tid = [];
         patterns.set(key, p);
       }
@@ -688,7 +903,13 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
       const rel = times.map((x) => x - start);
       const tk = rel.join(",");
       let v = p.tmKeys.get(tk);
+      if (v === undefined && a.timingTolS) {
+        const tol = a.timingTolS;
+        const near = p.rels.findIndex((q) => q.every((x, i) => Math.abs(x - rel[i]) <= tol));
+        if (near >= 0) v = near;
+      }
       if (v === undefined) {
+        p.rels.push(rel);
         v = p.tm.length;
         // Stored as successive differences: dwell, run, dwell... are two- and
         // three-digit numbers where the offsets themselves run to five, which
@@ -700,10 +921,10 @@ async function bakeCity(cityId: string, force: boolean): Promise<void> {
       p.tid?.push(t.id);
     }
     for (const p of patterns.values()) {
-      const { tmKeys: _drop, ...rest } = p;
+      const { tmKeys: _drop, rels: _rels, ...rest } = p;
       pack.patterns.push(rest);
     }
-    console.log(`  ${a.id}: ${patterns.size} patterns, ${[...shapeIdx.values()].filter(Boolean).length} shapes in clip, ${dropped} trips outside or shapeless`);
+    console.log(`  ${a.id}: ${patterns.size} patterns, ${[...shapeIdx.values()].filter(Boolean).length} shapes in clip, ${dropped} trips outside or shapeless, ${rare} on patterns under ${a.minTrips ?? 0} trips`);
   }
 
   // Elevated structure, from the OSM ways the shapes snapped to, minus the

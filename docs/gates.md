@@ -45,7 +45,7 @@ runs locally, and before a deploy that touched what it measures.
 
 | gate | script | claims | probes |
 | --- | --- | --- | --- |
-| check | `bun run check` | typecheck (app and tools); the offline suites in `test/*.check.ts` (solar, touch, flight, drone, roof, facade, archetype, sh, gtao, budget, quality, collision, landmask, roadmask, ribbon, trees, shrubs, car, carmesh, lighting, live, zoning, pavement, street, streetsign, bridge, trafficmodel, junction, livetraffic, spotting, transit, pack); the glsl, pack, land, road and aircraft verifiers | per suite, printed as `ok vacuity:` |
+| check | `bun run check` | typecheck (app and tools); the offline suites in `test/*.check.ts` (solar, touch, flight, drone, roof, facade, archetype, sh, gtao, budget, quality, collision, landmask, roadmask, ribbon, trees, shrubs, car, carmesh, lighting, live, zoning, pavement, street, streetsign, bridge, trafficmodel, junction, livetraffic, spotting, transit, muni, pack); the glsl, pack, land, road and aircraft verifiers | per suite, printed as `ok vacuity:` |
 | water | `bun run water` | water has texture up close, stays sub-pixel far off, mirrors the sky at grazing, carries the skyline (SSR), whitecaps in wind and none in calm, foam is white | `?flatwater`, `?nossr`, and each ceiling measured on a frame that must exceed it |
 | ground | `bun run ground` | the ground detail layer adds local contrast near, keeps the photograph's block colour, adds nothing aliased from altitude | `?nodetail`, `?detailtint`, `?detailalias` |
 | shadow | `bun run shadow` | the static city shadow map carries shadow past the cascades with no edge at the last cascade, at both quality tiers | `?nocityshadow` |
