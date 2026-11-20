@@ -21,7 +21,7 @@ import type { Origin } from "../geo";
 import { decodeFeed } from "../data/gtfsrt";
 import { FEEDS, type FeedSpec } from "../data/transitfeeds";
 import { parseTransitPack, Level, type RawPack, type TransitPack } from "../data/transitpack";
-import { TransitModel, trackHeights } from "../data/transit";
+import { TransitModel, trackHeights, boatPose, carPose, rollingFor, type CarPose, type Rolling, type Vehicle } from "../data/transit";
 import { axisOf, profileY, type Landmark } from "../data/landmarks";
 import type { AircraftModel } from "../render/aircraftmodel";
 import { TransitRender, structureColor } from "../render/transit";
@@ -290,6 +290,36 @@ export class TransitLayer {
       if (!under) cands.push({ v, x: smp.x, y: boat ? y + 6 : y, z: smp.z });
     }
     this.tags.update(camera, cands, model, now, avoid.map((q) => ({ x: q.x, y: q.y + q.h / 2 })));
+  }
+
+  /** The clock the model was last stepped to, epoch ms. */
+  get now(): number {
+    return this.frozenAt ?? Date.now();
+  }
+
+  /** Whether `v`'s kind is drawn right now (its layer on and the group visible). */
+  drawn(v: Vehicle): boolean {
+    const r = this.render;
+    if (!r || !r.group.visible || !this.pack) return false;
+    return this.pack.agencies[v.agency].kind === "ferry" ? r.boats : r.trains;
+  }
+
+  rollingOf(v: Vehicle): Rolling {
+    const pack = this.pack!;
+    return rollingFor(pack.agencies[v.agency].id, pack.routes[v.route].id);
+  }
+
+  /**
+   * Car `car` of `v` (0 for a boat) posed by the same functions, heights and
+   * water level render/transit.ts draws it with, so a rider and the mesh agree.
+   */
+  poseOf(v: Vehicle, car: number, out: CarPose): CarPose | null {
+    const pack = this.pack;
+    if (!pack) return null;
+    const sh = pack.shapes[pack.patterns[v.pattern].shape];
+    const rolling = this.rollingOf(v);
+    if (pack.agencies[v.agency].kind === "ferry") return boatPose(sh, v.s, rolling, this.o.waterY, out);
+    return carPose(sh, this.shapeHeights(pack.patterns[v.pattern].shape), v.s, car, rolling, this.o.groundAt, out);
   }
 
   /** Every vehicle's head as lat/lon/height, for pointing a pose at a real train. */

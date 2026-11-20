@@ -110,6 +110,7 @@ import { fetchNearby, searchNamedPlaces } from "./data/nearby";
 import { AirTrafficLayer } from "./app/airtraffic";
 import { SpotGame } from "./app/spotgame";
 import { TransitLayer } from "./app/transit";
+import { RideController } from "./app/ride";
 import { AIRPORTS, airportById, spotPose } from "./data/airports";
 import { haversine } from "./geo";
 import { prof, installObjectProfiling } from "./render/gpuprof";
@@ -1225,7 +1226,11 @@ async function main() {
   const layers = new Layers(ui);
   const airTraffic = new AirTrafficLayer({ scene, ui, model, origin, groundAt: terrain.heightAt, shotMode });
   // Trains and boats; see app/transit.ts.
-  const transit = new TransitLayer({ scene, ui, model, origin, cityId: city.id, groundAt: terrain.heightAt, waterY: waterLevel, landmarks, shotMode, onGo: (x, y, z, name) => arriveAt({ name, x, z, topY: y + 40 }) });
+  const transit = new TransitLayer({ scene, ui, model, origin, cityId: city.id, groundAt: terrain.heightAt, waterY: waterLevel, landmarks, shotMode, onGo: (x, y, z, name) => {
+    // On foot beside it, a tap on its tag gets on rather than flying off.
+    if (droneActive && drone.walk && ride.tryBoard()) return;
+    arriveAt({ name, x, z, topY: y + 40 });
+  } });
   airTraffic.render.group.name = "airtraffic";
   const drawSize = new THREE.Vector2();
   // Plane spotting over the live traffic; see app/spotgame.ts.
@@ -1307,6 +1312,8 @@ async function main() {
     }
     return null;
   };
+  // Riding trains and boats on foot; see app/ride.ts.
+  const ride = new RideController({ scene, ui, model, transit, drone, groundAt: terrain.heightAt, standable: nearestStandable, toast: (t) => hud.toast(t) });
   const easyStick = new EasyStick();
   /**
    * Put the aircraft half a mile off a place, pointed at it.
@@ -1730,7 +1737,10 @@ async function main() {
       // Drained every frame even while paused, or the mouse travel banks up
       // behind the pause and the view snaps when it lets go.
       const di = input.droneAxes(dt);
-      if (!input.paused) {
+      // Riding: the step is taken inside the vehicle by ride.update below.
+      if (ride.riding) {
+        if (!input.paused) ride.take(di);
+      } else if (!input.paused) {
         drone.update(di, dt, groundUnderDrone);
         // After the integrate and after the terrain clamp, so the push-out is
         // the last word on where the drone ended up this frame.
@@ -1951,6 +1961,18 @@ async function main() {
     prof.cpuBegin("transit");
     transit.update(camera, drawSize.y, dt, light.night, layers.trains, layers.boats, airTraffic.tags.rects);
     prof.cpuEnd("transit");
+    // After transit.update, so the rider and the car mesh come from the same
+    // model step; the camera is re-placed here and nothing above used it for
+    // more than culling.
+    if (input.boardPressed > 0) {
+      input.boardPressed = 0;
+      ride.press();
+    }
+    if (ride.update(input.paused ? 0 : dt, droneActive && drone.walk)) {
+      camera.position.copy(drone.position);
+      drone.orientation(camera.quaternion);
+      camera.updateMatrixWorld();
+    }
     minimap.setTransit(transit.blips);
     spotGame.transit = transit.blips;
 

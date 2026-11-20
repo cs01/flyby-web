@@ -746,6 +746,32 @@ html, body {
   color: var(--accent);
 }
 
+/* --- Riding transit ------------------------------------------------------ */
+
+/* The route banner takes the street sign's place (the sign is the car's, and
+   you are not in the car), and is tappable: a tap is F, to get off. */
+.ride-banner {
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.ride-hint {
+  position: absolute;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
 /* --- Places to fly to ---------------------------------------------------- */
 
 /* Bottom left, opposite the route. The route is where you are being sent and

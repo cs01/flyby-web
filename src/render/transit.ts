@@ -28,7 +28,7 @@ import { SH_GLSL } from "./sh";
 const MAX_RANGE_M = 10000;
 
 /** A growable triangle soup with the attributes trafficMaterial reads. */
-class Soup {
+export class Soup {
   pos: number[] = [];
   nrm: number[] = [];
   col: number[] = [];
@@ -50,6 +50,38 @@ class Soup {
     this.quad([x0, y0, z1], [x0, y1, z1], [x0, y1, z0], [x0, y0, z0], [-1, 0, 0], c);
     this.quad([x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], [0, 0, 1], c);
     this.quad([x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], [0, 0, -1], c);
+  }
+
+  /**
+   * A band `t` thick laid on both sides of a body `hw` either side of the
+   * centre line, with no face toward the inside. A full-width box would do
+   * from outside, but a rider inside sees its inner faces as partitions
+   * across the aisle and its top as a floor at window height.
+   */
+  skins(hw: number, t: number, y0: number, y1: number, z0: number, z1: number, color: number): void {
+    for (const sx of [-1, 1]) {
+      const o = new Soup();
+      o.box(sx < 0 ? -hw - t : hw, sx < 0 ? -hw : hw + t, y0, y1, z0, z1, color);
+      this.append(o, (nx) => nx !== -sx);
+    }
+  }
+
+  /** A pane across one end, `zf` the inner face, with no face toward the inside. */
+  endPane(hx: number, y0: number, y1: number, zf: number, t: number, color: number): void {
+    const o = new Soup();
+    const out = t > 0 ? 1 : -1;
+    o.box(-hx, hx, y0, y1, Math.min(zf, zf + t), Math.max(zf, zf + t), color);
+    this.append(o, (_nx, nz) => nz !== -out);
+  }
+
+  /** Copies the quads of `o` whose normal passes `keep`. */
+  private append(o: Soup, keep: (nx: number, nz: number) => boolean): void {
+    for (let q = 0; q < o.pos.length / 18; q++) {
+      if (!keep(o.nrm[q * 18], o.nrm[q * 18 + 2])) continue;
+      this.pos.push(...o.pos.slice(q * 18, q * 18 + 18));
+      this.nrm.push(...o.nrm.slice(q * 18, q * 18 + 18));
+      this.col.push(...o.col.slice(q * 24, q * 24 + 24));
+    }
   }
 
   /**
@@ -136,17 +168,17 @@ function carGeometry(r: Rolling, lv: Livery): { body: THREE.BufferGeometry; glas
   // Door leaves, evenly spaced, both sides.
   for (let k = 0; k < lv.doors; k++) {
     const zc = z0 + ((k + 0.5) * L) / lv.doors;
-    b.box(-hw - 0.012, hw + 0.012, 1.3, 3.15, zc - 0.65, zc + 0.65, lv.door);
+    b.skins(hw, 0.012, 1.3, 3.15, zc - 0.65, zc + 0.65, lv.door);
   }
-  for (const [c, y0, y1] of lv.stripes) b.box(-hw - 0.02, hw + 0.02, y0, y1, z0 + 0.25, z1 - 0.25, c);
+  for (const [c, y0, y1] of lv.stripes) b.skins(hw, 0.02, y0, y1, z0 + 0.25, z1 - 0.25, c);
   // End diaphragms, dark, so a consist reads as cars and not one tube.
   b.box(-hw * 0.7, hw * 0.7, 1.3, 3.3, z0 - 0.25, z0, 0x202224);
   b.box(-hw * 0.7, hw * 0.7, 1.3, 3.3, z1, z1 + 0.25, 0x202224);
   const g = new Soup();
-  g.box(-hw - 0.03, hw + 0.03, 2.1, 2.9, z0 + 0.7, z1 - 0.7, 0x161a1f);
+  g.skins(hw, 0.03, 2.1, 2.9, z0 + 0.7, z1 - 0.7, 0x161a1f);
   // End windows, front and back.
-  g.box(-hw * 0.6, hw * 0.6, 2.1, 2.95, z0 - 0.02, z0 + 0.01, 0x161a1f);
-  g.box(-hw * 0.6, hw * 0.6, 2.1, 2.95, z1 - 0.01, z1 + 0.02, 0x161a1f);
+  g.endPane(hw * 0.6, 2.1, 2.95, z0 + 0.01, -0.03, 0x161a1f);
+  g.endPane(hw * 0.6, 2.1, 2.95, z1 - 0.01, 0.03, 0x161a1f);
   return { body: b.geometry(), glass: g.geometry() };
 }
 

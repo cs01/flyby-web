@@ -79,7 +79,7 @@ const VERT_BOOST = 20;
 export const DRONE_DAMP = 0.12;
 
 export const DRONE_YAW_RATE = 110; // deg/s at full stick
-const PITCH_RATE = 70; // deg/s at full stick
+export const PITCH_RATE = 70; // deg/s at full stick
 export const DRONE_PITCH_LIMIT = 85;
 
 /** Cosmetic only. Degrees of lean at the full commanded acceleration. */
