@@ -623,7 +623,11 @@ export function classifyDevice(d: DeviceDescriptor): Budget {
   const memGb = assumedMemoryGb(d);
 
   if (d.coarsePointer) reasons.push("pointer is coarse");
-  if (memGb <= SMALL_MEMORY_GB) {
+  // Phones only. Brave on a 10-core Mac reports deviceMemory 4 (the API is
+  // clamped and fuzzed against fingerprinting), which demoted a desktop to the
+  // reduced plan: blocky bridges and low-poly cars. A mouse-driven machine
+  // that really is slow is still caught by the adaptive ladder.
+  if (d.coarsePointer && memGb <= SMALL_MEMORY_GB) {
     const how = d.deviceMemoryGb === null ? "assumed" : "reported";
     reasons.push(`memory ${how} ${memGb} GB, at or below ${SMALL_MEMORY_GB} GB`);
   }

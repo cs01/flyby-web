@@ -255,6 +255,17 @@ const MB = 1024 * 1024;
     classifyDevice(DESKTOP_NO_MEMORY).tier === "full",
     `tier ${classifyDevice(DESKTOP_NO_MEMORY).tier}, assumed ${assumedMemoryGb(DESKTOP_NO_MEMORY)} GB`,
   );
+  // Brave on a 10-core Mac reports deviceMemory 4 (clamped against
+  // fingerprinting); that must not demote a mouse-driven machine. The probe
+  // beside it keeps the rule honest: the same 4 GB on a coarse pointer, which
+  // is the real phone case, must still reduce.
+  const braveDesktop = classifyDevice({ ...DESKTOP, deviceMemoryGb: 4 });
+  check("a desktop reporting 4 GB still gets the full plan", braveDesktop.tier === "full", `tier ${braveDesktop.tier}`);
+  check(
+    "probe: a phone reporting 4 GB is still reduced",
+    classifyDevice({ ...PHONE, deviceMemoryGb: 4 }).tier === "reduced",
+    "",
+  );
 }
 
 // --- 4. the two tiers are provably different in bytes ------------------------
