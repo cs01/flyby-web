@@ -11,6 +11,8 @@
 export interface PerfSample {
   /** boot, tick or lost. */
   ev: string;
+  /** The page's own query string (city, off, scale...), so a bisect run says which flags it ran with. */
+  q: string;
   /** The budget's own GPU memory estimate for this device and tier, MiB. */
   est: number;
   /** Seconds the page had been flying when sampled. */
@@ -99,6 +101,7 @@ export class Telemetry {
     const nav = navigator as Navigator & { deviceMemory?: number };
     const s: PerfSample = {
       ev,
+      q: location.search.slice(1, 80),
       t: Math.round(this.elapsed),
       ...c,
       scale: Math.round(c.scale * 100) / 100,
