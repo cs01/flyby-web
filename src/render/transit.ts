@@ -182,6 +182,47 @@ function carGeometry(r: Rolling, lv: Livery): { body: THREE.BufferGeometry; glas
   return { body: b.geometry(), glass: g.geometry() };
 }
 
+/** A bus, nose -z, the road at y=0, in its route's colour. */
+function busGeometry(r: Rolling, color: number): { body: THREE.BufferGeometry; glass: THREE.BufferGeometry } {
+  const L = r.len, hw = r.width / 2;
+  const b = new Soup();
+  const z0 = -L / 2, z1 = L / 2;
+  for (const wz of [z0 + 2.6, z1 - 3.2]) b.box(-hw + 0.05, hw - 0.05, 0, 0.95, wz - 0.5, wz + 0.5, 0x1c1e20);
+  b.box(-hw, hw, 0.35, 3.0, z0, z1, color);
+  // Roof pods: the battery and HVAC housings a bus reads by from above.
+  b.box(-hw + 0.3, hw - 0.3, 3.0, 3.25, z0 + 1.5, z1 - 2.5, 0xd8dadc);
+  const g = new Soup();
+  g.box(-hw - 0.03, hw + 0.03, 1.35, 2.6, z0 + 1.2, z1 - 0.6, 0x161a1f);
+  g.box(-hw * 0.85, hw * 0.85, 1.1, 2.7, z0 - 0.02, z0 + 0.01, 0x161a1f);
+  return { body: b.geometry(), glass: g.geometry() };
+}
+
+/**
+ * A cable car, nose -z, the rail at y=0: an enclosed cabin in the middle and
+ * open-sided ends under one roof, which is what tells it from a tram.
+ */
+function cableCarGeometry(r: Rolling, color: number): { body: THREE.BufferGeometry; glass: THREE.BufferGeometry } {
+  const L = r.len, hw = r.width / 2;
+  const b = new Soup();
+  const z0 = -L / 2, z1 = L / 2;
+  const cab = L * 0.22;
+  for (const tz of [-0.3 * L, 0.3 * L]) b.box(-hw * 0.7, hw * 0.7, 0.1, 0.6, tz - 0.8, tz + 0.8, 0x1c1e20);
+  b.box(-hw, hw, 0.6, 0.95, z0, z1, color);
+  b.box(-hw, hw, 0.95, 2.9, -cab, cab, color);
+  // Benches facing out along the open ends, and the posts that hold the roof.
+  for (const [a0, a1] of [[z0 + 0.3, -cab], [cab, z1 - 0.3]]) {
+    b.box(-0.35, 0.35, 0.95, 1.4, a0, a1, 0x6b4a2b);
+    for (const sx of [-hw + 0.08, hw - 0.08]) for (let k = 0; k <= 2; k++) {
+      const z = a0 + ((a1 - a0) * k) / 2;
+      b.box(sx - 0.05, sx + 0.05, 0.95, 2.9, z - 0.05, z + 0.05, 0xe9dfc8);
+    }
+  }
+  b.box(-hw - 0.1, hw + 0.1, 2.9, 3.15, z0 - 0.1, z1 + 0.1, 0xe9dfc8);
+  const g = new Soup();
+  g.box(-hw - 0.03, hw + 0.03, 1.6, 2.5, -cab + 0.2, cab - 0.2, 0x161a1f);
+  return { body: b.geometry(), glass: g.geometry() };
+}
+
 interface HullStyle {
   hull: number;
   upper: number;
@@ -195,6 +236,7 @@ const HULLS: Record<string, HullStyle> = {
   siferry: { hull: 0xe8701e, upper: 0xf08a2c, band: 0x3a2a20, cat: false, decks: 3 },
   sfbayferry: { hull: 0xf0f2f4, upper: 0xf3f5f7, band: 0x0d4f8b, cat: true, decks: 2 },
   ggt: { hull: 0xeef0f2, upper: 0xf4f6f7, band: 0xb0302a, cat: false, decks: 2 },
+  alcatraz: { hull: 0xf0f2f4, upper: 0xf3f5f7, band: 0x1d3b6e, cat: true, decks: 2 },
 };
 
 /** A ferry, bow -z, waterline at y=0. */
@@ -556,8 +598,19 @@ export class TransitRender {
         continue;
       }
       const lv = LIVERY[agency.live === "bart" || agency.id === "bart" ? "bart" : agency.id === "cta" ? "cta" : "mta"];
-      const famKey = `${agency.id}-${rolling.len}-${rolling.width}`;
-      const f = this.family(famKey, rolling, false, () => carGeometry(rolling, lv), lv.metal);
+      const street = agency.kind === "bus" || agency.kind === "tram" || agency.kind === "cable";
+      const paint = parseInt(route.color, 16) || 0x808080;
+      // Street vehicles wear their route's colour, so one family per colour.
+      const famKey = `${agency.id}-${rolling.len}-${rolling.width}${street ? `-${route.color}` : ""}`;
+      const make = () =>
+        agency.kind === "bus"
+          ? busGeometry(rolling, paint)
+          : agency.kind === "cable"
+            ? cableCarGeometry(rolling, paint)
+            : agency.kind === "tram"
+              ? carGeometry(rolling, { ...lv, body: paint, door: 0x2a2d31, stripes: [], doors: 3, metal: 0 })
+              : carGeometry(rolling, lv);
+      const f = this.family(famKey, rolling, false, make, street ? 0 : lv.metal);
       const heights = src.heights(pat.shape);
       for (let i = 0; i < rolling.cars; i++) {
         if (!carPose(sh, heights, veh.s, i, rolling, src.groundAt, p)) continue;

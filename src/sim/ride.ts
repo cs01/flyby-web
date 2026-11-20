@@ -9,7 +9,7 @@
 
 import { DRONE_YAW_RATE, PITCH_RATE, WALK_EYE_M, WALK_RUN_SPEED, WALK_SPEED } from "./drone";
 
-export type RideKind = "subway" | "rail" | "tram" | "bus" | "ferry";
+export type RideKind = "subway" | "rail" | "tram" | "bus" | "cable" | "ferry";
 
 export interface RideSpec {
   /** Floor above the pose point: top of rail for a car, road for a bus, waterline for a hull. */
@@ -38,6 +38,9 @@ export const RIDE: Record<RideKind, RideSpec> = {
   rail: { floorM: 1.25, ceilM: 3.5, lenM: 15, widthM: 2.6, wallM: 0.7 },
   tram: { floorM: 0.35, ceilM: 2.6, lenM: 14, widthM: 2.6, wallM: 0.65 },
   bus: { floorM: 0.35, ceilM: 2.5, lenM: 11, widthM: 2.5, wallM: 0.6 },
+  // SF cable car: 8.4 to 9.2 m on Powell and California; the ends are open
+  // platforms, so the walls are low and the deck short.
+  cable: { floorM: 0.45, ceilM: 2.5, lenM: 8.4, widthM: 2.4, wallM: 0.5 },
   ferry: { floorM: 1.8, ceilM: 4.4, lenM: 20, widthM: 8, wallM: 0.7 },
 };
 

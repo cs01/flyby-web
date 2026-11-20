@@ -21,7 +21,8 @@ export const QUANT = 0.25;
 /** Vertical class of a stretch of track. */
 export const Level = { Tunnel: 0, Grade: 1, Elevated: 2 } as const;
 
-export type TransitKind = "subway" | "rail" | "ferry";
+/** tram, bus and cable run in the street; an agency mixing modes is baked as one pack agency per kind (sfmta-bus, sfmta-tram, sfmta-cable). */
+export type TransitKind = "subway" | "rail" | "ferry" | "tram" | "bus" | "cable";
 
 export interface PackAgency {
   id: string;
