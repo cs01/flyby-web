@@ -9,6 +9,7 @@ import * as THREE from "three";
 import { createRenderer, createSceneTarget } from "./render/renderer";
 import { AdaptiveQuality } from "./render/quality";
 import { Telemetry } from "./app/telemetry";
+import { browserSafeMode } from "./app/safemode";
 import { Sky } from "./render/sky";
 import { Terrain } from "./render/terrain";
 import { deviceBudget } from "./render/budget";
@@ -287,6 +288,10 @@ async function main() {
   // probes, ambient occlusion, both triangle budgets) comes out of this one
   // object, and `?diag=1` prints the memory total it adds up to.
   const budget = deviceBudget();
+  // A device that crashed the GPU on an earlier load starts lower; see app/safemode.ts.
+  const safe = browserSafeMode(canvas);
+  if (safe && !safe.rung.msaa) budget.msaaSamples = 0;
+  if (safe?.level) console.log(`[flyby] safe mode rung ${safe.level} after a GPU crash; ?safe=0 resets`);
   console.log(
     `[flyby] device tier: ${budget.tier}` +
     `${budget.reasons.length ? ` (${budget.reasons.join("; ")})` : ""}, ` +
@@ -401,12 +406,14 @@ async function main() {
     level: quality.level,
     scale: quality.scale,
     est: Math.round(budget.memory.totalBytes / 1048576),
+    safe: safe?.level ?? 0,
   }));
   // Passes and scene groups switched off, by name: `?off=ao,clouds,buildings`
   // or flybyShot.setOff at run time. tools/profile.ts attributes the frame by
   // taking each one away in turn, because the timer queries on this GPU
   // overlap and sum to twice the frame (see render/gpuprof.ts).
   const perfOff = new Set((new URLSearchParams(location.search).get("off") ?? "").split(",").filter(Boolean));
+  for (const n of safe?.rung.off ?? []) perfOff.add(n);
   const perfHidden: THREE.Object3D[] = [];
   const probeHidden: THREE.Object3D[] = [];
   let leanTags = false;
@@ -438,8 +445,9 @@ async function main() {
   const _driveFrom = new THREE.Vector3();
   const _driveStill = new THREE.Vector3();
   const pinScale = Number(new URLSearchParams(location.search).get("scale"));
-  if (Number.isFinite(pinScale) && pinScale > 0) {
-    quality.pin(pinScale);
+  const safeScale = safe?.rung.scale ?? 0;
+  if ((Number.isFinite(pinScale) && pinScale > 0) || safeScale > 0) {
+    quality.pin(pinScale > 0 ? pinScale : safeScale);
     quality.apply(renderer);
     renderer.setSize(canvas.clientWidth || innerWidth, canvas.clientHeight || innerHeight, false);
     resizeTargets();
@@ -2453,6 +2461,7 @@ async function main() {
 
     smoothedMs += (dt * 1000 - smoothedMs) * 0.06;
     telemetry.frame(rawDt * 1000, dt);
+    safe?.frame(telemetry.seconds);
     if (quality.update(smoothedMs, dt, rawDt * 1000)) {
       quality.apply(renderer);
       // Multisampling is a property of the target's buffers, so a change
@@ -2819,5 +2828,12 @@ async function main() {
 main().catch((err) => {
   console.error(err);
   const d = document.getElementById("loading");
-  if (d) d.querySelector(".step")!.textContent = `failed: ${err.message}`;
+  // After a GPU crash, Chromium browsers refuse new contexts for this site until
+  // the browser restarts; reloading alone cannot recover, so say so.
+  const blocked = /creating webgl context/i.test(String(err?.message));
+  if (d) {
+    d.querySelector(".step")!.textContent = blocked
+      ? "3D blocked by the browser after a crash. Fully close the browser app and reopen."
+      : `failed: ${err.message}`;
+  }
 });

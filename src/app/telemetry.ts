@@ -13,6 +13,8 @@ export interface PerfSample {
   ev: string;
   /** The page's own query string (city, off, scale...), so a bisect run says which flags it ran with. */
   q: string;
+  /** Safe mode rung (app/safemode.ts), 0 when nothing was disabled after a crash. */
+  safe: number;
   /** The budget's own GPU memory estimate for this device and tier, MiB. */
   est: number;
   /** Seconds the page had been flying when sampled. */
@@ -49,6 +51,10 @@ export class Telemetry {
   private times: number[] = [];
   private stamps: number[] = [];
   private elapsed = 0;
+  /** Seconds of visible rendering so far. */
+  get seconds(): number {
+    return this.elapsed;
+  }
   private sent = 0;
   private readonly enabled: boolean;
   // Read once up front: after a context loss getParameter returns nothing.
@@ -56,7 +62,7 @@ export class Telemetry {
 
   constructor(
     private readonly gl: WebGLRenderingContext | WebGL2RenderingContext,
-    private readonly ctx: () => Pick<PerfSample, "city" | "tier" | "level" | "scale" | "est">,
+    private readonly ctx: () => Pick<PerfSample, "city" | "tier" | "level" | "scale" | "est" | "safe">,
   ) {
     const q = new URLSearchParams(location.search);
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
