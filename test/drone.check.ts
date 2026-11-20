@@ -15,6 +15,7 @@
 // guards. A check nobody has seen fail is not a check.
 
 import * as THREE from "three";
+import { WALK_SPEED, WALK_RUN_SPEED, WALK_EYE_M } from "../src/sim/drone";
 import { Drone, DRONE_CRUISE, DRONE_BOOST, DRONE_MAX_BANK, DRONE_GROUND_CLEARANCE } from "../src/sim/drone";
 import type { DroneInput } from "../src/sim/drone";
 
@@ -248,6 +249,40 @@ function fresh(alt = 200, hdg = 0): Drone {
       d.yawDeg < 360,
     `pitch ${d.pitchDeg.toFixed(1)}, roll ${d.rollDeg.toFixed(1)}, yaw ${d.yawDeg.toFixed(1)}`,
   );
+}
+
+// --- On foot ---------------------------------------------------------------
+{
+  const run = (input: Partial<DroneInput>, secs: number, ground: (x: number, z: number) => number, blocked?: (x: number, z: number) => boolean) => {
+    const w = new Drone();
+    w.enterWalk(0, 0, ground(0, 0), 0);
+    w.blocked = blocked ?? null;
+    for (let i = 0; i < secs * 60; i++) {
+      w.update({ ...NEUTRAL, ...input }, DT, ground(w.position.x, w.position.z));
+    }
+    return w;
+  };
+  const flat = () => 10;
+  const walked = run({ forward: 1 }, 3, flat);
+  check("walks at walking pace", Math.abs(walked.speed - WALK_SPEED) < 0.05, `${walked.speed.toFixed(2)} m/s (want ${WALK_SPEED})`);
+  const ran = run({ forward: 1, boost: 1 }, 3, flat);
+  check("runs at running pace", Math.abs(ran.speed - WALK_RUN_SPEED) < 0.05, `${ran.speed.toFixed(2)} m/s (want ${WALK_RUN_SPEED})`);
+  const diag = run({ forward: 1, strafe: 1 }, 3, flat);
+  check("diagonals are not faster", diag.speed <= WALK_SPEED + 0.05, `${diag.speed.toFixed(2)} m/s`);
+  const climber = run({ forward: 1, lift: 1, pitch: 1 }, 3, flat);
+  check("lift and look-up never leave the ground", Math.abs(climber.position.y - (10 + WALK_EYE_M)) < 0.01, `y ${climber.position.y.toFixed(3)} (want ${10 + WALK_EYE_M})`);
+  const hill = run({ forward: 1 }, 6, (x, z) => 10 + 0.1 * Math.hypot(x, z));
+  check(
+    "eye follows a slope at 1.7 m",
+    Math.abs(hill.position.y - (10 + 0.1 * Math.hypot(hill.position.x, hill.position.z) + WALK_EYE_M)) < 0.4,
+    `y ${hill.position.y.toFixed(2)}`,
+  );
+  check("no lean while walking", walked.rollDeg === 0 && Math.abs(walked.orientation(new THREE.Quaternion()).z) < 1e-9, `roll ${walked.rollDeg}`);
+  const shore = run({ forward: 1 }, 20, flat, (x, z) => z < -20);
+  check("stops at the shore", shore.position.z >= -20 && shore.speed === 0, `z ${shore.position.z.toFixed(2)}, speed ${shore.speed}`);
+  // Vacuity: with no blocker the same walk goes straight through that line.
+  const through = run({ forward: 1 }, 20, flat);
+  check("probe: without a blocker the walk passes the shore line", through.position.z < -20, `z ${through.position.z.toFixed(1)}`);
 }
 
 // --- Report ----------------------------------------------------------------

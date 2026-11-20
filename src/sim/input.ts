@@ -96,6 +96,8 @@ export class Input {
   /** G presses, the same way. G rather than C, which is already the camera
    *  cycle, and next to the movement keys a hand is already on. */
   carToggled = 0;
+  /** N presses: step out on foot, or back into the Cessna. */
+  walkToggled = 0;
   paused = false;
 
   /**
@@ -149,6 +151,7 @@ export class Input {
       if (e.code === "KeyH") this.helpToggled++;
       if (e.code === "KeyV") this.droneToggled++;
       if (e.code === "KeyG") this.carToggled++;
+      if (e.code === "KeyN") this.walkToggled++;
       // Escape already drops pointer lock in every browser; doing it here as
       // well is what stops us asking for it straight back on the next click.
       if (e.code === "Escape") this.setPointerLock(false);

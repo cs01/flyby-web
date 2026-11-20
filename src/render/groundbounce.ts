@@ -110,7 +110,14 @@ float builtness(vec3 worldPos) {
  * part of the spectrum rather than one cancelling the other.
  */
 vec3 canyonBounce(vec3 sunRadiance, vec3 skyAmbient, float sunVis, vec3 sunDir, float built) {
-  float occ = (1.0 - sunVis) * max(0.0, sunDir.y) * built;
+  // Walls take the beam in proportion to cos(elevation), which RISES as the sun
+  // sinks, while sunDir.y (sin) falls. Weighting by sin alone left a November
+  // afternoon (22 degrees) with a third of its bounce: a near-black street.
+  // The floor of 0.75 leaves everything above 49 degrees exactly as it was;
+  // the smoothstep still shuts the term off at the horizon, where no sun
+  // reaches the walls.
+  float wallBeam = smoothstep(0.0, 0.1, sunDir.y) * max(sunDir.y, 0.75);
+  float occ = (1.0 - sunVis) * wallBeam * built;
   vec3 target = sunRadiance * (SHADOW_TARGET * occ);
   return max(vec3(0.0), target - skyAmbient) * (1.0 - uFlatBounce);
 }

@@ -6,9 +6,9 @@
 // choose, especially on a phone, after finding that at speed there was no way
 // down into the streets. This is that: three words at the bottom of the screen.
 
-export type Machine = "plane" | "drone" | "car";
+export type Machine = "plane" | "drone" | "car" | "walk";
 
-const LABELS: [Machine, string][] = [["plane", "plane"], ["drone", "drone"], ["car", "car"]];
+const LABELS: [Machine, string][] = [["plane", "plane"], ["drone", "drone"], ["car", "car"], ["walk", "walk"]];
 
 export class ModeBar {
   private root: HTMLDivElement;

@@ -485,6 +485,18 @@ export const POSES: Pose[] = [
     what: "Chicago LaSalle Street canyon from the kerb, late morning",
   },
   {
+    name: "chicago-lasalle-nov",
+    city: "chicago",
+    // The same kerb as chicago-lasalle-kerb in a Chicago November afternoon: the
+    // sun is 22 degrees up, so the canyon floor gets no beam at all and the
+    // walls are lit at a grazing angle. The summer-noon pose above cannot see
+    // this: a user reported a near-black street here ("so dark driving around").
+    lat: 41.8810, lon: -87.6325, altM: 190, hdgDeg: 2, pitchDeg: -1,
+    t: D("2025-11-20T20:43:00Z"), // 14:43 CST
+    wx: CLEAR,
+    what: "Chicago LaSalle Street canyon from the kerb, November afternoon",
+  },
+  {
     // MIDTOWN AT NIGHT, from over Chelsea looking north-east at the Empire
     // State and the towers around Herald Square.
     //

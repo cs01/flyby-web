@@ -32,7 +32,7 @@ import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
-import { Drone, DRONE_RADIUS } from "./sim/drone";
+import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
@@ -1289,6 +1289,24 @@ async function main() {
   const autopilot = new Autopilot();
   // Before the autopilot in the chain, so a place picked from the list still
   // flies itself once the thumb is off and the stick has eased back.
+  /**
+   * The nearest dry spot to stand on, spiralling out from x,z: the aeroplane is
+   * usually over the water or a roof when N is pressed. Null past 4 km.
+   */
+  const nearestStandable = (x: number, z: number): { x: number; z: number } | null => {
+    const dry = (px: number, pz: number) => terrain.heightAt(px, pz) > waterLevel + 0.6;
+    if (dry(x, z)) return { x, z };
+    for (let r = 50; r <= 4000; r += 50) {
+      const n = Math.max(8, Math.round((r * 2 * Math.PI) / 60));
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * 2 * Math.PI;
+        const px = x + Math.cos(a) * r;
+        const pz = z + Math.sin(a) * r;
+        if (dry(px, pz)) return { x: px, z: pz };
+      }
+    }
+    return null;
+  };
   const easyStick = new EasyStick();
   /**
    * Put the aircraft half a mile off a place, pointed at it.
@@ -1553,9 +1571,15 @@ async function main() {
     // there is one code path for every way of switching.
     {
       const want = modeBar.take();
-      const now = carActive ? "car" : droneActive ? "drone" : "plane";
+      const now = carActive ? "car" : droneActive ? (drone.walk ? "walk" : "drone") : "plane";
       if (want && want !== now) {
-        if (want === "plane") {
+        if (want === "walk") input.walkToggled++;
+        else if (want === "drone" && drone.walk) {
+          // Lift off from the pavement: the same body, the drone's rules.
+          drone.walk = false;
+          drone.position.y += 1;
+          hud.toast("Drone");
+        } else if (want === "plane") {
           if (droneActive) input.droneToggled++;
           if (carActive) input.carToggled++;
         } else if (want === "drone") input.droneToggled++;
@@ -1565,6 +1589,7 @@ async function main() {
     if (input.droneToggled > 0) {
       input.droneToggled = 0;
       droneActive = !droneActive;
+      drone.walk = false;
       if (droneActive) {
         // Two machines cannot both have the camera. Stepping into the drone
         // from the car is a step out of the car.
@@ -1577,6 +1602,40 @@ async function main() {
       } else {
         input.setPointerLock(false);
         hud.toast("Back in the Cessna");
+      }
+    }
+
+    if (input.walkToggled > 0) {
+      input.walkToggled = 0;
+      if (droneActive && drone.walk) {
+        drone.walk = false;
+        droneActive = false;
+        input.setPointerLock(false);
+        hud.toast("Back in the Cessna");
+      } else {
+        const from = carActive && car ? car.position : droneActive ? drone.position : ac.position;
+        const hdg = carActive && car ? car.headingDeg : droneActive ? drone.yawDeg : ac.headingDeg;
+        // A street, not just dry ground: the aeroplane is usually over a roof,
+        // and dry ground under a roof is the inside of a building. The car's
+        // own road snap finds the nearest carriageway within 400 m.
+        let spot = nearestStandable(from.x, from.z);
+        // Facing along the street, not at the wall the plane's heading happened
+        // to point you at.
+        let facing = hdg;
+        if (car && car.enterFrom(from, hdg, new THREE.Vector3(), terrain.heightAt)) {
+          spot = { x: car.position.x, z: car.position.z };
+          facing = car.headingDeg;
+        }
+        if (!spot) {
+          hud.toast("No dry land within reach \u00b7 fly closer to shore");
+        } else {
+          carActive = false;
+          droneActive = true;
+          drone.blocked = (x, z) => terrain.heightAt(x, z) < waterLevel + 0.4;
+          drone.enterWalk(spot.x, spot.z, terrain.heightAt(spot.x, spot.z), facing);
+          input.setPointerLock(true);
+          hud.toast("On foot: WASD walk \u00b7 mouse looks \u00b7 Shift runs \u00b7 N to get back in the Cessna");
+        }
       }
     }
 
@@ -1599,6 +1658,7 @@ async function main() {
           carActive = true;
           carCamBase = input.cameraCycled;
           droneActive = false;
+          drone.walk = false;
           input.setPointerLock(true);
           hud.toast("Car: W/S drive \u00b7 A/D steer and pick the turning \u00b7 mouse looks \u00b7 G to get out");
         } else {
@@ -1678,7 +1738,7 @@ async function main() {
         // The DRONE only. Flying the Cessna into a tower would end the flight,
         // which nobody asked for, and the aeroplane already has the rooftop
         // height field as a floor keeping it over the city rather than in it.
-        collision?.resolve(drone.position, drone.velocity, DRONE_RADIUS);
+        collision?.resolve(drone.position, drone.velocity, drone.walk ? WALK_RADIUS : DRONE_RADIUS);
       }
     }
 
@@ -1742,7 +1802,7 @@ async function main() {
     } else if (droneActive) {
       dash.style.display = "none";
       camera.up.set(0, 1, 0);
-      if (chase.mode === "cockpit") {
+      if (drone.walk || chase.mode === "cockpit") {
         // FPV: the camera IS the machine, and the lean it has is the lean it
         // flew. One CAM tap away from the default.
         camera.position.copy(drone.position);
@@ -1809,14 +1869,14 @@ async function main() {
     // it is the tarmac under the windscreen; see CAR_NEAR_PLANE_M. Stepped
     // rather than eased, because a moving near plane moves every depth in the
     // buffer and the shadow cascades are fitted against it.
-    const wantNear = carActive ? CAR_NEAR_PLANE_M : PLANE_NEAR;
+    const wantNear = carActive ? CAR_NEAR_PLANE_M : droneActive && drone.walk ? WALK_NEAR_M : PLANE_NEAR;
     if (camera.near !== wantNear) {
       camera.near = wantNear;
       camera.updateProjectionMatrix();
     }
     camera.updateMatrixWorld();
 
-    droneModel.group.visible = droneActive && chase.mode !== "cockpit" && !shotCam;
+    droneModel.group.visible = droneActive && !drone.walk && chase.mode !== "cockpit" && !shotCam;
     if (droneModel.group.visible) {
       droneModel.group.position.copy(drone.position);
       drone.bodyOrientation(droneModel.group.quaternion);
@@ -2300,7 +2360,7 @@ async function main() {
         !shotMode,
         ground,
       );
-      modeBar.update(carActive ? "car" : droneActive ? "drone" : "plane", !shotMode);
+      modeBar.update(carActive ? "car" : droneActive ? (drone.walk ? "walk" : "drone") : "plane", !shotMode);
     }
     if (!droneActive && !carActive) {
       osd.update({

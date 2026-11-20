@@ -118,6 +118,26 @@ export const DRONE_GROUND_CLEARANCE = 2.5;
  */
 export const DRONE_RADIUS = 1.2;
 
+/**
+ * ON FOOT. The same free body with a different set of rules, so a person gets
+ * the drone's pointer look, touch stick, building collision and terrain floor
+ * without a fourth parallel mode in main.ts.
+ *
+ * Walking pace is 1.4 m/s in life; 2 reads as a brisk walk on a screen where
+ * nothing swings your arms. Running is Shift or Space. Eye height is 1.7 m and
+ * the collision circle 0.45 m, so a person fits through a doorway-sized gap the
+ * 1.2 m drone could not. The camera near plane for this mode is WALK_NEAR_M.
+ */
+export const WALK_SPEED = 2;
+export const WALK_RUN_SPEED = 5.5;
+export const WALK_EYE_M = 1.7;
+export const WALK_RADIUS = 0.45;
+export const WALK_NEAR_M = 0.5;
+/** Acceleration on foot, m/s/s: a person starts and stops almost at once. */
+const WALK_ACCEL = 14;
+/** How fast the eye follows the ground under it, 1/s: smooths kerbs and slopes. */
+const WALK_EYE_FOLLOW = 14;
+
 /** Where the drone appears relative to the aeroplane it just left, in metres. */
 const ENTRY_BACK = 18;
 const ENTRY_UP = 2.5;
@@ -153,6 +173,15 @@ export class Drone {
 
   /** The nose-down the same tilt logic produces when accelerating forward. */
   private noseDeg = 0;
+
+  /** True while on foot: see WALK_SPEED. */
+  walk = false;
+  /**
+   * Asked before an on-foot step is kept: true means that spot cannot be stood
+   * on (open water). The step is undone, so the person stops at the shore
+   * instead of wading out along the sea floor.
+   */
+  blocked: ((x: number, z: number) => boolean) | null = null;
 
   get speed(): number {
     return this.velocity.length();
@@ -194,8 +223,69 @@ export class Drone {
     if (this.velocity.length() > DRONE_CRUISE) this.velocity.setLength(DRONE_CRUISE);
   }
 
+  /** Put a person on the ground at x,z, facing headingDeg. */
+  enterWalk(x: number, z: number, groundY: number, headingDeg: number): void {
+    this.walk = true;
+    this.yawDeg = ((headingDeg % 360) + 360) % 360;
+    this.pitchDeg = 0;
+    this.rollDeg = 0;
+    this.noseDeg = 0;
+    this.velocity.set(0, 0, 0);
+    this.position.set(x, groundY + WALK_EYE_M, z);
+  }
+
+  private updateWalk(input: DroneInput, dt: number, groundY: number): void {
+    const run = clamp(input.boost, 0, 1);
+    this.yawDeg += clamp(input.yaw, -1, 1) * DRONE_YAW_RATE * dt + input.lookYawDeg;
+    this.pitchDeg += clamp(input.pitch, -1, 1) * PITCH_RATE * dt + input.lookPitchDeg;
+    this.yawDeg = ((this.yawDeg % 360) + 360) % 360;
+    this.pitchDeg = clamp(this.pitchDeg, -80, 80);
+
+    // Movement is flat: looking up does not lift you off the street.
+    const yawRad = this.yawDeg * DEG;
+    _move.set(
+      Math.sin(yawRad) * clamp(input.forward, -1, 1) + Math.cos(yawRad) * clamp(input.strafe, -1, 1),
+      0,
+      -Math.cos(yawRad) * clamp(input.forward, -1, 1) + Math.sin(yawRad) * clamp(input.strafe, -1, 1),
+    );
+    if (_move.lengthSq() > 1) _move.normalize();
+    const speed = THREE.MathUtils.lerp(WALK_SPEED, WALK_RUN_SPEED, run);
+    const wx = _move.x * speed;
+    const wz = _move.z * speed;
+    const dx = wx - this.velocity.x;
+    const dz = wz - this.velocity.z;
+    const mag = Math.hypot(dx, dz);
+    const step = WALK_ACCEL * dt;
+    if (mag > step) {
+      this.velocity.x += (dx / mag) * step;
+      this.velocity.z += (dz / mag) * step;
+    } else {
+      this.velocity.x = wx;
+      this.velocity.z = wz;
+    }
+    this.velocity.y = 0;
+
+    const nx = this.position.x + this.velocity.x * dt;
+    const nz = this.position.z + this.velocity.z * dt;
+    if (this.blocked?.(nx, nz)) {
+      this.velocity.x = 0;
+      this.velocity.z = 0;
+    } else {
+      this.position.x = nx;
+      this.position.z = nz;
+    }
+    const eye = groundY + WALK_EYE_M;
+    this.position.y += (eye - this.position.y) * Math.min(1, WALK_EYE_FOLLOW * dt);
+    this.rollDeg = 0;
+    this.noseDeg = 0;
+  }
+
   update(input: DroneInput, dt: number, groundY: number): void {
     if (!(dt > 0)) return;
+    if (this.walk) {
+      this.updateWalk(input, dt, groundY);
+      return;
+    }
     const boost = clamp(input.boost, 0, 1);
 
     // --- Look ------------------------------------------------------------
