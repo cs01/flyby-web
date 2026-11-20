@@ -8,6 +8,7 @@
 import * as THREE from "three";
 import { createRenderer, createSceneTarget } from "./render/renderer";
 import { AdaptiveQuality } from "./render/quality";
+import { Telemetry } from "./app/telemetry";
 import { Sky } from "./render/sky";
 import { Terrain } from "./render/terrain";
 import { deviceBudget } from "./render/budget";
@@ -393,6 +394,12 @@ async function main() {
     msaa: budget.msaaSamples > 0,
     lean: budget.tier === "reduced",
   });
+  const telemetry = new Telemetry(renderer.getContext(), () => ({
+    city: city.id,
+    tier: budget.tier,
+    level: quality.level,
+    scale: quality.scale,
+  }));
   // Passes and scene groups switched off, by name: `?off=ao,clouds,buildings`
   // or flybyShot.setOff at run time. tools/profile.ts attributes the frame by
   // taking each one away in turn, because the timer queries on this GPU
@@ -2362,6 +2369,7 @@ async function main() {
     shotFrames++;
 
     smoothedMs += (dt * 1000 - smoothedMs) * 0.06;
+    telemetry.frame(rawDt * 1000, dt);
     if (quality.update(smoothedMs, dt, rawDt * 1000)) {
       quality.apply(renderer);
       // Multisampling is a property of the target's buffers, so a change
