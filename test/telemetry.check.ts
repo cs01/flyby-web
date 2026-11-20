@@ -17,18 +17,21 @@ check("empty window is 0, not NaN", percentile(ramp, 0, 0.5) === 0, "");
 
 function sends(search: string, hostname: string): number {
   let fetched = 0;
+  let lose: () => void = () => {};
   const g = globalThis as any;
   g.location = { search, hostname };
   g.document = { hidden: false };
   g.innerWidth = 412; g.innerHeight = 860; g.devicePixelRatio = 2.6;
   g.matchMedia = () => ({ matches: true });
   g.fetch = () => { fetched++; return Promise.resolve(); };
-  const gl = { getExtension: () => null, getParameter: () => "" } as any;
-  const t = new Telemetry(gl, () => ({ city: "sf", tier: "reduced", level: 0, scale: 1 }));
+  const gl = { getExtension: () => null, getParameter: () => "", canvas: { addEventListener: (_: string, f: () => void) => { lose = f; } } } as any;
+  const t = new Telemetry(gl, () => ({ city: "sf", tier: "reduced", level: 0, scale: 1, est: 300 }));
   for (let i = 0; i < 100 * 30; i++) t.frame(33, 1 / 30);
-  return fetched;
+  const before = fetched;
+  lose();
+  return before + (fetched - before) * 100;
 }
-check("live page sends two samples", sends("", "chadsmith.dev") === 2, `${sends("", "chadsmith.dev")}`);
+check("live page: boot + 2 ticks, then loss sends", sends("", "chadsmith.dev") === 3 + 100, `${sends("", "chadsmith.dev")} (3 ticks + loss)`);
 check("probe: shot mode sends none", sends("?shot", "chadsmith.dev") === 0, "");
 check("probe: localhost sends none", sends("", "localhost") === 0, "");
 check("probe: ?notelemetry sends none", sends("?notelemetry", "chadsmith.dev") === 0, "");

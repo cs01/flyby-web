@@ -399,6 +399,7 @@ async function main() {
     tier: budget.tier,
     level: quality.level,
     scale: quality.scale,
+    est: Math.round(budget.memory.totalBytes / 1048576),
   }));
   // Passes and scene groups switched off, by name: `?off=ao,clouds,buildings`
   // or flybyShot.setOff at run time. tools/profile.ts attributes the frame by

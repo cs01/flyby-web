@@ -1,6 +1,7 @@
 // Anonymous frame-time beacon, so a slow phone reports itself.
 //
-// Sends two samples per session (after 25 s and 90 s of flying) as a GET to
+// Sends samples per session (first frame, 25 s, 90 s of flying, and at once if
+// the GL context is lost, which is the crash a 25 s timer never outlives) as a GET to
 // the same-origin /flyby-feeds/t, which nginx answers 204 and logs WITHOUT the
 // client address or user agent (deploy/nginx-flyby-feeds.conf). No cookie, no
 // id: two samples cannot be joined to a person, and the second only says
@@ -8,6 +9,10 @@
 // and with ?notelemetry, so tests and development never pollute the log.
 
 export interface PerfSample {
+  /** boot, tick or lost. */
+  ev: string;
+  /** The budget's own GPU memory estimate for this device and tier, MiB. */
+  est: number;
   /** Seconds the page had been flying when sampled. */
   t: number;
   city: string;
@@ -31,7 +36,7 @@ export interface PerfSample {
 }
 
 const WINDOW_S = 10;
-const SEND_AT_S = [25, 90];
+const SEND_AT_S = [0, 25, 90];
 
 export function percentile(sorted: ArrayLike<number>, n: number, p: number): number {
   if (n === 0) return 0;
@@ -44,14 +49,20 @@ export class Telemetry {
   private elapsed = 0;
   private sent = 0;
   private readonly enabled: boolean;
+  // Read once up front: after a context loss getParameter returns nothing.
+  private readonly gpu: string;
 
   constructor(
     private readonly gl: WebGLRenderingContext | WebGL2RenderingContext,
-    private readonly ctx: () => Pick<PerfSample, "city" | "tier" | "level" | "scale">,
+    private readonly ctx: () => Pick<PerfSample, "city" | "tier" | "level" | "scale" | "est">,
   ) {
     const q = new URLSearchParams(location.search);
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
     this.enabled = !q.has("shot") && !q.has("notelemetry") && !local;
+    this.gpu = this.gpuName();
+    if (this.enabled) {
+      this.gl.canvas.addEventListener("webglcontextlost", () => this.send("lost"));
+    }
   }
 
   /** Call once per rendered frame with the raw frame time in ms. A hidden tab pauses the clock. */
@@ -66,8 +77,8 @@ export class Telemetry {
       this.times.shift();
     }
     if (this.elapsed >= SEND_AT_S[this.sent]) {
+      this.send(this.sent === 0 ? "boot" : "tick");
       this.sent++;
-      this.send();
     }
   }
 
@@ -81,12 +92,13 @@ export class Telemetry {
     }
   }
 
-  private send(): void {
+  private send(ev: string): void {
     const sorted = Float64Array.from(this.times).sort();
     const n = sorted.length;
     const c = this.ctx();
     const nav = navigator as Navigator & { deviceMemory?: number };
     const s: PerfSample = {
+      ev,
       t: Math.round(this.elapsed),
       ...c,
       scale: Math.round(c.scale * 100) / 100,
@@ -99,7 +111,7 @@ export class Telemetry {
       dpr: Math.round(devicePixelRatio * 100) / 100,
       cores: nav.hardwareConcurrency ?? 0,
       mem: nav.deviceMemory ?? 0,
-      gpu: this.gpuName(),
+      gpu: this.gpu,
     };
     const qs = new URLSearchParams(Object.entries(s).map(([k, v]) => [k, String(v)]));
     // keepalive: the 90 s sample can race a tab close.
