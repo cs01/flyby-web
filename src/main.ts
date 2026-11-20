@@ -1225,7 +1225,7 @@ async function main() {
   const layers = new Layers(ui);
   const airTraffic = new AirTrafficLayer({ scene, ui, model, origin, groundAt: terrain.heightAt, shotMode });
   // Trains and boats; see app/transit.ts.
-  const transit = new TransitLayer({ scene, ui, model, origin, cityId: city.id, groundAt: terrain.heightAt, waterY: waterLevel, landmarks, shotMode });
+  const transit = new TransitLayer({ scene, ui, model, origin, cityId: city.id, groundAt: terrain.heightAt, waterY: waterLevel, landmarks, shotMode, onGo: (x, y, z, name) => arriveAt({ name, x, z, topY: y + 40 }) });
   airTraffic.render.group.name = "airtraffic";
   const drawSize = new THREE.Vector2();
   // Plane spotting over the live traffic; see app/spotgame.ts.

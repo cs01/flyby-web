@@ -69,6 +69,10 @@ export class TransitTags {
   private cardKey = "";
   private clock: Intl.DateTimeFormat;
   maxTags = 6;
+  /** Called with the vehicle's world position when a tag is tapped, so the view can go there. */
+  onGo: ((x: number, y: number, z: number, name: string) => void) | null = null;
+  /** Where each tag drawn last frame is, by vehicle key. */
+  private pos = new Map<string, { x: number; y: number; z: number; name: string }>();
   visible = true;
   /** Screen boxes drawn last frame, for keeping the landmark labels off them. */
   readonly rects: { x: number; y: number; w: number; h: number }[] = [];
@@ -104,7 +108,10 @@ export class TransitTags {
       const t: Tag = { el, bullet: el.querySelector("i")!, text: el.querySelector("span")!, key: "" };
       el.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        this.select(t.key === this.selected ? null : t.key);
+        const wasSelected = t.key === this.selected;
+        this.select(wasSelected ? null : t.key);
+        const p = this.pos.get(t.key);
+        if (!wasSelected && p) this.onGo?.(p.x, p.y, p.z, p.name);
       });
       el.addEventListener("touchstart", (ev) => ev.stopPropagation(), { passive: true });
       el.addEventListener("pointerdown", (ev) => ev.stopPropagation());
@@ -135,6 +142,7 @@ export class TransitTags {
     list.sort((a, b) => (a.c.v.key === this.selected ? -1 : b.c.v.key === this.selected ? 1 : a.d - b.d));
     const placed = avoid.slice();
     this.rects.length = 0;
+    this.pos.clear();
     let n = 0;
     for (const it of list) {
       if (n >= this.maxTags) break;
@@ -145,6 +153,7 @@ export class TransitTags {
       const v = it.c.v;
       tag.key = v.key;
       const { bullet, line } = tagText(this.pack, v);
+      this.pos.set(v.key, { x: it.c.x, y: it.c.y, z: it.c.z, name: line });
       const r = this.pack.routes[v.route];
       if (tag.bullet.textContent !== bullet) tag.bullet.textContent = bullet;
       const bg = `#${r.color}`;
