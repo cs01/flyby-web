@@ -40,7 +40,8 @@ import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M, WALK_EYE_M } from "./sim/drone";
 import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
-import { Pompeii, Cart, Townsfolk, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
+import { Pompeii, Cart, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
+import { Townsfolk } from "./render/pompeiifolk";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { LandGrid, restoreCoast79 } from "./data/pompeiisuburbs";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
@@ -563,6 +564,10 @@ async function main() {
   // build itself reads the bare ground it lays the kerbs on.
   let pompeii: Pompeii | null = null;
   let townsfolk: Townsfolk | null = null;
+  // Last frame's night, for the lanterns in the townsfolk's hands (the light is worked out after they move).
+  let folkNight = 0;
+  const folkCam = (new URLSearchParams(location.search).get("folkcam") ?? "").split(",");
+  let folkSubject: number | null = null;
   let cart: Cart | null = null;
   let pompeiiLamps: PompeiiLamps | null = null;
   let pompeiiWater: PompeiiWater | null = null;
@@ -2253,7 +2258,7 @@ async function main() {
       const share = er ? crowdShare(er.h) : 1, pace = er ? walkPace(er.pumiceM) : 1;
       townsfolk.sim.steer = f ? (p, c, d, x, z) => { f.update(p, c, d, x, z, share, pace); } : null;
       const hurry = er ? (f ? 1.2 : 2.2) : 1;
-      townsfolk.update(shotMode || input.paused ? 0 : dt * hurry, camera.position.x, camera.position.z);
+      townsfolk.update(shotMode || input.paused ? 0 : dt * hurry, camera.position.x, camera.position.z, { camera, night: folkNight, torches: !!er && er.light < 0.3 });
       if (eruptView) {
         eruptView.bundles = f ? f.bundles(townsfolk.sim.people) : [];
         townsfolk.group.visible = eruptView.inSurge < 0.6;
@@ -2379,6 +2384,20 @@ async function main() {
         ),
       );
       camera.up.set(0, 1, 0);
+      // `?folkcam=what,bearingDeg,distM,eyeM,aimM` frames a townsperson
+      // (Townsfolk.subject: pair, toga or an index) from `bearingDeg` round
+      // from their front, for the close shots of the figures. Latched on the
+      // first one found, so the framing holds still.
+      if (folkCam.length >= 5 && townsfolk) {
+        if (folkSubject === null) folkSubject = townsfolk.subject(folkCam[0], camera.position.x, camera.position.z);
+        if (folkSubject !== null) {
+          const s = townsfolk.placeOf(folkSubject);
+          const [bearing, dist, eye, aim] = folkCam.slice(1).map(Number);
+          const a = s.heading + (bearing * Math.PI) / 180;
+          camera.position.set(s.x + Math.sin(a) * dist, s.y + eye, s.z - Math.cos(a) * dist);
+          camera.lookAt(s.x, s.y + aim, s.z);
+        }
+      }
     }
 
     // The opening sweep owns the lens until it lands. After the other rigs, so
@@ -2502,6 +2521,7 @@ async function main() {
 
     const solar = solarState(now, city.lat, city.lon);
     const light = computeLighting(solar, wx);
+    folkNight = light.night;
     eruptView?.light(light);
     // Daylight through the escape room's door (render/escaperoom.ts).
     roomLight.value.copy(light.ambient).multiplyScalar(1.5).addScalar(light.sunIntensity * 0.105 * 0.04);
@@ -2864,6 +2884,7 @@ async function main() {
       ...(shrubs && shrubs.group.visible && !perfOff.has("shrubs") ? [shrubs.depthScene] : []),
       ...(traffic && !perfOff.has("traffic") ? [traffic.depthScene] : []),
       ...(parkedCars && !perfOff.has("parkedcars") ? [parkedCars.depthScene] : []),
+      ...(townsfolk && townsfolk.group.visible ? [townsfolk.depthScene] : []),
     ];
     // The AO prepass needs the SAME list. Anything whose vertex shader places
     // it, and which is therefore absent from this buffer, does not merely fail
@@ -3442,6 +3463,8 @@ async function main() {
        *  budget for the canopy is decided here, so the harness can see it. */
       get treeLods() { return foliage ? foliage.stats.lodCounts : []; },
       get treeTriangles() { return foliage ? foliage.stats.triangles : 0; },
+      /** Pompeii's people: figures drawn full, far, and their triangles. */
+      get folk() { return townsfolk ? { ...townsfolk.stats } : null; },
       get lod() { return buildings ? buildings.stats.lod : 0; },
       /** True while the detail ring is fetching. A frame captured mid-stitch
        *  would show the drape the ring is about to replace. */

@@ -20,6 +20,8 @@ import { LIFE_RADIUS_M, PompeiiLife } from "../src/data/pompeiilife";
 import { Heightfield } from "../src/data/dem";
 import { CITIES } from "../src/cities";
 import { HORSE_BONES, buildHorse, hoofPoints, poseHorse } from "../src/render/horse";
+import { Arms, FOLK_SCALE, FOLK_STRIDE_M, Gait, buildFolk, buildFolkFar, clipPose, skinned, solePoints, solvePose, type FolkMesh, type FolkOpts, type PoseSpec } from "../src/render/folk";
+import { folkFragment } from "../src/render/pompeiifolk";
 import { ART_WORKS } from "../src/data/pompeiiart";
 import { ORDERS, Order, columnTemplate, shaftRadius } from "../src/render/pompeiiorders";
 import { statSync } from "node:fs";
@@ -364,6 +366,50 @@ let built: PompeiiModel;
     worst = Math.max(worst, Math.abs(ys[1]));
   }
   check("at a walk two or more hooves stay planted within 6 cm of the ground", worst < 0.06, `${(worst * 100).toFixed(1)} cm`);
+}
+
+// --- 10b. the townsfolk: a modelled body, dressed, walking without sliding ------------
+{
+  const kinds: FolkOpts[] = [
+    { dress: "tunic" }, { dress: "tunic", load: "amphora" }, { dress: "tunic", load: "basket" },
+    { dress: "stola" }, { dress: "stola", veil: true }, { dress: "stola", load: "basket" }, { dress: "toga" },
+  ];
+  const meshes = kinds.map((k) => buildFolk(k));
+  const top = (pos: Float32Array): number => { let t = 0; for (let i = 1; i < pos.length; i += 3) t = Math.max(t, pos[i]); return t; };
+  const low = (pos: Float32Array): number => { let t = Infinity; for (let i = 1; i < pos.length; i += 3) t = Math.min(t, pos[i]); return t; };
+  // Height of the bare figure (no load on the head), at both ends of each sex's scale range.
+  const tall = (scale: number): number => top(buildFolk({ dress: "tunic" }).position) * scale;
+  const heights = [tall(FOLK_SCALE.man[0]), tall(FOLK_SCALE.man[1]), tall(FOLK_SCALE.woman[0]), tall(FOLK_SCALE.woman[1])];
+  const inRange = (h: number[]): boolean => h.every((v) => v >= 1.5 && v <= 1.85);
+  check("townsfolk stand 1.5..1.85 m at every scale they are drawn", inRange(heights), heights.map((v) => v.toFixed(2)).join(" "));
+  check("probe: a figure drawn at 1.2x is caught", !inRange([tall(1.2)]), `${tall(1.2).toFixed(2)} m`);
+  const tris = meshes.map((m) => m.triangles), far = buildFolkFar().triangles;
+  const nearOk = (t: number[]): boolean => t.every((v) => v >= 400 && v <= 1000);
+  check("near figure 400..1000 tris for every dress, far under 80", nearOk(tris) && far < 80, `${tris.join("/")} far ${far}`);
+  check("probe: two figures in one mesh are over the bound", !nearOk([tris[0] * 2]), `${tris[0] * 2}`);
+  const rest = meshes.map((m) => low(m.position));
+  check("rest pose: soles on y 0 within 2 cm", rest.every((v) => Math.abs(v) < 0.02), rest.map((v) => v.toFixed(3)).join(" "));
+  // The lowest point of the posed figure: on the ground, nothing under it.
+  const lowest = (m: FolkMesh, spec: PoseSpec): number => low(skinned(m, solvePose(spec)));
+  const phases = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => k / 8);
+  const walkLow = kinds.flatMap((_, i) => phases.map((p) => lowest(meshes[i], clipPose(Gait.Walk, i === 6 ? Arms.Toga : i >= 3 ? Arms.Woman : Arms.Free, p))));
+  const idleLow = phases.map((p) => lowest(meshes[0], clipPose(Gait.Idle, Arms.Free, p)));
+  const grounded = (v: number[]): boolean => v.every((y) => Math.abs(y) < 0.02);
+  check("walking, 8 phases: the lowest point within 2 cm of y 0", grounded(walkLow), `${Math.min(...walkLow).toFixed(3)}..${Math.max(...walkLow).toFixed(3)}`);
+  check("standing, 8 phases: the same", grounded(idleLow), `${Math.min(...idleLow).toFixed(3)}..${Math.max(...idleLow).toFixed(3)}`);
+  const hopped = phases.map((p) => { const s = clipPose(Gait.Walk, Arms.Free, p); return lowest(meshes[0], { ...s, hip: [s.hip[0], s.hip[1] + 0.06, s.hip[2]] }); });
+  check("probe: the hips 6 cm higher lift the feet off", !grounded(hopped), `${Math.min(...hopped).toFixed(3)}`);
+  // A planted heel keeps still on the ground: in the body's frame it goes
+  // back at exactly the stride the sim walks (1.4 m a cycle).
+  const heelDrift = (stride: number): number => {
+    const zs = [0.1, 0.2, 0.3].map((p) => solePoints(solvePose(clipPose(Gait.Walk, Arms.Free, p)))[0][2] + stride * p);
+    return Math.max(...zs) - Math.min(...zs);
+  };
+  check("a planted heel does not slide (under 1 cm over the stance)", heelDrift(FOLK_STRIDE_M) < 0.01, `${(heelDrift(FOLK_STRIDE_M) * 100).toFixed(2)} cm`);
+  check("probe: against a 1.2 m stride it slides", heelDrift(1.2) > 0.01, `${(heelDrift(1.2) * 100).toFixed(1)} cm`);
+  const frag = folkFragment();
+  check("the town's fragment shader carries the figures' materials", frag.includes("style > 22.5 && style < 23.5"), "");
+  check("probe: a shader without the anchor line gets none", !folkFragment("void main() {}").includes("style > 22.5"), "");
 }
 
 // --- 11. the art: restored works in their houses, the atlas in budget ------------------

@@ -8,6 +8,8 @@
 // instance by render/pompeii.ts; a far column is the plain tapered prism
 // pompeiimesh.ts leaves in the town mesh, hidden inside this one up close.
 
+import { posedFaun } from "./folk";
+
 export type V3 = [number, number, number];
 export type RGB = [number, number, number];
 
@@ -306,15 +308,7 @@ export function figure(st: Sink, at: V3, yaw: number, scale: number, pose: Pose,
   const thick = pose === "faun" ? 1.5 : 1;
   const limb = (a: V3, b: V3, ra: number, rb: number): void => tube(st, P(...a), P(...b), ra * scale * thick, rb * scale * thick, 7, col, 0.5, style);
   if (pose === "faun") {
-    // The Faun dances on his toes, arms flung up and out, head thrown back:
-    // the bronze in the impluvium, about 0.7 m high (here at its scale).
-    limb([-0.09, 0.0, 0.05], [-0.1, 0.48, 0.0], 0.05, 0.065); limb([-0.1, 0.48, 0.0], [-0.1, 0.9, 0.02], 0.065, 0.085);
-    limb([0.09, 0.05, -0.15], [0.12, 0.5, -0.06], 0.05, 0.065); limb([0.12, 0.5, -0.06], [0.1, 0.9, 0.02], 0.065, 0.085);
-    limb([0, 0.9, 0.01], [0, 1.42, -0.04], 0.15, 0.17);
-    limb([-0.18, 1.4, -0.04], [-0.42, 1.62, 0.02], 0.05, 0.04); limb([-0.42, 1.62, 0.02], [-0.5, 1.92, 0.1], 0.04, 0.03);
-    limb([0.18, 1.4, -0.04], [0.4, 1.58, -0.1], 0.05, 0.04); limb([0.4, 1.58, -0.1], [0.36, 1.88, -0.18], 0.04, 0.03);
-    limb([0, 1.42, -0.04], [0, 1.52, -0.08], 0.05, 0.05);
-    dome(st, P(0, 1.62, -0.12), 0.1 * scale, 0.12 * scale, 0.11 * scale, col, 0.5, style, -Math.PI / 2, Math.PI / 2, 8, 5);
+    faunStatue(st, at, yaw, scale * 1.7, col, style);
     return;
   }
   if (pose === "rider") {
@@ -334,6 +328,26 @@ export function figure(st: Sink, at: V3, yaw: number, scale: number, pose: Pose,
   limb([0.2, 1.33, 0], [0.32, 1.12, 0.18], 0.055, 0.045); limb([0.32, 1.12, 0.18], [0.36, 1.45, 0.34], 0.045, 0.04);
   limb([-0.2, 1.33, 0], [-0.24, 1.0, 0.12], 0.07, 0.06); limb([-0.24, 1.0, 0.12], [-0.12, 0.95, 0.28], 0.06, 0.05);
   dome(st, P(0, 1.56, 0.01), 0.1 * scale, 0.125 * scale, 0.11 * scale, col, 0.5, style, -Math.PI / 2, Math.PI / 2, 8, 5);
+}
+
+/**
+ * The Dancing Faun: the townsfolk's body (render/folk.ts) nude, with horns,
+ * pointed ears and a tail, up on his toes with his arms raised and head
+ * thrown back, scaled so the raised hand is `height` over the base.
+ */
+export function faunStatue(st: Sink, at: V3, yaw: number, height: number, col: RGB, style: number): void {
+  const f = posedFaun();
+  let top = 0;
+  for (let i = 1; i < f.position.length; i += 3) top = Math.max(top, f.position[i]);
+  const k = height / top;
+  const ca = Math.cos(yaw), sa = Math.sin(yaw);
+  const base = st.n;
+  for (let i = 0; i < f.position.length / 3; i++) {
+    const x = f.position[i * 3], y = f.position[i * 3 + 1], z = f.position[i * 3 + 2];
+    const nx = f.normal[i * 3], ny = f.normal[i * 3 + 1], nz = f.normal[i * 3 + 2];
+    st.vert([at[0] + (x * ca + z * sa) * k, at[1] + y * k, at[2] + (-x * sa + z * ca) * k], [nx * ca + nz * sa, ny, -nx * sa + nz * ca], col, 0.5, style, 0, 0, [0, 0, 0, 0]);
+  }
+  for (let t = 0; t < f.index.length; t += 3) st.tri(base + f.index[t], base + f.index[t + 1], base + f.index[t + 2]);
 }
 
 // =====================================================================================

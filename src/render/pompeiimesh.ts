@@ -1040,7 +1040,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           // 71 cm high: modelled at that size, on a half-metre plinth).
           const fb = fl(f.x, f.z);
           cube(S, f.x - 0.3, fb - 0.1, f.z - 0.3, f.x + 0.3, fb + 0.5, f.z + 0.3, [0.85, 0.84, 0.8], seed, Surf.Marble);
-          figure(S, [f.x, fb + 0.5, f.z], Math.atan2(-vx, -vz), 0.42, "faun", [0.3, 0.24, 0.15], Surf.Hide);
+          figure(S, [f.x, fb + 0.5, f.z], Math.atan2(-vx, -vz), 0.42, "faun", [0.21, 0.16, 0.09], 17 /* bronze */);
           siteInfo.statues.push("dancing faun");
           artPlaced.push({ id: "dancing-faun", house: hs.name, x: f.x, y: g + 0.5, z: f.z });
         }
