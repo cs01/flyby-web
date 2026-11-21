@@ -367,10 +367,8 @@ export function buildWater(opts: WaterOptions): WaterBuild {
   // --- fountains ---------------------------------------------------------------------
   const fountains = placeFountains(data, opts.sites, groundAt);
   fountains.forEach((f, i) => {
-    const t0 = G.triangles;
     const r = buildFountain(f, i, G, Wt, Fm, J, drops, tier.drops, probe, groundAt);
     report.fountains.push({ ...r, head: f.head });
-    void t0;
   });
 
   // --- towers and the castellum ---------------------------------------------------------
@@ -587,12 +585,11 @@ function buildBath(site: BathSite, G: Geo, Wt: WaterGeo, J: JetGeo, drops: numbe
     }
     if (r.kind === "praefurnium" && !dry) {
       // The boiler: a bronze drum on its masonry stove, between the two caldaria.
-      const [e0, e1, n0, n1] = r.rect!;
+      const [, e1, n0, n1] = r.rect!;
       const [x, z] = W(e1 - 3, (n0 + n1) / 2);
       const m = new THREE.Matrix4().makeTranslation(x, fy + 0.6 + 0.75, z);
       G.mesh(new THREE.CylinderGeometry(0.6, 0.6, 1.5, 14), m, mat([0.45, 0.3, 0.16], S.bath, F.boiler, shut));
       G.mesh(new THREE.BoxGeometry(1.6, 0.6, 1.6), new THREE.Matrix4().makeTranslation(x, fy + 0.3, z), mat([0.5, 0.3, 0.22], S.bath, F.signinum, shut));
-      void e0;
     }
   }
 
@@ -656,7 +653,6 @@ function buildBath(site: BathSite, G: Geo, Wt: WaterGeo, J: JetGeo, drops: numbe
       const wy = rimY - 0.035;
       Wt.poly(ring, wy, [0, 0, 0, -1], [WK.Labrum, 0.1, x, z], [0.9, 0.9, 0.86, shut / 255]);
       // The jet: straight up from a bronze nozzle, falling back as a crown.
-      const v0 = Math.sqrt(2 * 9.81 * l.jet);
       J.tube([[x, wy, z], [x, wy + l.jet * 0.5, z], [x, wy + l.jet, z]], (s) => 0.012 - 0.006 * s, 0.11, 1, shut / 255);
       for (let k = 0; k < 6; k++) {
         const a = (k / 6) * Math.PI * 2 + 0.3;
@@ -664,7 +660,6 @@ function buildBath(site: BathSite, G: Geo, Wt: WaterGeo, J: JetGeo, drops: numbe
         const land = jetPath([x, wy + l.jet, z], [Math.cos(a) * 0.45, 0.15, Math.sin(a) * 0.45], wy, 8).at(-1)!;
         drops.push([land[0], wy, land[2], k / 6, 0.35, 0.5, 2.6, 0.006]);
       }
-      void v0;
     }
     labra++;
   }
@@ -1600,7 +1595,6 @@ uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec3 uCameraPos;
 uniform float uTime;
-uniform float uSteam;
 out vec2 vUv;
 out float vFade;
 out vec3 vWorld;
@@ -1624,10 +1618,10 @@ void main() {
   vUv = position.xy;
   float d = distance(w.xyz, uCameraPos);
   // Fades in off the water, out as it rises; out near the eye so a sprite never fills the screen.
-  vFade = smoothstep(0.0, 0.18, ph) * pow(1.0 - ph, 1.6) * smoothstep(0.8, 2.6, d) * (1.0 - smoothstep(45.0, 70.0, d)) * uSteam;
+  vFade = smoothstep(0.0, 0.18, ph) * pow(1.0 - ph, 1.6) * smoothstep(0.8, 2.6, d) * (1.0 - smoothstep(45.0, 70.0, d));
   vSeed = sd;
   gl_Position = projectionMatrix * viewMatrix * w;
-  if (d > 70.0 || uSteam <= 0.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+  if (d > 70.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 }
 `;
 
@@ -1713,7 +1707,7 @@ void main() {
 // In the scene.
 // =====================================================================================
 
-export interface WaterFrame { t: number; camera: THREE.Vector3; night: number }
+export interface WaterFrame { t: number }
 
 export class PompeiiWater {
   readonly group = new THREE.Group();
@@ -1722,9 +1716,7 @@ export class PompeiiWater {
   readonly build: WaterBuild;
   readonly lamps: Lamp[];
   private readonly time: { value: number };
-  private readonly steamOn: { value: number };
   private readonly townTime: { value: number };
-  private readonly steamMesh: THREE.Mesh | null;
 
   constructor(opts: { data: PompeiiData; model: { waterSites: WaterSites }; uniforms: PompeiiUniforms; groundAt: (x: number, z: number) => number; offX: number; offZ: number; lean: boolean }) {
     const { offX, offZ, lean } = opts;
@@ -1735,8 +1727,7 @@ export class PompeiiWater {
     this.lamps = this.build.lamps;
     this.townTime = opts.uniforms.uWaterTime;
     this.time = { value: 0 };
-    this.steamOn = { value: 1 };
-    const u = { ...opts.uniforms, uTime: this.time, uSteam: this.steamOn } as unknown as Record<string, THREE.IUniform>;
+    const u = { ...opts.uniforms, uTime: this.time } as unknown as Record<string, THREE.IUniform>;
     const defines: Record<string, number> = lean ? { LEAN: 1 } : {};
 
     this.stone = new THREE.Mesh(this.build.stone.build(), pompeiiMaterial(opts.uniforms));
@@ -1796,8 +1787,8 @@ export class PompeiiWater {
       m.name = "pompeii-water-steam";
       m.renderOrder = 24;
       this.group.add(m);
-      this.steamMesh = m;
-    } else this.steamMesh = null;
+
+    }
 
     // The sunbeam from each oculus: an open tube swung along the sun in the
     // vertex shader, so the clock needs no rebuild.
@@ -1837,13 +1828,6 @@ export class PompeiiWater {
     const t = f.t % 3600;
     this.time.value = t;
     this.townTime.value = t;
-    this.steamOn.value = 1;
-    void this.steamMesh;
   }
 }
 
-/** Stats for the HUD and the profile pose. */
-export function waterSummary(w: PompeiiWater): string {
-  const r = w.build.report;
-  return `${r.fountains.length} fountains, ${r.towers} towers, ${r.baths.length} baths`;
-}

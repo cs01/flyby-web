@@ -2220,7 +2220,7 @@ async function main() {
       }
     }
     pompeii?.update(camera.position);
-    pompeiiWater?.update({ t: elapsed, camera: camera.position, night: 0 });
+    pompeiiWater?.update({ t: elapsed });
     if (townsfolk) {
       // Once the column is up everyone is hurrying, and after dark one in three carries a torch.
       // From the first stones (13:30) everyone heads for a gate (sim/flee.ts),
