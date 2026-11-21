@@ -31,19 +31,25 @@ export const FOLK_HEIGHT_M = 1.7;
  * stride keeps its planted foot still on the ground.
  */
 export const FOLK_STRIDE_M = 1.4;
-/** Each figure's scale is drawn from these ranges (men 1.63-1.76 m, women 1.52-1.62 m). */
-export const FOLK_SCALE = { man: [0.96, 1.04], woman: [0.9, 0.96] } as const;
+/** Each figure's scale is drawn from these ranges (men 1.63-1.76 m, women 1.52-1.62 m, boys 1.25-1.39 m). */
+export const FOLK_SCALE = { man: [0.96, 1.04], woman: [0.9, 0.96], boy: [0.74, 0.82] } as const;
 /** Pose frames baked per cycle. */
 export const FOLK_FRAMES = 32;
 
 /** Colour slots: what a vertex takes its colour from. */
 export const SLOT_FIXED = 0, SLOT_SKIN = 1, SLOT_HAIR = 2, SLOT_CLOTH = 3, SLOT_CLOTH2 = 4;
+/** A calceus: black or red-brown leather, picked per figure. */
+export const SLOT_SHOE = 5;
 /** Materials (the fragment shader's p1 for style 23). */
 export const M_SKIN = 0, M_WOOL = 1, M_HAIR = 2, M_LEATHER = 3, M_CLAY = 4, M_WICKER = 5, M_WOOD = 6, M_FINE = 7;
+/** A foot in a sandal: skin, with the sole's edge and the straps painted on in leather. */
+export const M_SHOE = 8;
 /** Surface style of the figures in the town shader. */
 export const FOLK_STYLE = 23;
 /** Instance flag bits. */
 export const FLAG_TORCH = 1, FLAG_LONG = 2;
+/** Barefoot: the sandal's sole hidden and its straps not painted. */
+export const FLAG_BARE = 4;
 
 // --- the skeleton (left side; the right is mirrored in x) --------------------------
 
@@ -57,6 +63,8 @@ const SHOULDER: V3 = [0.175, 1.39, -0.02];
 const ELBOW: V3 = [0.2, 1.095, -0.045];
 const WRIST: V3 = [0.21, 0.85, -0.015];
 const HEEL_Z = ANKLE[2] - 0.055, BALL_Z = ANKLE[2] + 0.145, TOE_Z = ANKLE[2] + 0.205;
+/** The rest skeleton's joints (left side), for builders that model round it (render/statues.ts). */
+export const FOLK_REST = { PELVIS_PIVOT, CHEST_PIVOT, NECK_PIVOT, HIP, KNEE, ANKLE, SHOULDER, ELBOW, WRIST, HEEL_Z, BALL_Z, TOE_Z } as const;
 
 const mir = (p: V3, s: number): V3 => [p[0] * s, p[1], p[2]];
 const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -179,7 +187,7 @@ export function solvePose(spec: PoseSpec, out = new Float32Array(FOLK_BONES * 16
 const footRot = (pitch: number, s: number): M4 => mul(rotAxis([0, 1, 0], 0.08 * s), rotAxis([1, 0, 0], -pitch));
 
 /** Ankle of a foot whose sole point `pivotZ` (rest z, on y 0) sits at `at`, pitched by `pitch`. */
-function ankleFrom(at: V3, pivotZ: number, pitch: number, s: number): V3 {
+export function ankleFrom(at: V3, pivotZ: number, pitch: number, s: number): V3 {
   const rel = sub(mir(ANKLE, s), [ANKLE[0] * s, 0, pivotZ]);
   return add(at, applyDir(footRot(pitch, s), rel));
 }
@@ -223,7 +231,7 @@ function walkFoot(phi: number, s: number): FootPose {
 }
 
 /** Highest hip lift (above the rest pose) each pelvis pose allows, by bisection: the planted feet must reach. */
-function hipLift(pelvis: [number, number, number], dx: number, feet: (FootPose | null)[], cap: number): number {
+export function hipLift(pelvis: [number, number, number], dx: number, feet: (FootPose | null)[], cap: number): number {
   const reach = THIGH + SHIN - 0.004;
   let lo = -0.2, hi = cap;
   const ok = (dy: number): boolean => {
@@ -294,7 +302,7 @@ function idleBody(p: number): Body {
 }
 
 /** A hanging arm's wrist in the chest's rest frame: flexed forward, out to the side, the elbow bent. */
-function armAt(s: number, flex: number, abd: number, elbow: number): V3 {
+export function armAt(s: number, flex: number, abd: number, elbow: number): V3 {
   const d = (a: number): V3 => applyDir(mul(rotAxis([0, 0, 1], abd * s), rotAxis([1, 0, 0], -a)), [0, -1, 0]);
   const sh = mir(SHOULDER, s);
   return add(add(sh, scl(d(flex), UPPER_ARM)), scl(d(flex + elbow), FOREARM));
@@ -388,6 +396,9 @@ const one = (b: number): Skin => ({ b: [b, b, b], w: [1, 0, 0] });
 const two = (a: number, b: number, t: number): Skin => ({ b: [a, b, a], w: [1 - t, t, 0] });
 interface Attr { slot: number; mat: number; c?: RGB; folds?: number; depth?: number; skin: Skin; mask?: number; drop?: number }
 type AttrFn = (p: V3, k: number, j: number, m: number) => Attr;
+
+/** Set while the middle level of detail is built: fewer sides and rings, no small parts. */
+let LOW = false;
 
 class Builder {
   pos: number[] = []; col: number[] = []; surf: number[] = []; skin: number[] = []; wt: number[] = []; wall: number[] = []; nrm: number[] = [];
@@ -593,7 +604,9 @@ function arm(B: Builder, s: number, fromT: number, slotUpper = SLOT_SKIN, matUpp
   const prof = bare ? [r(0.05), [0.045, 0.042, 0.05] as [number, number, number], r(0.038), fore, r(0.028)] : [r(0.047), r(0.038), fore, r(0.028)];
   const bones = [s > 0 ? L_ARM : R_ARM, s > 0 ? L_FORE : R_FORE];
   const kEl = bare ? 2 : 1;
-  B.loft(along(path, prof, 8, [0, 0, 1]), (_p, k) => {
+  // The middle level keeps the shoulder, elbow and wrist rings only.
+  if (LOW && !bare) { path.splice(2, 1); prof.splice(2, 1); }
+  B.loft(along(path, prof, LOW ? 5 : 8, [0, 0, 1]), (_p, k) => {
     const skin = k === 0 && fromT < 0.2 ? two(CHEST, bones[0], 0.65) : k < kEl ? one(bones[0]) : k === kEl ? two(bones[0], bones[1], 0.5) : one(bones[1]);
     const covered = wrap > 0 && k < path.length - 1;
     return { slot: covered ? slotUpper : SLOT_SKIN, mat: covered ? matUpper : M_SKIN, folds: covered ? 5 : 0, depth: covered ? 0.6 : 0, skin };
@@ -609,7 +622,14 @@ function hand(B: Builder, s: number): void {
   const path: V3[] = [pt(-0.01, 0, 0), pt(0.07, 0.002, 0.005), pt(0.165, 0.016, 0.004)];
   // Across the palm (z) wider than through it (x): the ring's X axis runs through the palm.
   const prof: [number, number, number][] = [[0.022, 0.026, 0.026], [0.015, 0.046, 0.038], [0.01, 0.03, 0.026]];
-  B.loft(along(path, prof, 6, [0, 0, 1], 2.4), () => ({ slot: SLOT_SKIN, mat: M_SKIN, skin: one(s > 0 ? L_HAND : R_HAND) }), false, true);
+  if (LOW) { path.splice(1, 1); prof.splice(1, 1); }
+  B.loft(along(path, prof, LOW ? 3 : 6, [0, 0, 1], 2.4), () => ({ slot: SLOT_SKIN, mat: M_SKIN, skin: one(s > 0 ? L_HAND : R_HAND) }), false, true);
+}
+
+/** The inside of a leg darker: the gap between the legs gets little sky. */
+function innerShade(p: V3, s: number): RGB {
+  const k = 1 - 0.3 * smooth((ANKLE[0] - p[0] * s) / 0.05);
+  return [k, k, k];
 }
 
 /** A leg from height `topY` down through the knee to the ankle. */
@@ -622,8 +642,8 @@ function leg(B: Builder, s: number, topY: number, slot = SLOT_SKIN): void {
     // Under a long garment: the shin from the hem down.
     const tS = (kn[1] - topY) / (kn[1] - an[1]);
     const shin = s > 0 ? L_SHIN : R_SHIN, ftb = s > 0 ? L_FOOT : R_FOOT;
-    B.loft(along([lerp3(kn, an, tS), lerp3(kn, an, Math.max(tS + 0.1, 0.72)), an], [[0.045, 0.045, 0.055], [0.036, 0.038, 0.04], [0.031, 0.034, 0.032]], 7, [0, 0, 1]), (_p, k) => ({
-      slot, mat: M_SKIN, skin: k === 2 ? two(shin, ftb, 0.3) : one(shin),
+    B.loft(along([lerp3(kn, an, tS), lerp3(kn, an, Math.max(tS + 0.1, 0.72)), an], [[0.045, 0.045, 0.055], [0.036, 0.038, 0.04], [0.031, 0.034, 0.032]], LOW ? 5 : 7, [0, 0, 1]), (p, k) => ({
+      slot, mat: M_SKIN, c: innerShade(p, s), skin: k === 2 ? two(shin, ftb, 0.3) : one(shin),
     }), false, false);
     return;
   }
@@ -633,34 +653,57 @@ function leg(B: Builder, s: number, topY: number, slot = SLOT_SKIN): void {
   const profAll: [number, number, number][] = whole
     ? [[0.085, 0.085, 0.09], [0.068, 0.07, 0.068], [0.05, 0.055, 0.048], [0.052, 0.05, 0.068], [0.036, 0.038, 0.04], [0.031, 0.034, 0.032]]
     : [[lerp(0.085, 0.05, tT), lerp(0.085, 0.055, tT), lerp(0.09, 0.05, tT)], [0.05, 0.055, 0.048], [0.052, 0.05, 0.068], [0.036, 0.038, 0.04], [0.031, 0.034, 0.032]];
+  // The middle level keeps the thigh, knee, calf and ankle.
+  if (LOW && !whole) { path.splice(4, 1); profAll.splice(4, 1); }
   const kIdx = whole ? 2 : 1;
   const th = s > 0 ? L_THIGH : R_THIGH, sh = s > 0 ? L_SHIN : R_SHIN, ft = s > 0 ? L_FOOT : R_FOOT;
-  B.loft(along(path, profAll, whole ? 8 : 7, [0, 0, 1]), (_p, k) => ({
-    slot, mat: M_SKIN,
+  B.loft(along(path, profAll, LOW ? 5 : whole ? 8 : 7, [0, 0, 1]), (p, k) => ({
+    slot, mat: M_SKIN, c: innerShade(p, s),
     skin: k < kIdx ? (tT < 0.2 && k === 0 ? two(PELVIS, th, 0.6) : one(th)) : k === kIdx ? two(th, sh, 0.5) : k === path.length - 1 ? two(sh, ft, 0.3) : one(sh),
   }), false, false);
 }
 
-/** A foot in a sandal: a sole of leather under it, a strap over the instep. */
-function foot(B: Builder, s: number, bare: boolean): void {
+/**
+ * A foot: a rounded heel, the instep over a raised arch, the ball, and a
+ * squared block of toes. "sandal" puts a leather sole under it and leaves
+ * the straps to the shader (M_SHOE, hidden and bared for FLAG_BARE);
+ * "calceus" is the closed leather shoe to the ankle the toga was worn with.
+ */
+function foot(B: Builder, s: number, mode: "sandal" | "calceus" | "bare"): void {
   const x = ANKLE[0] * s;
+  const shoe = mode === "calceus" ? 0.006 : 0;
   const rows: [number, number, number, number, number][] = [
     // z, centre y, half width, up, down
-    [HEEL_Z + 0.008, 0.045, 0.03, 0.035, 0.044],
-    [ANKLE[2] + 0.03, 0.058, 0.037, 0.05, 0.057],
-    [BALL_Z + 0.005, 0.026, 0.047, 0.022, 0.026],
-    [TOE_Z - 0.008, 0.017, 0.038, 0.012, 0.017],
+    [HEEL_Z + 0.012, 0.042, 0.028, 0.032, 0.04],
+    [ANKLE[2] + 0.03, 0.057, 0.034, 0.05, 0.055],
+    // The arch: the sole lifts off the ground under the instep.
+    [ANKLE[2] + 0.09, 0.042, 0.038, 0.034, 0.03],
+    [BALL_Z + 0.005, 0.025, 0.046, 0.021, 0.023],
+    [TOE_Z - 0.006, 0.016, 0.04, 0.013, 0.014],
   ];
-  // Toes out as the pose turns the foot, so the rest mesh matches.
-  const rs = rows.map(([z, y, hw, up, dn]) => ring([x, y, z], [1, 0, 0], [0, 1, 0], hw, up, dn, 6, 2.4));
-  const ft = s > 0 ? L_FOOT : R_FOOT, toe = s > 0 ? L_TOE : R_TOE;
-  const LEATHER: RGB = [0.24, 0.15, 0.09];
-  B.loft(rs, (p, k) => {
-    const sole = !bare && p[1] < 0.012;
-    const strap = !bare && k === 1 && p[1] > 0.06;
-    const skin = k < 2 ? two(ft, s > 0 ? L_SHIN : R_SHIN, k === 0 ? 0.15 : 0.3) : k === 2 ? two(ft, toe, 0.6) : one(toe);
-    return { slot: sole || strap ? SLOT_FIXED : SLOT_SKIN, mat: sole || strap ? M_LEATHER : M_SKIN, c: sole || strap ? LEATHER : [1, 1, 1], skin };
-  }, true, true);
+  const m = LOW ? 4 : 7;
+  const rs = rows.filter((_, k) => !LOW || k === 0 || k === 3 || k === 4).map(([z, y, hw, up, dn]) => ring([x, y, z], [1, 0, 0], [0, 1, 0], hw + shoe, up + shoe, dn, m, 2.6));
+  const ft = s > 0 ? L_FOOT : R_FOOT, toe = s > 0 ? L_TOE : R_TOE, shin = s > 0 ? L_SHIN : R_SHIN;
+  const nr = rs.length;
+  const skinAt = (k: number): Skin => (k === 0 ? two(ft, shin, 0.15) : k === 1 ? two(ft, shin, 0.3) : k < nr - 2 ? one(ft) : k === nr - 2 ? two(ft, toe, 0.6) : one(toe));
+  const look = (): { slot: number; mat: number } => (mode === "calceus" ? { slot: SLOT_SHOE, mat: M_LEATHER } : mode === "sandal" ? { slot: SLOT_SKIN, mat: M_SHOE } : { slot: SLOT_SKIN, mat: M_SKIN });
+  B.loft(rs, (_p, k) => ({ ...look(), skin: skinAt(k) }), true, true, [null, [x, 0.014, TOE_Z]]);
+  if (mode === "calceus") {
+    // The shoe's upper round the ankle, laced.
+    const an = mir(ANKLE, s);
+    const cuff = [0.045, 0.13].map((y) => ring([an[0], y, an[2] + 0.005], [1, 0, 0], [0, 0, 1], 0.04, 0.045, 0.043, m));
+    B.loft(cuff, (_p, k) => ({ slot: SLOT_SHOE, mat: M_LEATHER, skin: k === 0 ? two(ft, shin, 0.3) : one(shin) }), false, false);
+  }
+  if (mode === "sandal" && !LOW) {
+    // The sole, a finger thick and a little proud of the foot all round.
+    const side: [number, number][] = [[HEEL_Z - 0.01, 0.024], [HEEL_Z + 0.03, 0.04], [ANKLE[2] + 0.09, 0.042], [BALL_Z, 0.056], [TOE_Z + 0.012, 0.034]];
+    const outline: V3[] = [...side.map(([z, w]): V3 => [x + w, 0, z]), ...side.slice().reverse().map(([z, w]): V3 => [x - w, 0, z])];
+    const top = outline.map((p): V3 => [p[0], 0.022, p[2]]);
+    B.loft([top, outline], (p) => ({
+      slot: SLOT_FIXED, mat: M_LEATHER, c: [0.13, 0.08, 0.05], mask: 2,
+      skin: p[2] < ANKLE[2] + 0.06 ? one(ft) : p[2] < BALL_Z ? two(ft, toe, 0.3) : one(toe),
+    }), true, false);
+  }
 }
 
 /** Garment rows: y, half width, front, back, centre z. */
@@ -677,8 +720,9 @@ const TUNIC: Row[] = [
   [1.09, 0.172, 0.122, 0.106, -0.008],
   [1.045, 0.152, 0.104, 0.096, -0.005],
   [0.93, 0.176, 0.118, 0.12, 0],
-  [0.72, 0.206, 0.14, 0.14, 0],
-  [0.55, 0.224, 0.156, 0.152, 0.004],
+  [0.75, 0.204, 0.138, 0.138, 0],
+  // Above the knee, as working men wore it: the shins and calves bare.
+  [0.6, 0.22, 0.152, 0.148, 0.004],
 ];
 
 const STOLA: Row[] = [
@@ -693,7 +737,7 @@ const STOLA: Row[] = [
   [0.92, 0.19, 0.125, 0.13, 0],
   [0.55, 0.205, 0.145, 0.148, 0.006],
   // To the ankles, the feet showing under the hem.
-  [0.12, 0.232, 0.166, 0.16, 0.014],
+  [0.15, 0.23, 0.165, 0.16, 0.014],
 ];
 
 const TOGA: Row[] = [
@@ -706,11 +750,13 @@ const TOGA: Row[] = [
   [0.8, 0.215, 0.15, 0.15, 0],
   [0.5, 0.23, 0.164, 0.16, 0.006],
   [0.24, 0.245, 0.175, 0.168, 0.01],
-  [0.11, 0.25, 0.18, 0.17, 0.014],
+  [0.14, 0.248, 0.178, 0.17, 0.014],
 ];
 
 function garment(B: Builder, rows: Row[], k: number, folds: number, pick: (p: V3, j: number, m: number) => { slot: number; mat: number }): void {
-  const m = 12;
+  const m = LOW ? 8 : 12;
+  // The middle level drops the rows that only shape the shoulders and the hips.
+  if (LOW) rows = rows.filter((_, i) => i !== 1 && i !== 4 && i !== 7);
   const rings = rows.map(([y, hw, f, b, zc]) => flat(y, zc, hw, f, b, m, 2.1));
   const belt = rows.findIndex((r) => r[0] < 1.1);
   B.loft(rings, (p, ki, j) => {
@@ -744,7 +790,7 @@ function sleeve(B: Builder, s: number, len: number, slot: number): void {
 
 /** The palla: a mantle over the shoulders and round the body, longer behind; up over the head when veiled. */
 function palla(B: Builder, veil: boolean): void {
-  const m = 12;
+  const m = LOW ? 8 : 12;
   const rows: Row[] = [
     [1.445, 0.13, 0.078, 0.084, -0.02],
     [1.405, 0.205, 0.1, 0.102, -0.02],
@@ -780,7 +826,7 @@ function palla(B: Builder, veil: boolean): void {
 function togaRoll(B: Builder): void {
   const path: V3[] = [[0.12, 1.43, -0.1], [0.14, 1.42, 0.06], [0.05, 1.26, 0.14], [-0.08, 1.1, 0.15], [-0.18, 0.98, 0.11], [-0.215, 0.93, 0.0], [-0.17, 0.95, -0.12], [-0.02, 1.0, -0.15]];
   const prof = path.map((_, k): [number, number, number] => { const r = k === 0 || k === path.length - 1 ? 0.025 : 0.045; return [r, r * 0.8, r * 0.8]; });
-  B.loft(along(path, prof, 5, [0, 1, 0]), (p) => ({ slot: SLOT_CLOTH, mat: M_FINE, folds: 3, depth: 0.7, skin: garmentSkin(p, 0.3) }), true, true);
+  B.loft(along(path, prof, LOW ? 4 : 5, [0, 1, 0]), (p) => ({ slot: SLOT_CLOTH, mat: M_FINE, folds: 3, depth: 0.7, skin: garmentSkin(p, 0.3) }), true, true);
 }
 
 /** An amphora on the left shoulder: lying back over it, the neck forward and up in the hand. */
@@ -795,7 +841,7 @@ function amphora(B: Builder): void {
 /** A wide basket of wicker carried on the head. */
 function basket(B: Builder): void {
   const rows: [number, number][] = [[1.705, 0.09], [1.73, 0.17], [1.83, 0.2], [1.835, 0.19]];
-  const rs = rows.map(([y, r]) => flat(y, -0.01, r, r, r, 9));
+  const rs = rows.filter((_, k) => !LOW || k !== 3).map(([y, r]) => flat(y, -0.01, r, r, r, LOW ? 6 : 9));
   B.loft(rs, () => ({ slot: SLOT_FIXED, mat: M_WICKER, c: [0.62, 0.48, 0.28], folds: 18, skin: one(HEAD) }), true, false);
   // The load in it: bread or fruit under a cloth, a dome.
   B.loft([flat(1.81, -0.01, 0.18, 0.18, 0.18, 9), flat(1.86, -0.01, 0.13, 0.13, 0.13, 9)], () => ({ slot: SLOT_FIXED, mat: M_WOOL, c: [0.78, 0.72, 0.6], skin: one(HEAD) }), false, true);
@@ -831,36 +877,56 @@ function nudeTorso(B: Builder): void {
 }
 
 /** A figure at the near level of detail. */
-export function buildFolk(o: FolkOpts): FolkMesh {
-  const B = new Builder();
-  head(B, o);
-  neck(B);
-  const cloth = (slot: number, mat: number) => () => ({ slot, mat });
-  if (o.dress === "tunic") {
-    garment(B, TUNIC, 0.62, 9, cloth(SLOT_CLOTH, M_WOOL));
-    band(B, TUNIC, 1.05, 0.035, [0.22, 0.14, 0.08], M_LEATHER);
-    for (const s of [1, -1]) { sleeve(B, s, 0.42, SLOT_CLOTH); arm(B, s, 0.3); leg(B, s, 0.7); foot(B, s, false); }
-  } else if (o.dress === "stola") {
-    garment(B, STOLA, 0.5, 11, cloth(SLOT_CLOTH, M_WOOL));
-    palla(B, !!o.veil);
-    for (const s of [1, -1]) { arm(B, s, 0.25); leg(B, s, 0.4); foot(B, s, false); }
-  } else if (o.dress === "toga") {
-    // The right shoulder and chest show the tunic; the toga goes under that arm.
-    garment(B, TOGA, 0.45, 10, (p) => (p[0] < -0.07 && p[1] > 1.18 && p[2] > -0.06 ? { slot: SLOT_CLOTH2, mat: M_WOOL } : { slot: SLOT_CLOTH, mat: M_FINE }));
-    togaRoll(B);
-    sleeve(B, -1, 0.42, SLOT_CLOTH2);
-    arm(B, -1, 0.3);
-    // The left arm wrapped in the toga to the wrist.
-    arm(B, 1, 0.0, SLOT_CLOTH, M_FINE, 0.03);
-    for (const s of [1, -1]) { leg(B, s, 0.3); foot(B, s, false); }
-  } else {
-    nudeTorso(B);
-    for (const s of [1, -1]) { arm(B, s, 0.0); leg(B, s, 0.93); foot(B, s, true); }
+/**
+ * A figure at the near level of detail, or (mid) the middle one for 12 to
+ * 45 m: the same dress and limbs with fewer sides and rings, no neck,
+ * sleeves, belt, sole or torch, about 300 to 420 triangles.
+ */
+export function buildFolk(o: FolkOpts, mid = false): FolkMesh {
+  LOW = mid;
+  try {
+    const B = new Builder();
+    if (mid) midHead(B, o); else { head(B, o); neck(B); }
+    const cloth = (slot: number, mat: number) => () => ({ slot, mat });
+    if (o.dress === "tunic") {
+      garment(B, TUNIC, 0.62, 9, cloth(SLOT_CLOTH, M_WOOL));
+      if (!mid) band(B, TUNIC, 1.05, 0.035, [0.22, 0.14, 0.08], M_LEATHER);
+      for (const s of [1, -1]) { if (!mid) sleeve(B, s, 0.42, SLOT_CLOTH); arm(B, s, 0.3); leg(B, s, 0.7); foot(B, s, "sandal"); }
+    } else if (o.dress === "stola") {
+      garment(B, STOLA, 0.5, 11, cloth(SLOT_CLOTH, M_WOOL));
+      palla(B, !!o.veil);
+      for (const s of [1, -1]) { arm(B, s, 0.25); leg(B, s, 0.4); foot(B, s, "sandal"); }
+    } else if (o.dress === "toga") {
+      // The right shoulder and chest show the tunic; the toga goes under that arm.
+      garment(B, TOGA, 0.45, 10, (p) => (p[0] < -0.07 && p[1] > 1.18 && p[2] > -0.06 ? { slot: SLOT_CLOTH2, mat: M_WOOL } : { slot: SLOT_CLOTH, mat: M_FINE }));
+      togaRoll(B);
+      if (!mid) sleeve(B, -1, 0.42, SLOT_CLOTH2);
+      arm(B, -1, 0.3);
+      // The left arm wrapped in the toga to the wrist.
+      arm(B, 1, 0.0, SLOT_CLOTH, M_FINE, 0.03);
+      for (const s of [1, -1]) { leg(B, s, 0.3); foot(B, s, "calceus"); }
+    } else {
+      nudeTorso(B);
+      for (const s of [1, -1]) { arm(B, s, 0.0); leg(B, s, 0.93); foot(B, s, "bare"); }
+    }
+    if (o.load === "amphora") amphora(B);
+    if (o.load === "basket") basket(B);
+    if (!mid && (o.dress === "tunic" || o.dress === "stola")) torch(B);
+    return B.finish();
+  } finally {
+    LOW = false;
   }
-  if (o.load === "amphora") amphora(B);
-  if (o.load === "basket") basket(B);
-  if (o.dress === "tunic" || o.dress === "stola") torch(B);
-  return B.finish();
+}
+
+/** The middle level's head: six sides, the hair on the crown and down the back. */
+function midHead(B: Builder, o: FolkOpts): void {
+  const rows = [0, 2, 4, 7].map((k) => HEAD_ROWS[k]);
+  const woman = o.dress === "stola";
+  B.loft(rows.map(([y, hw, f, b, zc]) => flat(y, zc, hw * 1.03, f, b, 6, 2.2)), (p, _k, j) => {
+    const back = Math.min(j / 6, 1 - j / 6) * 2;
+    const hair = p[1] > (woman ? 1.64 : 1.65) || (p[1] > 1.57 && back > 0.5);
+    return { slot: hair ? SLOT_HAIR : SLOT_SKIN, mat: hair ? M_HAIR : M_SKIN, folds: hair ? 0 : 1, skin: one(HEAD) };
+  }, true, true);
 }
 
 /**
@@ -871,9 +937,10 @@ export function buildFolkFar(): FolkMesh {
   const B = new Builder();
   const m = 4;
   const sq = (y: number, hw: number, d: number, zc = 0): V3[] => flat(y, zc, hw, d, d, m, 2);
-  // Neck point, shoulders, waist, hem: the hem is the knee, or the ankle for a long garment.
-  const rings = [sq(1.47, 0.05, 0.04, -0.015), sq(1.38, 0.2, 0.1, -0.02), sq(1.05, 0.16, 0.11), sq(0.53, 0.21, 0.15)];
-  B.loft(rings, (p, k) => ({ slot: SLOT_CLOTH, mat: M_WOOL, skin: k === 3 ? skirtSkin(p, 0.5) : torsoSkin(p), drop: k === 3 ? 0.44 : 0 }), false, false);
+  // Shoulders up to a point at the neck, waist, hem: the hem above the knee,
+  // or at the ankle for a long garment.
+  const rings = [sq(1.38, 0.2, 0.1, -0.02), sq(1.05, 0.16, 0.11), sq(0.6, 0.215, 0.15)];
+  B.loft(rings, (p, k) => ({ slot: SLOT_CLOTH, mat: M_WOOL, skin: k === 2 ? skirtSkin(p, 0.5) : torsoSkin(p), drop: k === 2 ? 0.47 : 0 }), true, false, [[0, 1.47, -0.015], null]);
   // The head as a double pyramid, hair on the crown.
   {
     const eq = flat(1.6, 0.005, 0.078, 0.1, 0.1, 3, 2);
@@ -882,85 +949,20 @@ export function buildFolkFar(): FolkMesh {
   }
   for (const s of [1, -1]) {
     const th = s > 0 ? L_THIGH : R_THIGH, sh = s > 0 ? L_SHIN : R_SHIN, ft = s > 0 ? L_FOOT : R_FOOT;
-    const hp = mir(HIP, s), kn = mir(KNEE, s), toe: V3 = [ANKLE[0] * s, 0.01, ANKLE[2] + 0.06];
-    B.loft(along([lerp3(hp, kn, 0.4), kn, toe], [[0.06, 0.06, 0.06], [0.048, 0.048, 0.048], [0.04, 0.07, 0.04]], 3, [0, 0, 1]), (_p, k) => ({
-      slot: SLOT_SKIN, mat: M_SKIN, skin: k === 0 ? one(th) : k === 1 ? two(th, sh, 0.5) : two(sh, ft, 0.5),
-    }), false, false);
+    // Thigh, knee, ankle, and the foot as a wedge forward to the toes in leather.
+    const hp = mir(HIP, s), kn = mir(KNEE, s), an = mir(ANKLE, s);
+    B.loft(along([lerp3(hp, kn, 0.4), kn, [an[0], 0.06, an[2]]], [[0.065, 0.065, 0.065], [0.05, 0.05, 0.05], [0.04, 0.045, 0.06]], 3, [0, 0, 1]), (_p, k) => ({
+      slot: k === 2 ? SLOT_FIXED : SLOT_SKIN, mat: k === 2 ? M_LEATHER : M_SKIN, c: k === 2 ? [0.22, 0.14, 0.08] : [1, 1, 1],
+      skin: k === 0 ? one(th) : k === 1 ? two(th, sh, 0.5) : one(ft),
+    }), false, true, [null, [an[0], 0.01, TOE_Z]]);
     const arm = s > 0 ? L_ARM : R_ARM, fore = s > 0 ? L_FORE : R_FORE;
-    const sp = mir(SHOULDER, s), el = mir(ELBOW, s), tip = add(mir(WRIST, s), [0, -0.12, 0.01]);
-    B.loft(along([sp, el, tip], [[0.055, 0.055, 0.055], [0.042, 0.042, 0.042], [0.03, 0.03, 0.03]], 3, [0, 0, 1]), (_p, k) => ({
-      slot: k === 0 ? SLOT_CLOTH : SLOT_SKIN, mat: M_SKIN, skin: k === 0 ? two(CHEST, arm, 0.7) : k === 1 ? two(arm, fore, 0.5) : one(fore),
-    }), false, false);
+    const sp = mir(SHOULDER, s), wr = mir(WRIST, s), tip = add(wr, [0, -0.13, 0.01]);
+    B.loft(along([sp, wr], [[0.055, 0.055, 0.055], [0.035, 0.035, 0.035]], 3, [0, 0, 1]), (_p, k) => ({
+      slot: k === 0 ? SLOT_CLOTH : SLOT_SKIN, mat: M_SKIN, skin: k === 0 ? two(CHEST, arm, 0.7) : one(fore),
+    }), false, true, [null, tip]);
   }
   return B.finish();
 }
-
-// --- the Dancing Faun -------------------------------------------------------------
-
-/** The bronze's pose (Naples, MANN 5002): up on the balls of both feet, arms up and out, head back. */
-export function faunPose(): PoseSpec {
-  const lp = -0.75, rp = -0.62;
-  return {
-    hip: [0.03, -0.035, -0.01],
-    pelvis: [0.18, -0.04, 0.05],
-    chest: [-0.28, -0.12, -0.06],
-    head: [-0.35, -0.45, -0.12],
-    feet: [
-      { ankle: ankleFrom([0.19, 0, 0.12 + BALL_Z - HEEL_Z], BALL_Z, lp, 1), pitch: lp },
-      { ankle: ankleFrom([-0.1, 0, -0.12 + BALL_Z - HEEL_Z], BALL_Z, rp, -1), pitch: rp },
-    ],
-    // The right hand high over the head, the left out level with the shoulder and forward.
-    wrists: [[0.6, 1.5, 0.18], [-0.36, 1.87, 0.05]],
-    poles: [[0.2, -1, -0.6], [-1, -0.3, -0.4]],
-    handBend: [0.5, 0.4],
-  };
-}
-
-/**
- * The lampbearer (the bronze youth of the Casa di Giulio Polibio, life
- * size): weight on the right leg, the left foot drawn back, the left hand
- * up and forward under the lamp tray at `tray` (figure frame, scale 1).
- */
-export function lampbearerPose(tray: V3): PoseSpec {
-  const right: FootPose = { ankle: ankleFrom([-0.08, 0, 0.0], HEEL_Z, 0, -1), pitch: 0 };
-  const lp = -0.22;
-  const left: FootPose = { ankle: ankleFrom([0.13, 0, -0.1 + BALL_Z - HEEL_Z], BALL_Z, lp, 1), pitch: lp };
-  const pelvis: [number, number, number] = [0.08, 0.0, -0.06];
-  const dx = -0.03;
-  return {
-    hip: [dx, hipLift(pelvis, dx, [left, right], -0.008) - 0.004, 0], pelvis,
-    chest: [-0.1, 0.02, 0.07], head: [0.3, 0.12, 0.04],
-    feet: [left, right],
-    wrists: [[tray[0] - 0.02, tray[1] - 0.09, tray[2] - 0.03], armAt(-1, 0.05, 0.06, 0.2)],
-    poles: [[1, -0.8, -0.3], BACK_POLE(-1)],
-    handBend: [-0.9, 0],
-  };
-}
-
-/** A nude figure (the faun, the lampbearer) with a pose applied: positions and normals in the figure's frame. */
-export function posedStatue(o: FolkOpts, spec: PoseSpec): { position: Float32Array; normal: Float32Array; index: Uint16Array; colour: Uint8Array } {
-  const mesh = buildFolk(o);
-  const bones = solvePose(spec);
-  const n = mesh.position.length / 3;
-  const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    const p: V3 = [mesh.position[i * 3], mesh.position[i * 3 + 1], mesh.position[i * 3 + 2]];
-    const nv: V3 = [mesh.normal[i * 4] / 127, mesh.normal[i * 4 + 1] / 127, mesh.normal[i * 4 + 2] / 127];
-    let P: V3 = [0, 0, 0], N: V3 = [0, 0, 0];
-    for (let k = 0; k < 3; k++) {
-      const w = mesh.weight[i * 4 + k] / 255;
-      if (w <= 0) continue;
-      const m = Array.from(bones.subarray(mesh.skin[i * 4 + k] * 16, mesh.skin[i * 4 + k] * 16 + 16));
-      P = add(P, scl(apply(m, p), w));
-      N = add(N, scl(applyDir(m, nv), w));
-    }
-    N = norm(N);
-    pos.set(P, i * 3); nrm.set(N, i * 3);
-  }
-  return { position: pos, normal: nrm, index: mesh.index, colour: mesh.colour };
-}
-
-export const posedFaun = (): ReturnType<typeof posedStatue> => posedStatue({ dress: "nude", faun: true }, faunPose());
 
 /** Skinned positions of a mesh in a pose (the gate measures with it). */
 export function skinned(mesh: FolkMesh, bones: Float32Array): Float32Array {

@@ -1631,6 +1631,16 @@ export const POSES: Pose[] = [
     query: "agl&fov=50&folkcam=pair,70,4,1.6,0.95",
   },
   {
+    // Low on a walker's legs and feet from 3 m: bare shins, sandals or bare feet.
+    name: "pompeii-folk-feet",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 1.6, hdgDeg: 58, pitchDeg: 0,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Legs and footwear of a walking pair at 3 m",
+    query: "agl&fov=40&folkcam=pair,80,3,0.9,0.45",
+  },
+  {
     // The forum's open square: a man in a toga about 8 m off, the crowd round him.
     name: "pompeii-folk-forum",
     city: "pompeii",
@@ -1648,7 +1658,81 @@ export const POSES: Pose[] = [
     t: D("0079-08-22T09:30:00Z"),
     wx: POMPEII_WX,
     what: "Close on the bronze Dancing Faun",
-    query: "agl&fov=40",
+    query: "agl&near=0.05&fov=40&statuecam=faun,15,1.5,0.75,0.38",
+  },
+  // The statues (render/statues.ts), framed by `statuecam=` from their own
+  // place and facing: eye and aim heights are over the top of the base.
+  {
+    name: "pompeii-statue-togate",
+    city: "pompeii",
+    lat: 40.74888, lon: 14.48514, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "A togate magistrate on his forum base from 3 m",
+    query: "agl&near=0.05&fov=40&statuecam=togate,25,3.2,-0.4,1.1",
+  },
+  {
+    name: "pompeii-statue-rider",
+    city: "pompeii",
+    lat: 40.74888, lon: 14.48514, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "An equestrian bronze from below its base",
+    query: "agl&near=0.05&fov=40&statuecam=rider,40,5.5,-0.9,1.7",
+  },
+  {
+    name: "pompeii-statue-apollo",
+    city: "pompeii",
+    lat: 40.749276, lon: 14.484473, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Apollo the archer in his sanctuary",
+    query: "agl&near=0.05&fov=40&statuecam=apollo,20,3.2,0.5,1.0",
+  },
+  {
+    name: "pompeii-statue-diana",
+    city: "pompeii",
+    lat: 40.749276, lon: 14.484473, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Diana's bust facing Apollo",
+    query: "agl&near=0.05&fov=40&statuecam=diana,15,2.0,0.3,0.35",
+  },
+  {
+    name: "pompeii-statue-holconius",
+    city: "pompeii",
+    lat: 40.7499, lon: 14.48808, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Holconius Rufus in his cuirass at the Stabian crossroads",
+    query: "agl&near=0.05&fov=40&statuecam=cuirassed,20,3.0,0.0,1.0",
+  },
+  {
+    name: "pompeii-statue-doryphoros",
+    city: "pompeii",
+    lat: 40.74897, lon: 14.488, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "The Doryphoros in the Samnite Palaestra",
+    query: "agl&near=0.05&fov=40&statuecam=doryphoros,25,3.2,0.6,1.0",
+  },
+  {
+    name: "pompeii-statue-faun-phone",
+    city: "pompeii",
+    lat: 40.7510725, lon: 14.4846052, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "The Faun on the reduced tier",
+    query: "agl&near=0.05&fov=40&statuecam=faun,15,1.5,0.75,0.38&tier=reduced",
+  },
+  {
+    name: "pompeii-statue-apollo-phone",
+    city: "pompeii",
+    lat: 40.749276, lon: 14.484473, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Apollo on the reduced tier",
+    query: "agl&near=0.05&fov=40&statuecam=apollo,20,3.2,0.5,1.0&tier=reduced",
   },
   // Inside the houses (render/pompeiiinterior.ts): rooms off the atria, read
   // off PompeiiModel.interiors.
@@ -2103,7 +2187,7 @@ interface Shot {
   treeLods: number[];
   treeTriangles: number;
   /** Pompeii's people: figures drawn full and far, and their triangles. */
-  folk: { near: number; far: number; triangles: number } | null;
+  folk: { near: number; mid?: number; far: number; triangles: number } | null;
   lod: number;
   pavementTriangles: number;
   /** The street: columns, moving cars, parked cars, and what they cost. */
@@ -2192,7 +2276,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const shrubs = await cdp.eval<number>("window.flybyShot.shrubs ?? 0");
   const treeLods = await cdp.eval<number[]>("window.flybyShot.treeLods ?? []");
   const treeTriangles = await cdp.eval<number>("window.flybyShot.treeTriangles ?? 0");
-  const folk = await cdp.eval<{ near: number; far: number; triangles: number } | null>("window.flybyShot.folk ?? null");
+  const folk = await cdp.eval<{ near: number; mid?: number; far: number; triangles: number } | null>("window.flybyShot.folk ?? null");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
   const pavementTriangles = await cdp.eval<number>("window.flybyShot.pavementTriangles ?? 0");
   const lamps = await cdp.eval<number>("window.flybyShot.lamps ?? 0");
@@ -2334,7 +2418,7 @@ async function main(): Promise<void> {
         `street ${s.lamps} lamps (${s.lampsMeasured} surveyed) ${s.cars} moving ` +
         `${s.parkedCars} parked ${(s.streetTriangles / 1000).toFixed(0)}k tris` +
         (s.streetClipped ? `  CLIPPED ${s.streetClipped}` : "") +
-        (s.folk ? `  folk ${s.folk.near}+${s.folk.far} ${(s.folk.triangles / 1000).toFixed(1)}k tris` : ""),
+        (s.folk ? `  folk ${s.folk.near}+${s.folk.mid ?? 0}+${s.folk.far} ${(s.folk.triangles / 1000).toFixed(1)}k tris` : ""),
       );
       if (repeat) {
         const again = await capture(cdp, base, p, outDir, "-repeat");

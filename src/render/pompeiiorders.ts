@@ -8,7 +8,7 @@
 // instance by render/pompeii.ts; a far column is the plain tapered prism
 // pompeiimesh.ts leaves in the town mesh, hidden inside this one up close.
 
-import { posedFaun } from "./folk";
+import { buildStatue, emitStatue } from "./statues";
 
 export type V3 = [number, number, number];
 export type RGB = [number, number, number];
@@ -294,60 +294,22 @@ function prism(st: Sink, poly: [number, number][], y0: number, y1: number, col: 
 }
 
 // =====================================================================================
-// Figures: the Dancing Faun and the honorific statues, built of tapered limbs.
+// Figures: the togate statues of the tombs and of Herculaneum.
 // =====================================================================================
 
-/** Joint positions of a standing or dancing figure 1.75 m tall, facing +z. */
-export type Pose = "togate" | "faun" | "rider";
-
-export function figure(st: Sink, at: V3, yaw: number, scale: number, pose: Pose, col: RGB, style: number): void {
-  const ca = Math.cos(yaw), sa = Math.sin(yaw);
-  const P = (x: number, y: number, z: number): V3 => [at[0] + (x * ca + z * sa) * scale, at[1] + y * scale, at[2] + (-x * sa + z * ca) * scale];
-  // The Faun is a statuette: limbs drawn at its proportions read as wire at
-  // its size, so they are thickened half again.
-  const thick = pose === "faun" ? 1.5 : 1;
-  const limb = (a: V3, b: V3, ra: number, rb: number): void => tube(st, P(...a), P(...b), ra * scale * thick, rb * scale * thick, 7, col, 0.5, style);
-  if (pose === "faun") {
-    faunStatue(st, at, yaw, scale * 1.7, col, style);
-    return;
-  }
-  if (pose === "rider") {
-    // Seated astride: thighs forward and down the barrel, the right arm raised.
-    limb([-0.17, 0.0, 0.1], [-0.2, -0.45, 0.15], 0.07, 0.05); limb([0.17, 0.0, 0.1], [0.2, -0.45, 0.15], 0.07, 0.05);
-    limb([-0.12, 0.05, -0.05], [-0.17, 0.0, 0.35], 0.08, 0.07); limb([0.12, 0.05, -0.05], [0.17, 0.0, 0.35], 0.08, 0.07);
-    limb([0, 0.05, 0], [0, 0.62, 0.02], 0.16, 0.18);
-    limb([0.2, 0.55, 0.02], [0.32, 0.8, 0.2], 0.05, 0.04); limb([0.32, 0.8, 0.2], [0.36, 1.05, 0.35], 0.04, 0.035);
-    limb([-0.2, 0.55, 0.02], [-0.22, 0.3, 0.2], 0.05, 0.04); limb([-0.22, 0.3, 0.2], [-0.1, 0.25, 0.42], 0.04, 0.035);
-    dome(st, P(0, 0.8, 0.03), 0.1 * scale, 0.12 * scale, 0.11 * scale, col, 0.5, style, -Math.PI / 2, Math.PI / 2, 8, 5);
-    return;
-  }
-  // A togate man, the honorific statue of a magistrate: the toga a long
-  // cone to the feet, the right arm raised in address (adlocutio).
-  tube(st, P(0, 0.02, 0), P(0, 1.38, 0), 0.27 * scale, 0.19 * scale, 9, col, 0.5, style);
-  limb([0, 1.3, 0], [0, 1.45, 0], 0.06, 0.06);
-  limb([0.2, 1.33, 0], [0.32, 1.12, 0.18], 0.055, 0.045); limb([0.32, 1.12, 0.18], [0.36, 1.45, 0.34], 0.045, 0.04);
-  limb([-0.2, 1.33, 0], [-0.24, 1.0, 0.12], 0.07, 0.06); limb([-0.24, 1.0, 0.12], [-0.12, 0.95, 0.28], 0.06, 0.05);
-  dome(st, P(0, 1.56, 0.01), 0.1 * scale, 0.125 * scale, 0.11 * scale, col, 0.5, style, -Math.PI / 2, Math.PI / 2, 8, 5);
-}
+/** The one figure type still placed through here; the rest are render/statues.ts's. */
+export type Pose = "togate";
 
 /**
- * The Dancing Faun: the townsfolk's body (render/folk.ts) nude, with horns,
- * pointed ears and a tail, up on his toes with his arms raised and head
- * thrown back, scaled so the raised hand is `height` over the base.
+ * A togate statue, sculpted (render/statues.ts) at its coarsest: these
+ * stand on tombs and in Herculaneum in numbers. A figure 1.75 m tall at scale
+ * 1, its front to (sin yaw, cos yaw). A pale `col` is painted marble or
+ * stucco; Surf 14 (the old bronze) is bronze.
  */
-export function faunStatue(st: Sink, at: V3, yaw: number, height: number, col: RGB, style: number): void {
-  const f = posedFaun();
-  let top = 0;
-  for (let i = 1; i < f.position.length; i += 3) top = Math.max(top, f.position[i]);
-  const k = height / top;
-  const ca = Math.cos(yaw), sa = Math.sin(yaw);
-  const base = st.n;
-  for (let i = 0; i < f.position.length / 3; i++) {
-    const x = f.position[i * 3], y = f.position[i * 3 + 1], z = f.position[i * 3 + 2];
-    const nx = f.normal[i * 3], ny = f.normal[i * 3 + 1], nz = f.normal[i * 3 + 2];
-    st.vert([at[0] + (x * ca + z * sa) * k, at[1] + y * k, at[2] + (-x * sa + z * ca) * k], [nx * ca + nz * sa, ny, -nx * sa + nz * ca], col, 0.5, style, 0, 0, [0, 0, 0, 0]);
-  }
-  for (let t = 0; t < f.index.length; t += 3) st.tri(base + f.index[t], base + f.index[t + 1], base + f.index[t + 2]);
+export function figure(st: Sink, at: V3, yaw: number, scale: number, pose: Pose, col: RGB, style: number): void {
+  void pose;
+  const marble = style !== 14 && col[0] > 0.5;
+  emitStatue(st, buildStatue("togate", true, { marble, tiny: true }), at, yaw, (scale * 1.75) / 1.7);
 }
 
 // =====================================================================================

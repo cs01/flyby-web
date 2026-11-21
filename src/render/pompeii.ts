@@ -1263,6 +1263,12 @@ void main() {
     gloss = fg;
     // At night the moon has no shadow map: a roofed floor must not take it.
     shut = mix(0.5, 0.95, uNight);
+  } else if (style > 24.5 && style < 25.5) {
+    // A marble statue (render/statues.ts): the vertex colour is its paint
+    // and baked fold shading. Fine grain and a soft polish only; the paving
+    // marble's slab joints (style 11) would cut across a figure.
+    albedo *= 0.96 + 0.06 * vnoise(vWorld.xz * 40.0 + vWorld.y * 31.0);
+    gloss = 0.3;
   }
 
 #ifdef ROOF_COLLAPSE

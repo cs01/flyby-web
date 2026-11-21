@@ -28,8 +28,8 @@
 import type { PompeiiData, PompeiiInsula, PompeiiPublic, Ring } from "../data/pompeii";
 import { KERB_M, pointInRing, ringArea, ringCentroid, villaFloorPoint } from "../data/pompeii";
 import { ART_INDEX, ART_WORKS, ATRIUM_SCHEMES, GARDEN_SCHEMES } from "../data/pompeiiart";
-import { ORDERS, Order, TOP_DIAMETER, cube, figure, lathe, mill, oven, tube, type Sink } from "./pompeiiorders";
-import { HORSE_BONES, buildHorse, poseHorse } from "./horse";
+import { ORDERS, Order, TOP_DIAMETER, lathe, mill, oven, tube, type Sink } from "./pompeiiorders";
+import { faunStatue, forumStatue, placeTownStatues } from "./statues";
 import { buildSuburbs, type SuburbStats } from "./pompeiisuburbs";
 import type { LampSites } from "../data/pompeiilamps";
 import { roofFailDepthM, roofTag } from "../sim/eruption";
@@ -359,7 +359,6 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   };
   const upperHouses: PompeiiModel["upperHouses"] = [];
   const art = opts.art !== false && !grey;
-  let statueHorse: { h: ReturnType<typeof buildHorse>; pos: Float32Array } | null = null;
   const orders: ColumnInstance[] = [];
   const artPlaced: ArtPlaced[] = [];
   const interiors: InteriorView[] = [];
@@ -1397,8 +1396,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           // The Dancing Faun on his base at the impluvium's edge (the bronze is
           // 71 cm high: modelled at that size, on a half-metre plinth).
           const fb = fl(f.x, f.z);
-          cube(S, f.x - 0.3, fb - 0.1, f.z - 0.3, f.x + 0.3, fb + 0.5, f.z + 0.3, [0.85, 0.84, 0.8], seed, Surf.Marble);
-          figure(S, [f.x, fb + 0.5, f.z], Math.atan2(-vx, -vz), 0.42, "faun", [0.21, 0.16, 0.09], 17 /* bronze */);
+          faunStatue(S, f.x, fb, f.z, Math.atan2(-vx, -vz), lean, seed);
           siteInfo.statues.push("dancing faun");
           artPlaced.push({ id: "dancing-faun", house: hs.name, x: f.x, y: g + 0.5, z: f.z });
         }
@@ -2883,6 +2881,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const forum = data.publics.find((p) => p.kind === "forum");
   const forumC = forum ? ringCentroid(forum.ring) : null;
   for (let pi = 0; pi < data.publics.length; pi++) { buildPublic(data.publics[pi], pi); S.tag = 0; }
+  if (!grey) siteInfo.statues.push(...placeTownStatues(S, data, ground, KERB_M, lean, 0.5).placed);
 
   function buildPublic(p: PompeiiPublic, pi: number): void {
     const r = cleanRing(p.ring) ?? p.ring;
@@ -2998,40 +2997,6 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     return e3;
   }
 
-  /** A held pose of the horse, baked into the town mesh as a bronze (the Forum's equestrian statues). */
-  function statueHorseBuild(): { h: ReturnType<typeof buildHorse>; pos: Float32Array } {
-    const h = buildHorse(true);
-    const bones = new Float32Array(HORSE_BONES * 16);
-    // Mid-stride at a walk with the near fore lifted: the pose of the
-    // surviving Roman equestrian bronzes.
-    poseHorse("walk", 0.47, bones, 0.85);
-    const pos = new Float32Array(h.position.length);
-    for (let i = 0; i < h.position.length / 3; i++) {
-      const b0 = h.skin[i * 4], b1 = h.skin[i * 4 + 1], w = h.skin[i * 4 + 2] / 255;
-      for (let k = 0; k < 3; k++) {
-        let v = 0;
-        for (const [b, wt] of [[b0, 1 - w], [b1, w]]) {
-          const m = bones.subarray(b * 16, b * 16 + 16);
-          v += wt * (m[k] * h.position[i * 3] + m[4 + k] * h.position[i * 3 + 1] + m[8 + k] * h.position[i * 3 + 2] + m[12 + k]);
-        }
-        pos[i * 3 + k] = v;
-      }
-    }
-    return { h, pos };
-  }
-  function bronzeHorse(x: number, y: number, z: number, yaw: number, scale: number): void {
-    statueHorse ??= statueHorseBuild();
-    const { h, pos } = statueHorse;
-    const ca = Math.cos(yaw), sa = Math.sin(yaw), base = S.n;
-    const bronze: RGB = [0.3, 0.24, 0.15];
-    for (let i = 0; i < pos.length / 3; i++) {
-      const px = pos[i * 3] * scale, py = pos[i * 3 + 1] * scale, pz = pos[i * 3 + 2] * scale;
-      const nx = h.normal[i * 4] / 127, ny = h.normal[i * 4 + 1] / 127, nz = h.normal[i * 4 + 2] / 127;
-      S.vert([x + px * ca + pz * sa, y + py, z - px * sa + pz * ca], [nx * ca + nz * sa, ny, -nx * sa + nz * ca], bronze, 0.5, Surf.Hide, 0, 0, [0, 0, 0, 0]);
-    }
-    for (let k = 0; k < h.index.length; k += 3) S.tri(base + h.index[k], base + h.index[k + 1], base + h.index[k + 2]);
-  }
-
   function buildForum(r: Ring, g: number, seed: number): void {
     // The travertine paving is drawn with the open ground (see the floor
     // grid), following the terrain, so everything standing on it takes its
@@ -3073,31 +3038,9 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const x = o.cx + o.ux * k * (o.hu / 4.5) - o.uz * (o.hv * 0.55), z = o.cz + o.uz * k * (o.hu / 4.5) + o.ux * (o.hv * 0.55);
         bases.push([x, z]);
         const rider = Math.abs(k) === 3;
-        const hl = rider ? 1.7 : 0.75, hw = rider ? 0.75 : 0.65;
-        const q = [x - o.ux * hl - o.uz * hw, z - o.uz * hl + o.ux * hw, x + o.ux * hl - o.uz * hw, z + o.uz * hl + o.ux * hw,
-          x + o.ux * hl + o.uz * hw, z + o.uz * hl - o.ux * hw, x - o.ux * hl + o.uz * hw, z - o.uz * hl - o.ux * hw];
-        const g = ground(x, z) + KERB_M;
-        box(q, g - 0.3, g + 2.2, [0.86, 0.84, 0.8], seed, Surf.Marble);
-        // A projecting cornice on the base.
-        const qc = q.map((v, i) => (i % 2 ? z + (v - z) * 1.08 : x + (v - x) * 1.08));
-        box(qc, g + 2.02, g + 2.2, [0.9, 0.88, 0.84], seed, Surf.Marble);
-        const bronze: RGB = [0.3, 0.24, 0.15];
-        // A figure's yaw puts its front at (sin yaw, cos yaw). The togati face
-        // across the square, toward its long centre line; the riders ride
-        // along it, toward the middle.
-        const face = Math.atan2(-o.uz, o.ux);
-        if (rider) {
-          const s = 1.15;
-          const hyaw = k > 0 ? Math.atan2(-o.ux, -o.uz) : Math.atan2(o.ux, o.uz);
-          bronzeHorse(x, g + 2.2, z, hyaw, s);
-          // The rider sits just behind the withers.
-          const fx = Math.sin(hyaw), fz = Math.cos(hyaw);
-          figure(S, [x + fx * 0.25 * s, g + 2.2 + 1.36 * s, z + fz * 0.25 * s], hyaw, s, "rider", bronze, Surf.Hide);
-          siteInfo.statues.push("equestrian");
-        } else {
-          figure(S, [x, g + 2.2, z], face, 1.1, "togate", bronze, Surf.Hide);
-          siteInfo.statues.push("togate");
-        }
+        // The togati face across the square; the riders ride along it, toward the middle (render/statues.ts).
+        forumStatue(S, x, ground(x, z) + KERB_M, z, o.ux, o.uz, k, rider, Math.atan2(-o.uz, o.ux), seed);
+        siteInfo.statues.push(rider ? "equestrian" : "togate");
       }
       // Market stalls along the long sides, in front of the colonnade:
       // trestle tables under cloth roofs, with jars and baskets. Clear of

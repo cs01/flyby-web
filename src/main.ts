@@ -42,6 +42,7 @@ import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { Townsfolk } from "./render/pompeiifolk";
+import { STATUE_SPOTS } from "./render/statues";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { LandGrid, restoreCoast79 } from "./data/pompeiisuburbs";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
@@ -568,6 +569,7 @@ async function main() {
   let folkNight = 0;
   const folkCam = (new URLSearchParams(location.search).get("folkcam") ?? "").split(",");
   let folkSubject: number | null = null, folkFrames = 0;
+  const statueCam = (new URLSearchParams(location.search).get("statuecam") ?? "").split(",");
   let cart: Cart | null = null;
   let pompeiiLamps: PompeiiLamps | null = null;
   let pompeiiWater: PompeiiWater | null = null;
@@ -2413,6 +2415,21 @@ async function main() {
           if (c && c.n) a = Math.atan2(s.x - c.x, -(s.z - c.z)) + (bearing * Math.PI) / 180;
           camera.position.set(s.x + Math.sin(a) * dist, s.y + eye, s.z - Math.cos(a) * dist);
           camera.lookAt(s.x, s.y + aim, s.z);
+        }
+      }
+      // `?statuecam=kind,bearingDeg,distM,eyeM,aimM` frames the nearest
+      // statue of a kind (render/statues.ts STATUE_SPOTS) from `bearingDeg`
+      // round from its front, eye and aim heights over the top of its base.
+      if (statueCam.length >= 5) {
+        const spots = STATUE_SPOTS.filter((q) => q.kind === statueCam[0]);
+        const cx = camera.position.x - pompeiiOff.x, cz = camera.position.z - pompeiiOff.z;
+        const q = spots.sort((a, b) => Math.hypot(a.x - cx, a.z - cz) - Math.hypot(b.x - cx, b.z - cz))[0];
+        if (q) {
+          const [bearing, dist, eye, aim] = statueCam.slice(1).map(Number);
+          const a = q.yaw + (bearing * Math.PI) / 180;
+          const x = q.x + pompeiiOff.x, z = q.z + pompeiiOff.z;
+          camera.position.set(x + Math.sin(a) * dist, q.y + eye, z + Math.cos(a) * dist);
+          camera.lookAt(x, q.y + aim, z);
         }
       }
     }

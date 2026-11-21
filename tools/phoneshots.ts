@@ -62,6 +62,10 @@ const BASE: { name: string; query: string; act?: string; settleMs?: number; atMs
   { name: "pompeii-eruption-menu", query: "city=pompeii&intro=0", act: "document.querySelector('.topbar-menu')?.click()", settleMs: 600 },
   // The town by lamplight at 21:30 on the lean tier: 16 lights, 128 flames (render/pompeiilamps.ts).
   { name: "pompeii-lamps", query: "city=pompeii&intro=0&t=-59653941596", act: tap("walk"), settleMs: 3000 },
+  // The townsfolk at eye height on a phone (render/pompeiifolk.ts): walking
+  // into the forum from its south end, and on Via dell'Abbondanza, at 07:30.
+  { name: "pompeii-folk-forum", query: "city=pompeii&intro=0&t=-59653989000&agl&cam=40.74892,14.48512,1.6,336,0", settleMs: 4000 },
+  { name: "pompeii-folk-abbondanza", query: "city=pompeii&intro=0&t=-59653989000&agl&cam=40.75092,14.49024,1.6,58,0", settleMs: 4000 },
 ];
 
 const SCENES: Scene[] = [

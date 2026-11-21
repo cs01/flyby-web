@@ -21,7 +21,8 @@ import { Heightfield } from "../src/data/dem";
 import { CITIES } from "../src/cities";
 import { HORSE_BONES, buildHorse, hoofPoints, poseHorse } from "../src/render/horse";
 import { Arms, FOLK_SCALE, FOLK_STRIDE_M, Gait, buildFolk, buildFolkFar, clipPose, skinned, solePoints, solvePose, type FolkMesh, type FolkOpts, type PoseSpec } from "../src/render/folk";
-import { LEAN_NEAR_CAP, folkFragment } from "../src/render/pompeiifolk";
+import { FOLK_LOD, folkFragment, folkLevels } from "../src/render/pompeiifolk";
+import { STATUE_KINDS, buildStatue, statueBase } from "../src/render/statues";
 import { ART_WORKS } from "../src/data/pompeiiart";
 import { ORDERS, Order, columnTemplate, shaftRadius } from "../src/render/pompeiiorders";
 import { statSync } from "node:fs";
@@ -393,14 +394,23 @@ let built: PompeiiModel;
   const inRange = (h: number[]): boolean => h.every((v) => v >= 1.5 && v <= 1.85);
   check("townsfolk stand 1.5..1.85 m at every scale they are drawn", inRange(heights), heights.map((v) => v.toFixed(2)).join(" "));
   check("probe: a figure drawn at 1.2x is caught", !inRange([tall(1.2)]), `${tall(1.2).toFixed(2)} m`);
-  const tris = meshes.map((m) => m.triangles), far = buildFolkFar().triangles;
-  const nearOk = (t: number[]): boolean => t.every((v) => v >= 400 && v <= 1000);
-  check("near figure 400..1000 tris for every dress, far under 80", nearOk(tris) && far < 80, `${tris.join("/")} far ${far}`);
-  check("probe: two figures in one mesh are over the bound", !nearOk([tris[0] * 2]), `${tris[0] * 2}`);
-  // The phone's 24 walkers, none culled, against the 181-triangle box figures they replaced.
-  const phone = (cap: number): number => cap * Math.max(...tris) + (24 - cap) * far;
-  check("phone: people cost no more than the box figures (24 x 181)", phone(LEAN_NEAR_CAP) <= 24 * 181, `${phone(LEAN_NEAR_CAP)} <= ${24 * 181}`);
-  check("probe: three full figures on the phone are over it", phone(LEAN_NEAR_CAP + 1) > 24 * 181, `${phone(LEAN_NEAR_CAP + 1)}`);
+  const boys = [tall(FOLK_SCALE.boy[0]), tall(FOLK_SCALE.boy[1])];
+  check("boys stand 1.2..1.45 m", boys.every((v) => v >= 1.2 && v <= 1.45), boys.map((v) => v.toFixed(2)).join(" "));
+  const tris = meshes.map((m) => m.triangles), mid = kinds.map((k) => buildFolk(k, true).triangles), far = buildFolkFar().triangles;
+  const inBand = (t: number[], lo: number, hi: number): boolean => t.every((v) => v >= lo && v <= hi);
+  check("near figure 400..1100 tris, middle 250..520, far under 80", inBand(tris, 400, 1100) && inBand(mid, 250, 520) && far < 80, `${tris.join("/")} mid ${mid.join("/")} far ${far}`);
+  check("probe: two figures in one mesh are over the bound", !inBand([tris[0] * 2], 400, 1100), `${tris[0] * 2}`);
+  // Every walker at once, none culled, all at the camera: the levels step
+  // down so the people stay inside each tier's budget (12k on
+  // the full tier, the box figures' 24 x 181 on the phone).
+  const est = { near: Math.max(...tris), mid: Math.max(...mid), far };
+  const cost = (n: number, lod: typeof FOLK_LOD.full | typeof FOLK_LOD.lean): number => folkLevels(new Array(n).fill(1), est, lod).reduce((s, l) => s + (l === 0 ? est.near : l === 1 ? est.mid : est.far), 0);
+  const fullCost = cost(64, FOLK_LOD.full), leanCost = cost(24, FOLK_LOD.lean);
+  check("people within budget: full 12k, phone 24 x 181", fullCost <= 12000 && leanCost <= 24 * 181, `${fullCost} / ${leanCost}`);
+  const greedy = cost(24, { ...FOLK_LOD.lean, budget: 1e9 });
+  check("probe: without the budget the phone's crowd is over it", greedy > 24 * 181, `${greedy}`);
+  const nearCount = folkLevels(new Array(64).fill(5), est, FOLK_LOD.full).filter((l) => l === 0).length;
+  check("full tier draws at least the nearest 6 within 12 m in full", nearCount >= 6, `${nearCount}`);
   const rest = meshes.map((m) => low(m.position));
   check("rest pose: soles on y 0 within 2 cm", rest.every((v) => Math.abs(v) < 0.02), rest.map((v) => v.toFixed(3)).join(" "));
   // The lowest point of the posed figure: on the ground, nothing under it.
@@ -424,6 +434,26 @@ let built: PompeiiModel;
   const frag = folkFragment();
   check("the town's fragment shader carries the figures' materials", frag.includes("style > 22.5 && style < 23.5"), "");
   check("probe: a shader without the anchor line gets none", !folkFragment("void main() {}").includes("style > 22.5"), "");
+}
+
+// --- 10c. the statues: sculpted fields, on moulded bases with their dedications --------
+{
+  const kinds = STATUE_KINDS.filter((k) => k !== "diana");
+  const full = kinds.map((k) => buildStatue(k, false)), lean = kinds.map((k) => buildStatue(k, true));
+  const tris = (m: { index: number[] }): number => m.index.length / 3;
+  const band = (t: number[]): boolean => t.every((v) => v >= 2500 && v <= 10500);
+  check("statues 2.5k..10.5k tris each in full, under 2.5k reduced", band(full.map(tris)) && lean.every((m) => tris(m) < 2500), `${full.map(tris).join("/")} | ${lean.map(tris).join("/")}`);
+  check("probe: a townsperson's 1k figure is too coarse for a statue", !band([buildFolk({ dress: "toga" }).triangles]), "");
+  // Standing statues touch their base; the rider sits a horse's height up.
+  const low = (m: { position: number[] }): number => { let t = Infinity; for (let i = 1; i < m.position.length; i += 3) t = Math.min(t, m.position[i]); return t; };
+  const standing = full.filter((_, i) => kinds[i] !== "rider");
+  check("standing statues' feet on the base within 2 cm", standing.every((m) => Math.abs(low(m)) < 0.02), standing.map((m) => low(m).toFixed(3)).join(" "));
+  check("probe: a statue raised 5 cm is caught", Math.abs(low({ position: standing[0].position.map((v, i) => (i % 3 === 1 ? v + 0.05 : v)) })) >= 0.02, "");
+  // The base's dedication is cut letter by letter: a line of text costs triangles.
+  const sink = { n: 0, vert: () => sink.n++, tri: () => {} };
+  const withText = statueBase(sink, 0, 0, 0, 0, 0.5, 0.5, 2, ["M.HOLCONIO.M.F", "RVFO"], 0.5), bare = statueBase(sink, 0, 0, 0, 0, 0.5, 0.5, 2, [], 0.5);
+  check("statue bases carry their dedications in letters", withText > bare + 100, `${withText} vs ${bare} tris`);
+  check("probe: an uninscribed base has none", bare < 200, `${bare}`);
 }
 
 // --- 11. the art: restored works in their houses, the atlas in budget ------------------

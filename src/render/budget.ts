@@ -378,8 +378,10 @@ export interface PompeiiPlan {
 // The suburbs outside the walls (tombs, villas, roads, river) are about 6 MB
 // of the full build and 3 of the lean; the street furniture (counters, shop
 // fittings, doors, eave trim) about 22 MB of the full build and 7.5 of the lean
-// (counters, sills, beams, shutters, door leaves and the eave soffits only).
-export const POMPEII_FULL_BYTES = Math.round(72 * 1048576);
+// (counters, sills, beams, shutters, door leaves and the eave soffits only);
+// the house interiors about 9 MB and the sculpted statues (render/statues.ts)
+// about 4.5 MB of the full build.
+export const POMPEII_FULL_BYTES = Math.round(78 * 1048576);
 export const POMPEII_LEAN_BYTES = Math.round(26 * 1048576);
 
 /** The art atlas on the GPU: RGBA8 with its mip chain. */
