@@ -2044,7 +2044,7 @@ html, body {
 .escape-end .e-hist { color: #e6dccd; }
 .escape-end .e-note { color: var(--dim); font-size: 12px; }
 .escape-end .e-btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
-#ui.phone > .escape-card { top: calc(60px + var(--sat)); width: calc(100% - 16px - var(--sal) - var(--sar)); font-size: 12px; }
+#ui.phone > .escape-card { top: calc(60px + var(--sat)); width: calc(100% - 16px - var(--sal) - var(--sar)); max-width: 520px; font-size: 12px; }
 #ui.phone .sheet .hud-eruption { position: static; max-width: none; }
 #ui.phone .sheet .hud-eruption .esc-starts { flex-direction: row; flex-wrap: wrap; align-items: center; }
 #ui.phone .sheet .hud-eruption .esc-starts span { flex-basis: 100%; }
