@@ -71,6 +71,8 @@ class Geo {
   col: number[] = [];
   surf: number[] = [];
   wall: number[] = [];
+  /** Wall footprints for the walker's collider (render/pompeii.ts pompeiiCityPack). */
+  solids: { ring: number[]; baseY: number; topY: number }[] = [];
 
   get triangles(): number { return this.pos.length / 9; }
 
@@ -536,7 +538,7 @@ function buildBath(site: BathSite, G: Geo, Wt: WaterGeo, J: JetGeo, drops: numbe
       const low = Math.min(ga, gb) - 0.3, top = Math.max(ga, gb) + H;
       const lift = Math.max(ga, gb) - low;
       const cuts = doors.map((q) => ({ ...q, h: q.h + lift }));
-      wallFace(G, [ax, az], [bx, bz], low, top, [ox, oz], { doors: cuts, m: mat(creamC, S.plaster, 60, 1), floorY: low, H: top - low });
+      wallFace(G, [ax, az], [bx, bz], low, top, [ox, oz], { doors: cuts, m: mat(creamC, S.plaster, 60, 1), floorY: low, H: top - low, collide: true });
       const ix = -ox * 0.5, iz = -oz * 0.5;
       wallFace(G, [ax + ix, az + iz], [bx + ix, bz + iz], low, top, [-ox, -oz], { doors: cuts, m: mat(creamC, S.plaster, 60, 255), floorY: low, H: top - low });
       // The top of the wall, and the jambs of the gaps through it.
@@ -564,7 +566,7 @@ function buildBath(site: BathSite, G: Geo, Wt: WaterGeo, J: JetGeo, drops: numbe
     if (r.round) {
       frigRound = frigRound || r.kind === "frigidarium";
       if (r.oculus) oculus = true;
-      roundRoom(G, r, W3, fy, foot, eave, shut, mat, plan.pools.find((p) => p.room === r.id && p.round)?.round?.r ?? 0);
+      roundRoom(G, r, W3, fy, foot, eave, shut, mat, plan.pools.find((p) => p.room === r.id && p.round)?.round?.r ?? 0, doorAngle(r, plan.doors));
     } else {
       rectRoom(G, r, plan.doors, W, W3, dirW, fy, foot, eave, wallM, vaultM, floorM, mat, inRoom, eaveOf, floorOf, plan.pools.filter((p) => p.room === r.id && p.rect));
       if (r.niches) {
@@ -698,6 +700,17 @@ function buildBath(site: BathSite, G: Geo, Wt: WaterGeo, J: JetGeo, drops: numbe
   return { name: plan.name, rooms: roomsBuilt, frigidariumRound: frigRound, oculus, labra, natatio, pools, outside: [] };
 }
 
+/** Where a round room's doorway is, as an angle in the plan (0 toward +e): the plan's door nearest its wall. */
+function doorAngle(r: RoomPlan, doors: DoorPlan[]): number {
+  const c = r.round!;
+  let best = 0, bd = Infinity;
+  for (const d of doors) {
+    const dd = Math.abs(Math.hypot(d.e - c.e, d.n - c.n) - c.r);
+    if (dd < bd) { bd = dd; best = Math.atan2(d.n - c.n, d.e - c.e); }
+  }
+  return best;
+}
+
 function domeRise(r: RoomPlan): number {
   return r.round ? r.round.r * 1.15 : 0;
 }
@@ -711,6 +724,8 @@ interface WallOpts {
   arch?: { u0: number; u1: number; spring: number };
   m: Mat;
   floorY: number;
+  /** Also give the walker a solid wall here, broken at the doorways. */
+  collide?: boolean;
   H: number;
 }
 
@@ -743,6 +758,18 @@ function wallFace(G: Geo, a: [number, number], b: [number, number], y0: number, 
     for (let k = 1; k < 12; k++) { const u = L - (L * k) / 12; out.push([u, y1 - y0 + o.top(u)]); }
   }
   out.push([0, y1 - y0]);
+  if (o.collide) {
+    // The wall's footprint for the walker, a thin box behind the face, in pieces between the doorways.
+    let s0 = 0;
+    const pieces: [number, number][] = [];
+    for (const d of cuts) { if (d.u0 > s0 + 0.05) pieces.push([s0, d.u0]); s0 = Math.max(s0, d.u1); }
+    if (L > s0 + 0.05) pieces.push([s0, L]);
+    for (const [p, q] of pieces) {
+      const bx = -n[0] * WALL_T, bz = -n[1] * WALL_T;
+      const A = [a[0] + eu[0] * p, a[1] + eu[2] * p], B = [a[0] + eu[0] * q, a[1] + eu[2] * q];
+      G.solids.push({ ring: [A[0], A[1], B[0], B[1], B[0] + bx, B[1] + bz, A[0] + bx, A[1] + bz], baseY: y0, topY: y1 });
+    }
+  }
   const holes = (o.windows ?? []).filter((w) => w.u0 > 0.1 && w.u1 < L - 0.1).map((w): [number, number][] => [[w.u0, w.y0 - y0], [w.u1, w.y0 - y0], [w.u1, w.y1 - y0], [w.u0, w.y1 - y0]]);
   G.face([a[0], y0, a[1]], eu, [0, 1, 0], out, holes, [n[0], 0, n[1]], o.m, (u, v) => [u, v + y0 - o.floorY, L, o.H]);
 }
@@ -783,7 +810,7 @@ function rectRoom(
     }
     const arch = r.apse?.side === s ? { u0: L / 2 - r.apse.r, u1: L / 2 + r.apse.r, spring: spring - 0.3 } : undefined;
     const top = isEnd ? (u: number) => vaultRise(span, u - span / 2) : undefined;
-    wallFace(G, W(...w.a), W(...w.b), fy, spring, [dirW(w.inE, w.inN)[0], dirW(w.inE, w.inN)[2]], { doors: mine, windows, top, arch, m: wallM, floorY: fy, H });
+    wallFace(G, W(...w.a), W(...w.b), fy, spring, [dirW(w.inE, w.inN)[0], dirW(w.inE, w.inN)[2]], { doors: mine, windows, top, arch, m: wallM, floorY: fy, H, collide: true });
     // The outside of the wall, where no room stands against it.
     const oe = -w.inE * WALL_T, on = -w.inN * WALL_T;
     const ext = (t: number): [number, number] => {
@@ -955,7 +982,7 @@ function subtractRect(a: [number, number, number, number], b: [number, number, n
 
 /** The round room: niches in the wall, the cone with its oculus, and a cone of tiles outside. */
 function roundRoom(G: Geo, r: RoomPlan, W3: (e: number, n: number, y: number) => V3, fy: number, foot: number, eave: number, shut: number,
-  mat: (rgb: RGB, s: number, p1?: number, p2?: number) => Mat, poolR: number): void {
+  mat: (rgb: RGB, s: number, p1?: number, p2?: number) => Mat, poolR: number, doorAt: number): void {
   const { e, n, r: R } = r.round!;
   const spring = fy + r.spring;
   const segs = 40;
@@ -988,8 +1015,14 @@ function roundRoom(G: Geo, r: RoomPlan, W3: (e: number, n: number, y: number) =>
     };
     const x = nicheAt(tm);
     // A door on the side toward the apodyterium (+e) and none elsewhere: the gap is the doorway.
-    let dt = Math.abs(tm); dt = Math.min(dt, Math.PI * 2 - dt);
+    // Angle from the plan's doorway into this room, wrapped to 0..pi.
+    const off = (t: number): number => { const q = Math.abs(((t - doorAt) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI); return q; };
+    const dt = off(tm);
     const door = dt * R < 0.55;
+    if (!door) {
+      const q = [P(t0, 0, R), P(t1, 0, R), P(t1, 0, R + WALL_T), P(t0, 0, R + WALL_T)];
+      G.solids.push({ ring: q.flatMap((p) => [p[0], p[2]]), baseY: fy, topY: spring });
+    }
     // The side of a niche or the doorway, through to `back`, facing along +t (s 1) or -t.
     const jamb = (t: number, ya: number, yb: number, back: number, s: number): void => {
       const a = P(t, 0, R), b = P(t + 0.01, 0, R);
@@ -997,7 +1030,7 @@ function roundRoom(G: Geo, r: RoomPlan, W3: (e: number, n: number, y: number) =>
       G.quad(P(t, ya, R), P(t, ya, back), P(t, yb, back), P(t, yb, R), tn, wallM);
     };
     const step = (Math.PI * 2) / segs;
-    const isDoor = (t: number): boolean => { let q = Math.abs(t); q = Math.min(q, Math.PI * 2 - q); return q * R < 0.55; };
+    const isDoor = (t: number): boolean => off(t) * R < 0.55;
     if (door) {
       band(fy + 2.3, spring);
       const back = R + WALL_T + 0.1;
@@ -1456,8 +1489,9 @@ void main() {
   float k = vPool.x;
   float alpha = 1.0;
   if (k > 1.5 && k < 2.5) {
-    // A film on the paving: mostly the sky, dark wet stone through it.
-    body = vTint.rgb * 0.5 * (amb + sunE * max(0.0, uSunDir.y) * sv + lamps);
+    // Wet basalt goes near black and glossy: the darkening is what reads as water at a glance.
+    body = vTint.rgb * 0.18 * (amb + sunE * max(0.0, uSunDir.y) * sv + lamps);
+    fres = max(fres, 0.12);
     float across = abs(vOpen.y);
     alpha = (1.0 - smoothstep(0.55, 1.0, across)) * (1.0 - smoothstep(8.0, 14.0, vOpen.x)) * 0.9;
   }
@@ -1618,7 +1652,7 @@ void main() {
   vUv = position.xy;
   float d = distance(w.xyz, uCameraPos);
   // Fades in off the water, out as it rises; out near the eye so a sprite never fills the screen.
-  vFade = smoothstep(0.0, 0.18, ph) * pow(1.0 - ph, 1.6) * smoothstep(0.8, 2.6, d) * (1.0 - smoothstep(45.0, 70.0, d));
+  vFade = smoothstep(0.0, 0.18, ph) * pow(1.0 - ph, 1.6) * smoothstep(0.3, 1.1, d) * (1.0 - smoothstep(45.0, 70.0, d));
   vSeed = sd;
   gl_Position = projectionMatrix * viewMatrix * w;
   if (d > 70.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -1638,7 +1672,7 @@ void main() {
   if (r > 1.0) discard;
   float puff = wn(vUv * 2.2 + vSeed * 40.0 + uTime * 0.05) * 0.6 + wn(vUv * 4.7 - vSeed * 13.0) * 0.4;
   // Soft all through: a Gaussian blob broken up by the puffs, never a disc with an edge.
-  float a = exp(-r * r * 3.5) * smoothstep(0.25, 0.9, puff + 0.25) * vFade * 0.55;
+  float a = exp(-r * r * 3.0) * smoothstep(0.25, 0.9, puff + 0.25) * vFade * 1.1;
   vec3 up = vec3(0.0, 1.0, 0.0);
   // Lit as the room is: a little sky, the sun where the shaft crosses it, the lamps.
   // Grey: steam scatters every colour alike, so it takes the sky's brightness, not its blue.

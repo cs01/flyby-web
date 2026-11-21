@@ -179,7 +179,7 @@ export const BATH_PLANS: BathPlan[] = [
       { e: -6, n: 1.5, axis: "n", w: 1.1, h: 2.3 },
       { e: 4, n: 1.1, axis: "n", w: 1.2, h: 2.4 },
       { e: 4, n: 8.9, axis: "n", w: 1.2, h: 2.4 },
-      { e: -8, n: -5.7, axis: "e", w: 1.1, h: 2.4 },
+      { e: -8, n: -5.7, axis: "n", w: 1.1, h: 2.4 },
     ],
     porticos: [],
   },

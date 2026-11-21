@@ -605,6 +605,8 @@ async function main() {
         offX: off.x, offZ: off.z, lean: budget.pompeii.lean,
       });
       pompeii.buildings.add(pompeiiWater.stone);
+      // The bath walls, broken at the doorways, for the walker and the cart.
+      pompeii.model.solids.push(...pompeiiWater.build.stone.solids);
       scene.add(pompeiiWater.group);
     }
     // The town by lamplight at night (render/pompeiilamps.ts); `?off=pompeiilamps`.

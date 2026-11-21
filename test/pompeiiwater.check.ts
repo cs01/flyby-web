@@ -215,6 +215,66 @@ const probeBuild = (p: NonNullable<Parameters<typeof buildWater>[0]["probe"]>): 
   check("tiers: steam and droplets per tier are literals", WATER_TIERS.lean.steam < WATER_TIERS.full.steam && WATER_TIERS.lean.drops < WATER_TIERS.full.drops, "");
 }
 
+// --- 6. every water surface lands in a shader branch that draws water --------------------
+{
+  // The town shader's water (style 8) reads p1 and p2 as flags: both set an
+  // atrium pool under its opening, p1 alone open water (the Sarno), neither a
+  // plain basin. p2 without p1 would be a pool with an opening at no height.
+  const flagsOk = (surf: Uint8Array): [boolean, string] => {
+    let bad = 0, n = 0;
+    for (let i = 0; i < surf.length; i += 4) {
+      if (surf[i] !== 8) continue;
+      n++;
+      if (surf[i + 1] === 0 && surf[i + 2] > 0) bad++;
+    }
+    return [bad === 0 && n > 0, `${n} water vertices, ${bad} unhandled`];
+  };
+  rule("every town water vertex has a handled p1/p2 combination", (probe) => {
+    const s = model.mesh.surf.slice();
+    if (probe) for (let i = 0; i < s.length; i += 4) if (s[i] === 8) { s[i + 1] = 0; s[i + 2] = 40; break; }
+    return flagsOk(s);
+  });
+  // The water module's own kinds: still, basin, film, hot, labrum.
+  const kinds = new Set<number>();
+  for (const g of [full.water, full.film]) for (let i = 0; i < g.pool.length; i += 4) kinds.add(g.pool[i]);
+  check("water module kinds are the five the shader draws (0..4)", [...kinds].every((k) => Number.isInteger(k) && k >= 0 && k <= 4) && kinds.has(2), [...kinds].join(","));
+  // A colour left in from debugging (a surface painted flat red to find it) is a shot nobody can use.
+  const src = ["../src/render/pompeiiwater.ts", "../src/render/pompeii.ts"].map((p) => readFileSync(new URL(p, import.meta.url), "utf8")).join("\n");
+  const debug = /fragColor\s*=\s*vec4\(\s*1\.0\s*,\s*0\.0\s*,\s*0\.0/;
+  rule("no flat debug colour written by the water or town shaders", (probe) => {
+    const s = probe ? src + "\n  fragColor = vec4(1.0, 0.0, 0.0, 1.0);" : src;
+    return [!debug.test(s), ""];
+  });
+}
+
+// --- 7. the bath walls stop the walker, the doorways let them through -----------------
+{
+  const solids = full.stone.solids;
+  const inSolid = (list: typeof solids, x: number, z: number): boolean => list.some((s) => pointInRing(s.ring, x, z));
+  check("bath walls given to the collider (200+ pieces)", solids.length >= 200, `${solids.length}`);
+  rule("every doorway is clear of the wall solids", (probe) => {
+    const list = probe ? solids.concat(full.sites.flatMap((s) => s.plan.doors.map((d) => {
+      const [x, z] = toWorld(s.frame, d.e, d.n);
+      return { ring: [x - 2, z - 2, x + 2, z - 2, x + 2, z + 2, x - 2, z + 2], baseY: 0, topY: 9 };
+    }))) : solids;
+    const blocked: string[] = [];
+    for (const s of full.sites) for (const d of s.plan.doors) {
+      // Just through the doorway on both sides of the wall line.
+      for (const k of [-0.25, 0.25]) {
+        const [x, z] = toWorld(s.frame, d.e + (d.axis === "e" ? k : 0), d.n + (d.axis === "n" ? k : 0));
+        if (inSolid(list, x, z)) { blocked.push(`${s.plan.name}:${d.e},${d.n}`); break; }
+      }
+    }
+    return [blocked.length === 0, blocked.slice(0, 3).join(" ") || "all open"];
+  });
+  // A room's middle is walkable and its wall is not.
+  const stab = full.sites.find((s) => s.plan.name === "Terme Stabiane")!;
+  const cal = stab.plan.rooms.find((q) => q.id === "m-cal")!.rect!;
+  const mid = toWorld(stab.frame, (cal[0] + cal[1]) / 2, (cal[2] + cal[3]) / 2);
+  const wallPt = toWorld(stab.frame, (cal[0] + cal[1]) / 2, cal[2] - 0.2);
+  check("caldarium: its middle is open, its wall is solid", !inSolid(solids, ...mid) && inSolid(solids, ...wallPt), "");
+}
+
 if (failures) {
   console.log(`\n${failures} check(s) failed`);
   process.exit(1);
