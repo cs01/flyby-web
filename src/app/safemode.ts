@@ -23,13 +23,15 @@ export const LADDER: SafeRung[] = [
   { off: [], scale: 0, msaa: true },
   { off: ["ao", "ssr", "shadow", "skyprobe", "cloudshadow"], scale: 0, msaa: true },
   {
-    off: ["ao", "ssr", "shadow", "skyprobe", "cloudshadow", "clouds", "bloom", "aircraft", "foliage", "shrubs"],
+    // The FFT ocean goes here, not on rung 1: it is new GPU work (float render
+    // targets, a dense grid), so it is a suspect once the cheap passes are off.
+    off: ["ao", "ssr", "shadow", "skyprobe", "cloudshadow", "clouds", "bloom", "aircraft", "foliage", "shrubs", "ocean"],
     scale: 0.5,
     msaa: false,
   },
   {
     off: [
-      "ao", "ssr", "shadow", "skyprobe", "cloudshadow", "clouds", "bloom", "aircraft", "foliage", "shrubs",
+      "ao", "ssr", "shadow", "skyprobe", "cloudshadow", "clouds", "bloom", "aircraft", "foliage", "shrubs", "ocean",
       "buildings", "traffic", "parkedcars", "transit", "lamps", "live", "airtraffic",
     ],
     scale: 0.35,

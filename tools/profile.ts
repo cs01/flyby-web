@@ -82,6 +82,10 @@ export const PROFILE_POSES: ProfilePose[] = [
     t: D("2025-06-22T02:30:00Z"), wx: CLEAR, query: "drive=1" },
   { name: "manhattan-overcast", city: "manhattan", lat: 40.7000, lon: -74.0200, altM: 380, hdgDeg: 30, pitchDeg: 4,
     t: D("2025-06-21T17:00:00Z"), wx: OVERCAST },
+  // Ten metres over the bay, the frame nearly all FFT ocean: the pose that
+  // prices the "ocean" toggle (render/ocean.ts) where it is largest.
+  { name: "sf-bay-low", city: "sf", lat: 37.8240, lon: -122.4150, altM: 10, hdgDeg: 262, pitchDeg: -4,
+    t: D("2025-06-21T20:00:00Z"), wx: `${CUMULUS},wind:12:265` },
 ];
 
 /** A viewport: CSS size and device pixel ratio, as the page is told it. */
@@ -245,7 +249,7 @@ export async function measure(
 export const TOGGLES = [
   "shadow", "aircraft", "ao", "ssr", "clouds", "cloudshadow", "bloom", "skyprobe",
   "terrain", "buildings", "roads", "pavement", "bridges", "lamps", "traffic", "parkedcars",
-  "foliage", "shrubs", "live", "airtraffic", "transit", "sky",
+  "foliage", "shrubs", "live", "airtraffic", "transit", "sky", "ocean",
 ];
 
 /**

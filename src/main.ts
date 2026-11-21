@@ -12,6 +12,7 @@ import { Telemetry } from "./app/telemetry";
 import { browserSafeMode } from "./app/safemode";
 import { Sky } from "./render/sky";
 import { Terrain } from "./render/terrain";
+import { Ocean, oceanSupported } from "./render/ocean";
 import { deviceBudget } from "./render/budget";
 import { computeLighting } from "./render/lighting";
 import { loadHeightfield, bboxAround, type Heightfield } from "./data/dem";
@@ -848,6 +849,15 @@ async function main() {
     if (Number.isFinite(terrainDebug)) u.uDebug.value = terrainDebug;
     u.uFlatWater.value = flatWater ? 1 : 0;
   }
+
+  // The FFT sea over open water near the camera; see render/ocean.ts. Needs
+  // the landcover (it is what keeps the sea off the land) and float render
+  // targets; without either, or under the flat-water probe, the terrain's own
+  // water is all there is, exactly as before.
+  const ocean = land.has && !flatWater && oceanSupported(renderer)
+    ? new Ocean(budget.ocean, terrain, budget.tier === "reduced" ? 1 : 8)
+    : null;
+  if (ocean) scene.add(ocean.mesh);
 
   // What the canopy must not stand on. Both start from whatever packs loaded
   // and GROW as live tiles arrive, which is why they are built here rather than
@@ -2021,6 +2031,12 @@ async function main() {
       const windTo = (wx.windDir + 180) * (Math.PI / 180);
       u.uWind.value.set(Math.sin(windTo) * wx.windSpeed, -Math.cos(windTo) * wx.windSpeed);
     }
+    if (ocean) {
+      // The ocean's switch also takes the terrain's sink away, which hiding
+      // the mesh through the off set alone would not.
+      ocean.setActive(!perfOff.has("ocean"));
+      ocean.update(camera.position, elapsed, shotMode ? 0 : dt, terrain.uniforms[0].uWind.value);
+    }
     sky.uniforms.uExposure.value = light.exposure * exposureScale;
 
     // Local SOLAR hour, from UTC and the longitude, rather than the civil
@@ -2414,6 +2430,12 @@ async function main() {
       });
     }
 
+    prof.cpuBegin("ocean");
+    prof.begin("ocean");
+    if (ocean) ocean.simulate(renderer);
+    prof.end();
+    prof.cpuEnd("ocean");
+
     // Pass 1: the world, in linear HDR, into the offscreen target.
     renderer.setRenderTarget(target);
     prof.cpuBegin("scene");
@@ -2771,7 +2793,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph,
+      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean,
       get droneActive() { return droneActive; },
       get carActive() { return carActive; },
       get wx() { return wx; },

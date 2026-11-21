@@ -23,6 +23,8 @@
 // gated under Bun; see test/budget.check.ts. `describeDevice()` is the only
 // part that touches `navigator`.
 
+import type { OceanCascadePlan } from "./oceanspectrum";
+
 /** Cap on the device pixel ratio, applied by render/renderer.ts.
  *
  * This renderer is fragment-bound (a full-screen atmosphere on every surface
@@ -31,6 +33,33 @@
  * and the cost is 78% more pixels. It lives here because the drawing buffer it
  * produces is the biggest single term in the memory estimate below. */
 export const MAX_PIXEL_RATIO = 1.5;
+
+/**
+ * The FFT ocean (render/ocean.ts): its cascades and the camera-following grid
+ * it is displaced on.
+ */
+export interface OceanPlan {
+  /** Largest patch first; every cascade has the same n (they share one FFT texture). */
+  cascades: OceanCascadePlan[];
+  /** Disc radius, metres. Past it the terrain's own water carries on. */
+  radiusM: number;
+  /**
+   * Polar grid: segments round; first ring at innerM; nearRings geometric
+   * rings out to nearM, then farRings geometric rings out to radiusM.
+   *
+   * Two zones because a ring's cell is dr * h / r^2 pixels tall from a camera
+   * h metres up: one ratio fine enough for the deck-side chop made every ring
+   * past ~150 m a sub-pixel sliver, and the terrain shader ran on 2x2 quads
+   * that were nearly all empty. Measured on sf-bay-ocean-low (M4, 720p): 430
+   * rings at 2% cost 4.5 ms over the ocean off, this plan 1.7 ms (0.9 of
+   * it the FFT and the terrain sink, which the grid does not touch).
+   */
+  gridSegments: number;
+  innerM: number;
+  nearM: number;
+  nearRings: number;
+  farRings: number;
+}
 
 export interface TerrainRing {
   /** Half-width in metres. */
@@ -200,6 +229,7 @@ export interface Budget {
   trafficInstanceBudget: number;
   /** Parked cars resident at once. */
   parkedInstanceBudget: number;
+  ocean: OceanPlan;
   memory: MemoryEstimate;
 }
 
@@ -325,6 +355,21 @@ const ROAD_BYTES_PER_TRIANGLE = 36 + 3 * 4;
  * + info = 36 bytes, and six indices per four triangles.
  */
 const PAVEMENT_BYTES_PER_TRIANGLE = 36 + 1.5 * 4;
+/**
+ * The FFT ocean: h0 and two ping-pong FFT targets, RGBA32F at n x n per
+ * cascade, plus per cascade two targets (this frame, and last frame for the
+ * foam) of two mipmapped RGBA16F attachments. The grid is a vec3 per vertex
+ * and two triangles of indices per vertex, 16-bit when they fit.
+ */
+export function oceanBytes(o: OceanPlan): number {
+  let bytes = 0;
+  for (const c of o.cascades) {
+    bytes += 3 * c.n * c.n * 16;
+    bytes += 2 * 2 * c.n * c.n * 8 * MIPMAP_FACTOR;
+  }
+  const verts = 1 + o.gridSegments * (o.nearRings + o.farRings);
+  return bytes + verts * (12 + 6 * (verts < 65536 ? 2 : 4));
+}
 /**
  * Street furniture and traffic, per INSTANCE rather than per triangle.
  *
@@ -480,6 +525,20 @@ const FULL_PLAN: Plan = {
   // occupied. Measured at 3,662 over the Marina, which is the densest street
   // grid in the set; 3,500 was the first figure and it clipped there.
   parkedInstanceBudget: 4_200,
+  // Two cascades: 240 m for the swell and the dominant chop (waves down to 7.5
+  // m), 35 m for the short chop (down to 0.55 m), with the analytic waves
+  // below that. Neither size divides the other, so their tiling never lines
+  // up. Out to 40 m the rings grow 3% a step, near the 256 segments' arc, so
+  // the cells there are about square: 0.6 m at 20 m. Past it, 10% a step.
+  ocean: {
+    cascades: [{ patchM: 240, n: 256 }, { patchM: 35, n: 256 }],
+    radiusM: 3000,
+    gridSegments: 256,
+    innerM: 0.6,
+    nearM: 40,
+    nearRings: 142,
+    farRings: 45,
+  },
 };
 
 const REDUCED_PLAN: Plan = {
@@ -517,6 +576,21 @@ const REDUCED_PLAN: Plan = {
   lampInstanceBudget: 1_200,
   trafficInstanceBudget: 3_000,
   parkedInstanceBudget: 1_500,
+  // ONE 64 cascade over 80 m: the dominant waves (5 m to 80 m; a Beaufort 6
+  // bay peaks near 13 m) as real geometry, everything shorter left to the
+  // analytic sum the terrain already pays for. The FFT is then 13 passes over
+  // 4k texels, and the grid a tenth of the desktop one over half the radius.
+  // Not 128 over 120 m: that is 1.2 MB more, and put this plan 0.7 MB over
+  // the ceiling test/budget.check.ts holds it to.
+  ocean: {
+    cascades: [{ patchM: 80, n: 64 }],
+    radiusM: 1500,
+    gridSegments: 96,
+    innerM: 1,
+    nearM: 30,
+    nearRings: 54,
+    farRings: 28,
+  },
 };
 
 const PLANS: Record<QualityTier, Plan> = { full: FULL_PLAN, reduced: REDUCED_PLAN };
@@ -589,6 +663,10 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
         (plan.trafficInstanceBudget + plan.parkedInstanceBudget) *
           CAR_BYTES_PER_INSTANCE * CAR_BUCKET_HEADROOM +
         STREET_BASE_MESH_BYTES,
+    },
+    {
+      what: `ocean fft ${plan.ocean.cascades.map((c) => `${c.n}@${c.patchM}m`).join("+")}`,
+      bytes: oceanBytes(plan.ocean),
     },
   ];
 
