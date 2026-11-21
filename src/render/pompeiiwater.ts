@@ -1260,7 +1260,8 @@ function buildCastellum(k: Castellum, G: Geo): void {
   const brick: Mat = { rgb: [0.62, 0.38, 0.27], style: S.masonry, p1: 0, p2: 0, seed: 0.3 };
   const stone: Mat = { rgb: [0.8, 0.76, 0.68], style: S.marble, p1: 0, p2: 0, seed: 0.3 };
   // Facade toward +x (the street): a brick house with three blind arches and a door.
-  G.mesh(new THREE.BoxGeometry(k.d, k.h, k.w), L.clone().multiply(new THREE.Matrix4().makeTranslation(0, k.h / 2, 0)), brick, (p) => [p[0] + p[2], p[1] - k.g, 6, k.h]);
+  // Down past the street on its low side: the house stands on the slope by the gate.
+  G.mesh(new THREE.BoxGeometry(k.d, k.h + 1, k.w), L.clone().multiply(new THREE.Matrix4().makeTranslation(0, (k.h - 1) / 2, 0)), brick, (p) => [p[0] + p[2], p[1] - k.g, 6, k.h]);
   for (const w of [-k.w / 3, 0, k.w / 3]) {
     // Each arch: a recess with pilasters either side.
     G.mesh(new THREE.BoxGeometry(0.12, k.h * 0.62, k.w / 3 - 0.6), L.clone().multiply(new THREE.Matrix4().makeTranslation(k.d / 2 - 0.02, k.h * 0.36, w)), { ...brick, rgb: [0.5, 0.3, 0.22] });

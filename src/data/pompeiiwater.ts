@@ -202,14 +202,27 @@ export function placeCastellum(data: PompeiiData, groundAt: (x: number, z: numbe
   // West of the road: the side whose normal has the more negative x.
   const sides = [[-best.tz, best.tx], [best.tz, -best.tx]].sort((a, b) => a[0] - b[0]);
   for (const [ox, oz] of sides) {
-    for (const along of [9, 14, 19]) {
+    // Clear of the gate: the passage through the wall runs some 15 m, and the castellum stands past its inner end.
+    for (let along = 12; along <= 45; along += 3) {
       const off = best.half + D / 2 + 0.3;
       const x = best.x + best.tx * along + ox * off, z = best.z + best.tz * along + oz * off;
       if (fronts.some((r) => pointInRing(r, x, z))) continue;
+      if (!pointInRing(data.wall, x, z) || ringDist(data.wall, x, z) < Math.hypot(W, D) / 2 + 1) continue;
       return { x, z, g: groundAt(x, z), ang: Math.atan2(-oz, -ox), w: W, d: D, h: 5.2 };
     }
   }
   return null;
+}
+
+function ringDist(r: Ring, x: number, z: number): number {
+  let best = Infinity;
+  const n = r.length / 2;
+  for (let i = 0; i < n; i++) {
+    const ax = r[i * 2], az = r[i * 2 + 1], dx = r[((i + 1) % n) * 2] - ax, dz = r[((i + 1) % n) * 2 + 1] - az;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+    best = Math.min(best, Math.hypot(x - ax - t * dx, z - az - t * dz));
+  }
+  return best;
 }
 
 /** Rim of an atrium pool over its water: the gate wants every pool's water below it. */

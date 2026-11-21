@@ -184,7 +184,7 @@ const probeBuild = (p: NonNullable<Parameters<typeof buildWater>[0]["probe"]>): 
   const gate = data.gates.find((g) => g.name === "Porta Vesuvio")!;
   const c = full.castellum;
   check("Castellum Aquae just inside Porta Vesuvio (within 35 m)", !!c && Math.hypot(c.x - gate.x, c.z - gate.z) < 35, c ? `${Math.hypot(c.x - gate.x, c.z - gate.z).toFixed(1)} m` : "missing");
-  check("castellum clear of the houses", !!c && !fronts.some((q) => pointInRing(q, c.x, c.z)), "");
+  check("castellum clear of the houses, inside the walls", !!c && !fronts.some((q) => pointInRing(q, c.x, c.z)) && pointInRing(data.wall, c.x, c.z), "");
 }
 
 // --- 4. atrium pools -------------------------------------------------------------------
