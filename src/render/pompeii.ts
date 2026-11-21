@@ -230,6 +230,29 @@ vec3 voronoi(vec2 p) {
 
 const vec3 CREAM = vec3(0.86, 0.82, 0.72);
 ${DIPINTI_GLSL}
+// The notice's extent along the wall, as dipinto() places it: x0, width
+// (0 when it does not fit), for the whitewashed panel it is painted on.
+vec2 dipintoSpan(float seed, float len) {
+  int m = int(floor(fract(seed * 7.31 + 0.17) * float(MSG_LEN.length())));
+  float w = float(MSG_LEN[m]) * CHAR_W;
+  if (w > len - 2.0) return vec2(0.0);
+  return vec2(1.0 + fract(seed * 3.7) * max(0.0, len - 2.0 - w), w);
+}
+// Hand-floated lime plaster: broad trowel sweeps and a sand grain, a height
+// in arbitrary units over wall-plane metres.
+float plasterRelief(vec2 p) {
+  float sweep = vnoise(vec2(p.x * 2.3 + p.y * 1.4, p.y * 3.4 - p.x * 0.8));
+  float ridge = 1.0 - abs(2.0 * vnoise(vec2(p.x * 5.1 - p.y * 1.3, p.y * 6.8 + p.x * 1.4)) - 1.0);
+  return 0.12 * sweep + 0.43 * ridge * ridge + 0.45 * vnoise(p * 17.0);
+}
+// The normal tilted by plasterRelief's slope; T the wall's horizontal
+// tangent (wp.x increases along it). k in tilt per unit of relief per metre.
+vec3 plasterNormal(vec3 n, vec3 T, vec2 p, float k) {
+  const float e = 0.025;
+  float h0 = plasterRelief(p);
+  vec2 g = vec2(plasterRelief(p + vec2(e, 0.0)) - h0, plasterRelief(p + vec2(0.0, e)) - h0) / e;
+  return normalize(n - (T * g.x + vec3(0.0, 1.0, 0.0) * g.y) * k);
+}
 
 float sdCap(vec2 p, vec2 a, vec2 b, float r) {
   vec2 pa = p - a, ba = b - a;
@@ -271,9 +294,18 @@ void main() {
   // Unlike covered it leaves the sun alone: the shadow map already lets
   // it in only through the oculus and the windows.
   float shut = 0.0;
+  // Shading the styles fake below geometry they do not have: ao scales the
+  // sky and bounce light (contact shadows, recesses), sunShade the sun
+  // (a window reveal's own shadow, which the shadow map is too coarse for).
+  float ao = 1.0;
+  float sunShade = 1.0;
   float u = vWall.x, h = vWall.y, len = vWall.z, H = vWall.w;
   vec2 tng = normalize(vec2(-n.z, n.x) + vec2(1e-4, 0.0));
+  vec3 T3 = vec3(tng.x, 0.0, tng.y);
   vec2 wp = vec2(dot(vWorld.xz, tng), vWorld.y);
+  // u runs along a wall one way or the other; su is +1 where it increases
+  // along T3, so u-based relief and reveals turn the right way.
+  float su = dFdx(u) * dot(dFdx(vWorld.xz), tng) + dFdy(u) * dot(dFdy(vWorld.xz), tng) < 0.0 ? -1.0 : 1.0;
 
   if (style < 0.5) {
     // Plaster: dark socle, the coloured dado zone, a fillet, the pale wall above.
@@ -300,40 +332,176 @@ void main() {
     }
     if (abs(h - bandTop - wob) < 0.06) c = albedo * 0.45;
     if (h < socle) c = mix(vec3(0.16, 0.08, 0.07), albedo * 0.35, 0.3);
-    // Windows: small, high and shuttered, more of them upstairs.
+    // Two levels of detail: grain, cracks and streak texture (centimetres)
+    // go by 45 m, patches and stains (decimetres) by 110 m; past that the
+    // wall keeps the plain scheme so the air views do not shimmer.
+    float nearF = 1.0 - smoothstep(20.0, 45.0, vViewDist);
+    float nearM = 1.0 - smoothstep(60.0, 110.0, vViewDist);
+    bool painted = h < bandTop + wob && h > socle;
+    // An electoral notice in red or black capitals on about half of the
+    // street walls: straight onto the cream wash, or on a whitewashed panel
+    // where the wall is coloured, as the notices were.
+    // Most surveyed fronts carry p2 255 like the inner walls, so those get
+    // notices too, a little less often.
+    bool notice = len > 8.0 && fract(seed * 13.7) < (street ? 0.65 : 0.45);
+    // Over the lintels where the wall is tall enough: lower down the line
+    // mostly fell inside the shop openings and was never seen.
+    float y0 = H > 4.4 ? 3.45 : bandTop + 0.4;
+    if (notice) {
+      vec2 sp = dipintoSpan(seed, len);
+      if (full && sp.y > 0.0 && abs(u - sp.x - sp.y * 0.5) < sp.y * 0.5 + 0.22 && abs(h - y0 - CHAR_H * 0.5) < CHAR_H * 0.5 + 0.16) {
+        // The panel's brush edge is ragged.
+        float rag = vnoise(vec2(u, h) * 9.0 + seed);
+        if (abs(u - sp.x - sp.y * 0.5) < sp.y * 0.5 + 0.15 + 0.07 * rag && abs(h - y0 - CHAR_H * 0.5) < CHAR_H * 0.5 + 0.1 + 0.06 * rag) c = mix(c, CREAM * 0.97, 0.88);
+      }
+      float ink = dipinto(u, h, seed, len, y0);
+      ink *= mix(1.0, smoothstep(0.12, 0.32, vnoise(vec2(u, h) * 4.0 + seed * 40.0)), nearF);
+      // Strokes are 3 cm: past about two pixels a stroke they would alias,
+      // so they fade to the tint the line of letters averages to.
+      float fw = max(fwidth(u), fwidth(h));
+      float sharp = 1.0 - smoothstep(0.016, 0.04, fw);
+      float lineArea = step(abs(h - y0 - CHAR_H * 0.5), CHAR_H * 0.5) * step(0.0, u - sp.x) * step(u, sp.x + sp.y);
+      ink = mix(lineArea * 0.3, ink, sharp);
+      vec3 inkC = fract(seed * 29.3) < 0.7 ? vec3(0.55, 0.07, 0.04) : vec3(0.07, 0.06, 0.05);
+      c = mix(c, inkC, ink * 0.9);
+    }
+    // Faded, uneven paint on the coloured zone: chalky where the sun and
+    // rain have taken the pigment.
+    if (painted && nearM > 0.0) {
+      float fade = smoothstep(0.45, 0.8, fbm(wp * vec2(1.1, 0.7) + seed * 4.0));
+      c = mix(c, mix(c, CREAM * 0.82, 0.4), fade * 0.8 * nearM);
+    }
+    albedo = c;
+    // Large stains, rain streaks, damp and splash. Past 110 m only the
+    // broad tone is left.
+    albedo *= 0.86 + 0.24 * fbm(vec2(wp.x * 0.25, wp.y * 0.35) + seed * 10.0);
+    vec2 sf = vec2(wp.x * 0.45, wp.y * 0.6) + seed * 21.0;
+    albedo = mix(albedo, albedo * vec3(0.78, 0.7, 0.58), 0.55 * smoothstep(0.55, 0.78, fbm(sf)) * nearM);
+    float damp = 1.0 - smoothstep(0.0, 1.0 + 0.5 * vnoise(vec2(wp.x * 0.9, seed * 9.0)), h);
+    albedo = mix(albedo, albedo * vec3(0.72, 0.68, 0.62), damp * 0.6);
+    if (vViewDist < 110.0) {
+      // Rain run-off from the wall top: vertical streaks, strongest under
+      // the eaves, reaching down a metre to four.
+      float reach = H - 1.0 - 3.0 * vnoise(vec2(wp.x * 0.7, seed * 7.0));
+      float fromTop = smoothstep(reach, H - 0.1, h) * step(1.0, H);
+      float sk = vnoise(vec2(wp.x * 6.5, wp.y * 0.3 + seed * 3.0)) * (0.6 + 0.8 * vnoise(vec2(wp.x * 1.9 + 5.0, wp.y * 0.15)));
+      float streak = mix(0.3, smoothstep(0.25, 0.55, sk), nearF) * fromTop;
+      albedo = mix(albedo, albedo * vec3(0.6, 0.6, 0.58), 0.6 * streak * nearM);
+      // Splash and dirt in the bottom 0.6 m: street mud thrown up the wall.
+      float splash = 1.0 - smoothstep(0.0, 0.45 + 0.25 * vnoise(vec2(wp.x * 2.0, seed)), h);
+      float speck = mix(0.5, vnoise(wp * 22.0), nearF);
+      albedo = mix(albedo, vec3(0.3, 0.24, 0.18), splash * (0.35 + 0.35 * speck) * nearM);
+      // Hairline cracks: an isoline of a warped noise, a few millimetres
+      // wide, only where a second noise allows, thinning out before they alias.
+      if (nearF > 0.0) {
+        vec2 cp = wp * vec2(1.2, 0.9) + seed * 5.0;
+        float cn = vnoise(cp + 0.35 * vec2(vnoise(wp * 4.0), vnoise(wp * 4.0 + 7.0)));
+        float cw = 0.008 + fwidth(cn) * 0.5;
+        // The second mask is fine enough to break each crack into short runs.
+        float crack = (1.0 - smoothstep(0.0, cw, abs(cn - 0.5))) * smoothstep(0.62, 0.78, vnoise(wp * 0.45 + 13.0)) * smoothstep(0.45, 0.7, vnoise(wp * 2.5 + 31.0));
+        crack *= 1.0 - smoothstep(0.012, 0.035, fwidth(cn));
+        albedo *= 1.0 - 0.22 * crack * nearF;
+        // Trowel relief: lit by a raking sun.
+        n = plasterNormal(n, T3, wp, 0.006 * nearF);
+      }
+      // Plaster fallen away, mostly near the foot and at the corners,
+      // showing the opus incertum behind with a dark broken lip.
+      float corner = len > 0.0 ? 1.0 - smoothstep(0.0, 0.9, min(u, len - u)) : 0.0;
+      float pf = fbm(wp * vec2(0.75, 0.9) + seed * 23.0) + 0.26 * (1.0 - smoothstep(0.0, 1.3, h)) + 0.12 * corner + 0.05 * vnoise(wp * 7.0) * nearF;
+      float th = 0.9;
+      float loss = smoothstep(th, th + 0.008, pf) * nearM;
+      float lip = (smoothstep(th - 0.03, th, pf) - smoothstep(th, th + 0.008, pf)) * nearM;
+      if (loss > 0.0) {
+        vec3 vo = voronoi(wp / 0.11);
+        float k = h21(vo.yz);
+        vec3 stone = k < 0.55 ? vec3(0.3, 0.29, 0.28) : k < 0.85 ? vec3(0.44, 0.4, 0.32) : k < 0.95 ? vec3(0.5, 0.48, 0.44) : vec3(0.4, 0.27, 0.2);
+        stone *= 0.8 + 0.3 * mix(0.5, vnoise(wp * 18.0), nearF);
+        // Rough faces in a lot of grey mortar, each stone shaded into it.
+        stone *= 0.7 + 0.3 * smoothstep(0.08, 0.3, vo.x);
+        vec3 mas = mix(vec3(0.44, 0.41, 0.36) * (0.85 + 0.3 * vnoise(wp * 30.0)), stone, smoothstep(0.1, 0.16, vo.x));
+        albedo = mix(albedo, mas, loss);
+        // Set back the plaster's thickness: less sky reaches in.
+        ao *= 1.0 - 0.3 * loss;
+        n = normalize(mix(n, normalize(vNormal), loss));
+      }
+      albedo *= 1.0 - 0.45 * lip;
+    }
+    // Soot and grime down from the eaves.
+    albedo *= 1.0 - 0.14 * smoothstep(H - 0.8, H, h) * step(1.0, H);
+    // Contact shadow where the wall meets the ground, and under the eaves.
+    if (len > 0.0) {
+      // Gentle: the GTAO pass in occludedSkyIrradiance already darkens the
+      // corner, this only adds what its screen-space radius misses.
+      ao *= mix(0.72, 1.0, smoothstep(0.0, 0.35, h));
+      ao *= 1.0 - 0.3 * smoothstep(H - 0.5, H, h) * step(1.0, H);
+    }
+    // Windows: small, high and shuttered, more of them upstairs. Each is a
+    // box 0.3 m deep traced from the eye: the reveal it shows depends on
+    // where the eye is, the head and one jamb shadow the back by the sun.
     if (street && len > 0.0) {
       float twoStorey = step(7.0, H);
       float bay = twoStorey > 0.5 ? 3.1 : 5.3;
       float col = floor(u / bay);
-      float lx = u - col * bay - bay * 0.5;
       float wy = twoStorey > 0.5 ? H - 2.6 : 3.4;
       float ww = twoStorey > 0.5 ? 0.42 : 0.28, wh = twoStorey > 0.5 ? 0.62 : 0.32;
-      bool inside = abs(lx) < ww && abs(h - wy) < wh && u > 1.0 && u < len - 1.0 && h21(vec2(col, seed * 91.0)) > 0.25;
-      if (inside) {
-        c = vec3(0.05, 0.04, 0.035);
+      vec2 P = vec2((u - col * bay - bay * 0.5) * su, h - wy);
+      // A single-storey wall with a notice gives its window row to it.
+      bool has = u > 1.0 && u < len - 1.0 && h21(vec2(col, seed * 91.0)) > 0.25 && !(notice && twoStorey < 0.5 && H > 4.4);
+      vec3 ng = normalize(vNormal);
+      if (has && abs(P.x) < ww && abs(P.y) < wh) {
+        const float dep = 0.3;
+        float vn = max(0.08, dot(v, ng));
+        vec2 d = dep * vec2(dot(v, T3), v.y) / vn;
+        float sX = abs(d.x) > 1e-4 ? (P.x + sign(d.x) * ww) / d.x : 2.0;
+        float sY = abs(d.y) > 1e-4 ? (P.y + sign(d.y) * wh) / d.y : 2.0;
+        float s = min(1.0, min(sX, sY));
+        vec2 Q = P - s * d;
+        vec3 wallC = full ? mix(c, CREAM, 0.15) : CREAM * 0.9;
+        if (s >= 1.0) {
+          // The back: a wooden frame, and inside it the dark room, a
+          // closed shutter leaf upstairs, an iron grille downstairs.
+          bool frame = abs(Q.x) > ww - 0.05 || abs(Q.y) > wh - 0.05;
+          vec3 wood = vec3(0.3, 0.19, 0.11) * (0.8 + 0.3 * vnoise(vec2(Q.x * 40.0, Q.y * 3.0)));
+          if (frame) albedo = wood;
+          else if (twoStorey > 0.5 && Q.x * (h21(vec2(col, seed)) - 0.5) > 0.0) albedo = wood * (0.85 + 0.25 * step(0.08, fract(Q.x / 0.11)));
+          else albedo = vec3(0.045, 0.038, 0.032);
+          n = ng;
+          ao *= 0.7;
+        } else {
+          albedo = wallC * 0.95;
+          if (sX < sY) n = sign(d.x) * T3;
+          else n = d.y > 0.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, -1.0, 0.0);
+          if (d.y > 0.0 && sY <= sX) albedo = vec3(0.68, 0.64, 0.55);
+          ao *= 1.0 - 0.35 * s;
+        }
+        // Grille: bars in the outer third of the reveal on ground floor windows.
+        if (twoStorey < 0.5) {
+          vec2 G = P - min(s, 0.3) * d;
+          float bar = step(abs(fract(G.x / 0.1 + 0.5) - 0.5), 0.09) + step(abs(G.y), 0.012);
+          if (bar > 0.0 && s > 0.3) { albedo = vec3(0.09, 0.08, 0.075); n = ng; ao = 0.8; }
+        }
+        // Sun into the box: lit where the ray back toward the sun leaves
+        // through the opening rather than through the wall.
+        float sn = dot(uSunDir, ng);
+        vec2 E = Q + s * dep * vec2(dot(uSunDir, T3), uSunDir.y) / max(sn, 1e-3);
+        float inLight = step(0.02, sn) * (1.0 - smoothstep(-0.01, 0.01, max(abs(E.x) - ww, abs(E.y) - wh)));
+        sunShade = s > 0.0 ? inLight : 1.0;
+      } else if (has && abs(P.x) < ww + 0.06 && P.y < -wh && P.y > -wh - 0.08) {
+        // A travertine sill, proud of the plaster.
+        albedo = vec3(0.7, 0.66, 0.56) * (0.9 + 0.15 * vnoise(vec2(u, h) * 20.0));
+        n = normalize(normalize(vNormal) + vec3(0.0, 0.6 * smoothstep(-wh - 0.08, -wh, P.y), 0.0));
+        ao *= 0.9;
+      } else if (has && abs(P.x) < ww && P.y < -wh - 0.08 && P.y > -wh - 1.8) {
+        // Run-off from the sill.
+        float st = vnoise(vec2(P.x * 14.0, P.y * 0.5 + seed));
+        float fall = smoothstep(-wh - 1.8, -wh - 0.1, P.y);
+        albedo *= 1.0 - 0.35 * fall * mix(0.5, smoothstep(0.3, 0.6, st), nearF) * nearM;
+      } else if (has && twoStorey > 0.5 && abs(P.x) < ww * 2.1 && abs(P.y) < wh && abs(P.x) > ww) {
         // Wooden shutters folded back either side.
-      } else if (abs(lx) < ww * 2.1 && abs(h - wy) < wh && abs(lx) > ww && u > 1.0 && u < len - 1.0 && twoStorey > 0.5 && h21(vec2(col, seed * 91.0)) > 0.25) {
-        c = vec3(0.32, 0.2, 0.11);
-      }
-      // An electoral notice in red capitals on about a third of the street
-      // walls, worn in patches. Letters 0.26 m high read from across the
-      // street and alias past ~40 m, so they fade out there.
-      if (!full && len > 8.0 && fract(seed * 13.7) < 0.35) {
-        float ink = dipinto(u, h, seed, len, bandTop + 0.4);
-        ink *= smoothstep(0.25, 0.45, vnoise(vec2(u, h) * 3.0 + seed * 40.0));
-        ink *= 1.0 - smoothstep(25.0, 45.0, vViewDist);
-        c = mix(c, vec3(0.6, 0.1, 0.06), ink * 0.85);
+        albedo = vec3(0.32, 0.2, 0.11) * (0.85 + 0.25 * step(0.1, fract(P.x / 0.13)));
+        ao *= 0.85;
       }
     }
-    albedo = c;
-    // Weathering: blotches, trowel marks, rising damp and splash at the foot.
-    albedo *= 0.9 + 0.16 * fbm(vec2(wp.x * 0.3, wp.y * 0.4) + seed * 10.0);
-    albedo *= 0.96 + 0.08 * vnoise(vec2(wp.x * 2.6 + wp.y * 0.8, wp.y * 9.0));
-    albedo *= 0.97 + 0.05 * vnoise(vWorld.xz * 6.0 + wp.y * 5.0);
-    float damp = 1.0 - smoothstep(0.0, 1.0 + 0.5 * vnoise(vec2(wp.x * 0.9, seed * 9.0)), h);
-    albedo = mix(albedo, albedo * vec3(0.72, 0.68, 0.62), damp * 0.6);
-    // Grime under the eaves and down from the wall top.
-    albedo *= 1.0 - 0.12 * smoothstep(H - 0.8, H, h) * step(1.0, H);
   } else if (style < 1.5) {
     // Terracotta: imbrex ridges up the slope, tegulae between, course lines.
     float pitch = 0.42;
@@ -341,16 +509,44 @@ void main() {
     // the imbrex rows run across the slope in world space rather than along
     // a facade's u.
     float cu = (p2 > 0.5 ? wp.x : u) / pitch;
-    float ridge = abs(fract(cu) - 0.5) * 2.0;
-    float course = fract(h / 0.52);
-    float id = h21(vec2(floor(cu), floor(h / 0.52)) + seed * 17.0);
-    albedo *= 0.82 + 0.3 * id;
-    albedo *= mix(1.12, 0.72, smoothstep(0.55, 1.0, ridge));
-    albedo *= 1.0 - 0.25 * smoothstep(0.85, 1.0, course);
-    albedo = mix(albedo, vec3(0.32, 0.3, 0.2), 0.25 * smoothstep(0.55, 0.85, fbm(vWorld.xz * 0.5)));
-    // Light the ridges as if they were round.
-    n = normalize(n + tng.x * 0.0 + vec3(0.0, 0.0, 0.0));
-    gloss = 0.15;
+    float cv = h / 0.52;
+    // Fades the per-tile pattern out where a pixel spans a good part of a
+    // row: from the air it would only shimmer. The means stay.
+    float fwT = max(fwidth(cu), fwidth(cv));
+    float detail = 1.0 - smoothstep(0.08, 0.3, fwT);
+    // The rows' stripes hold on longer than the relief: they read from the air.
+    float stripes = 1.0 - smoothstep(0.25, 0.6, fwT);
+    float course = fract(cv);
+    // xi: across a row, the imbrex (cover tile) on the joint at |xi| < IW.
+    float xi = fract(cu + 0.5) - 0.5;
+    const float IW = 0.19;
+    float onImb = step(abs(xi), IW);
+    float id = h21(vec2(floor(cu + 0.5 * onImb), floor(cv)) + seed * 17.0 + onImb * 3.0);
+    vec3 tile = albedo * (0.82 + 0.3 * id);
+    // A few tiles replaced after the earthquake of 62: paler, yellower.
+    tile = mix(tile, albedo * vec3(1.25, 1.18, 1.0), step(0.95, id));
+    // Round imbrices: the normal turns across them; pans dish slightly and
+    // sit in the imbrex's shadow at its foot.
+    float q = clamp(xi / IW, -0.96, 0.96);
+    float slopeI = q / sqrt(1.0 - q * q);
+    float pan = (abs(xi) - IW) / (0.5 - IW);
+    float slopeP = -sign(xi) * 0.25 * (1.0 - smoothstep(0.0, 0.3, pan));
+    n = normalize(n + T3 * (p2 > 0.5 ? 1.0 : su) * (onImb > 0.5 ? slopeI * 0.7 : slopeP) * detail);
+    float shade = onImb > 0.5 ? 1.0 - 0.18 * q * q : 0.82 + 0.18 * smoothstep(0.0, 0.25, pan);
+    // Each course overlaps the one below: a dark line at its lower edge.
+    shade *= 1.0 - 0.3 * smoothstep(0.86, 1.0, course) * (1.0 - onImb * 0.6);
+    ao *= mix(0.93, 0.8 + 0.2 * smoothstep(0.0, 0.2, pan) * (1.0 - onImb) + 0.2 * onImb, detail);
+    albedo = mix(albedo * 0.88, tile * shade, stripes);
+    // Tone that drifts from one imbrex row to the next, a metre or two at a
+    // time: coarse enough to resolve from the air, where it reads as tiling.
+    albedo *= 0.8 + 0.36 * vnoise(vec2(cu * 0.5, cv * 0.12) + seed * 9.0);
+    albedo *= 0.9 + 0.2 * fract(seed * 41.0);
+    // Lichen and soot, broad patches with speckled edges.
+    float lich = smoothstep(0.55, 0.85, fbm(vWorld.xz * 0.5));
+    lich *= mix(0.6, smoothstep(0.35, 0.65, vnoise(vWorld.xz * 6.0)), detail);
+    albedo = mix(albedo, vec3(0.42, 0.4, 0.25), 0.4 * lich);
+    albedo *= 1.0 - 0.25 * smoothstep(0.62, 0.9, fbm(vWorld.xz * 0.21 + 40.0));
+    gloss = 0.12;
   } else if (style < 2.5) {
     // Basalt paving: big irregular lava blocks, 40-80 cm, each one domed
     // ("pillowed") by two thousand years of wheels and feet, dark gaps
@@ -362,34 +558,89 @@ void main() {
     vec4 pc = paveCell(q);
     float edge = pc.x;
     float tone = pc.w;
-    // Gaps: open joints a few centimetres wide, rounded shoulders into them.
-    float gap = smoothstep(0.025, 0.06, edge);
-    float crown = smoothstep(0.06, 0.42, edge);
-    albedo = mix(vec3(0.25, 0.25, 0.255), vec3(0.37, 0.36, 0.35), tone) * (0.9 + 0.2 * vnoise(vWorld.xz * 2.0));
-    albedo *= mix(0.78, 1.08, crown);
+    float nearP = 1.0 - smoothstep(25.0, 60.0, vViewDist);
+    // Tight joints: a hairline of shadow in the crack, grey-tan grit and
+    // dust packed in round it, rounded shoulders into them.
+    float crackL = 1.0 - smoothstep(0.006, 0.016, edge);
+    float grit = 1.0 - smoothstep(0.02, 0.075, edge);
+    float crown = smoothstep(0.05, 0.4, edge);
+    // Per-block tone varies a little; most of the variety is the surface.
+    vec3 lava = vec3(0.28, 0.28, 0.275) * (0.9 + 0.2 * tone) * mix(vec3(1.02, 1.0, 0.96), vec3(0.97, 0.99, 1.02), fract(tone * 7.0));
+    lava *= 0.9 + 0.18 * vnoise(vWorld.xz * 2.0 + tone * 9.0);
+    lava *= mix(1.0, 0.86 + 0.24 * vnoise(vWorld.xz * 11.0), nearP);
+    // Worn crowns are polished paler, the shoulders keep dust.
+    lava *= mix(0.86, 1.1, crown);
     // Vesicles: the lava's small pits, on some blocks.
-    albedo *= 1.0 - 0.35 * step(0.6, tone) * step(0.93, vnoise(vWorld.xz * 26.0));
-    albedo = mix(vec3(0.07, 0.065, 0.06), albedo, gap);
-    // Cart ruts: two grooves a Roman axle apart down each lane, worn into
-    // the blocks (vWall.z: metres from the street's centreline).
+    lava *= 1.0 - 0.4 * step(0.6, tone) * step(0.9, vnoise(vWorld.xz * 26.0)) * nearP;
+    vec3 dust = vec3(0.36, 0.32, 0.26) * (0.85 + 0.3 * vnoise(vWorld.xz * 7.0));
+    albedo = mix(lava, dust, grit * 0.75);
+    albedo = mix(albedo, vec3(0.1, 0.09, 0.08), crackL * 0.7 * nearP);
+    // Dust and dung down the middle, and dust blown against the kerbs.
     float lat = vWall.z, half_ = vWall.w;
+    float mid = 1.0 - smoothstep(0.3, 1.1, abs(lat));
+    float side = smoothstep(half_ - 0.6, half_ - 0.05, abs(lat)) * step(0.1, half_);
+    float muck = smoothstep(0.4, 0.75, fbm(vWorld.xz * 0.9 + 3.0)) * mid + side * (0.5 + 0.5 * vnoise(vWorld.xz * 1.7));
+    albedo = mix(albedo, vec3(0.36, 0.3, 0.22) * (0.85 + 0.3 * vnoise(vWorld.xz * 5.0)), 0.6 * clamp(muck, 0.0, 1.0));
+    // Cart ruts: two grooves a Roman axle apart down each lane, worn into
+    // the blocks (vWall.z: metres from the street's centreline). Real
+    // depressions: the normal turns into each one from the lateral
+    // direction, which the screen derivatives of lat give in world space.
     float rut = 0.0;
     if (half_ > 1.6) {
+      vec2 dx = dFdx(vWorld.xz), dy = dFdy(vWorld.xz);
+      vec2 dl = vec2(dFdx(lat), dFdy(lat));
+      float det = dx.x * dy.y - dx.y * dy.x;
+      vec2 G = abs(det) > 1e-10 ? vec2(dl.x * dy.y - dx.y * dl.y, dx.x * dl.y - dl.x * dy.x) / det : vec2(0.0);
+      G = length(G) > 0.01 ? normalize(G) : vec2(0.0);
+      float rslope = 0.0;
       for (int k = -1; k <= 1; k += 2) {
         float c = float(k) * 0.72;
-        rut = max(rut, 1.0 - smoothstep(0.03, 0.09, abs(lat - c)));
+        float t = (lat - c) / 0.11;
+        float r = 1.0 - smoothstep(0.0, 1.0, abs(t));
+        rut = max(rut, r);
+        // Height -cos-like across the groove: slope away from its axis.
+        rslope += abs(t) < 1.0 ? sign(t) * sin(3.1416 * abs(t)) * 0.6 : 0.0;
       }
-      albedo *= 1.0 - 0.3 * rut;
+      n = normalize(n - vec3(G.x, 0.0, G.y) * rslope * nearP);
+      albedo *= 1.0 - 0.25 * rut;
+      ao *= 1.0 - 0.3 * rut;
     }
     // The dome's slope, from the point's offset to the block's centre;
     // flat on a broad worn crown, steep at the shoulders.
     vec2 off = pc.yz * S;
-    float slope = (1.0 - crown) * 0.9 + 0.15;
-    vec3 tilt = vec3(off.x, 0.0, off.y) * slope * 1.6;
-    n = normalize(n + tilt * gap);
-    gloss = 0.4 * gap * crown;
+    float slope = (1.0 - crown) * 0.7 + 0.08;
+    vec3 tilt = vec3(off.x, 0.0, off.y) * slope * 1.3;
+    n = normalize(n + tilt * (1.0 - grit * 0.7));
+    ao *= 1.0 - 0.35 * grit;
+    gloss = 0.55 * crown * (1.0 - rut * 0.5);
   } else if (style < 3.5) {
     // Kerbstones and slab edges: cut blocks.
+    if (abs(n.y) < 0.6 && H > 0.0 && H < 0.7 && len > 0.0) {
+      // A street kerb (the slabs' sides, KERB_M high): big blocks of dark
+      // lava and pale tuff or limestone, irregular lengths, the top edge
+      // rounded and polished by feet and hubs, mud at the foot.
+      float nearK = 1.0 - smoothstep(20.0, 50.0, vViewDist);
+      const float BL = 1.8;
+      float k0 = floor(u / BL), fu = u / BL - k0;
+      float cut = 0.3 + 0.4 * h21(vec2(k0, seed * 13.0));
+      float bid = k0 * 2.0 + step(cut, fu);
+      float jd = min(min(fu, 1.0 - fu), abs(fu - cut)) * BL;
+      float kind = h21(vec2(bid, seed * 7.0 + 1.0));
+      vec3 st = kind < 0.6 ? vec3(0.22, 0.22, 0.215) : kind < 0.85 ? vec3(0.5, 0.45, 0.34) : vec3(0.6, 0.58, 0.52);
+      st *= 0.88 + 0.2 * h21(vec2(bid, 3.0));
+      st *= mix(1.0, 0.85 + 0.3 * vnoise(vec2(u, h) * vec2(9.0, 14.0) + bid), nearK);
+      if (kind < 0.6) st *= 1.0 - 0.4 * step(0.9, vnoise(vec2(u, h) * 30.0)) * nearK;
+      float top = smoothstep(H - 0.08 - 0.03 * vnoise(vec2(u * 3.0, bid)), H, h);
+      st *= mix(1.0, 1.18, top);
+      // Joints: tight, dark, a little dust.
+      st = mix(st, vec3(0.12, 0.11, 0.1), (1.0 - smoothstep(0.004, 0.014, jd)) * nearK);
+      // Mud at the foot.
+      st = mix(st, vec3(0.32, 0.27, 0.2), 0.6 * (1.0 - smoothstep(0.0, 0.14 + 0.08 * vnoise(vec2(u * 2.0, 1.0)), h)));
+      albedo = st;
+      n = normalize(n + vec3(0.0, 1.3 * top, 0.0));
+      ao *= 1.0 - 0.3 * (1.0 - smoothstep(0.0, 0.15, h));
+      gloss = 0.35 * top;
+    } else {
     vec2 b = vec2(wp.x / 1.1, wp.y / 0.45);
     if (abs(n.y) > 0.6) b = vWorld.xz / 0.9;
     // A tier of seats: blocks along the ring, the dark line under the step
@@ -402,10 +653,27 @@ void main() {
     albedo *= 0.8 + 0.35 * id;
     vec2 f = fract(b);
     albedo *= 0.75 + 0.25 * smoothstep(0.0, 0.05, min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)));
+    albedo *= 0.9 + 0.18 * vnoise(vWorld.xz * 6.0 + vWorld.y * 4.0);
+    }
   } else if (style < 4.5) {
     // Stucco: columns, temples, porticoes. Columns go red on the lower third.
     if (p1 > 0.5 && h < H * 0.36) albedo = vec3(0.56, 0.14, 0.09);
-    albedo *= 0.92 + 0.12 * fbm(vec2(wp.x * 0.6, wp.y * 0.6));
+    albedo *= 0.9 + 0.16 * fbm(vec2(wp.x * 0.6, wp.y * 0.6));
+    if (vViewDist < 90.0 && abs(n.y) < 0.6) {
+      // Weathered stucco: water stains, rain streaks, a trowelled face,
+      // dirt at the foot where the wall has a known height.
+      float nearS = 1.0 - smoothstep(25.0, 50.0, vViewDist);
+      float farS = 1.0 - smoothstep(60.0, 90.0, vViewDist);
+      vec2 sf = vec2(wp.x * 0.5, wp.y * 0.5) + seed * 13.0;
+      albedo = mix(albedo, albedo * vec3(0.8, 0.74, 0.64), 0.5 * smoothstep(0.55, 0.8, fbm(sf)) * farS);
+      float sk = vnoise(vec2(wp.x * 5.0, wp.y * 0.3)) * vnoise(vec2(wp.x * 1.7, wp.y * 0.12 + 4.0));
+      albedo *= 1.0 - 0.2 * mix(0.25, smoothstep(0.2, 0.5, sk), nearS) * farS;
+      if (H > 0.5) {
+        albedo = mix(albedo, vec3(0.34, 0.29, 0.22), 0.45 * (1.0 - smoothstep(0.0, 0.5, h)) * farS);
+        ao *= mix(0.72, 1.0, smoothstep(0.0, 0.35, h));
+      }
+      if (nearS > 0.0) n = plasterNormal(n, T3, wp, 0.01 * nearS);
+    }
     gloss = 0.1;
   } else if (style < 5.5) {
     // Garden: clipped green and bare earth.
@@ -413,12 +681,73 @@ void main() {
     albedo = mix(vec3(0.38, 0.3, 0.2), albedo, smoothstep(0.35, 0.6, g));
     albedo *= 0.85 + 0.3 * vnoise(vWorld.xz * 2.5);
   } else if (style < 6.5) {
-    // Inside a shop or a doorway: dim, with shelves and jars on the back wall.
-    covered = 1.0;
-    if (p1 > 0.5 && fract(h / 0.9) < 0.07 && h > 0.6) albedo *= 0.4;
-    if (p1 > 0.5 && h > 0.0 && h < 0.85) {
-      float jar = step(0.5, fract(u / 0.55)) * step(0.3, h21(vec2(floor(u / 0.55), seed * 5.0)));
-      albedo = mix(albedo, vec3(0.6, 0.33, 0.2), jar * 0.8);
+    // Inside a shop or a doorway, lit from the opening: the light falls off
+    // with depth. A reveal's u runs inward on one side and outward on the
+    // other; the eye is always on the street side, so the end of u nearer
+    // the eye is the opening. The back wall (p1) and the ceilings sit at
+    // a typical depth.
+    float depthIn = p1 > 0.5 ? 3.0 : 1.2;
+    // The suburbs' openings are a dark quad on the front, not a recess.
+    bool flatOpening = albedo.r < 0.2;
+    bool vertical = abs(n.y) < 0.5 && !flatOpening;
+    if (flatOpening) depthIn = 3.0;
+    if (vertical && p1 < 0.5 && len > 0.0) depthIn = dot(T3 * su, v) > 0.0 ? len - u : u;
+    float dim = smoothstep(0.0, 3.4, depthIn);
+    covered = flatOpening ? 1.0 : 0.6;
+    if (!flatOpening) ao *= mix(1.0, 0.6, dim);
+    float nearI = 1.0 - smoothstep(25.0, 50.0, vViewDist);
+    if (vertical && len > 0.0) {
+      // Painted plaster: a dark red dado, a white upper wall, smudged.
+      vec3 wallC = h < 0.95 ? vec3(0.46, 0.15, 0.1) : mix(albedo, CREAM, 0.45);
+      wallC *= 0.85 + 0.25 * fbm(vec2(u, h) * 1.3 + seed * 7.0);
+      wallC = mix(wallC, wallC * 0.6, (1.0 - smoothstep(0.0, 0.3, h)));
+      albedo = wallC;
+      if (p1 > 0.5) {
+        // The back wall: two shelves of jars and jugs, a row of amphorae
+        // stood against the wall below.
+        for (int k = 0; k < 2; k++) {
+          float sh = 1.35 + 0.6 * float(k);
+          float above = h - sh;
+          if (abs(above) < 0.02) albedo = vec3(0.34, 0.22, 0.12) * (1.0 + 0.4 * step(0.0, above));
+          if (above < -0.02 && above > -0.12) ao *= 0.55 + 0.45 * (1.0 - smoothstep(-0.12, -0.02, above));
+          float cw = 0.22;
+          float cell = floor(u / cw);
+          float r0 = h21(vec2(cell, seed * 5.0 + float(k)));
+          if (r0 > 0.25 && above > 0.02 && nearI > 0.0) {
+            float jh = 0.16 + 0.12 * fract(r0 * 7.0);
+            float R = 0.05 + 0.035 * fract(r0 * 13.0);
+            float yy = (above - 0.02) / jh;
+            float r = yy < 0.82 ? R * pow(sin(3.1416 * min(1.0, yy / 0.82 * 0.9 + 0.1)), 0.6) : R * 0.42;
+            float dx = fract(u / cw) * cw - cw * 0.5;
+            if (yy < 1.0 && abs(dx) < r) {
+              float roundness = sqrt(1.0 - (dx / r) * (dx / r));
+              vec3 jc = fract(r0 * 31.0) < 0.6 ? vec3(0.58, 0.32, 0.19) : fract(r0 * 31.0) < 0.85 ? vec3(0.72, 0.64, 0.5) : vec3(0.16, 0.13, 0.11);
+              albedo = jc * (0.45 + 0.7 * roundness);
+              ao = mix(ao, 1.0, 0.3);
+            }
+          }
+        }
+        // Amphorae: a body swelling from a pointed toe, a narrow neck, two handles.
+        float aw = 0.34;
+        float ac = floor(u / aw);
+        float ra = h21(vec2(ac, seed * 3.0 + 11.0));
+        if (ra > 0.2 && h < 1.0 && nearI > 0.0) {
+          float yy = h / (0.9 + 0.1 * ra);
+          float dx = fract(u / aw) * aw - aw * 0.5;
+          float R = 0.125;
+          float r = yy < 0.1 ? R * 0.25 * yy / 0.1 + 0.01 : yy < 0.78 ? R * pow(sin(3.1416 * (0.12 + 0.88 * (yy - 0.1) / 0.68)), 0.7) : yy < 0.97 ? 0.035 : 0.0;
+          bool handle = yy > 0.74 && yy < 0.93 && abs(abs(dx) - 0.06) < 0.012;
+          if (abs(dx) < r || handle) {
+            float roundness = handle ? 0.6 : sqrt(max(0.0, 1.0 - (dx / r) * (dx / r)));
+            vec3 ac3 = ra < 0.6 ? vec3(0.62, 0.36, 0.22) : ra < 0.85 ? vec3(0.74, 0.6, 0.45) : vec3(0.55, 0.28, 0.18);
+            albedo = ac3 * (0.4 + 0.75 * roundness);
+            ao = mix(ao, 1.0, 0.2);
+          }
+        }
+      }
+    } else if (!flatOpening) {
+      // Ceilings: smoke-blackened boards.
+      albedo *= 0.55;
     }
   } else if (style < 7.5) {
     if (p1 > 0.5) {
@@ -428,10 +757,55 @@ void main() {
       float fu = fract(u / 0.09), fh = fract(h / 0.04);
       albedo *= mix(0.62, 1.05, over) * (0.75 + 0.25 * sin(3.1416 * fh)) * (0.85 + 0.15 * sin(3.1416 * fu));
     } else {
-    // Wood: planks and the studs of a door.
-    float pl = fract(u / 0.24);
-    albedo *= 0.8 + 0.25 * h21(vec2(floor(u / 0.24), seed)) - 0.25 * smoothstep(0.9, 1.0, pl);
-    albedo *= 0.9 + 0.15 * vnoise(vec2(u * 2.0, h * 12.0));
+    // Wood: planks and the studs of a door. A surface with no wall
+    // coordinates (eaves, ceilings) runs its planks along the world.
+    bool door = len > 0.5 && H > 1.5 && abs(n.y) < 0.5;
+    bool flat_ = abs(n.y) > 0.5;
+    float x = len > 0.0 ? u : flat_ ? vWorld.x : wp.x;
+    float y = len > 0.0 ? h : flat_ ? vWorld.z : vWorld.y;
+    // Grain is a few millimetres across: it goes before a pixel spans it.
+    float nearW = 1.0 - smoothstep(0.005, 0.014, fwidth(x));
+    float pw = 0.2;
+    float pid = floor(x / pw), pl = fract(x / pw);
+    vec3 wood = albedo * (0.78 + 0.3 * h21(vec2(pid, seed)));
+    // Grain runs along the plank: stretched noise.
+    float gr = vnoise(vec2(x * 40.0 + pid * 3.0, y * 1.6)) * 0.6 + vnoise(vec2(x * 70.0, y * 0.8 + pid)) * 0.4;
+    wood *= mix(1.0, 0.8 + 0.35 * gr, nearW);
+    wood = mix(wood, wood * vec3(0.85, 0.85, 0.88), 0.4 * smoothstep(0.5, 0.8, vnoise(vec2(x, y) * 1.5 + seed)));
+    float gap = 1.0 - smoothstep(0.0, 0.02, min(pl, 1.0 - pl) * pw);
+    wood *= 1.0 - 0.5 * gap * mix(0.4, 1.0, nearW);
+    if (door) {
+      // Three rails across the leaves, nailed through with bronze studs; a
+      // seam between the two leaves; the foot weathered grey.
+      float rail = 0.0, railY = 0.0;
+      for (int k = 0; k < 3; k++) {
+        float ry = k == 0 ? 0.35 : k == 1 ? H * 0.5 : H - 0.35;
+        if (abs(h - ry) < 0.075) { rail = 1.0; railY = h - ry; }
+      }
+      if (rail > 0.0) {
+        wood = albedo * (0.9 + 0.2 * vnoise(vec2(u * 1.2, h * 50.0))) * 1.08;
+        n = normalize(n + vec3(0.0, sign(railY) * 0.6 * smoothstep(0.05, 0.075, abs(railY)), 0.0));
+        // Studs at each plank's middle on the rail.
+        float sd = length(vec2((pl - 0.5) * pw, railY));
+        float stud = 1.0 - smoothstep(0.014, 0.019, sd);
+        if (stud > 0.0) {
+          wood = mix(wood, vec3(0.5, 0.36, 0.16), stud * nearW);
+          vec2 sv = vec2((pl - 0.5) * pw, railY) / 0.019;
+          n = normalize(n + (T3 * su * sv.x + vec3(0.0, sv.y, 0.0)) * stud * nearW);
+          gloss = 0.6 * stud * nearW;
+        }
+      } else {
+        // Shadow under each rail.
+        for (int k = 0; k < 3; k++) {
+          float ry = k == 0 ? 0.35 : k == 1 ? H * 0.5 : H - 0.35;
+          float below = ry - 0.075 - h;
+          if (below > 0.0 && below < 0.05) ao *= 0.6 + 0.4 * below / 0.05;
+        }
+      }
+      wood *= 1.0 - 0.6 * (1.0 - smoothstep(0.0, 0.015, abs(u - len * 0.5)));
+      wood = mix(wood, vec3(0.3, 0.28, 0.26), 0.35 * (1.0 - smoothstep(0.0, 0.5, h)));
+    }
+    albedo = wood;
     }
   } else if (style < 8.5) {
     // Water: dark, with the sky in it at a grazing angle. An atrium's pool
@@ -538,13 +912,33 @@ void main() {
     albedo = mix(vec3(0.7, 0.66, 0.6), c, smoothstep(0.02, 0.05, vo.x));
     gloss = 0.3;
   } else if (style < 11.5) {
-    // Marble and travertine: pale slabs with faint veins.
-    vec2 b = abs(n.y) > 0.6 ? vWorld.xz / 1.2 : vec2(wp.x / 1.2, wp.y / 0.6);
-    albedo *= 0.88 + 0.14 * h21(floor(b));
-    albedo *= 0.95 + 0.08 * vnoise(vWorld.xz * 4.0 + vWorld.y);
+    // Travertine and marble: big slabs in running bond, warm cream, banded
+    // along the bedding, pitted with elongated pores, grime in the joints
+    // and broad stains from feet and rain.
+    bool flat_ = abs(n.y) > 0.6;
+    vec2 m = flat_ ? vWorld.xz : vec2(wp.x, wp.y);
+    vec2 sz = flat_ ? vec2(1.3, 0.9) : vec2(1.2, 0.6);
+    vec2 b = m / sz;
+    b.x += 0.5 * step(1.0, mod(floor(b.y), 2.0));
+    vec2 cellB = floor(b);
+    float sid = h21(cellB + 0.37);
+    float nearT = 1.0 - smoothstep(20.0, 50.0, vViewDist);
+    vec3 trav = albedo * vec3(1.06, 1.0, 0.87) * (0.86 + 0.16 * sid);
+    // Bedding: each slab's bands run along one of its axes.
+    vec2 lm = fract(sid * 5.0) < 0.5 ? m : m.yx;
+    float band = vnoise(vec2(lm.x * 0.6, lm.y * 7.0 + sid * 20.0));
+    trav *= 0.93 + 0.1 * band;
+    // Pores: small and sparse, fading before they would sparkle.
+    float pore = smoothstep(0.8, 0.86, vnoise(vec2(lm.x * 14.0, lm.y * 55.0) + sid * 11.0));
+    trav *= 1.0 - 0.18 * pore * nearT;
     vec2 f = fract(b);
-    albedo *= 0.88 + 0.12 * smoothstep(0.0, 0.03, min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)));
-    gloss = 0.25;
+    float jd = min(min(f.x, 1.0 - f.x) * sz.x, min(f.y, 1.0 - f.y) * sz.y);
+    float joint = 1.0 - smoothstep(0.003, 0.02 + fwidth(jd), jd);
+    trav = mix(trav, vec3(0.45, 0.39, 0.31), joint * 0.45 * mix(0.5, 1.0, nearT));
+    trav = mix(trav, trav * vec3(0.8, 0.75, 0.66), 0.5 * smoothstep(0.5, 0.8, fbm(m * 0.35 + 7.0)));
+    albedo = trav;
+    ao *= 1.0 - 0.3 * joint;
+    gloss = 0.2 * (1.0 - joint);
   } else if (style < 12.5) {
     // Fresco: black dado, red panels framed in yellow, a white frieze.
     vec3 c = albedo;
@@ -556,9 +950,28 @@ void main() {
     else if (h21(vec2(floor(u / pw), seed * 3.0)) > 0.6) c = vec3(0.06, 0.06, 0.06);
     albedo = c;
   } else if (style < 13.5) {
-    // Opus signinum and beaten earth: warm, speckled with white tesserae.
-    albedo *= 0.85 + 0.25 * fbm(vWorld.xz * 0.8);
-    albedo = mix(albedo, albedo * 1.35, 0.6 * step(0.985, h21(floor(vWorld.xz * 22.0))));
+    // Opus signinum and beaten earth: warm, packed with crushed tile, lava
+    // chips and limestone pebbles, white tesserae here and there.
+    albedo *= 0.82 + 0.3 * fbm(vWorld.xz * 0.8);
+    albedo = mix(albedo, albedo * vec3(1.08, 0.94, 0.86), 0.5 * smoothstep(0.45, 0.7, fbm(vWorld.xz * 0.3 + 9.0)));
+    float nearE = 1.0 - smoothstep(12.0, 30.0, vViewDist);
+    if (nearE > 0.0) {
+      for (int k = 0; k < 2; k++) {
+        float cs = k == 0 ? 0.07 : 0.032;
+        vec2 g = vWorld.xz / cs;
+        vec2 ci = floor(g);
+        float r0 = h21(ci + float(k) * 17.0);
+        vec2 o = 0.3 + 0.4 * h22(ci + float(k) * 5.0);
+        float rad = (0.12 + 0.12 * fract(r0 * 9.0));
+        float d = length(fract(g) - o);
+        float peb = (1.0 - smoothstep(rad * 0.75, rad, d)) * step(0.68, r0);
+        float t = fract(r0 * 23.0);
+        vec3 pc = t < 0.4 ? vec3(0.17, 0.16, 0.15) : t < 0.65 ? vec3(0.72, 0.69, 0.62) : t < 0.85 ? vec3(0.55, 0.26, 0.16) : vec3(0.52, 0.45, 0.3);
+        albedo = mix(albedo, pc * (0.8 + 0.4 * (1.0 - d / rad)), peb * nearE);
+      }
+      albedo *= 0.92 + 0.16 * vnoise(vWorld.xz * 23.0) * nearE;
+    }
+    albedo = mix(albedo, albedo * 1.35, 0.6 * step(0.99, h21(floor(vWorld.xz * 22.0))));
   } else if (style < 14.5) {
     // Hide: the horse's coat, or (p1 set) mane and tail hair in strands.
     if (p1 > 0.5) {
@@ -806,16 +1219,33 @@ void main() {
   float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
   // Under the lamps the night sky is starlight and airglow only: no town of
   // thousands of electric lights round it, so the street between pools goes dark.
-  vec3 ambient = occludedSkyIrradiance(n) * (1.0 - 0.65 * uLampNight * uNight);
+  vec3 occSky = occludedSkyIrradiance(n);
+  vec3 ambient = occSky * (1.0 - 0.65 * uLampNight * uNight);
+  // The lower hemisphere sees warm paving and plaster, the upper the blue
+  // sky: without this a wall's foot and its top were the same flat grey.
+  ambient *= mix(vec3(1.08, 0.97, 0.84), vec3(0.98, 1.0, 1.02), clamp(n.y * 0.5 + 0.5, 0.0, 1.0));
   vec3 moon = uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
   // Sunlit paving and plaster throw a lot of light into a narrow street:
   // onto the walls from the paving, and back down onto shaded ground from
   // the pale sunlit walls round it. Without the second term a shaded street
   // or forum got the sky alone and went near black, worst on a phone with
   // no ambient occlusion pass to balance it against.
-  vec3 bounce = sunE * max(0.0, uSunDir.y) * (0.15 * (1.0 - n.y) + 0.07 * max(0.0, n.y));
-  float inside = (1.0 - covered * 0.7) * (1.0 - 0.9 * shut);
-  vec3 lit = albedo * ((sunE * ndl * sunVis) * (1.0 - covered * 0.85) + (ambient + bounce) * inside + moon * (1.0 - shut));
+  // Tinted by the warm plaster and dust it comes off; strongest on
+  // down-facing and vertical surfaces, which face the lit street. It
+  // scales with the sun, so it goes at night and under the ash by itself.
+  // A covered surface (a shop, a portico) is lit mostly this way, through
+  // its opening, so it gets more of it.
+  // How shut in the point is (the share of its sky the AO pass took) says
+  // how much lit wall surrounds it: a street floor between two sunlit
+  // walls gets far more than an open plaza or a roof. With no AO pass (a
+  // phone) this is 0 and the base terms are what is left.
+  vec3 skyOpen = shIrradiance(n);
+  float enclosed = 1.0 - clamp(dot(occSky, vec3(0.3, 0.6, 0.1)) / max(1e-5, dot(skyOpen, vec3(0.3, 0.6, 0.1))), 0.0, 1.0);
+  float upB = style > 0.5 && style < 1.5 ? 0.07 : 0.24 + 0.4 * enclosed;
+  vec3 bounce = sunE * max(0.0, uSunDir.y) * vec3(1.0, 0.87, 0.7) * ((0.26 + 0.2 * enclosed) * (1.0 - n.y) + upB * max(0.0, n.y)) * (1.0 + covered);
+  float inside = (1.0 - covered * 0.45) * (1.0 - 0.9 * shut) * ao;
+  sunVis *= sunShade;
+  vec3 lit = albedo * ((sunE * ndl * sunVis) * (1.0 - covered * 0.85) + (ambient + bounce) * inside + moon * (1.0 - shut) * ao);
   // Lamps and hearths inside at night. Stand-ins for the oil lamps, which
   // replace them while render/pompeiilamps.ts runs (uLampNight 1).
   lit += albedo * uNightGlow * uNight * 0.3 * (1.0 - uLampNight);
