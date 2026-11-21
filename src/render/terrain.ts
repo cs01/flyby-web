@@ -31,7 +31,7 @@ import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { CITY_RINGS, type TerrainRing } from "./budget";
 import { WATER_SSR_GLSL, WATER_SSR_UNIFORMS, type WaterSsrUniforms } from "./waterssr";
 import { GROUND_DETAIL_GLSL } from "./grounddetail";
-import { OCEAN_FS_GLSL, OCEAN_VS_GLSL, oceanLinkUniforms, type OceanLinkUniforms } from "./oceanglsl";
+import { OCEAN_FS_GLSL, OCEAN_VS_GLSL, SWELL_GLSL, oceanLinkUniforms, type OceanLinkUniforms } from "./oceanglsl";
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -137,6 +137,7 @@ ${SH_GLSL}
 ${AO_GLSL}
 ${WATER_SSR_GLSL}
 ${waveTableGlsl()}
+${SWELL_GLSL}
 ${GROUND_DETAIL_GLSL}
 
 uniform sampler2D uDrape;
@@ -255,15 +256,48 @@ void main() {
 #ifdef OCEAN
   // The FFT normal maps, here for the same reason: they are mipmapped, so
   // they need the derivatives a branch would make undefined.
-  vec4 oN0 = texture(uOceanNrm0, vOceanXZ / uOceanPatch.x);
-#if OCEAN_CASCADES > 1
-  vec4 oN1 = texture(uOceanNrm1, vOceanXZ / uOceanPatch.y);
-#else
-  vec4 oN1 = vec4(0.0);
-#endif
   // Geometric mean of the two axes' footprints: the maps filter anisotropically,
   // so the long axis alone would call far more of the slope lost than is.
   float oFoot = sqrt(length(wdx) * length(wdy)) + 1e-4;
+  vec2 oUv0 = vOceanXZ / uOceanPatch.x;
+  vec4 oN0 = texture(uOceanNrm0, oUv0);
+  // The foam blurred over ~3 m: the ramp the foam texture is eroded across
+  // (see the FFT foam below), wide enough that the edge it cuts is ragged at
+  // the scale of a patch rather than smooth at the scale of one texel. An
+  // explicit level, because near the lens the map is magnified and a bias on
+  // a negative level still reads level 0.
+  float oFb = textureLod(uOceanNrm0, oUv0, oceanBlurLod(3.0, oFoot, uOceanPatch.x)).a;
+#ifdef OCEAN_DETILE
+  // The vertex stage's second read, mirrored the same way (see
+  // oceanDetileMask). J - 1 is what is Gaussian, so that is what is blended.
+  {
+    vec2 oUvB = oceanMirror(vOceanXZ, uOceanWind) / uOceanPatch.x + OCEAN_DETILE_OFS;
+    vec4 oB = texture(uOceanNrm0, oUvB);
+    oB.xy = oceanMirror(oB.xy, uOceanWind);
+    float oM = oceanDetileMask(vOceanXZ);
+    float oNm = oceanDetileNorm(oM);
+    oN0 = vec4(mix(oN0.xy, oB.xy, oM) * oNm, 1.0 + mix(oN0.z - 1.0, oB.z - 1.0, oM) * oNm,
+               mix(oN0.a, oB.a, oM));
+    oFb = mix(oFb, textureLod(uOceanNrm0, oUvB, oceanBlurLod(3.0, oFoot, uOceanPatch.x)).a, oM);
+  }
+  // THE DETAIL OCTAVE. One 80 m cascade leaves everything under 5 m to the
+  // terrain's fixed 24-wave sum, and from a deck those few waves per octave
+  // are a regular scale pattern right under the lens. The same map read
+  // OCEAN_DETAIL_S times smaller (mirrored and shifted so it is not the big
+  // waves' pattern in miniature) is a random sea in that band at the cost
+  // of one texture read and no memory. Slopes, not heights, are what carry
+  // over unchanged when a surface is scaled down in all three axes.
+  vec2 oUvD = oceanMirror(vOceanXZ, uOceanWind) * (OCEAN_DETAIL_S / uOceanPatch.x) + vec2(0.213, 0.829);
+  vec4 oD = texture(uOceanNrm0, oUvD);
+  oD.xy = oceanMirror(oD.xy, uOceanWind);
+#endif
+#if OCEAN_CASCADES > 1
+  vec2 oUv1 = vOceanXZ / uOceanPatch.y;
+  vec4 oN1 = texture(uOceanNrm1, oUv1);
+  oFb = max(oFb, textureLod(uOceanNrm1, oUv1, oceanBlurLod(3.0, oFoot, uOceanPatch.y)).a);
+#else
+  vec4 oN1 = vec4(0.0);
+#endif
 #endif
 
   // Landcover, sampled once and used by both the water term and the night
@@ -859,6 +893,10 @@ void main() {
   // this pixel sits in units of the resolved sea's rms (for the subsurface
   // glow). Both stay at their calm values under ?flatwater.
   float foam = 0.0;
+  // The foam's brightness (1 is a fresh breaker) and the bubble cloud under
+  // it (0..1); only the FFT sea knows either.
+  float foamLum = 1.0;
+  float foamSub = 0.0;
   float crestN = 0.0;
   float waveRes = 0.0;
   // Rms slope the waves left UNRESOLVED at this pixel, along one direction.
@@ -951,9 +989,18 @@ void main() {
     // The FFT carries these wavelengths now. Dropped AFTER the sum above, so
     // the share every other wave gets is the same as the terrain's own and
     // the capillaries under the FFT band match the far field exactly.
+    // With one cascade the detail octave (OCEAN_DETAIL_S) takes the band
+    // below it too, and how much slope it must carry is exactly what these
+    // waves had.
+    float detWv = 0.0;
     for (int i = 0; i < WAVE_N; i++) {
       float lamI = exp(WAVE_LNLAM0[i]);
       wv[i] *= 1.0 - oRad * step(uOceanBand.x, lamI) * step(lamI, uOceanBand.y);
+#ifdef OCEAN_DETILE
+      float inDet = oRad * step(uOceanBand.x / OCEAN_DETAIL_S, lamI) * (1.0 - step(uOceanBand.x, lamI));
+      detWv += wv[i] * inDet;
+      wv[i] *= 1.0 - inDet;
+#endif
     }
 #endif
     float share = mss / wsum;
@@ -1035,7 +1082,34 @@ void main() {
     varPKept += oVar * uOceanSlopeVar.x * (1.0 - oLost0);
     varPAll += oVar * uOceanSlopeVar.x;
     slope += (oN0.xy + oN1.xy) * oAmp * sqrt(rough);
+#ifdef OCEAN_DETILE
+    // The detail octave, scaled to the slope variance of the analytic waves
+    // it replaced (the map's slopes are the cascade's, sv0). What its mip has
+    // averaged out goes to the roughness like every other band's.
+    float detVar = share * detWv;
+    float dLost = oceanLostFrac(oFoot, uOceanPatch.x / OCEAN_DETAIL_S);
+    lostVar += detVar * dLost;
+    keptVar += detVar * (1.0 - dLost);
+    slope += oD.xy * sqrt(detVar / max(uOceanSlopeVar.x, 1e-6));
 #endif
+#endif
+
+    // THE SWELL (SWELL_GLSL): its slope on top of the wind sea, inside the
+    // FFT disc and out of it alike, so the far field carries the same swell
+    // the disc displaces. Off a coast it fades as the disc's geometry does.
+    {
+#ifdef OCEAN
+      vec2 sxz = vOceanXZ;
+#else
+      vec2 sxz = vWorld.xz;
+#endif
+      float sAmp = uSwellOn * swellAmpAt(sxz) * smoothstep(8.0, 60.0, shoreD);
+      if (sAmp > 1e-3) {
+        vec3 sw = swellSlope(sxz, sAmp, wdx, wdy);
+        slope += sw.xy;
+        lostVar += sw.z;
+      }
+    }
 
     // Water is LEVEL. The terrain normal under it is whatever the heightfield's
     // noise made of a flat plateau, so the waves are hung off vertical and only
@@ -1088,46 +1162,125 @@ void main() {
     // the crest threshold is the Gaussian tail holding W / 0.33 of the area
     // (t ~ 0.77 sqrt(-2 ln p), within 0.25 of the exact quantile between
     // 0.1% and 10%).
-    float group = smoothstep(0.50, 0.72, vnoise2((qa - vec2(U * 0.5 * uTime, 0.0)) / vec2(34.0, 22.0) + vec2(5.7, 1.3)));
-    float t = 0.77 * sqrt(-2.0 * log(clamp(W / 0.33, 1e-6, 0.5)));
-    float crestP = jacP / sqrt(max(varPKept, 1e-9));
-    float lace = vnoise2(qa / vec2(3.2, 1.6) - vec2(uTime * 0.4, 0.0)) * 0.6
-               + vnoise2(qa / 0.9 + vec2(3.1, 9.4)) * 0.4;
-    // Which crest in a group breaks is not decided by height alone (the wind
-    // gusts, the current shears), and with only the three or four dominant
-    // waves in the sum, height alone picks the same phase of each: dots on a
-    // lattice. A 7 m noise added to the crest height (sd ~0.35 against the
-    // crest's 1) jumbles which crests clear the bar without moving the bar.
-    float jumble = vnoise2(qa / vec2(7.0, 4.0) + vec2(13.1, 7.7)) - 0.5;
-    float near_ = smoothstep(t - 0.5, t + 0.3, crestP + 2.4 * jumble) * group
-                * smoothstep(0.2, 0.6, lace);
     // Far: once the dominant crests are not resolved the foam is not either,
     // and what a pixel sees is the coverage itself, as a brighter tint. Which
     // applies is how much of the dominant waves' slope is still resolved.
     float resolved = smoothstep(0.25, 0.75, keptVar / (keptVar + lostVar));
     float resolvedP = smoothstep(0.3, 0.8, varPKept / varPAll);
     waveRes = resolved;
-    foam = mix(W * 0.8, near_, resolvedP) * rough;
+    // How much of the foam below the analytic waves' foam is: all of it on
+    // the terrain, none under the FFT disc, where the FFT's own foam is drawn.
+    // Each noise below is only evaluated where its result is used (none of
+    // them takes a derivative, so the branches are safe), which is most of
+    // what keeps the phone's water shader the price it was.
+#ifdef OCEAN
+    float aW = 1.0 - oRad;
+    float oFar = smoothstep(0.3, 0.7, oceanLostFrac(oFoot, uOceanPatch.x));
+#else
+    float aW = 1.0;
+    float oFar = 0.0;
+#endif
+    // The lace is the shore band's too.
+    float lace = 0.5;
+    if (resolvedP * aW > 0.001 || shoreD < 25.0) {
+      lace = vnoise2(qa / vec2(3.2, 1.6) - vec2(uTime * 0.4, 0.0)) * 0.6
+           + vnoise2(qa / 0.9 + vec2(3.1, 9.4)) * 0.4;
+    }
+    float near_ = 0.0;
+    if (resolvedP * aW > 0.001) {
+      float group = smoothstep(0.50, 0.72, vnoise2((qa - vec2(U * 0.5 * uTime, 0.0)) / vec2(34.0, 22.0) + vec2(5.7, 1.3)));
+      float t = 0.77 * sqrt(-2.0 * log(clamp(W / 0.33, 1e-6, 0.5)));
+      float crestP = jacP / sqrt(max(varPKept, 1e-9));
+      // Which crest in a group breaks is not decided by height alone (the wind
+      // gusts, the current shears), and with only the three or four dominant
+      // waves in the sum, height alone picks the same phase of each: dots on a
+      // lattice. A 7 m noise added to the crest height (sd ~0.35 against the
+      // crest's 1) jumbles which crests clear the bar without moving the bar.
+      float jumble = vnoise2(qa / vec2(7.0, 4.0) + vec2(13.1, 7.7)) - 0.5;
+      near_ = smoothstep(t - 0.5, t + 0.3, crestP + 2.4 * jumble) * group
+            * smoothstep(0.2, 0.6, lace);
+    }
+    // Between the two: a breaker is a patch metres across, so it is still a
+    // speck a pixel or two wide well after the waves that made it have gone
+    // to roughness. Without this the whitecaps stopped where the FFT disc (or
+    // the resolved crests) ended and the sea past them was a plain tint, a
+    // change of character a kilometre or two out. Patches ~14 m by 5 m along
+    // the wind, drifting with it, thresholded at the Gaussian tail that
+    // covers W of the area (the noise sum is ~N(0.5, 0.14)); they blur to W
+    // itself once a pixel is wider than a patch.
+    float spFoot = sqrt(length(wdx) * length(wdy));
+    float spBlur = smoothstep(7.0, 18.0, spFoot);
+    float farSpeck = 0.8 * W;
+    if (spBlur < 1.0 && (aW * (1.0 - resolvedP) > 0.001 || oFar > 0.001)) {
+      vec2 spQ = (qa - vec2(U * 0.5 * uTime, 0.0)) / vec2(14.0, 5.0);
+      float spN = vnoise2(spQ + vec2(2.9, 6.3)) * 0.7 + vnoise2(spQ * 2.6 + vec2(8.1, 0.7)) * 0.3;
+      float spT = 0.5 + 0.14 * 0.77 * sqrt(-2.0 * log(clamp(W, 1e-6, 0.5)));
+      float spW = 0.03 + 0.1 * smoothstep(1.5, 8.0, spFoot);
+      farSpeck = 0.8 * mix(smoothstep(spT - spW, spT + spW, spN), W, spBlur);
+    }
+    foam = mix(farSpeck, near_, resolvedP) * rough;
 #ifdef OCEAN
     // Foam where the FFT surface is folding (Jacobian under the threshold the
-    // wind sets, see foamThreshold), kept a few seconds as it decays: patches
-    // on the crests trailing streaks. The lace breaks a patch's edge up and
-    // stretches it downwind; the mip of the same map is the far coverage tint.
+    // wind sets, see foamThreshold), kept a few seconds as it decays (the
+    // map's alpha, 1 at the breaker, falling with FOAM_TAU_S after it).
     // Gated like the analytic foam: no fetch, no breakers.
     //
-    // Near the lens the long cascade's foam is a metre a texel and magnifies
-    // into soft blobs; real whitecap foam is a lace with holes in it. A
-    // sub-metre grain thresholds it into that where it has the pixels, and
-    // fades back to the plain map (its mean) where it has not.
+    // The map is a metre a texel and magnifies into soft blobs, and dimming
+    // a blob as it ages is exactly the pasted-on look. Real foam ERODES: the
+    // thin parts of the lace go first, so an old patch is a few streaks and
+    // walls with water between, and only the newest is a solid sheet. So the
+    // foam's own texture (oceanFoamTex, roughly uniform 0..1) is cut at one
+    // minus the amount: a fresh patch shows all of it, a fading one only its
+    // brightest walls, and the area covered stays close to the amount, which
+    // is what keeps the mean right where the texture is too fine to see.
     float oF = max(oN0.a, oN1.a);
-    float grain = vnoise2(qa / vec2(1.3, 0.7) + vec2(2.3, 8.1)) * 0.6
-                + vnoise2(qa / 0.35 + vec2(9.2, 1.7)) * 0.4;
-    oF = mix(oF * 0.6, smoothstep(0.45, 0.75, oF * (0.15 + 1.25 * grain)), smoothstep(0.6, 0.1, pxFoot));
-    float fftFoam = oF * smoothstep(300.0, 3000.0, fetchM)
-                  * smoothstep(0.35, 0.85, oceanFetchAmp(shoreD))
-                  * mix(1.0, smoothstep(0.15, 0.55, lace), 0.7)
-                  * clamp(rough, 0.5, 1.5);
+    float oBreak = oceanBreaking(oN0.z, uOceanFoamTh.xy);
+#if OCEAN_CASCADES > 1
+    oBreak = max(oBreak, oceanBreaking(oN1.z, uOceanFoamTh.zw));
+#endif
+    float fGate = smoothstep(300.0, 3000.0, fetchM)
+                * smoothstep(0.35, 0.85, oceanFetchAmp(shoreD))
+                * clamp(rough, 0.5, 1.5);
+    float fFoot = oFoot;
+    // The texture only where it is seen: near enough to resolve, and foam.
+    float fTexOn = smoothstep(1.2, 0.3, fFoot);
+    float fTexVis = smoothstep(2.5, 0.6, fFoot);
+    // Mostly the blurred map while the texture is there to cut it, so the
+    // texture picks where the edge falls across metres rather than one
+    // texel; past that the blur would only smudge a crisp patch. The breaker
+    // adds to it: dense, but cut by the same texture, so its rim is as
+    // ragged as the trail's. Never quite all of it: even a fresh sheet has
+    // holes in it.
+    float fAmt = clamp(1.15 * mix(oF, oFb, 0.65 * fTexOn) + 0.45 * oBreak, 0.0, 0.94);
+    float fTex = 0.5;
+    if (fTexVis > 0.0 && fAmt > 0.01) fTex = oceanFoamTex(qa, fFoot);
+    // The cut's soft edge widens with the footprint: a hard threshold on a
+    // texture the pixel cannot resolve is a field of sparkling stairs.
+    float fEdge = 0.15 + 0.3 * smoothstep(0.3, 2.0, fFoot);
+    float fCov = smoothstep(0.0, fEdge, fTex + fAmt - 1.0);
+    // Old foam is a film, not paint: the water shows through it.
+    fCov *= mix(0.55, 1.0, smoothstep(0.15, 0.85, max(fAmt, oBreak)));
+    // Too far for the texture: the amount is the coverage.
+    fCov = mix(fAmt * 0.8, fCov, fTexVis);
+    float fftFoam = fCov * fGate;
+    // FAR. Once the map's own patches are sub-pixel what it gives is its mean,
+    // which is not guaranteed to be the tint the terrain water shows past the
+    // rim, and a difference there is a ring on the sea a few km out. So the
+    // terrain's own far foam (the specks, then the tint) takes over as the
+    // map stops being resolved, well inside the rim, and the rim has nothing
+    // left to hand over.
+    fftFoam = mix(fftFoam, farSpeck * rough, oFar);
     foam = mix(foam, fftFoam, oRad);
+    // A breaking crest is the brightest thing on the sea; the foam it leaves
+    // is thinner, wetter and greyer. And the higher on the wave the brighter,
+    // the crest facing the sky. The texture shades it too, faded with it:
+    // bubbles of every size, not a flat white.
+    foamLum = mix(1.0, mix(0.72, 1.0, oBreak) * mix(0.92, 1.06, smoothstep(-0.5, 1.5, crestN))
+                       * mix(1.0, 0.8 + 0.3 * fTex, fTexVis), oRad);
+    // Bubbles under the surface: a pale cloud round and under every patch,
+    // wider than the foam on top, which is what stops the foam's edge reading
+    // as a cut-out. Smooth (the map's own blur), so it fills the lace's holes.
+    foamSub = smoothstep(0.05, 0.7, oF) * (1.0 - fCov) * fGate * oRad;
 #endif
 
     // THE SHORE. A foam line where waves arrive at a coast, sized by the waves
@@ -1308,6 +1461,12 @@ void main() {
       float behind = pow(clamp(dot(vh, lh), 0.0, 1.0), 3.0);
       float lowSun = smoothstep(0.0, 0.08, uSunDir.y) * (1.0 - smoothstep(0.35, 0.8, uSunDir.y));
       float crest = mix(0.25, smoothstep(0.3, 2.0, crestN), waveRes);
+      // And the face turned away from the sun, toward the camera: the light
+      // that crossed the crest leaves through it, so the glow sits on the
+      // upper back of each wave, not as a flat band over all of it. Resolved
+      // waves only; past them it is the average again.
+      float awayFace = smoothstep(-0.02, 0.2, dot(wn.xz, -lh));
+      crest *= mix(1.0, 0.35 + 1.6 * awayFace, waveRes);
       // The glow is the body colour pushed toward its own hue: the scattering
       // that made it that colour is happening through a thinner sheet.
       // Pulled a little toward the blue-green that clear water transmits,
@@ -1316,13 +1475,18 @@ void main() {
       vec3 glowTint = mix(body / max(max(body.r, max(body.g, body.b)), 1e-4),
                           vec3(0.25, 0.85, 0.70), 0.35);
       sss = glowTint * uSunColor * uSunIntensity * uSunSurface * sunT * sunVis
-          * behind * lowSun * crest * 0.11;
+          * behind * lowSun * crest * 0.24;
+      // Bubbles in the water scatter light back up before the body absorbs
+      // it: a paler cloud of the water's own colour under the foam, seen
+      // through the surface (so under the Fresnel, like the body colour it
+      // brightens).
+      deep = mix(deep, (body * 2.5 + 0.02) * (beam + ambient), 0.4 * foamSub);
     }
     vec3 surface = mix(deep, skyRefl, fres) + glint + sss * (1.0 - fres);
 
     // Foam is a rough white scatterer lying ON the water: it takes the light
     // the way a snowfield does and hides the reflection and the glint under it.
-    vec3 foamCol = vec3(0.78, 0.80, 0.80) * (beam + ambient);
+    vec3 foamCol = vec3(0.78, 0.80, 0.80) * foamLum * (beam + ambient);
     surface = mix(surface, foamCol, foam);
     lit = mix(lit, surface, water);
   }

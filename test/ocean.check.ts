@@ -11,8 +11,12 @@
 // asserted to reject it. A gate that cannot go red is not a gate.
 
 import {
+  FOAM_ACTIVE_SHARE,
+  FOAM_TAU_S,
+  OCEAN_CHOP,
   OCEAN_FETCH_REF_M,
   PHASE_PERIOD_S,
+  SWELL_HS_M,
   cascadeBands,
   cascadeGaussians,
   cascadeStats,
@@ -20,13 +24,21 @@ import {
   foamThreshold,
   ifft,
   jacobianField,
+  shoreSampler,
   simulateCascade,
+  swellExposure,
+  swellHs,
+  swellWaves,
   whitecapCoverage,
   writeH0,
   type FoamThreshold,
   type OceanCascadePlan,
 } from "../src/render/oceanspectrum";
 import { budgetForTier, type DeviceDescriptor } from "../src/render/budget";
+import { parseLandPack } from "../src/data/landcover";
+import { encodeShoreDistance, shoreDistanceM } from "../src/data/landmask";
+import { SHORE_MAX_FAR_M, SHORE_MAX_NEAR_M } from "../src/render/landmask";
+import { Origin } from "../src/geo";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -201,6 +213,91 @@ const rms = (a: Float32Array): number => Math.sqrt(a.reduce((s, x) => s + x * x,
       check("probe: an unreachable threshold fails the rise", !increasing(flat.slice(1)), flat.map((x) => x.toFixed(3)).join(" "));
     });
   }
+}
+
+// --- foam history -------------------------------------------------------------
+
+// The GPU keeps foam for seconds after its crest has passed (render/ocean.ts):
+// max(new foam, last frame's * exp(-dt / tau)). Replayed here over the warm-up
+// the GPU runs, the map's mean must stay near the whitecap coverage, which is
+// what FOAM_ACTIVE_SHARE is for: with the threshold set for the whole
+// coverage the history foamed a quarter of the sea.
+{
+  const replay = (plan: OceanCascadePlan[], ci: number, U: number, share: number, steps: number, dt: number): number => {
+    const c = plan[ci];
+    const b = cascadeBands(plan)[ci];
+    const h0 = new Float32Array(c.n * c.n * 4);
+    writeH0(c, b, cascadeGaussians(c.n, 0x51ed270b + ci * 0x9e3779b1), U, WX, WZ, OCEAN_FETCH_REF_M, h0, 0, c.n);
+    const th = foamThreshold(U, cascadeStats(c, b, U, WX, WZ).slopeVar, OCEAN_CHOP, share);
+    const keep = Math.exp(-dt / FOAM_TAU_S);
+    const F = new Float32Array(c.n * c.n);
+    for (let s = steps; s >= 0; s--) {
+      const J = jacobianField(simulateCascade(c, h0, 0, c.n, 40 - s * dt));
+      for (let i = 0; i < J.length; i++) F[i] = Math.max(foamAt(J[i], th), F[i] * keep);
+    }
+    return F.reduce((a, x) => a + x, 0) / F.length;
+  };
+  const U = 12;
+  const W = whitecapCoverage(U);
+  const near = (m: number) => m > W / 2.5 && m < W * 2;
+  // Reduced at the GPU's own warm-up step; the full plan's 240 m cascade at a
+  // coarser one (same 12 s of history), since it is 16x the work per step.
+  const cases: [string, OceanCascadePlan[], number, number][] = [
+    ["reduced", REDUCED.cascades, 48, 0.25],
+    ["full 240 m", FULL.cascades, 12, 1.0],
+  ];
+  for (const [name, plan, steps, dt] of cases) {
+    const m = replay(plan, 0, U, FOAM_ACTIVE_SHARE, steps, dt);
+    check(`${name}: kept foam averages near the coverage at ${U} m/s`, near(m),
+      `${(m * 100).toFixed(2)}% vs W ${(W * 100).toFixed(2)}%`);
+  }
+  const all = replay(REDUCED.cascades, 0, U, 1, 48, 0.25);
+  check("probe: a threshold for the whole coverage over-foams", !near(all), `${(all * 100).toFixed(2)}%`);
+}
+
+// --- swell ----------------------------------------------------------------------
+
+// The swell from the open Pacific, against the real coast: outside the Golden
+// Gate it must be there at about the height a NorCal swell has, and the bay
+// behind the Gate must be in its lee. Measured on the SF land pack through the
+// same shore distance the GPU samples (encoded and decoded the same way).
+{
+  const waves = swellWaves();
+  const hs0 = swellHs(waves);
+  check("swell components sum to the offshore Hs", Math.abs(hs0 - SWELL_HS_M) < 1e-6, `${hs0.toFixed(3)} m`);
+  check("swell is long: every component over 100 m",
+    waves.every((w) => (2 * Math.PI) / w.k > 100 && w.omega > 0), waves.map((w) => ((2 * Math.PI) / w.k).toFixed(0)).join(" "));
+
+  const lp = parseLandPack(await Bun.file("public/cities/sf.land").arrayBuffer());
+  const [nl, fl] = [lp.levels[0], lp.levels[1] ?? lp.levels[0]];
+  const grid = (l: typeof nl, maxM: number) => ({ data: encodeShoreDistance(shoreDistanceM(l), maxM), n: l.n, extentM: l.extentM, maxM });
+  const shore = shoreSampler(grid(nl, SHORE_MAX_NEAR_M), grid(fl, SHORE_MAX_FAR_M));
+  const origin = new Origin(lp.lat0, lp.lon0);
+  const hsAt = (s: (x: number, z: number) => number, lat: number, lon: number): number => {
+    const p = origin.toWorld(lat, lon);
+    return hs0 * swellExposure(s, p.x, p.z);
+  };
+  // Mid-channel 2 km west of the bridge (the sf-gate-swell shot), Ocean
+  // Beach 1 km off the sand, east of Alcatraz (sf-bay-ocean-low), and off the
+  // Bay Bridge.
+  const outside = hsAt(shore, 37.8060, -122.5020);
+  const beach = hsAt(shore, 37.7600, -122.5250);
+  const alcatraz = hsAt(shore, 37.8240, -122.4150);
+  const bayBridge = hsAt(shore, 37.8100, -122.3780);
+  check("swell outside the Gate is an ocean swell (1.5 to 2.5 m)", outside >= 1.5 && outside <= 2.5, `Hs ${outside.toFixed(2)} m`);
+  check("swell off Ocean Beach is the open-ocean height", beach > 0.85 * hs0, `Hs ${beach.toFixed(2)} m`);
+  const lee = (o: number, i: number) => o > 3 * i;
+  check("swell outside the Gate is over 3x the bay's behind it", lee(outside, alcatraz),
+    `outside ${outside.toFixed(2)} m, east of Alcatraz ${alcatraz.toFixed(2)} m`);
+  check("the inner bay is in the swell's lee", bayBridge < 0.4, `off the Bay Bridge ${bayBridge.toFixed(2)} m`);
+  // Probe: with no coast at all every point sees the open sea, and the lee
+  // predicate must say so.
+  const open = (): number => 1e5;
+  const o2 = hsAt(open, 37.8060, -122.5020);
+  const i2 = hsAt(open, 37.8240, -122.4150);
+  check("probe: with no coast the lee predicate fails", !lee(o2, i2), `outside ${o2.toFixed(2)}, inside ${i2.toFixed(2)}`);
+  // And on land there is no swell to have.
+  check("probe: no swell on land", hsAt(shore, 37.7793, -122.4193) === 0, "Civic Center");
 }
 
 console.log(failures === 0 ? "\nall ocean checks ok" : `\n${failures} ocean check(s) FAILED`);
