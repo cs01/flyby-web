@@ -635,13 +635,21 @@ async function main() {
     // `?off=eruption` leaves the town as it was the day before.
     if (!perfOff.has("eruption")) {
       const v = origin.toWorld(VESUVIUS.lat, VESUVIUS.lon);
+      const plumeQ = new URLSearchParams(location.search).get("plume");
       eruptView = new EruptionView({
         vent: new THREE.Vector3(v.x, terrain.heightAt(v.x, v.z), v.z),
         town: { x: off.x, z: off.z },
         heightAt: (x, z) => terrain.heightAt(x, z),
         reduced: budget.tier === "reduced",
         fall: townDef(pompeiiData.town).eruption.fall,
+        // `?plume=billows` keeps the phone's billows on a desktop, `?plume=low`
+        // the cut-down march the quality ladder steps down to.
+        volume: budget.tier === "full" && plumeQ !== "billows",
       });
+      if (eruptView.volume) {
+        composite.setPlume(renderer, eruptView.volume.uniforms);
+        composite.plumeLow = plumeQ === "low";
+      }
       eruptView.enabled = new URLSearchParams(location.search).has("eruption");
       // The town mesh sits at the offset; its roofs are in the town's own frame.
       eruptView.roofs = pompeii.model.roofs.map((r) => ({ ...r, x: r.x + off.x, z: r.z + off.z, ring: r.ring.map((v, i) => v + (i % 2 ? off.z : off.x)) }));
@@ -1978,7 +1986,9 @@ async function main() {
   let wxDirty = false;
 
   const clock = new THREE.Clock();
-  let elapsed = 0;
+  // `?anim=<s>` pins the frozen animation clock of a shot somewhere other
+  // than zero, so a sequence of shots can show motion (the eruption's eddies).
+  let elapsed = shotMode ? Number(new URLSearchParams(location.search).get("anim") ?? 0) || 0 : 0;
   const bridgeBufferSize = new THREE.Vector2();
 
   // The animation clock as of the last traffic step; see the step below.
@@ -3049,6 +3059,7 @@ async function main() {
 
     // Pass 2 + 3: clouds raymarched at half resolution against that target's
     // depth, then a full-resolution present that folds them in and tone maps.
+    composite.plumeOn = eruptView?.volumeActive ?? false;
     composite.update(camera, wx, light, elapsed, skyProbe.sh, cityUplight);
     composite.presentUniforms.uExposure.value = light.exposure * exposureScale;
     composite.presentUniforms.uNight.value = light.night;
