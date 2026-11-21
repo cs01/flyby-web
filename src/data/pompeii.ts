@@ -85,6 +85,9 @@ export interface PompeiiData {
   stats: Record<string, number>;
 }
 
+/** Pavement height above the carriageway. Pompeii's kerbs run 0.3 to 0.6 m. */
+export const KERB_M = 0.42;
+
 export function parsePompeii(text: string): PompeiiData {
   const d = JSON.parse(text) as PompeiiData;
   if (!Array.isArray(d.streets) || !Array.isArray(d.insulae) || !Array.isArray(d.wall)) {

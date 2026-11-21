@@ -104,9 +104,6 @@ function straightness(p: number[]): number {
   const chord = Math.hypot(p[p.length - 2] - p[0], p[p.length - 1] - p[1]);
   return chord / Math.max(1e-6, polylineLength(p));
 }
-function bearing(p: number[]): number {
-  return Math.atan2(p[p.length - 1] - p[1], p[p.length - 2] - p[0]);
-}
 const streets: PompeiiStreet[] = [];
 for (const w of ways.values()) {
   const t = w.tags;
@@ -166,6 +163,26 @@ for (const e of raw.elements) {
 }
 if (!amphiRing) throw new Error("no amphitheatre outline");
 const amphitheatre = fitEllipse(amphiRing);
+{
+  // The visitor paths across the arena are not streets.
+  const a = amphitheatre;
+  const inAmphi = (x: number, z: number): boolean => {
+    const dx = x - a.cx, dz = z - a.cz;
+    const u = dx * Math.cos(a.rot) + dz * Math.sin(a.rot), v = -dx * Math.sin(a.rot) + dz * Math.cos(a.rot);
+    return (u / a.a) ** 2 + (v / a.b) ** 2 <= 1;
+  };
+  for (let i = streets.length - 1; i >= 0; i--) {
+    const p = streets[i].pts;
+    // Sampled along the line, not at its vertices: a two-node path straight
+    // across the arena has none inside.
+    let n = 0, m = 0;
+    for (let k = 2; k < p.length; k += 2) {
+      const L = Math.hypot(p[k] - p[k - 2], p[k + 1] - p[k - 1]);
+      for (let s = 0; s < L; s += 2, m++) if (inAmphi(p[k - 2] + ((p[k] - p[k - 2]) * s) / L, p[k - 1] + ((p[k + 1] - p[k - 1]) * s) / L)) n++;
+    }
+    if (m && n / m > 0.3) streets.splice(i, 1);
+  }
+}
 
 /**
  * The ellipse with the outline's AREA moments. The outline's extremes are the
