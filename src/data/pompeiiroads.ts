@@ -7,7 +7,7 @@
 // for parts of the town) and none of that is modelled.
 
 import { RoadClass, SurfaceKind, type Road, type RoadPack } from "./roadpack";
-import { KERB_M, type PompeiiData } from "./pompeii";
+import { KERB_M, pointInRing, villaFloorPoint, type PompeiiData } from "./pompeii";
 
 export function pompeiiRoadPack(data: PompeiiData): RoadPack {
   const roads: Road[] = [];
@@ -62,8 +62,21 @@ export function pompeiiHeightAt(data: PompeiiData, base: (x: number, z: number) 
       }
     }
   }
+  // The Villa dei Misteri stands on its built-up terrace outside the wall:
+  // one floor level, taken (as render/pompeiimesh.ts builds it) from the
+  // ground at the middle of its longest side. Measured on first use, when
+  // the terrain under it exists.
+  const villa = data.villa?.ring;
+  let villaFloor: number | null = null;
+  const villaY = (): number => {
+    if (villaFloor !== null || !villa) return villaFloor ?? 0;
+    const [mx, mz] = villaFloorPoint(villa);
+    villaFloor = base(mx + offX, mz + offZ) + KERB_M + 0.06;
+    return villaFloor;
+  };
   return (x: number, z: number): number => {
     const g = base(x, z);
+    if (villa && pointInRing(villa, x - offX, z - offZ)) return Math.max(g, villaY());
     const i = Math.floor(x - offX - x0), j = Math.floor(z - offZ - z0);
     if (i < 0 || j < 0 || i >= W || j >= H || !raised[j * W + i]) return g;
     return g + KERB_M;
