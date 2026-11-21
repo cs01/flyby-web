@@ -31,6 +31,7 @@ import { AO_GLSL, aoUniforms, type AoUniforms } from "./ao";
 import { CITY_RINGS, type TerrainRing } from "./budget";
 import { WATER_SSR_GLSL, WATER_SSR_UNIFORMS, type WaterSsrUniforms } from "./waterssr";
 import { GROUND_DETAIL_GLSL } from "./grounddetail";
+import { OCEAN_FS_GLSL, OCEAN_VS_GLSL, oceanLinkUniforms, type OceanLinkUniforms } from "./oceanglsl";
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -41,6 +42,7 @@ uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
 uniform mat3 normalMatrix;
 uniform vec3 uCameraPos;
+${OCEAN_VS_GLSL}
 out vec2 vUv;
 out vec3 vNormal;
 out vec3 vWorld;
@@ -48,9 +50,13 @@ out float vViewDist;
 void main() {
   vUv = uv;
   vNormal = normalize(normalMatrix * normal);
-  vWorld = position;
-  vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  vViewDist = length(position - uCameraPos);
+  // Open water under the FFT ocean drops out of the way of its troughs; see
+  // render/ocean.ts. Zero everywhere else and whenever the ocean is off.
+  vec3 p = position;
+  p.y -= oceanSinkAt(p);
+  vWorld = p;
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  vViewDist = length(p - uCameraPos);
   gl_Position = projectionMatrix * mv;
 }
 `;
@@ -182,6 +188,9 @@ uniform float uDetailMode;
 // Height of the water surface the DEM reports, metres; see waterLevelM in
 // data/landmask.ts. 0 for a coast, 176 for Chicago's lakefront.
 uniform float uWaterLevel;
+#ifdef OCEAN
+${OCEAN_FS_GLSL}
+#endif
 
 float hash21(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -243,6 +252,19 @@ void main() {
   float pxFoot3 = max(length(dFdx(vWorld)), length(dFdy(vWorld))) + 1e-4;
   vec2 duvx = dFdx(vUv);
   vec2 duvy = dFdy(vUv);
+#ifdef OCEAN
+  // The FFT normal maps, here for the same reason: they are mipmapped, so
+  // they need the derivatives a branch would make undefined.
+  vec4 oN0 = texture(uOceanNrm0, vOceanXZ / uOceanPatch.x);
+#if OCEAN_CASCADES > 1
+  vec4 oN1 = texture(uOceanNrm1, vOceanXZ / uOceanPatch.y);
+#else
+  vec4 oN1 = vec4(0.0);
+#endif
+  // Geometric mean of the two axes' footprints: the maps filter anisotropically,
+  // so the long axis alone would call far more of the slope lost than is.
+  float oFoot = sqrt(length(wdx) * length(wdy)) + 1e-4;
+#endif
 
   // Landcover, sampled once and used by both the water term and the night
   // lighting. Near level inside its own extent, far level outside, crossfaded
@@ -284,6 +306,12 @@ void main() {
     float edge = mix(lcWater, (1.0 - photoLand) * (1.0 - cliff), lowGround);
     lcWater = mix(lcWater, edge, inRamp);
   }
+#ifdef OCEAN
+  // The ocean draws only what the terrain would shade as water, so it can
+  // never paint the sea over a pier or a beach. Early, so a land pixel inside
+  // the disc costs a few texture reads rather than the whole shader.
+  if (lcWater * uHasLand < 0.5) discard;
+#endif
   float lcBuilt = lc.g;
   // Roads, which the landcover cannot see. WorldCover is a 10 m posting and a
   // suburban street plus its verges is one texel of it, classified by whatever
@@ -298,9 +326,17 @@ void main() {
   // The same guard the urban mask uses: clamp-to-edge would smear the border
   // texel, and roads reach the edge of the pack, so the border texel is not
   // zero and the smear would be a stripe of dead grass out to the horizon.
+#ifdef OCEAN
+  // No roads on the sea, and no texture unit to spare: three allocates one per
+  // sampler across both stages, the ocean's maps and displacement add four,
+  // and the program must stay within the 16 a GPU is allowed to report. The
+  // urban grid is left out below for the same reason.
+  float roadCov = 0.0;
+#else
   float roadCov = texture(uRoadMask, rmUv).r * uHasRoadMask
                 * step(0.0, rmUv.x) * step(rmUv.x, 1.0)
                 * step(0.0, rmUv.y) * step(rmUv.y, 1.0);
+#endif
 
   // Ground vegetation, from the two channels that exist to describe it. This
   // is what stops Central Park being green paint: the drape carries the right
@@ -665,7 +701,7 @@ void main() {
         delta = mix(delta, rDelta, wRock);
         dbgRock = wRock;
       }
-      if (uDebug > 19.5) { fragColor = vec4(t.amt, dbgRock, wSand, 1.0); return; }
+      if (uDebug > 19.5 && uDebug < 20.5) { fragColor = vec4(t.amt, dbgRock, wSand, 1.0); return; }
 
       if (uDetailMode > 1.5 && uDetailMode < 2.5) {
         albedo *= mix(vec3(1.0), vec3(1.25, 1.0, 0.8), max(t.amt, wRock));
@@ -678,7 +714,7 @@ void main() {
       detailLen = length(nd);
       n = nd / detailLen;
     }
-    if (uDebug > 19.5) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+    if (uDebug > 19.5 && uDebug < 20.5) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
   }
 
   // Snow settles on flat ground and slides off anything steep. The slope test
@@ -752,8 +788,13 @@ void main() {
   // footprints where a .city pack has them, WorldCover's built class
   // everywhere else. That is what confines this to streets -- a ridge line and
   // a forest cast a shadow too, and neither is a sunlit wall.
+#ifdef OCEAN
+  float builtHere = 0.0;
+#else
+  float builtHere = builtness(vWorld);
+#endif
   vec3 bounce = canyonBounce(uSunColor * uSunIntensity * uSunSurface * sunT, ambient, sunVis,
-                             uSunDir, max(builtness(vWorld), lcBuilt * uHasLand));
+                             uSunDir, max(builtHere, lcBuilt * uHasLand));
 
   vec3 lit = albedo * (beam + ambient + bounce);
 
@@ -892,6 +933,11 @@ void main() {
     // glass from there. Two more shares stand for the capillaries under the
     // shortest wave, which only ever go to the roughness.
     float lnLamP = log(lamP);
+#ifdef OCEAN
+    // How much of this pixel the FFT sea owns: all of it near the camera,
+    // none at the rim, where these analytic waves take back the band.
+    float oRad = oceanRadial(vWorld.xz);
+#endif
     float wv[WAVE_N];
     float wsum = 2.0;
     for (int i = 0; i < WAVE_N; i++) {
@@ -901,6 +947,15 @@ void main() {
       wv[i] = exp(-1.25 * x2) * (1.0 + 2.3 * exp(-0.5 * lp * lp));
       wsum += wv[i];
     }
+#ifdef OCEAN
+    // The FFT carries these wavelengths now. Dropped AFTER the sum above, so
+    // the share every other wave gets is the same as the terrain's own and
+    // the capillaries under the FFT band match the far field exactly.
+    for (int i = 0; i < WAVE_N; i++) {
+      float lamI = exp(WAVE_LNLAM0[i]);
+      wv[i] *= 1.0 - oRad * step(uOceanBand.x, lamI) * step(lamI, uOceanBand.y);
+    }
+#endif
     float share = mss / wsum;
     float lostVar = 2.0 * share;
     float keptVar = 0.0;
@@ -963,6 +1018,25 @@ void main() {
       warp -= D * (3.0 * sk / k) * cth;
     }
 
+#ifdef OCEAN
+    // THE FFT SEA. Its gradient is of the displaced surface the mesh already
+    // is, scaled like the geometry by the local fetch, and by the gusts' rms
+    // (their factor is on slope VARIANCE). What a mip has averaged out goes to
+    // the roughness, as the analytic waves' does above.
+    float oAmp = oRad * oceanFetchAmp(shoreD);
+    float oVar = oAmp * oAmp * rough;
+    float oLost0 = oceanLostFrac(oFoot, uOceanPatch.x);
+    float oLost1 = oceanLostFrac(oFoot, uOceanPatch.y);
+    lostVar += oVar * (uOceanSlopeVar.x * oLost0 + uOceanSlopeVar.y * oLost1);
+    float oKept = oVar * (uOceanSlopeVar.x * (1.0 - oLost0) + uOceanSlopeVar.y * (1.0 - oLost1));
+    keptVar += oKept;
+    // The FFT's own long waves are the dominant ones, so they count toward
+    // how resolved the breaking crests are.
+    varPKept += oVar * uOceanSlopeVar.x * (1.0 - oLost0);
+    varPAll += oVar * uOceanSlopeVar.x;
+    slope += (oN0.xy + oN1.xy) * oAmp * sqrt(rough);
+#endif
+
     // Water is LEVEL. The terrain normal under it is whatever the heightfield's
     // noise made of a flat plateau, so the waves are hung off vertical and only
     // blend back to the ground's own normal where the water mask fades out at a
@@ -993,6 +1067,11 @@ void main() {
 
     // How far up a crest this pixel is, in rms of what is resolved here.
     crestN = jac / sqrt(max(keptVar, 1e-6));
+#ifdef OCEAN
+    // The mesh knows how high it is; the crest glow wants that, not the
+    // analytic sum's leftovers.
+    crestN = mix(crestN, vOceanH / max(uOceanHeightSd * oAmp, 1e-3), oRad);
+#endif
 
     // WHITECAPS. Coverage from Monahan's fit, W = 3.84e-6 U^3.41: 0.04% at
     // 4 m/s, 1% at 10, 4% at 15. Tripled, because the residual foam a breaker
@@ -1029,6 +1108,27 @@ void main() {
     float resolvedP = smoothstep(0.3, 0.8, varPKept / varPAll);
     waveRes = resolved;
     foam = mix(W * 0.8, near_, resolvedP) * rough;
+#ifdef OCEAN
+    // Foam where the FFT surface is folding (Jacobian under the threshold the
+    // wind sets, see foamThreshold), kept a few seconds as it decays: patches
+    // on the crests trailing streaks. The lace breaks a patch's edge up and
+    // stretches it downwind; the mip of the same map is the far coverage tint.
+    // Gated like the analytic foam: no fetch, no breakers.
+    //
+    // Near the lens the long cascade's foam is a metre a texel and magnifies
+    // into soft blobs; real whitecap foam is a lace with holes in it. A
+    // sub-metre grain thresholds it into that where it has the pixels, and
+    // fades back to the plain map (its mean) where it has not.
+    float oF = max(oN0.a, oN1.a);
+    float grain = vnoise2(qa / vec2(1.3, 0.7) + vec2(2.3, 8.1)) * 0.6
+                + vnoise2(qa / 0.35 + vec2(9.2, 1.7)) * 0.4;
+    oF = mix(oF * 0.6, smoothstep(0.45, 0.75, oF * (0.15 + 1.25 * grain)), smoothstep(0.6, 0.1, pxFoot));
+    float fftFoam = oF * smoothstep(300.0, 3000.0, fetchM)
+                  * smoothstep(0.35, 0.85, oceanFetchAmp(shoreD))
+                  * mix(1.0, smoothstep(0.15, 0.55, lace), 0.7)
+                  * clamp(rough, 0.5, 1.5);
+    foam = mix(foam, fftFoam, oRad);
+#endif
 
     // THE SHORE. A foam line where waves arrive at a coast, sized by the waves
     // that are arriving: none on a river, a broken line round a bay, a wide
@@ -1165,6 +1265,26 @@ void main() {
         // without these two terms water becomes the one black hole in a
         // moonlit frame.
         skyRefl += uMoonLight * uSunSurface * 0.10 + uAmbient * uNight * 0.35;
+        // THE CLOUDS IN IT. The integral is a clear sky, and the decks are
+        // drawn later, over the finished frame (render/composite.ts), so under
+        // an overcast the sea went on mirroring blue it could not see and read
+        // as navy ink instead of the grey a cloud base gives it. The cloud
+        // shadow map is the deck's transmittance on its own plane; where the
+        // reflected ray crosses that plane it says how much cloud is there,
+        // and past the map's edge (where a grazing ray crosses, kilometres
+        // out) its mean. The cloud base is taken as the grey of the ambient,
+        // which is what an overcast lights the ground with.
+        if (uCloudShadow.x > 0.5) {
+          float sC = (uCloudShadowRect.w - vWorld.y) / max(r.y, 0.02);
+          vec2 uvC = (vWorld.xz + r.xz * sC - uCloudShadowRect.xy) * uCloudShadowRect.z;
+          float tMean = textureLod(uCloudShadowMap, vec2(0.5), 16.0).r;
+          vec2 eC = min(uvC, 1.0 - uvC);
+          float tC = mix(tMean, textureLod(uCloudShadowMap, uvC, 0.0).r,
+                         smoothstep(0.0, 0.08, min(eC.x, eC.y)));
+          float cloudCover = 1.0 - clamp(tC, 0.0, 1.0);
+          vec3 cloudBase = vec3(dot(uAmbient, vec3(0.2126, 0.7152, 0.0722))) * 1.25;
+          skyRefl = mix(skyRefl, cloudBase, cloudCover);
+        }
       }
       skyRefl = mix(skyRefl, ssr.rgb, ssr.a);
 
@@ -1215,7 +1335,7 @@ void main() {
     // drape cannot answer "is this built up": it is bright and desaturated over
     // beach, bare hill and runway alike, so every threshold either lit the whole
     // map or none of it.
-    float urban = builtness(vWorld);
+    float urban = builtHere;
 
     // Union with the landcover's built class. Only a handful of cities have a
     // .city pack, and the rest were getting emptyUrbanMask() and rendering
@@ -1324,6 +1444,8 @@ void main() {
   //     water; tools/verify-ground.ts reads it
   //  20 ground detail: red how much of the octave band is in, green rock,
   //     blue sand (render/grounddetail.ts)
+  //  21 the FFT ocean's height, gradient and foam (render/ocean.ts); the
+  //     terrain's own water, outside the ocean's disc, is black
   if (uDebug > 0.5) {
     if (uDebug < 1.5)       col = albedo;
     else if (uDebug < 2.5)  col = beam;
@@ -1350,6 +1472,12 @@ void main() {
     else if (uDebug < 17.5) col = vec3(shoreD / 500.0, foam, waveAlpha * 2.0);
     else if (uDebug < 18.5) col = vec3(step(0.3, foam) * water);
     else if (uDebug < 19.5) col = vec3(1.0 - step(0.5, water));
+#ifdef OCEAN
+    // 21: the FFT sea (render/ocean.ts): red height (0.5 is the mean level,
+    // 1 m a unit), green and blue the x and z gradient x4, foam in all three.
+    else if (uDebug > 20.5 && uDebug < 21.5)
+      col = vec3(0.5 + vOceanH, 0.5 + 4.0 * (oN0.xy + oN1.xy)) + oN0.a;
+#endif
     // 20 returns from the detail block above; reaching here means the layer
     // is off (?nodetail), which is black.
     else col = vec3(0.0);
@@ -1365,8 +1493,14 @@ void main() {
 }
 `;
 
+/**
+ * The terrain fragment shader. render/ocean.ts compiles it a second time with
+ * OCEAN defined, so the near sea is shaded by exactly this code.
+ */
+export const TERRAIN_FRAG = FRAG;
+
 export interface TerrainUniforms
-  extends SunShadowUniforms, AoUniforms, GroundBounceUniforms, WaterSsrUniforms {
+  extends SunShadowUniforms, AoUniforms, GroundBounceUniforms, WaterSsrUniforms, OceanLinkUniforms {
   uDrape: THREE.IUniform<THREE.Texture | null>;
   /** Sky irradiance, 9 RGB coefficients; see render/sh.ts. */
   uSH: THREE.IUniform<Float32Array>;
@@ -1419,6 +1553,8 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     ...aoUniforms(),
     ...groundBounceUniforms(),
     ...WATER_SSR_UNIFORMS,
+    // Replaced by the ocean's shared set when one attaches; see render/ocean.ts.
+    ...oceanLinkUniforms(),
     uDrape: { value: null },
     // Held at the hemispherical ambient the shader used before the probe
     // existed, so frame one shades correctly whatever happens to the probe.
@@ -1653,6 +1789,8 @@ export class Terrain {
   private readonly grids: RingGrid[] = [];
   private readonly meshes: THREE.Mesh[] = [];
   private readonly textures: THREE.Texture[] = [];
+  /** Each ring's drape bbox, for drapeUv. */
+  private readonly drapeBoxes: { west: number; east: number; south: number; north: number }[] = [];
   /**
    * Where the innermost, finest ring currently sits.
    *
@@ -1724,7 +1862,30 @@ export class Terrain {
       this.grids.push(grid);
       this.meshes.push(mesh);
       this.textures.push(tex);
+      this.drapeBoxes.push(drape.bbox);
     }
+  }
+
+  /**
+   * The finest STATIC ring (not the detail ring, whose drape moves under it)
+   * whose square holds the whole square (x, z) +- r, or the outermost. For a
+   * mesh that shades as terrain without being one: the ocean.
+   */
+  drapeCovering(x: number, z: number, r: number): number {
+    for (let i = 1; i < this.grids.length; i++) {
+      const e = this.grids[i].ring.extent;
+      if (Math.abs(x) + r <= e && Math.abs(z) + r <= e) return i;
+    }
+    return this.grids.length - 1;
+  }
+
+  /** Ring `ring`'s drape uv at world (x, z), by the same mapping buildRingGrid uses. */
+  drapeUv(ring: number, x: number, z: number): [number, number] {
+    const b = this.drapeBoxes[ring];
+    const ll = this.origin.toLatLon(x, z);
+    const yN = latToTileY(b.north, 0);
+    const yS = latToTileY(b.south, 0);
+    return [(ll.lon - b.west) / (b.east - b.west), (latToTileY(ll.lat, 0) - yN) / (yS - yN)];
   }
 
   /** Where the detail ring is now, in world metres. */
@@ -1760,6 +1921,7 @@ export class Terrain {
     this.meshes[0].geometry = geo;
     this.textures[0] = tex;
     this.uniforms[0].uDrape.value = tex;
+    this.drapeBoxes[0] = drape.bbox;
     this.detail = after;
     oldGeo.dispose();
     oldTex.dispose();

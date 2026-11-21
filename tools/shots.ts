@@ -739,6 +739,30 @@ export const POSES: Pose[] = [
     what: "SF bay in an afternoon westerly",
   },
   {
+    // The FFT ocean from a boat deck: ten metres over the bay east of
+    // Alcatraz, looking west toward the Golden Gate under a grey overcast in
+    // a Beaufort 6 westerly. The near-field check for render/ocean.ts: crests
+    // must stand up and occlude the water behind them, foam must sit in
+    // patches, and the sea must not read as a painted plane.
+    name: "sf-bay-ocean-low",
+    city: "sf",
+    lat: 37.8240, lon: -122.4150, altM: 10, hdgDeg: 262, pitchDeg: -4,
+    t: D("2025-06-21T20:00:00Z"), // 13:00 PDT
+    wx: "low:0.85:600:1400,mid:0.6:3000:4200,high:0:8500:9400,precip:0,wind:12:265",
+    what: "SF bay from ten metres up in a westerly, toward the Gate",
+  },
+  {
+    // The same water from 300 m: the FFT sea seen as a texture rather than as
+    // geometry, and the range where its tiling, its rim and its foam coverage
+    // would show if they were wrong.
+    name: "sf-bay-ocean-300",
+    city: "sf",
+    lat: 37.8240, lon: -122.4150, altM: 300, hdgDeg: 262, pitchDeg: -16,
+    t: D("2025-06-21T21:00:00Z"), // 14:00 PDT
+    wx: `${CLEAR},wind:11:265`,
+    what: "SF bay from 300 m in a westerly, toward the Gate",
+  },
+  {
     // Hong Kong, over Victoria Harbour looking at the Central towers.
     //
     // The densest vertical city in the set and the one with the most glass, so
