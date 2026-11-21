@@ -536,7 +536,10 @@ html, body {
    name (Yellow, Brown) than for a letter. */
 .xtag { padding: 2px 7px 2px 3px; border-left-color: rgba(242, 246, 250, 0.5); }
 .xtag .l1 { display: flex; align-items: center; gap: 5px; }
-.xtag .l1 span { margin-left: 0; color: var(--ink); }
+/* Capped to TAG_W_PX in transittags.ts: the declutter test assumes that width,
+   and an uncapped route name overlapped its neighbours by hundreds of pixels. */
+.xtag { max-width: 150px; box-sizing: border-box; }
+.xtag .l1 span { margin-left: 0; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .xb {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 16px; height: 16px; padding: 0 3px; box-sizing: border-box;

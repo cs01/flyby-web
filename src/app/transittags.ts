@@ -15,7 +15,11 @@ import type { TransitPack } from "../data/transitpack";
 const TAG_RANGE_M = 6000;
 const TAG_NEAR_M = 1500;
 const TAG_MIN_OPACITY = 0.45;
-const TAG_W_PX = 120;
+const TAG_W_PX = 150;
+/** At street level every vehicle out to TAG_RANGE_M sits on the horizon line,
+ * so a camera near the vehicles' own height only tags the close ones. */
+const TAG_GROUND_RANGE_M = 900;
+const GROUND_EYE_M = 60;
 const TAG_H_PX = 24;
 const CARD_STOPS = 6;
 
@@ -136,7 +140,7 @@ export class TransitTags {
     const list: { c: TagCandidate; d: number; sx: number; sy: number }[] = [];
     for (const c of cands) {
       const d = Math.hypot(c.x - cam.x, c.y - cam.y, c.z - cam.z);
-      if (d > TAG_RANGE_M) continue;
+      if (d > (Math.abs(cam.y - c.y) < GROUND_EYE_M ? TAG_GROUND_RANGE_M : TAG_RANGE_M)) continue;
       this.ndc.set(c.x, c.y + 5, c.z).project(camera);
       if (this.ndc.z < -1 || this.ndc.z > 1 || Math.abs(this.ndc.x) > 1.05 || Math.abs(this.ndc.y) > 1.05) continue;
       list.push({ c, d, sx: (this.ndc.x * 0.5 + 0.5) * W, sy: (-this.ndc.y * 0.5 + 0.5) * H });
@@ -164,7 +168,8 @@ export class TransitTags {
         tag.bullet.style.color = `#${r.text}`;
       }
       tag.bullet.classList.toggle("wide", bullet.length > 2);
-      const txt = v.live ? line : `${line} · scheduled`;
+      // "scheduled" vs live stays on the card; on the tag it only widened every label.
+      const txt = line;
       if (tag.text.textContent !== txt) tag.text.textContent = txt;
       const fade = it.d <= TAG_NEAR_M ? 1 : 1 - ((1 - TAG_MIN_OPACITY) * (it.d - TAG_NEAR_M)) / (TAG_RANGE_M - TAG_NEAR_M);
       tag.el.style.opacity = fade.toFixed(2);
