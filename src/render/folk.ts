@@ -538,7 +538,7 @@ const HEAD_ROWS: [number, number, number, number, number][] = [
 ];
 
 /** The head: a face in profile (chin, mouth, nose, brow), ears, the hair as a cap over it. */
-function head(B: Builder, o: FolkOpts, lean: boolean): void {
+function head(B: Builder, o: FolkOpts): void {
   const m = 12;
   const woman = o.dress === "stola";
   const hairRow = (y: number, j: number): boolean => {
@@ -574,7 +574,6 @@ function head(B: Builder, o: FolkOpts, lean: boolean): void {
       B.loft(along(path, [[0.012, 0.012, 0.012], [0.008, 0.008, 0.008], [0.002, 0.002, 0.002]], 5, [0, 0, 1]), () => ({ slot: SLOT_SKIN, mat: M_SKIN, skin: one(HEAD) }), true, false);
     }
   }
-  void lean;
 }
 
 /** The neck from inside the collar into the head. */
@@ -834,7 +833,7 @@ function nudeTorso(B: Builder): void {
 /** A figure at the near level of detail. */
 export function buildFolk(o: FolkOpts): FolkMesh {
   const B = new Builder();
-  head(B, o, false);
+  head(B, o);
   neck(B);
   const cloth = (slot: number, mat: number) => () => ({ slot, mat });
   if (o.dress === "tunic") {
