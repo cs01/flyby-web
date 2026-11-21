@@ -838,7 +838,9 @@ function tube(out: StatueMesh, [a, b, r1, r2]: [V3, V3, number, number], c: RGB)
 
 // --- materials -------------------------------------------------------------------------
 
-const BRONZE: RGB = [0.27, 0.18, 0.1], DARK: RGB = [0.11, 0.075, 0.045], PATINA: RGB = [0.11, 0.24, 0.19], WORN: RGB = [0.56, 0.39, 0.18];
+// A dark patinated bronze, as the pieces look in the Naples museum: at
+// the old mid brown the figures read as painted plastic.
+const BRONZE: RGB = [0.13, 0.1, 0.065], DARK: RGB = [0.05, 0.042, 0.032], PATINA: RGB = [0.08, 0.15, 0.12], WORN: RGB = [0.4, 0.29, 0.14];
 const mix3 = (a: RGB, b: RGB, t: number): RGB => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const scl3 = (c: RGB, k: number): RGB => [c[0] * k, c[1] * k, c[2] * k];
 
@@ -868,9 +870,11 @@ function bronzePaint(p: V3, n: V3, F: Field): RGB {
 function marblePaint(lab: number, n: V3, cloak: RGB): RGB {
   const CLOTH: RGB = [0.86, 0.83, 0.76], PURPLE: RGB = [0.42, 0.11, 0.22];
   switch (lab) {
-    case Lab.Hair: return [0.32, 0.2, 0.11];
-    case Lab.Eye: return [0.62, 0.52, 0.44];
-    case Lab.Lip: return [0.84, 0.68, 0.62];
+    // Hair, eyes and lips stay the stone's colour, a shade apart: painted
+    // in full colour on a face this coarse they made a doll's mask of it.
+    case Lab.Hair: return [0.74, 0.69, 0.6];
+    case Lab.Eye: return [0.8, 0.76, 0.69];
+    case Lab.Lip: return [0.84, 0.78, 0.7];
     case Lab.Border: return PURPLE;
     case Lab.Sinus: return n[1] < -0.25 ? PURPLE : CLOTH;
     case Lab.Balteus: return n[1] > 0.35 ? PURPLE : CLOTH;
@@ -879,7 +883,7 @@ function marblePaint(lab: number, n: V3, cloak: RGB): RGB {
     case Lab.Leather: return [0.42, 0.25, 0.14];
     case Lab.Wood: return [0.4, 0.28, 0.16];
     case Lab.Cloth: return CLOTH;
-    default: return [0.88, 0.8, 0.71];
+    default: return [0.86, 0.82, 0.74];
   }
 }
 
