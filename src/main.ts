@@ -117,6 +117,8 @@ import { RideController } from "./app/ride";
 import { AIRPORTS, airportById, spotPose } from "./data/airports";
 import { haversine } from "./geo";
 import { prof, installObjectProfiling } from "./render/gpuprof";
+import { loadAlcatraz } from "./data/alcatraz";
+import { Alcatraz, alcatrazHeightAt, alcatrazIslandBox, alcatrazRingFields, loadAlcatrazDrape, replacesPackBuilding } from "./render/alcatraz";
 
 function chooseCity(): City | null {
   const params = new URLSearchParams(location.search);
@@ -342,6 +344,12 @@ async function main() {
   const demTotalGuess = 45;
   const bump = () => loading.set(0.08 + 0.34 * Math.min(1, ++demDone / demTotalGuess), "loading terrain");
 
+  // Alcatraz's lidar, drape and outlines (render/alcatraz.ts): fetched beside
+  // the DEM because the terrain rings need the patch before they are meshed.
+  // Whether it is USED waits for the off set below; a few hundred kB fetched
+  // and dropped under `?off=alcatraz` is cheaper than serialising the load.
+  const alcatrazPromise = city.id === "sf" ? loadAlcatraz(`${import.meta.env.BASE_URL}landmarks`) : Promise.resolve(null);
+  const alcatrazDrapePromise = city.id === "sf" ? loadAlcatrazDrape(budget.alcatraz, `${import.meta.env.BASE_URL}landmarks`) : Promise.resolve(null);
   const fields: Heightfield[] = await Promise.all([
     loadHeightfield(bboxAround(city.lat, city.lon, 22000), 12, bump),
     loadHeightfield(bboxAround(city.lat, city.lon, 80000), 9, bump),
@@ -493,7 +501,13 @@ async function main() {
 
   // The plan the drapes were stitched for. Defaulting to CITY_RINGS here gave a
   // reduced-tier device the desktop meshes under its own smaller drapes.
-  const terrain = new Terrain(origin, fields, drapes, sunShadow.uniforms, budget.rings);
+  const alcatrazAsset = perfOff.has("alcatraz") ? null : await alcatrazPromise;
+  const terrainFields = alcatrazAsset ? alcatrazRingFields(alcatrazAsset.patch, fields, budget.rings, origin) : fields;
+  const terrain = new Terrain(origin, terrainFields, drapes, sunShadow.uniforms, budget.rings);
+  // Before anything reads it: every consumer below (buildings, collision,
+  // trees, walking, docking) must stand on the lidar, not on the eroded field
+  // the rings are meshed from.
+  if (alcatrazAsset) terrain.heightAt = alcatrazHeightAt(alcatrazAsset.patch, fields, origin);
   terrain.group.name = "terrain";
   scene.add(terrain.group);
 
@@ -540,7 +554,12 @@ async function main() {
     pack.buildings = flattenParts(pack.buildings);
   }
   if (pack && !buildingsOff) {
-    buildings = new Buildings(pack, terrain.heightAt, sunShadow.uniforms, budget);
+    // The island's OSM boxes go from the renderer only: render/alcatraz.ts
+    // draws its own models on the same footprints, and the collider and the
+    // tree mask keep the originals.
+    const islandBox = alcatrazAsset ? alcatrazIslandBox(alcatrazAsset.patch, origin) : null;
+    const drawn = islandBox ? { ...pack, buildings: pack.buildings.filter((b) => !replacesPackBuilding(islandBox, b)) } : pack;
+    buildings = new Buildings(drawn, terrain.heightAt, sunShadow.uniforms, budget);
     buildings.group.name = "buildings";
     scene.add(buildings.group);
     // `?nocityshadow=1` and `?cityshadowonly=1` are the probe and the reference
@@ -692,7 +711,9 @@ async function main() {
    * the buffer is indexed by gl_FragCoord, so it only means anything while the
    * main camera is the one drawing.
    */
+  let alcatraz: Alcatraz | null = null;
   const setAo = (strength: number): void => {
+    if (alcatraz) ao.apply(alcatraz.uniforms, strength);
     for (const u of terrain.uniforms) ao.apply(u, strength);
     for (const u of buildingUniformSets) ao.apply(u, strength);
     for (const u of roadUniformSets) ao.apply(u, strength);
@@ -859,6 +880,28 @@ async function main() {
     ? new Ocean(budget.ocean, terrain, budget.tier === "reduced" ? 1 : 8)
     : null;
   if (ocean) scene.add(ocean.mesh);
+
+  // After the ocean: the island's ground shares the terrain's uniform objects
+  // by reference, and the ocean has just swapped its link uniforms into them.
+  if (alcatrazAsset) {
+    alcatraz = new Alcatraz({
+      meta: alcatrazAsset.meta,
+      patch: alcatrazAsset.patch,
+      origin,
+      heightAt: terrain.heightAt,
+      terrainUniforms: terrain.uniforms[Math.min(1, terrain.uniforms.length - 1)],
+      shadow: sunShadow.uniforms,
+      plan: budget.alcatraz,
+      drape: await alcatrazDrapePromise,
+    });
+    scene.add(alcatraz.group);
+    streetUniformSets.push(alcatraz.uniforms);
+    const s = alcatraz.stats;
+    console.log(
+      `[flyby] alcatraz: ${s.structures} structures ${s.buildingTriangles} tris, ground ${s.patchTriangles} tris, ` +
+      `${(s.gpuBytes / 1048576).toFixed(1)} MB, ${s.buildMs.toFixed(0)} ms`,
+    );
+  }
 
   // What the canopy must not stand on. Both start from whatever packs loaded
   // and GROW as live tiles arrive, which is why they are built here rather than
@@ -2199,6 +2242,7 @@ async function main() {
       g.uniforms.uPixelAngle.value = pixAngle;
       g.uniforms.uNight.value = light.night;
     }
+    alcatraz?.update(elapsed, light.night);
     for (const u of streetUniformSets) {
       // The bridges share this set and carry no lamp, hence the guard.
       if (u.uPixelAngle) u.uPixelAngle.value = pixAngle;

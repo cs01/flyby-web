@@ -230,6 +230,7 @@ export interface Budget {
   /** Parked cars resident at once. */
   parkedInstanceBudget: number;
   ocean: OceanPlan;
+  alcatraz: AlcatrazPlan;
   memory: MemoryEstimate;
 }
 
@@ -361,6 +362,36 @@ const PAVEMENT_BYTES_PER_TRIANGLE = 36 + 1.5 * 4;
  * foam) of two mipmapped RGBA16F attachments. The grid is a vec3 per vertex
  * and two triangles of indices per vertex, 16-bit when they fit.
  */
+/** Alcatraz (render/alcatraz.ts): its own drape and the lidar ground's grid step. */
+export interface AlcatrazPlan {
+  /** Drape width in texels: 2048 picks alcatraz-drape.jpg, anything under 1024 the small one. */
+  drapePx: number;
+  /** Lidar cells per ground-mesh vertex along each axis. */
+  gridStep: number;
+}
+
+// Measured off the bake (public/landmarks/alcatraz.*): quads of 1-cell lidar
+// with any corner above the sea, and the structures' vertex and triangle
+// counts. Literals rather than read from the asset, so this module stays pure.
+const ALCATRAZ_LAND_QUADS = 91_500;
+const ALCATRAZ_STRUCTURE_VERTS = 8_400;
+const ALCATRAZ_STRUCTURE_TRIS = 4_450;
+/** Drape height over width. */
+const ALCATRAZ_DRAPE_ASPECT = 1725 / 2048;
+
+/**
+ * Patch vertices are position, normal, uv (32 bytes) and about one per quad;
+ * each quad is two 32-bit triangles. Structure vertices carry position,
+ * normal, colour, surface (12 each) and the facade vec4 (16).
+ */
+export function alcatrazBytes(a: AlcatrazPlan): number {
+  const quads = ALCATRAZ_LAND_QUADS / (a.gridStep * a.gridStep);
+  const ground = quads * (32 + 6 * 4);
+  const structures = ALCATRAZ_STRUCTURE_VERTS * 64 + ALCATRAZ_STRUCTURE_TRIS * 12;
+  const drape = a.drapePx * Math.round(a.drapePx * ALCATRAZ_DRAPE_ASPECT) * DRAPE_BYTES_PER_TEXEL * MIPMAP_FACTOR;
+  return Math.round(ground + structures + drape);
+}
+
 export function oceanBytes(o: OceanPlan): number {
   let bytes = 0;
   for (const c of o.cascades) {
@@ -539,6 +570,7 @@ const FULL_PLAN: Plan = {
     nearRings: 142,
     farRings: 45,
   },
+  alcatraz: { drapePx: 2048, gridStep: 1 },
 };
 
 const REDUCED_PLAN: Plan = {
@@ -565,8 +597,11 @@ const REDUCED_PLAN: Plan = {
   aoEnabled: false,
   // Half, which is the same factor the rest of this plan lands on. The LOD
   // solver spends whatever it is given, so this is the term that keeps the
-  // geometry estimate below from being the largest line on a phone.
-  buildingTriangleBudget: 750_000,
+  // geometry estimate below from being the largest line on a phone. Less
+  // 30k for Alcatraz (see `alcatraz` below): the island is buildings too, and
+  // its own models and lidar ground are paid for out of this line rather than
+  // by raising the ceiling test/budget.check.ts holds the plan to.
+  buildingTriangleBudget: 720_000,
   roadTriangleBudget: 350_000,
   pavementTriangleBudget: 110_000,
   // Halved along with the rest of the plan, on top of ring radii that are
@@ -591,6 +626,10 @@ const REDUCED_PLAN: Plan = {
     nearRings: 54,
     farRings: 28,
   },
+  // A quarter of the drape (1 m a texel, about what ring 0 gives a phone
+  // anyway) and the lidar every third cell: 2.3 MB against 25 MB on the
+  // full plan, while the cliffs keep their shape at 3 m.
+  alcatraz: { drapePx: 512, gridStep: 3 },
 };
 
 const PLANS: Record<QualityTier, Plan> = { full: FULL_PLAN, reduced: REDUCED_PLAN };
@@ -667,6 +706,10 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
     {
       what: `ocean fft ${plan.ocean.cascades.map((c) => `${c.n}@${c.patchM}m`).join("+")}`,
       bytes: oceanBytes(plan.ocean),
+    },
+    {
+      what: `alcatraz drape ${plan.alcatraz.drapePx} px, ground every ${plan.alcatraz.gridStep} m`,
+      bytes: alcatrazBytes(plan.alcatraz),
     },
   ];
 
