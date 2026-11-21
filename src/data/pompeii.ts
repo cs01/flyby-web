@@ -80,8 +80,17 @@ export interface PompeiiData {
   publics: PompeiiPublic[];
   amphitheatre: PompeiiAmphitheatre;
   places: PompeiiPlace[];
-  /** Real domus outlines from OSM, used as explicit lots where they fit. */
-  domus: { name: string; ring: Ring }[];
+  /**
+   * Real house outlines from OSM, built on their own footprints. `courts`
+   * are the open atria and peristyles found in the surveyed room walls
+   * (rectangles, empty where the survey has no walls inside), `wallM` the
+   * metres of room wall inside the outline.
+   */
+  domus: { name: string; ring: Ring; courts?: Ring[]; wallM?: number }[];
+  /** The surveyed wall towers (Torre I..XII). */
+  towers?: PompeiiGate[];
+  /** Public fountains mapped in the excavation. */
+  fountains?: { x: number; z: number }[];
   stats: Record<string, number>;
 }
 

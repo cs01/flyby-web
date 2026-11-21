@@ -18,12 +18,86 @@ import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./
 import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeStreetLampUniforms, type StreetLampUniforms } from "./streetlamps";
-import { buildPompeii, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
+import { AMPHI, buildPompeii, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
 import { BuildingKind, RoofShape, type Building, type CityPack } from "../data/citypack";
-import type { Heightfield } from "../data/dem";
+import { Heightfield } from "../data/dem";
 import type { StitchedImage } from "../data/imagery";
 import { metresPerDegLat, metresPerDegLon, type Origin } from "../geo";
+
+/**
+ * Shadow cascade splits for the town, metres: the first two cascades end at
+ * 150 m and 700 m instead of 350 m and 1.4 km (see SunShadow.setSplits). The
+ * city map, at about 0.4 m a texel over a town this small, covers the rest.
+ */
+export const POMPEII_SHADOW_SPLITS: readonly [number, number] = [150, 700];
+
+// Painted electoral notices (programmata), the commonest writing on the
+// street walls: "Gnaeus Helvius Sabinus for aedile, he is worthy of public
+// office" and its like. The candidates are real ones from the 79 AD
+// elections; V for U as the painters wrote it.
+export const DIPINTI = [
+  "CN HELVIVM SABINVM AED OVF",
+  "M HOLCONIVM PRISCVM IIVIR OVF",
+  "C IVLIVM POLYBIVM AED OVF",
+  "A VETTIVM FIRMVM AED OVF",
+  "M EPIDIVM SABINVM IIVIR OVF",
+  "L CEIVM SECVNDVM AED OVF",
+];
+const FONT_CHARS = "ABCDEFGHILMNOPRSTVXY";
+// 5x5 capitals, rows top to bottom.
+const FONT_ROWS: Record<string, string> = {
+  A: ".###./#...#/#####/#...#/#...#", B: "####./#...#/####./#...#/####.", C: ".####/#..../#..../#..../.####",
+  D: "####./#...#/#...#/#...#/####.", E: "#####/#..../####./#..../#####", F: "#####/#..../####./#..../#....",
+  G: ".####/#..../#.###/#...#/.###.", H: "#...#/#...#/#####/#...#/#...#", I: ".###./..#../..#../..#../.###.",
+  L: "#..../#..../#..../#..../#####", M: "#...#/##.##/#.#.#/#...#/#...#", N: "#...#/##..#/#.#.#/#..##/#...#",
+  O: ".###./#...#/#...#/#...#/.###.", P: "####./#...#/####./#..../#....", R: "####./#...#/####./#..#./#...#",
+  S: ".####/#..../.###./....#/####.", T: "#####/..#../..#../..#../..#..", V: "#...#/#...#/#...#/.#.#./..#..",
+  X: "#...#/.#.#./..#../.#.#./#...#", Y: "#...#/.#.#./..#../..#../..#..",
+};
+/** Glyph bits, bit (row * 5 + col), and the notices as glyph indices (-1 a space). */
+export function dipintiTables(): { glyphs: number[]; chars: number[]; offsets: number[]; lengths: number[] } {
+  const glyphs = [...FONT_CHARS].map((c) => {
+    const rows = FONT_ROWS[c].split("/").join("");
+    if (rows.length !== 25) throw new Error(`dipinti font: ${c} is not 5x5`);
+    let b = 0;
+    for (let k = 0; k < 25; k++) if (rows[k] === "#") b |= 1 << k;
+    return b;
+  });
+  const chars: number[] = [], offsets: number[] = [], lengths: number[] = [];
+  for (const m of DIPINTI) {
+    offsets.push(chars.length);
+    lengths.push(m.length);
+    for (const c of m) chars.push(c === " " ? -1 : FONT_CHARS.indexOf(c));
+  }
+  return { glyphs, chars, offsets, lengths };
+}
+const DIP = dipintiTables();
+const DIPINTI_GLSL = /* glsl */ `
+const int GLYPH[${DIP.glyphs.length}] = int[](${DIP.glyphs.join(", ")});
+const int MSG[${DIP.chars.length}] = int[](${DIP.chars.join(", ")});
+const int MSG_OFF[${DIP.offsets.length}] = int[](${DIP.offsets.join(", ")});
+const int MSG_LEN[${DIP.lengths.length}] = int[](${DIP.lengths.join(", ")});
+const float CHAR_W = 0.2;
+const float CHAR_H = 0.26;
+// Ink of one painted notice on a facade, 0..1. One notice per chosen wall,
+// in one line along it at y0 above the pavement.
+float dipinto(float u, float h, float seed, float len, float y0) {
+  int m = int(floor(fract(seed * 7.31 + 0.17) * float(MSG_LEN.length())));
+  float w = float(MSG_LEN[m]) * CHAR_W;
+  float x0 = 1.0 + fract(seed * 3.7) * max(0.0, len - 2.0 - w);
+  float lu = u - x0, lh = h - y0;
+  if (lu < 0.0 || lu >= w || lh < 0.0 || lh >= CHAR_H || w > len - 2.0) return 0.0;
+  int ci = int(floor(lu / CHAR_W));
+  int g = MSG[MSG_OFF[m] + ci];
+  if (g < 0) return 0.0;
+  float fx = fract(lu / CHAR_W) * CHAR_W / (CHAR_W * 0.8);
+  if (fx >= 1.0) return 0.0;
+  int col = int(floor(fx * 5.0));
+  int row = int(floor((1.0 - lh / CHAR_H) * 5.0));
+  return float((GLYPH[g] >> (row * 5 + col)) & 1);
+}
+`;
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -100,6 +174,7 @@ vec3 voronoi(vec2 p) {
 }
 
 const vec3 CREAM = vec3(0.86, 0.82, 0.72);
+${DIPINTI_GLSL}
 
 void main() {
   vec3 n = normalize(vNormal);
@@ -115,15 +190,29 @@ void main() {
   vec2 wp = vec2(dot(vWorld.xz, tng), vWorld.y);
 
   if (style < 0.5) {
-    // Plaster: dark socle, the coloured band, a fillet, the pale wall above.
+    // Plaster: dark socle, the coloured dado zone, a fillet, the pale wall above.
     float bandTop = p1 / 40.0;
     bool street = p2 < 1.5;
     bool full = p2 > 0.5;
     float wob = (vnoise(vec2(wp.x * 0.7, 3.0)) - 0.5) * 0.08;
     vec3 upper = full ? mix(albedo, CREAM, 0.15) : CREAM * (0.94 + 0.08 * seed);
     vec3 c = h < bandTop + wob ? albedo : upper;
-    if (abs(h - bandTop - wob) < 0.06) c = albedo * 0.45;
     float socle = 0.55 + 0.25 * seed;
+    // Painted panels on the coloured zone: a fine darker frame every couple
+    // of metres and a fillet over the socle, the way the red and ochre
+    // street walls were laid out. Only where the colour is strong enough to
+    // be a painted scheme, not the cream wash.
+    float sat = max(albedo.r, max(albedo.g, albedo.b)) - min(albedo.r, min(albedo.g, albedo.b));
+    if (sat > 0.3 && h > socle && h < bandTop + wob) {
+      float pw = 2.1 + 0.6 * seed;
+      float px = fract((u + seed * 3.0) / pw) * pw;
+      float line = step(px, 0.05) + step(abs(h - socle - 0.12), 0.025);
+      c = mix(c, c * 0.62, clamp(line, 0.0, 1.0));
+      // A paler inner panel inset from each frame.
+      float inset = step(0.22, px) * step(px, pw - 0.17) * step(socle + 0.3, h) * step(h, bandTop + wob - 0.2);
+      c = mix(c, c * 1.08, inset * step(0.5, h21(vec2(floor((u + seed * 3.0) / pw), seed * 17.0))));
+    }
+    if (abs(h - bandTop - wob) < 0.06) c = albedo * 0.45;
     if (h < socle) c = mix(vec3(0.16, 0.08, 0.07), albedo * 0.35, 0.3);
     // Windows: small, high and shuttered, more of them upstairs.
     if (street && len > 0.0) {
@@ -140,26 +229,32 @@ void main() {
       } else if (abs(lx) < ww * 2.1 && abs(h - wy) < wh && abs(lx) > ww && u > 1.0 && u < len - 1.0 && twoStorey > 0.5 && h21(vec2(col, seed * 91.0)) > 0.25) {
         c = vec3(0.32, 0.2, 0.11);
       }
-      // Painted notices on the pale wall: electoral slogans in red.
-      // Two lines of capitals 0.2 m high, a few metres long, on some walls.
-      float lineY = h - bandTop - 0.35;
-      float row = floor(lineY / 0.32);
-      float inRow = fract(lineY / 0.32);
-      if (!full && row >= 0.0 && row < 2.0 && inRow < 0.62 && h21(vec2(floor(u / 5.0), seed * 13.0)) > 0.7 && fract(u / 5.0) < 0.6) {
-        vec2 cell = vec2(floor(u / 0.16), row);
-        float letter = step(0.35, h21(cell + seed)) * step(0.18, fract(u / 0.16));
-        float bar = step(0.5, h21(cell + 7.0)) * step(abs(inRow - 0.31), 0.06) + step(fract(u / 0.16), 0.32) * step(0.25, h21(cell + 3.0));
-        c = mix(c, h21(vec2(floor(u / 5.0), 2.0)) > 0.5 ? vec3(0.58, 0.1, 0.06) : vec3(0.1, 0.08, 0.07), clamp(letter * bar, 0.0, 1.0) * 0.85);
+      // An electoral notice in red capitals on about a third of the street
+      // walls, worn in patches. Letters 0.26 m high read from across the
+      // street and alias past ~40 m, so they fade out there.
+      if (!full && len > 8.0 && fract(seed * 13.7) < 0.35) {
+        float ink = dipinto(u, h, seed, len, bandTop + 0.4);
+        ink *= smoothstep(0.25, 0.45, vnoise(vec2(u, h) * 3.0 + seed * 40.0));
+        ink *= 1.0 - smoothstep(25.0, 45.0, vViewDist);
+        c = mix(c, vec3(0.6, 0.1, 0.06), ink * 0.85);
       }
     }
     albedo = c;
-    // Weathering: blotches, rising damp, a little grime under the eaves.
-    albedo *= 0.88 + 0.2 * fbm(vec2(wp.x * 0.3, wp.y * 0.4) + seed * 10.0);
-    albedo *= mix(0.78, 1.0, smoothstep(0.0, 1.2, h));
+    // Weathering: blotches, trowel marks, rising damp and splash at the foot.
+    albedo *= 0.9 + 0.16 * fbm(vec2(wp.x * 0.3, wp.y * 0.4) + seed * 10.0);
+    albedo *= 0.96 + 0.08 * vnoise(vec2(wp.x * 2.6 + wp.y * 0.8, wp.y * 9.0));
+    albedo *= 0.97 + 0.05 * vnoise(vWorld.xz * 6.0 + wp.y * 5.0);
+    float damp = 1.0 - smoothstep(0.0, 1.0 + 0.5 * vnoise(vec2(wp.x * 0.9, seed * 9.0)), h);
+    albedo = mix(albedo, albedo * vec3(0.72, 0.68, 0.62), damp * 0.6);
+    // Grime under the eaves and down from the wall top.
+    albedo *= 1.0 - 0.12 * smoothstep(H - 0.8, H, h) * step(1.0, H);
   } else if (style < 1.5) {
     // Terracotta: imbrex ridges up the slope, tegulae between, course lines.
     float pitch = 0.42;
-    float cu = u / pitch;
+    // p2 set: a surveyed house's roof, one heightfield over many slopes, so
+    // the imbrex rows run across the slope in world space rather than along
+    // a facade's u.
+    float cu = (p2 > 0.5 ? wp.x : u) / pitch;
     float ridge = abs(fract(cu) - 0.5) * 2.0;
     float course = fract(h / 0.52);
     float id = h21(vec2(floor(cu), floor(h / 0.52)) + seed * 17.0);
@@ -171,14 +266,17 @@ void main() {
     n = normalize(n + tng.x * 0.0 + vec3(0.0, 0.0, 0.0));
     gloss = 0.15;
   } else if (style < 2.5) {
-    // Basalt paving: big polygonal lava blocks, dark with pale joints.
-    vec3 vo = voronoi(vWorld.xz / 0.62);
+    // Basalt paving: big polygonal lava blocks, grey-brown where wheels and
+    // feet have worn them, each block its own tone, the joints dark and
+    // packed with grit. Cool blue-black stone read as asphalt in shade.
+    vec3 vo = voronoi(vWorld.xz / 0.7);
     float tone = h21(vo.yz);
-    // Worn tops lighter and browner than the stone in the joints.
-    albedo = mix(vec3(0.2, 0.2, 0.21), vec3(0.3, 0.29, 0.27), tone) * (0.85 + 0.3 * vnoise(vWorld.xz * 1.5));
-    albedo = mix(vec3(0.32, 0.3, 0.26), albedo, smoothstep(0.015, 0.05, vo.x));
-    albedo *= 0.9 + 0.2 * vnoise(vWorld.xz * 3.0);
-    gloss = 0.35 * smoothstep(0.03, 0.12, vo.x);
+    albedo = mix(vec3(0.27, 0.255, 0.235), vec3(0.4, 0.37, 0.33), tone) * (0.88 + 0.24 * vnoise(vWorld.xz * 1.5));
+    // Each block's top is worn smooth in the middle and darker at its rim.
+    albedo *= 0.9 + 0.12 * smoothstep(0.04, 0.3, vo.x);
+    albedo = mix(vec3(0.15, 0.135, 0.12), albedo, smoothstep(0.012, 0.045, vo.x));
+    albedo *= 0.92 + 0.16 * vnoise(vWorld.xz * 3.0);
+    gloss = 0.3 * smoothstep(0.03, 0.12, vo.x);
   } else if (style < 3.5) {
     // Kerbstones and slab edges: cut blocks.
     vec2 b = vec2(wp.x / 1.1, wp.y / 0.45);
@@ -287,8 +385,12 @@ void main() {
   float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
   vec3 ambient = occludedSkyIrradiance(n);
   vec3 moon = uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
-  // Sunlit paving and plaster throw a lot of light into a narrow street.
-  vec3 bounce = sunE * max(0.0, uSunDir.y) * 0.3 * 0.5 * (1.0 - n.y);
+  // Sunlit paving and plaster throw a lot of light into a narrow street:
+  // onto the walls from the paving, and back down onto shaded ground from
+  // the pale sunlit walls round it. Without the second term a shaded street
+  // or forum got the sky alone and went near black, worst on a phone with
+  // no ambient occlusion pass to balance it against.
+  vec3 bounce = sunE * max(0.0, uSunDir.y) * (0.15 * (1.0 - n.y) + 0.07 * max(0.0, n.y));
   float inside = 1.0 - covered * 0.7;
   vec3 lit = albedo * ((sunE * ndl * sunVis) * (1.0 - covered * 0.85) + (ambient + bounce) * inside + moon);
   // Lamps and hearths inside at night.
@@ -462,6 +564,78 @@ export function restoreVesuvius(fields: Heightfield[]): number {
     }
   }
   return raised;
+}
+
+/**
+ * The amphitheatre's bowl in the terrain: its arena lay about 6 m below the
+ * ground round it, the lower cavea cut into the earth. The 30 m DEM cannot
+ * hold a hole 35 m across, so, as Alcatraz does with its lidar, a field goes
+ * at the head of the terrain's list that answers inside the building's
+ * ellipse and defers to the DEM everywhere else. The ground falls from the
+ * outer wall to the arena floor over the outer 12 m, under the upper tiers,
+ * so the street outside keeps its level and the ring meshes' 6-12 m
+ * triangles cannot lift earth through the seats.
+ */
+export class AmphitheatreField extends Heightfield {
+  private readonly base: (lat: number, lon: number) => number;
+  private readonly mLat: number;
+  private readonly mLon: number;
+  readonly floorY: number;
+
+  constructor(private readonly town: PompeiiData, fields: Heightfield[]) {
+    const data = town;
+    const a = data.amphitheatre;
+    const mLat = metresPerDegLat(data.lat0), mLon = metresPerDegLon(data.lat0);
+    const R = AMPHI.a + 2;
+    super({ west: data.lon0 + (a.cx - R) / mLon, east: data.lon0 + (a.cx + R) / mLon, south: data.lat0 - (a.cz + R) / mLat, north: data.lat0 - (a.cz - R) / mLat }, 1, 1);
+    this.loaded = true;
+    this.mLat = mLat;
+    this.mLon = mLon;
+    this.base = (lat, lon) => {
+      for (const f of fields) if (f.contains(lat, lon)) return f.sample(lat, lon);
+      return fields[fields.length - 1]?.sample(lat, lon) ?? 0;
+    };
+    // The same rim buildPompeii measures: the ground just outside the wall.
+    let rim = 0;
+    for (let k = 0; k < 16; k++) {
+      const t = (k / 16) * Math.PI * 2;
+      const [x, z] = this.ellipse(AMPHI.a + 6, AMPHI.b + 6, t);
+      rim += this.base(data.lat0 - z / mLat, data.lon0 + x / mLon) / 16;
+    }
+    this.floorY = rim - AMPHI.dig - 0.4;
+  }
+
+  private ellipse(ka: number, kb: number, t: number): [number, number] {
+    const a = this.town.amphitheatre, c = Math.cos(a.rot), s = Math.sin(a.rot);
+    const u = Math.cos(t) * ka, v = Math.sin(t) * kb;
+    return [a.cx + c * u - s * v, a.cz + s * u + c * v];
+  }
+
+  /** 0 outside the wall, 1 over the bowl. */
+  depth(x: number, z: number): number {
+    const a = this.town.amphitheatre, c = Math.cos(a.rot), s = Math.sin(a.rot);
+    const dx = x - a.cx, dz = z - a.cz;
+    const rho = Math.hypot((dx * c + dz * s) / AMPHI.a, (-dx * s + dz * c) / AMPHI.b);
+    const inner = (AMPHI.a - 12) / AMPHI.a;
+    return rho >= 1 ? 0 : rho <= inner ? 1 : (1 - rho) / (1 - inner);
+  }
+
+  override sample(lat: number, lon: number): number {
+    const g = this.base(lat, lon);
+    const x = (lon - this.town.lon0) * this.mLon, z = (this.town.lat0 - lat) * this.mLat;
+    const t = this.depth(x, z);
+    return t > 0 ? g + (Math.min(g, this.floorY) - g) * t : g;
+  }
+
+  override contains(lat: number, lon: number): boolean {
+    const { west, east, south, north } = this.bbox;
+    return lat >= south && lat <= north && lon >= west && lon <= east;
+  }
+}
+
+/** The terrain's field list with the amphitheatre's bowl at its head. */
+export function pompeiiRingFields(fields: Heightfield[], data: PompeiiData): Heightfield[] {
+  return [new AmphitheatreField(data, fields), ...fields];
 }
 
 /**

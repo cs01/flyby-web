@@ -49,6 +49,8 @@ export const enum Surf {
 
 export const ROOF_PITCH_DEG = 22;
 const TAN_PITCH = Math.tan((ROOF_PITCH_DEG * Math.PI) / 180);
+/** How far in from a wall or court a surveyed house's roof keeps rising. */
+const ROOF_RANGE_M = 8;
 
 export { KERB_M } from "../data/pompeii";
 
@@ -59,7 +61,7 @@ export { KERB_M } from "../data/pompeii";
  * arena 66.8 x 34.5 m, which the OSM inner ring matches. Centre and axis come
  * from OSM, the sizes from the survey literature.
  */
-export const AMPHI = { a: 67.5, b: 52, arenaA: 33.4, arenaB: 17.25, podium: 2.2, top: 13, tiers: 26 };
+export const AMPHI = { a: 67.5, b: 52, arenaA: 33.4, arenaB: 17.25, podium: 2.2, top: 13, tiers: 26, dig: 6 };
 
 type V3 = [number, number, number];
 type RGB = [number, number, number];
@@ -152,9 +154,11 @@ export interface PompeiiModel {
     lots: number; domus: number; tabernae: number; compluvia: number; fountains: number;
     steppingStones: number; columns: number; towers: number; roofTriangles: number; flatRoofs: number;
     plasterTriangles: number; buildMs: number;
+    /** Named houses built on their OSM outline with courts. */
+    surveyedHouses: number;
   };
   /** Where the amphitheatre was put, for the gate. */
-  amphitheatre: { cx: number; cz: number; a: number; b: number; rot: number };
+  amphitheatre: { cx: number; cz: number; a: number; b: number; rot: number; floorY: number; rimY: number };
 }
 
 export interface BuildOptions {
@@ -197,7 +201,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const lots: LotInfo[] = [];
   const stats = {
     lots: 0, domus: 0, tabernae: 0, compluvia: 0, fountains: 0, steppingStones: 0, columns: 0,
-    towers: 0, roofTriangles: 0, flatRoofs: 0, plasterTriangles: 0, buildMs: 0,
+    towers: 0, roofTriangles: 0, flatRoofs: 0, plasterTriangles: 0, buildMs: 0, surveyedHouses: 0,
   };
 
   // --- emitters ------------------------------------------------------------------
@@ -298,6 +302,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const cell = lean ? 8 : 5;
     const nx = Math.ceil((x1 - x0) / cell) + 1, nz = Math.ceil((z1 - z0) / cell) + 1;
     const vid = new Int32Array(nx * nz).fill(-1);
+    const pid = new Int32Array(nx * nz).fill(-1);
     // Beaten earth wherever nothing else is built: the open ground round the
     // amphitheatre, the pomerium inside the walls. The streets are ribbons on it.
     const v = (i: number, j: number): number => {
@@ -307,10 +312,24 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       vid[k] = F.vert([x, ground(x, z) + 0.05, z], [0, 1, 0], [0.46, 0.4, 0.3], hash(i, j), Surf.Garden, 0, 0, [x, z, 0, 0]);
       return vid[k];
     };
+    // The forum's travertine is this same terrain-following sheet, a kerb
+    // higher. A flat slab at the forum's lowest corner was buried under the
+    // terrain and this earth wherever the square rises to the north, which
+    // is most of it, and the forum read as a dark dirt yard.
+    const forumRing = data.publics.find((p) => p.kind === "forum")?.ring ?? null;
+    const pv = (i: number, j: number): number => {
+      const k = j * nx + i;
+      if (pid[k] >= 0) return pid[k];
+      const x = x0 + i * cell, z = z0 + j * cell;
+      pid[k] = F.vert([x, ground(x, z) + KERB_M + 0.05, z], [0, 1, 0], [0.86, 0.83, 0.75], hash(i, j, 5), Surf.Marble, 0, 0, [x, z, 0, 0]);
+      return pid[k];
+    };
     for (let j = 0; j + 1 < nz; j++) for (let i = 0; i + 1 < nx; i++) {
       const cx = x0 + (i + 0.5) * cell, cz = z0 + (j + 0.5) * cell;
       if (!pointInRing(wallRing, cx, cz) || inAmph(cx, cz, -2)) continue;
-      const a = v(i, j), b = v(i + 1, j), c = v(i, j + 1), d = v(i + 1, j + 1);
+      const paved = !!forumRing && pointInRing(forumRing, cx, cz);
+      const vv = paved ? pv : v;
+      const a = vv(i, j), b = vv(i + 1, j), c = vv(i, j + 1), d = vv(i + 1, j + 1);
       // Up-facing with +z south: (a, c, b) winds counter-clockwise seen from above.
       F.tri(a, c, b); F.tri(b, c, d);
     }
@@ -440,9 +459,27 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       }
     }
   }
-  for (let ji = 0; ji < junctions.length; ji++) {
-    const [jx, jz, big] = junctions[ji];
-    if (hash(ji, 31) > (big ? 0.5 : 0.18)) continue;
+  // Public fountains: about forty in the town, nearly all on a street
+  // corner. The ones the excavation keeps are where OSM maps them; the rest
+  // go to junctions, main-street crossings first, never two within 40 m.
+  const FOUNTAINS = 40;
+  const sites: [number, number][] = [];
+  for (const f of data.fountains ?? []) {
+    let best: [number, number] | null = null, bd = 25;
+    for (const [jx, jz] of junctions) {
+      const d = Math.hypot(jx - f.x, jz - f.z);
+      if (d < bd) { bd = d; best = [jx, jz]; }
+    }
+    const p = best ?? [f.x, f.z];
+    if (!sites.some((s) => Math.hypot(s[0] - p[0], s[1] - p[1]) < 15)) sites.push(p);
+  }
+  const order = junctions.map((j, ji) => ({ j, k: (j[2] ? 0 : 1) + hash(ji, 31) })).sort((a, b) => a.k - b.k);
+  for (const { j } of order) {
+    if (sites.length >= FOUNTAINS) break;
+    if (!sites.some((s) => Math.hypot(s[0] - j[0], s[1] - j[1]) < 40)) sites.push([j[0], j[1]]);
+  }
+  for (let ji = 0; ji < sites.length; ji++) {
+    const [jx, jz] = sites[ji];
     // On the pavement at a corner: the nearest kerb ring vertex to the junction.
     let best: [number, number] | null = null, bd = 14;
     for (const ins of data.insulae) {
@@ -473,6 +510,324 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   // Insulae: lots round the perimeter, a domus/taberna/house in each.
   // =====================================================================================
   const publicRings = data.publics.map((p) => p.ring);
+
+  // =====================================================================================
+  // Surveyed houses: the 114 named outlines OSM maps (Casa del Fauno, dei
+  // Vettii, ...) built on their real footprints, with the open courts the
+  // bake found in their room walls. The rule-built lots give way round them.
+  // =====================================================================================
+  interface House { ring: Ring; courts: Ring[]; surveyed: boolean; x0: number; x1: number; z0: number; z1: number; seed: number }
+  const houses: House[] = [];
+  for (let di = 0; di < data.domus.length; di++) {
+    const d = data.domus[di];
+    let ring = cleanRing(d.ring);
+    if (!ring || ringArea(ring) < 40) continue;
+    const [cx, cz] = ringCentroid(ring);
+    // OSM draws many outlines a metre or two shy of the street (the survey
+    // follows the wall's inner face, the insula the back of the pavement):
+    // pulled out onto the frontage, or a strip of the block's garden shows
+    // between the pavement and the house.
+    const ins = blockOf(ring);
+    // An outline that runs across a street is not a house plan (Casa di
+    // Giulio Polibio's spans four blocks): those are left to the rules.
+    if (!ins || shareInside(ring, ins.ring) < 0.85) continue;
+    {
+      const r = [...ring];
+      for (let i = 0; i < r.length; i += 2) {
+        if (distToRing(ins.ring, r[i], r[i + 1]) < 5) [r[i], r[i + 1]] = nearestOnRing(ins.ring, r[i], r[i + 1]);
+      }
+      ring = cleanRing(r) ?? ring;
+    }
+    if (publicRings.some((pr) => pointInRing(pr, cx, cz))) continue;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < ring.length; i += 2) { x0 = Math.min(x0, ring[i]); x1 = Math.max(x1, ring[i]); z0 = Math.min(z0, ring[i + 1]); z1 = Math.max(z1, ring[i + 1]); }
+    // A court must sit inside its house with room for the walls round it.
+    const courts = (d.courts ?? []).filter((c) => {
+      for (let k = 0; k < 8; k += 2) if (!pointInRing(ring, c[k], c[k + 1])) return false;
+      return true;
+    });
+    houses.push({ ring, courts, surveyed: courts.length > 0, x0, x1, z0, z1, seed: hash(di, 991) });
+  }
+  const houseAt = (x: number, z: number): boolean =>
+    houses.some((h) => x >= h.x0 && x <= h.x1 && z >= h.z0 && z <= h.z1 && pointInRing(h.ring, x, z));
+  /**
+   * How far back from its street front a lot quad (fa, fb front; ba, bb
+   * back) is clear of every surveyed house, 0..1 of its depth: 1 untouched,
+   * 0 when the house reaches the front row.
+   */
+  function lotFreeDepth(fa: [number, number], fb: [number, number], bb: [number, number], ba: [number, number]): number {
+    if (!houses.length) return 1;
+    const rows = [0.08, 0.3, 0.55, 0.8, 0.97];
+    for (let r = 0; r < rows.length; r++) {
+      const t = rows[r];
+      for (const s of [0.08, 0.35, 0.65, 0.92]) {
+        const x = lerp(lerp(fa[0], fb[0], s), lerp(ba[0], bb[0], s), t), z = lerp(lerp(fa[1], fb[1], s), lerp(ba[1], bb[1], s), t);
+        if (houseAt(x, z)) return r === 0 ? 0 : Math.max(0, rows[r - 1] + 0.05);
+      }
+    }
+    return 1;
+  }
+  const mainStreets = data.streets.filter((s) => s.main);
+  /**
+   * The insula a house belongs to: the one holding most of its corners. Not
+   * the one holding its centroid: a fifth of the outlines overhang their
+   * block's traced edge and an L-shaped house's centroid can miss it.
+   */
+  /** Share of a ring's area, sampled on a 1.5 m lattice, that lies inside `outer`. */
+  function shareInside(ring: Ring, outer: Ring): number {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < ring.length; i += 2) { x0 = Math.min(x0, ring[i]); x1 = Math.max(x1, ring[i]); z0 = Math.min(z0, ring[i + 1]); z1 = Math.max(z1, ring[i + 1]); }
+    let n = 0, k = 0;
+    for (let x = x0 + 0.75; x < x1; x += 1.5) for (let z = z0 + 0.75; z < z1; z += 1.5) {
+      if (!pointInRing(ring, x, z)) continue;
+      n++;
+      if (pointInRing(outer, x, z)) k++;
+    }
+    return n ? k / n : 0;
+  }
+  function blockOf(ring: Ring): PompeiiInsula | undefined {
+    let best: PompeiiInsula | undefined, bn = 0;
+    for (const ins of data.insulae) {
+      let k = 0;
+      for (let i = 0; i < ring.length; i += 2) if (pointInRing(ins.ring, ring[i], ring[i + 1])) k++;
+      if (k > bn) { bn = k; best = ins; }
+    }
+    return best;
+  }
+  for (const h of houses) buildHouse(h);
+
+  function buildHouse(hs: House): void {
+    const { ring, seed } = hs;
+    const n = ring.length / 2;
+    const area = ringArea(ring);
+    const ins = blockOf(ring);
+    let gMin = Infinity;
+    for (let i = 0; i < n; i++) gMin = Math.min(gMin, ground(ring[i * 2], ring[i * 2 + 1]));
+    const yBot = gMin - 0.3;
+    const storeyH = 4.9 + hash(seed * 1e6, 3) * 0.7;
+    const col = LOWER[Math.floor(hash(seed * 1e6, 4) * LOWER.length)];
+    const bandTop = 2.0 + hash(seed * 1e6, 5) * 1.2;
+    const p1 = Math.round(bandTop * 40);
+    const tileC: RGB = [0.6 + hash(seed * 1e6, 7) * 0.12, 0.29 + hash(seed * 1e6, 8) * 0.06, 0.18 + hash(seed * 1e6, 9) * 0.05];
+    const sideC: RGB = [col[0] * 0.5 + 0.43, col[1] * 0.5 + 0.4, col[2] * 0.5 + 0.34];
+
+    // Street edges: those running along the insula's frontage line.
+    const edges = [];
+    for (let i = 0; i < n; i++) {
+      const ax = ring[i * 2], az = ring[i * 2 + 1], bx = ring[((i + 1) % n) * 2], bz = ring[((i + 1) % n) * 2 + 1];
+      const L = Math.hypot(bx - ax, bz - az);
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      const street = L >= 2.5 && !!ins && distToRing(ins.ring, mx, mz) < 1.8;
+      const main = street && mainStreets.some((s) => distToPolyline(s.pts, mx, mz) < s.carriageM / 2 + s.sidewalkM + 2.5);
+      edges.push({ ax, az, bx, bz, L, ox: (bz - az) / L, oz: -(bx - ax) / L, street, main });
+    }
+    // The front: the longest street edge, else the longest edge.
+    let fi = 0;
+    for (let i = 1; i < n; i++) {
+      const a = edges[i], b = edges[fi];
+      if ((a.street && !b.street) || (a.street === b.street && a.L > b.L)) fi = i;
+    }
+    const F = edges[fi];
+    const ux = (F.bx - F.ax) / F.L, uz = (F.bz - F.az) / F.L;
+    // v runs into the house from its front.
+    const vx = -F.ox, vz = -F.oz;
+    // The floor is level with the pavement at the front door: the plaster
+    // scheme (socle, dado, window heights) is measured from it, and from the
+    // centroid it stood a metre over the street on a slope.
+    const g = ground((F.ax + F.bx) / 2, (F.az + F.bz) / 2) + KERB_M + 0.06;
+    const top = g + storeyH;
+
+    // No survey inside: an atrium behind the fauces and, in a deep house, a
+    // peristyle garden behind the tablinum, on the house's own axis.
+    let courts = hs.courts;
+    if (!courts.length) {
+      const fmx = (F.ax + F.bx) / 2, fmz = (F.az + F.bz) / 2;
+      const depth = rayToRing(ring, fmx + vx * 0.1, fmz + vz * 0.1, vx, vz);
+      const rect = (cu: number, v0: number, hw: number, dv: number): Ring => {
+        const P = (u: number, v: number): number[] => [fmx + ux * u + vx * v, fmz + uz * u + vz * v];
+        return [...P(cu - hw, v0), ...P(cu + hw, v0), ...P(cu + hw, v0 + dv), ...P(cu - hw, v0 + dv)];
+      };
+      const fits = (r: Ring): boolean => {
+        for (let k = 0; k < 8; k += 2) if (!pointInRing(ring, r[k], r[k + 1]) || distToRing(ring, r[k], r[k + 1]) < 2.4) return false;
+        return true;
+      };
+      const out: Ring[] = [];
+      if (depth >= 13 && F.L >= 9) {
+        const v0 = Math.min(6, depth * 0.3), dv = Math.min(9, Math.max(4, depth * 0.3));
+        const a = rect(0, v0, Math.min(5, F.L * 0.2), dv);
+        if (fits(a)) out.push(a);
+        if (depth > 26) {
+          const p0 = v0 + dv + 5;
+          const p = rect(0, p0, Math.min(10, F.L * 0.32), Math.min(18, depth - p0 - 4));
+          if (depth - p0 - 4 >= 6 && fits(p)) out.push(p);
+        }
+      }
+      courts = out;
+    }
+    // Rooms ran at most a range or two deep from a wall or a court; ground
+    // farther in than that was a garden or yard. Wherever the plan still
+    // leaves a point that far from every edge, open a court there, so no
+    // roof has to rise more than a range's pitch.
+    courts = [...courts];
+    for (let pass = 0; pass < 4; pass++) {
+      // The farthest point from every edge, on a 2 m lattice.
+      let bx = 0, bz = 0, bd = 0;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (let i = 0; i < n; i++) { x0 = Math.min(x0, ring[i * 2]); x1 = Math.max(x1, ring[i * 2]); z0 = Math.min(z0, ring[i * 2 + 1]); z1 = Math.max(z1, ring[i * 2 + 1]); }
+      for (let x = x0 + 1; x < x1; x += 2) for (let z = z0 + 1; z < z1; z += 2) {
+        if (!pointInRing(ring, x, z) || courts.some((c) => pointInRing(c, x, z))) continue;
+        let d = distToRing(ring, x, z);
+        for (const c of courts) d = Math.min(d, distToRing(c, x, z));
+        if (d > bd) { bd = d; bx = x; bz = z; }
+      }
+      if (bd < ROOF_RANGE_M) break;
+      // Corners stay a range in from the walls: the diagonal is the short way.
+      const s = Math.max(2.5, (bd - 5) / 1.45);
+      const c: Ring = [];
+      for (const [a, b] of [[-s, -s], [s, -s], [s, s], [-s, s]]) c.push(bx + ux * a + vx * b, bz + uz * a + vz * b);
+      courts.push(c);
+    }
+    const kind: LotInfo["kind"] = courts.length ? "domus" : "house";
+    stats.lots++;
+    if (kind === "domus") { stats.domus++; stats.compluvia++; stats.surveyedHouses++; }
+    lots.push({ kind, width: F.L, depth: Math.sqrt(area), storeys: 1, main: F.main, compluvium: courts.length > 0, inferred: false });
+
+    // --- outer walls, the street front with its door and shops ---
+    for (let i = 0; i < n; i++) {
+      const e = edges[i];
+      if (!e.street || grey) {
+        wall(e.ax, e.az, e.bx, e.bz, yBot, yBot, top, top, e.ox, e.oz, sideC, seed, Surf.Plaster, p1, 255, 0, e.L, g, top - g);
+        continue;
+      }
+      const openings: Opening[] = [];
+      if (i === fi) openings.push({ u0: e.L / 2 - 0.95, u1: e.L / 2 + 0.95, h: 3.4, kind: "door" });
+      if (e.main) {
+        // Shops along a main-street front, either side of the door.
+        for (let u = 0.8; u + 4.2 < e.L - 0.6; u += 5.2) {
+          if (openings.some((o) => u < o.u1 + 0.6 && u + 4.2 > o.u0 - 0.6)) continue;
+          openings.push({ u0: u, u1: u + 4.2, h: 3.1, kind: "shop" });
+        }
+      }
+      if (openings.length) facade([e.ax, e.az], [e.bx, e.bz], g, yBot, top, e.ox, e.oz, col, seed, p1, 0, openings, 5);
+      else wall(e.ax, e.az, e.bx, e.bz, yBot, yBot, top, top, e.ox, e.oz, col, seed, Surf.Plaster, p1, 0, 0, e.L, g, top - g);
+    }
+
+    // --- the courts: walls round each looking in, the floor, pool or garden ---
+    const areas = courts.map((c) => Math.abs(ringArea(c)));
+    const biggest = areas.reduce((m, a, k) => (a > areas[m] ? k : m), 0);
+    courts.forEach((c, k) => {
+      const garden = areas[k] >= 150 && k === biggest;
+      const [ccx, ccz] = ringCentroid(c);
+      for (let e = 0; e < 4; e++) {
+        const ax = c[e * 2], az = c[e * 2 + 1], bx = c[((e + 1) % 4) * 2], bz = c[((e + 1) % 4) * 2 + 1];
+        const L = Math.hypot(bx - ax, bz - az);
+        let ix = ccx - (ax + bx) / 2, iz = ccz - (az + bz) / 2;
+        const il = Math.hypot(ix, iz) || 1;
+        ix /= il; iz /= il;
+        wall(ax, az, bx, bz, g - 0.1, g - 0.1, top, top, ix, iz, garden ? [0.86, 0.8, 0.68] : [0.55, 0.12, 0.08], seed, garden ? Surf.Plaster : Surf.Fresco, garden ? 100 : 0, 255, 0, L, g, top - g);
+        if (garden && !lean && !grey) {
+          // The peristyle: columns a portico's depth in from the walls.
+          const m = Math.max(1, Math.round((L - 4) / 3));
+          for (let q = 0; q <= m; q++) {
+            const t = 2 + ((L - 4) * q) / m;
+            column(ax + ((bx - ax) * t) / L + ix * 2.4, az + ((bz - az) * t) / L + iz * 2.4, g, storeyH - 1.4, 0.2, [0.86, 0.82, 0.74], seed, 6, hash(seed * 1e6, 21) < 0.7);
+          }
+        }
+      }
+      const fp: V3[] = [0, 1, 2, 3].map((q): V3 => [c[q * 2], g + 0.02, c[q * 2 + 1]]);
+      poly(S, fp, [0, 1, 0], garden ? [0.3, 0.4, 0.18] : [0.55, 0.38, 0.3], seed, garden ? Surf.Garden : Surf.Pavement, 0, 0, fp.map((p) => [p[0], p[2], 0, 0]));
+      if (garden && !lean && !grey) {
+        // The portico roof inside the colonnade: a lean-to from the court walls.
+        const inner = [0, 1, 2, 3].map((q): [number, number] => {
+          const x = c[q * 2], z = c[q * 2 + 1];
+          const dx = ccx - x, dz = ccz - z, dl = Math.hypot(dx, dz) || 1;
+          return [x + (dx / dl) * 3.4, z + (dz / dl) * 3.4];
+        });
+        for (let e = 0; e < 4; e++) {
+          const p: V3 = [c[e * 2], top - 0.2, c[e * 2 + 1]], q: V3 = [c[((e + 1) % 4) * 2], top - 0.2, c[((e + 1) % 4) * 2 + 1]];
+          const qi: V3 = [inner[(e + 1) % 4][0], g + storeyH - 1.2, inner[(e + 1) % 4][1]], pi: V3 = [inner[e][0], g + storeyH - 1.2, inner[e][1]];
+          const L = Math.hypot(q[0] - p[0], q[2] - p[2]);
+          poly(S, [p, q, qi, pi], [ccx - (p[0] + q[0]) / 2, 2, ccz - (p[2] + q[2]) / 2], tileC, seed, Surf.Tile, 0, 0, [[0, 3.4, L, 3.4], [L, 3.4, L, 3.4], [L, 0, L, 3.4], [0, 0, L, 3.4]]);
+        }
+      } else if (!garden) {
+        const pool = fp.map((p): V3 => [ccx + (p[0] - ccx) * 0.45, g + 0.07, ccz + (p[2] - ccz) * 0.45]);
+        poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], seed, Surf.Water, 0, 0, pool.map((p) => [p[0], p[2], 0, 0]));
+      }
+    });
+
+    // --- the roof: one hipped heightfield over the house ---
+    // Every point rises from the nearest eave, outer wall or court edge, at
+    // the Roman pitch, so ranges of rooms get hipped roofs that drain both
+    // to the street and into the atrium and peristyle, whatever the plan's
+    // shape. Sampled on a grid along the house's axis; vertices that fall
+    // outside the outline or inside a court are pulled onto its edge, so
+    // the eaves follow the real walls.
+    const cell = lean ? 2 : 1.25;
+    const CAP = ROOF_RANGE_M + 1;
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const u = ring[i * 2] * ux + ring[i * 2 + 1] * uz, v = ring[i * 2] * vx + ring[i * 2 + 1] * vz;
+      u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+    }
+    // The (u, v) frame has to keep the (x, z) handedness, or every triangle
+    // below winds the wrong way and the roof is culled from above.
+    const flipV = ux * vz - uz * vx < 0 ? -1 : 1;
+    const nu = Math.ceil((u1 - u0) / cell) + 1, nv = Math.ceil((v1 - v0) / cell) + 1;
+    const XZ = (i: number, j: number): [number, number] => {
+      const u = u0 + i * cell, v = v0 + j * cell;
+      return [u * ux + v * vx, u * uz + v * vz];
+    };
+    const inCourt = (x: number, z: number): number => courts.findIndex((c) => pointInRing(c, x, z));
+    const vid = new Int32Array(nu * nv).fill(-1);
+    const hgt = new Float32Array(nu * nv);
+    const vert = (i: number, j: number): number => {
+      const k = j * nu + i;
+      if (vid[k] >= 0) return vid[k];
+      const [gx0, gz0] = XZ(i, j);
+      let x = gx0, z = gz0;
+      if (!pointInRing(ring, x, z)) [x, z] = nearestOnRing(ring, x, z);
+      const ci = inCourt(x, z);
+      if (ci >= 0) [x, z] = nearestOnRing(courts[ci], x, z);
+      // Distance to the nearest edge and the way out to it.
+      let [nx, nz] = nearestOnRing(ring, x, z);
+      let d = Math.hypot(x - nx, z - nz);
+      for (const c of courts) {
+        const [cx, cz] = nearestOnRing(c, x, z);
+        const dc = Math.hypot(x - cx, z - cz);
+        if (dc < d) { d = dc; nx = cx; nz = cz; }
+      }
+      const capped = d >= CAP;
+      const dd = Math.min(d, CAP);
+      // On an edge the slope runs in from where the grid point was pulled from.
+      const sl = Math.hypot(x - gx0, z - gz0);
+      const gx = d > 1e-3 ? (x - nx) / d : sl > 1e-3 ? (x - gx0) / sl : 0, gz = d > 1e-3 ? (z - nz) / d : sl > 1e-3 ? (z - gz0) / sl : 0;
+      const y = top + dd * TAN_PITCH;
+      const nrm: V3 = capped ? [0, 1, 0] : [-gx * TAN_PITCH, 1, -gz * TAN_PITCH];
+      const nl = Math.hypot(nrm[0], nrm[1], nrm[2]);
+      hgt[k] = y;
+      vid[k] = S.vert([x, y, z], [nrm[0] / nl, nrm[1] / nl, nrm[2] / nl], grey ? GREY : tileC, seed, grey ? Surf.Stucco : Surf.Tile, 0, grey ? 0 : 1, [0, dd / Math.cos(Math.atan(TAN_PITCH)), 0, 0]);
+      return vid[k];
+    };
+    let roofTris = 0;
+    for (let j = 0; j + 1 < nv; j++) for (let i = 0; i + 1 < nu; i++) {
+      const [cx, cz] = XZ(i + 0.5, j + 0.5);
+      if (!pointInRing(ring, cx, cz) || inCourt(cx, cz) >= 0) continue;
+      const a = vert(i, j), b = vert(i + 1, j), c = vert(i, j + 1), dd = vert(i + 1, j + 1);
+      const ha = hgt[j * nu + i], hb = hgt[j * nu + i + 1], hc = hgt[(j + 1) * nu + i], hd = hgt[(j + 1) * nu + i + 1];
+      // Split along the higher diagonal: the roof is a lower envelope of
+      // planes, so that diagonal follows the ridge or hip rather than
+      // cutting a notch across it.
+      const tris: [number, number, number][] = ha + hd >= hb + hc ? [[a, c, dd], [a, dd, b]] : [[a, c, b], [b, c, dd]];
+      for (const [p, q, r] of tris) {
+        if (flipV > 0) S.tri(p, q, r); else S.tri(p, r, q);
+        roofTris++;
+      }
+    }
+    if (!grey) stats.roofTriangles += roofTris;
+    else stats.flatRoofs++;
+    solids.push({ ring: [...ring], baseY: yBot, topY: top + Math.min(CAP, 4) * TAN_PITCH });
+  }
+
   for (let ii = 0; ii < data.insulae.length; ii++) buildInsula(data.insulae[ii], ii);
 
   function buildInsula(ins: PompeiiInsula, ii: number): void {
@@ -587,7 +942,15 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         // A lot poking into a public building is somebody else's ground.
         const mx = (fa[0] + fb[0] + ba[0] + bb[0]) / 4, mz = (fa[1] + fb[1] + ba[1] + bb[1]) / 4;
         if (publicRings.some((pr) => pointInRing(pr, mx, mz))) continue;
-        buildLot(fa, fb, bb, ba, e.nx, e.nz, kind, e.main, ins.inferred, hash(ii, i * 31 + li, 5), e.d);
+        // A lot on a surveyed house's ground gives way to it: dropped when
+        // the house reaches the street front, else cut back to stop short of it.
+        const free = lotFreeDepth(fa, fb, bb, ba);
+        if (free <= 0) continue;
+        if (free < 1) {
+          const cb: [number, number] = [lerp(fb[0], bb[0], free), lerp(fb[1], bb[1], free)];
+          const ca: [number, number] = [lerp(fa[0], ba[0], free), lerp(fa[1], ba[1], free)];
+          buildLot(fa, fb, cb, ca, e.nx, e.nz, kind, e.main, ins.inferred, hash(ii, i * 31 + li, 5), e.d * free);
+        } else buildLot(fa, fb, bb, ba, e.nx, e.nz, kind, e.main, ins.inferred, hash(ii, i * 31 + li, 5), e.d);
         lotIx++;
       }
     }
@@ -611,6 +974,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       for (let v = v0 + 24; v + D < v1 - 24; v += D + gap) {
         const c = [[u, v], [u + W, v], [u + W, v + D], [u, v + D]].map(([a, b]) => [a * ex + b * nx, a * ez + b * nz]);
         if (!c.every(([x, z]) => pointInRing(ring, x, z) && distToRing(ring, x, z) > 18)) continue;
+        if (lotFreeDepth([c[0][0], c[0][1]], [c[1][0], c[1][1]], [c[2][0], c[2][1]], [c[3][0], c[3][1]]) < 1) continue;
         if (publicRings.some((pr) => c.some(([x, z]) => pointInRing(pr, x, z)))) continue;
         // Front on the u0 side, facing a lane between the houses.
         buildLot([c[0][0], c[0][1]], [c[1][0], c[1][1]], [c[2][0], c[2][1]], [c[3][0], c[3][1]], nx, nz, "domus", false, true, hash(ii, k++, 41), D);
@@ -1011,14 +1375,12 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
 
   function buildForum(r: Ring, g: number, seed: number): void {
-    // Travertine paving over the whole square.
-    const pts = r;
-    const tri = triangulateRing(new Float32Array(pts));
-    const base = S.n;
-    for (let i = 0; i < pts.length; i += 2) S.vert([pts[i], g + 0.05, pts[i + 1]], [0, 1, 0], [0.82, 0.79, 0.72], seed, Surf.Marble, 0, 0, [pts[i], pts[i + 1], 0, 0]);
-    for (let k = 0; k < tri.length; k += 3) S.tri(base + tri[k], base + tri[k + 2], base + tri[k + 1]);
-    // Two-storey colonnade round the edges, set in 4 m, except where the
-    // temples stand at the ends.
+    // The travertine paving is drawn with the open ground (see the floor
+    // grid), following the terrain, so everything standing on it takes its
+    // height from the ground where it stands rather than the square's lowest
+    // corner. Two-storey colonnade round the edges, set in 4 m, except where
+    // the temples stand at the ends.
+    void g;
     const temples = data.publics.filter((q) => q.kind === "temple").map((q) => q.ring);
     const inTemple = (x: number, z: number): boolean => temples.some((t) => pointInRing(t, x, z) || distToRing(t, x, z) < 4);
     const n = r.length / 2;
@@ -1030,6 +1392,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const tx = (bx - ax) / L, tz = (bz - az) / L;
       const ins = 5.5;
       const x0 = ax + nx * ins + tx * ins, z0 = az + nz * ins + tz * ins, x1 = bx + nx * ins - tx * ins, z1 = bz + nz * ins - tz * ins;
+      const g = Math.min(ground(x0, z0), ground(x1, z1)) + KERB_M;
       colonnade(x0, z0, x1, z1, g, 6.2, 0.42, 3.2, -nx, -nz, ins, g + 9.5, seed, [0.9, 0.87, 0.8], inTemple);
       if (!lean) colonnade(x0, z0, x1, z1, g + 6.95, 4.4, 0.3, 3.2, -nx, -nz, ins, g + 13.4, seed, [0.9, 0.87, 0.8], inTemple);
       // The back wall the portico roofs lean on.
@@ -1042,7 +1405,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         if (k === 0) continue;
         const x = o.cx + o.ux * k * (o.hu / 4.5) - o.uz * (o.hv * 0.55), z = o.cz + o.uz * k * (o.hu / 4.5) + o.ux * (o.hv * 0.55);
         const q = [x - 0.9, z - 0.7, x + 0.9, z - 0.7, x + 0.9, z + 0.7, x - 0.9, z + 0.7];
-        box(q, g, g + 2.2, [0.86, 0.84, 0.8], seed, Surf.Marble);
+        const g = ground(x, z) + KERB_M;
+        box(q, g - 0.3, g + 2.2, [0.86, 0.84, 0.8], seed, Surf.Marble);
         // A bronze figure on the base: a draped body and a head.
         column(x, z, g + 2.2, 1.55, 0.3, [0.24, 0.2, 0.14], seed, 8);
         column(x, z, g + 3.75, 0.3, 0.13, [0.24, 0.2, 0.14], seed, 6);
@@ -1255,13 +1619,24 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     solids.push({ ring: sb, baseY: g0, topY: topY + 2 });
   }
 
+  let amphY = { floor: 0, rim: 0 };
   // --- the amphitheatre ----------------------------------------------------------------
   {
     const a = amph;
     const ux = Math.cos(a.rot), uz = Math.sin(a.rot), vx = -uz, vz = ux;
-    const g0 = ground(a.cx, a.cz) + 0.1;
-    const segs = lean ? 40 : 72;
     const E = (ka: number, kb: number, t: number): [number, number] => [a.cx + ux * Math.cos(t) * ka + vx * Math.sin(t) * kb, a.cz + uz * Math.cos(t) * ka + vz * Math.sin(t) * kb];
+    // The arena floor is dug AMPHI.dig below the ground round the building
+    // (digAmphitheatre lowers the terrain to match), so the lower cavea sits
+    // in the ground and the outer wall stands only 8 m over the street. The
+    // rim is measured outside the wall, where the terrain was left alone.
+    let rim = 0;
+    for (let k = 0; k < 16; k++) {
+      const [x, z] = E(AMPHI.a + 6, AMPHI.b + 6, (k / 16) * Math.PI * 2);
+      rim += ground(x, z) / 16;
+    }
+    const g0 = rim - AMPHI.dig;
+    amphY = { floor: g0, rim };
+    const segs = lean ? 40 : 72;
     const seed = 0.37;
     // Arena sand.
     const ap: V3[] = [];
@@ -1338,8 +1713,19 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const gs = ground(sx, sz);
         // A sloped block: top rising from the ground at the far end to the
         // walk at the facade, on its own retaining wall.
-        const q: V3[] = [[ex, gs, ez], [ex + nox * w, gs, ez + noz * w], [sx + nox * w, y1, sz + noz * w], [sx, y1, sz]];
-        poly(S, q, [0, 1, 0], [0.7, 0.66, 0.56], seed, Surf.Marble, 0, 0, uv4());
+        if (lean) {
+          const q: V3[] = [[ex, gs, ez], [ex + nox * w, gs, ez + noz * w], [sx + nox * w, y1, sz + noz * w], [sx, y1, sz]];
+          poly(S, q, [0, 1, 0], [0.7, 0.66, 0.56], seed, Surf.Marble, 0, 0, uv4());
+        } else {
+          // Steps a third of a metre high, each a block down to the ground.
+          const N = Math.max(4, Math.round((y1 - gs) / 0.34));
+          for (let k = 0; k < N; k++) {
+            const d0 = (run * k) / N, d1 = (run * (k + 1)) / N;
+            const p0x = ex - dx * dir * d0, p0z = ez - dz * dir * d0, p1x = ex - dx * dir * d1, p1z = ez - dz * dir * d1;
+            box([p0x, p0z, p1x, p1z, p1x + nox * w, p1z + noz * w, p0x + nox * w, p0z + noz * w], gs - 0.5, gs + ((y1 - gs) * (k + 1)) / N,
+              [0.72, 0.66, 0.55], seed, Surf.Kerb, Surf.Kerb, [0.74, 0.7, 0.6]);
+          }
+        }
         wall(ex + nox * w, ez + noz * w, sx + nox * w, sz + noz * w, gs - 0.5, gs - 0.5, gs, y1, nox, noz, [0.72, 0.66, 0.55], seed, Surf.Masonry, 0, 0, 0, run, gs, y1 - gs);
         poly(S, [[sx, gs - 0.5, sz], [sx + nox * w, gs - 0.5, sz + noz * w], [sx + nox * w, y1, sz + noz * w], [sx, y1, sz]], [dx * dir, 0, dz * dir], [0.72, 0.66, 0.55], seed, Surf.Masonry, 0, 0, uv4());
       }
@@ -1391,19 +1777,44 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       }
       along += L;
     }
-    // Towers on the north and east, where the walls faced the open approach:
-    // about every 110 m along those stretches (twelve on the real circuit).
-    let next = 60;
-    let acc = 0;
-    for (let i = 0; i < n; i++) {
+    // Towers: the twelve the survey numbers (Torre I to XII, from the
+    // south-east round by the east and north to the Porta di Ercolano), each
+    // on the wall line nearest its mapped outline. A pack without them gets
+    // twelve spread along the north and east, where the walls faced the open
+    // approach.
+    const towerAt: [number, number, number][] = [];
+    if (data.towers?.length) {
+      for (const t of data.towers) {
+        let best = 0, bd = Infinity;
+        for (let i = 0; i < n; i++) {
+          const d = distSeg(t.x, t.z, r[i * 2], r[i * 2 + 1], r[((i + 1) % n) * 2], r[((i + 1) % n) * 2 + 1]);
+          if (d < bd) { bd = d; best = i; }
+        }
+        const ax = r[best * 2], az = r[best * 2 + 1], bx = r[((best + 1) % n) * 2], bz = r[((best + 1) % n) * 2 + 1];
+        const L = Math.hypot(bx - ax, bz - az) || 1;
+        const s = Math.max(0, Math.min(L, ((t.x - ax) * (bx - ax) + (t.z - az) * (bz - az)) / L));
+        towerAt.push([best, s, L]);
+      }
+    } else {
+      let perim = 0;
+      for (let i = 0; i < n; i++) perim += Math.hypot(r[((i + 1) % n) * 2] - r[i * 2], r[((i + 1) % n) * 2 + 1] - r[i * 2 + 1]);
+      let acc = 0, next = 60;
+      for (let i = 0; i < n && towerAt.length < 12; i++) {
+        const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
+        const L = Math.hypot(bx - ax, bz - az);
+        while (acc + L >= next && towerAt.length < 12) {
+          const s = next - acc;
+          next += perim / 24;
+          const x = ax + ((bx - ax) * s) / L, z = az + ((bz - az) * s) / L;
+          if ((z < wcz - 60 || x > wcx + 350) && !gates.some((gt) => Math.hypot(gt.x - x, gt.z - z) < 25)) towerAt.push([i, s, L]);
+        }
+        acc += L;
+      }
+    }
+    for (const [i, s, L] of towerAt) {
       const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
-      const L = Math.hypot(bx - ax, bz - az);
-      while (acc + L >= next) {
-        const s = next - acc;
+      {
         const x = ax + ((bx - ax) * s) / L, z = az + ((bz - az) * s) / L;
-        next += 110;
-        const northOrEast = z < wcz - 60 || x > wcx + 350;
-        if (!northOrEast || nearGate(x, z) || gates.some((gt) => Math.hypot(gt.x - x, gt.z - z) < 25)) continue;
         const tx = (bx - ax) / L, tz = (bz - az) / L, ox = tz, oz = -tx;
         const q = [x - tx * 4 - ox * 4, z - tz * 4 - oz * 4, x + tx * 4 - ox * 4, z + tz * 4 - oz * 4, x + tx * 4 + ox * 6, z + tz * 4 + oz * 6, x - tx * 4 + ox * 6, z - tz * 4 + oz * 6];
         const gt = ground(x, z);
@@ -1419,7 +1830,6 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         solids.push({ ring: q, baseY: gt - 4, topY: top + 2.4 });
         stats.towers++;
       }
-      acc += L;
     }
     // Gates: two piers and a vault over the road.
     for (const gt of gates) {
@@ -1464,7 +1874,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     solids,
     lots,
     stats,
-    amphitheatre: { cx: amph.cx, cz: amph.cz, a: AMPHI.a, b: AMPHI.b, rot: amph.rot },
+    amphitheatre: { cx: amph.cx, cz: amph.cz, a: AMPHI.a, b: AMPHI.b, rot: amph.rot, floorY: amphY.floor, rimY: amphY.rim },
   };
 }
 
@@ -1592,4 +2002,23 @@ function triangulateRing(f: Float32Array): number[] {
   }
   if (idx.length === 3) out.push(idx[0], idx[1], idx[2]);
   return out;
+}
+
+/** The nearest point on a ring's boundary. */
+export function nearestOnRing(r: Ring, x: number, z: number): [number, number] {
+  const n = r.length / 2;
+  let best = Infinity, px = x, pz = z;
+  for (let i = 0; i < n; i++) {
+    const ax = r[i * 2], az = r[i * 2 + 1], dx = r[((i + 1) % n) * 2] - ax, dz = r[((i + 1) % n) * 2 + 1] - az;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1e-9)));
+    const qx = ax + t * dx, qz = az + t * dz, d = Math.hypot(x - qx, z - qz);
+    if (d < best) { best = d; px = qx; pz = qz; }
+  }
+  return [px, pz];
+}
+
+function distToPolyline(p: number[], x: number, z: number): number {
+  let best = Infinity;
+  for (let s = 2; s < p.length; s += 2) best = Math.min(best, distSeg(x, z, p[s - 2], p[s - 1], p[s], p[s + 1]));
+  return best;
 }

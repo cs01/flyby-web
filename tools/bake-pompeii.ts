@@ -78,8 +78,19 @@ function outerRing(e: El): Ring | null {
 // --- the wall -----------------------------------------------------------------
 const wallWay = [...ways.values()].find((w) => w.tags?.barrier === "city_wall" || w.tags?.historic === "citywalls");
 if (!wallWay) throw new Error("no city wall in the raw OSM");
-const wall = outerRing(wallWay)!;
+let wall = outerRing(wallWay)!;
 if (ringArea(wall) < 0) reverseRing(wall);
+{
+  // South of Porta Marina the OSM way runs out round the terrace of the
+  // Villa Imperiale, which was built against the OUTSIDE of the wall, and
+  // back: a 100 m spur that made a block stick out west of the gate. The
+  // circuit runs straight from the gate's south side to the Foro Triangolare
+  // terrace, so the spur's vertices (west of x -310, south of z 80) go.
+  const kept: number[] = [];
+  for (let i = 0; i < wall.length; i += 2) if (!(wall[i] < -310 && wall[i + 1] > 80)) kept.push(wall[i], wall[i + 1]);
+  if (wall.length - kept.length < 20) throw new Error(`porta marina spur not found (${(wall.length - kept.length) / 2} vertices)`);
+  wall = kept;
+}
 function reverseRing(r: Ring): void {
   const n = r.length / 2;
   for (let i = 0; i < n / 2; i++) {
@@ -643,9 +654,127 @@ function distToPolyline(p: number[], x: number, z: number): number {
 }
 
 
+// --- the open courts of the surveyed houses ---------------------------------------------
+// Pompeii's rooms are small: cubicula 3 m across, a triclinium or tablinum 5
+// or 6. A space whose inscribed circle is 7 m across with no surveyed wall
+// in it is an atrium or a peristyle garden. Each house is rasterised at
+// half a metre with its room walls and outline as obstacles; cells whose
+// clearance reaches COURT_R seed a court, the court is the union of their
+// clearance disks, and it is kept as a rectangle on the house's own axis.
+const ROOM_WALLS: number[][] = [];
+for (const w of ways.values()) {
+  if (w.tags?.barrier !== "wall" || w.tags?.name) continue;
+  const p = wayPts(w);
+  if (p.length >= 4) ROOM_WALLS.push(p);
+}
+const COURT_R = 3.4;
+function houseCourts(ring: Ring): { courts: Ring[]; wallM: number } {
+  const C = 0.5;
+  let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+  for (let i = 0; i < ring.length; i += 2) { x0 = Math.min(x0, ring[i]); x1 = Math.max(x1, ring[i]); z0 = Math.min(z0, ring[i + 1]); z1 = Math.max(z1, ring[i + 1]); }
+  const w = Math.ceil((x1 - x0) / C) + 1, h = Math.ceil((z1 - z0) / C) + 1;
+  const free = new Uint8Array(w * h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) if (pointInRing(ring, x0 + (i + 0.5) * C, z0 + (j + 0.5) * C)) free[j * w + i] = 1;
+  let wallM = 0;
+  for (const p of ROOM_WALLS) {
+    for (let s = 2; s < p.length; s += 2) {
+      const ax = p[s - 2], az = p[s - 1], bx = p[s], bz = p[s + 1];
+      if (Math.max(ax, bx) < x0 || Math.min(ax, bx) > x1 || Math.max(az, bz) < z0 || Math.min(az, bz) > z1) continue;
+      const L = Math.hypot(bx - ax, bz - az);
+      let inside = false;
+      for (let t = 0; t <= L; t += C * 0.5) {
+        const x = ax + ((bx - ax) * t) / (L || 1), z = az + ((bz - az) * t) / (L || 1);
+        const i = Math.floor((x - x0) / C), j = Math.floor((z - z0) / C);
+        if (i >= 0 && j >= 0 && i < w && j < h && free[j * w + i]) { free[j * w + i] = 0; inside = true; }
+      }
+      if (inside) wallM += L;
+    }
+  }
+  // Chamfer distance to the nearest obstacle (wall or outside), in metres.
+  const d = new Float32Array(w * h);
+  for (let k = 0; k < w * h; k++) d[k] = free[k] ? 1e9 : 0;
+  const D1 = C, D2 = C * Math.SQRT2;
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const k = j * w + i;
+    if (!d[k]) continue;
+    const m = (ii: number, jj: number, c: number): number => (ii < 0 || jj < 0 || ii >= w ? 0 : d[jj * w + ii]) + c;
+    d[k] = Math.min(d[k], m(i - 1, j, D1), m(i, j - 1, D1), m(i - 1, j - 1, D2), m(i + 1, j - 1, D2));
+  }
+  for (let j = h - 1; j >= 0; j--) for (let i = w - 1; i >= 0; i--) {
+    const k = j * w + i;
+    if (!d[k]) continue;
+    const m = (ii: number, jj: number, c: number): number => (ii >= w || jj >= h || ii < 0 ? 0 : d[jj * w + ii]) + c;
+    d[k] = Math.min(d[k], m(i + 1, j, D1), m(i, j + 1, D1), m(i + 1, j + 1, D2), m(i - 1, j + 1, D2));
+  }
+  // No survey inside, no courts from it: the renderer's rules place them.
+  const area = Math.abs(ringArea(ring));
+  if (wallM < area * 0.04) return { courts: [], wallM: r1(wallM) };
+  const court = new Uint8Array(w * h);
+  for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+    const r = d[j * w + i];
+    if (r < COURT_R) continue;
+    const rc = Math.floor(r / C);
+    for (let jj = Math.max(0, j - rc); jj <= Math.min(h - 1, j + rc); jj++) for (let ii = Math.max(0, i - rc); ii <= Math.min(w - 1, i + rc); ii++) {
+      if (Math.hypot(ii - i, jj - j) * C <= r) court[jj * w + ii] = 1;
+    }
+  }
+  // The house's axis: its longest outline edge.
+  let ux = 1, uz = 0, best = 0;
+  const n = ring.length / 2;
+  for (let i = 0; i < n; i++) {
+    const ex = ring[((i + 1) % n) * 2] - ring[i * 2], ez = ring[((i + 1) % n) * 2 + 1] - ring[i * 2 + 1], L = Math.hypot(ex, ez);
+    if (L > best) { best = L; ux = ex / L; uz = ez / L; }
+  }
+  // Greedy rectangles: the clearest uncovered cell seeds a square inside its
+  // clearance disk, grown side by side while it stays in the court mask.
+  // A component's bounding box was wrong for this: the atrium, the open
+  // tablinum and the peristyle join into one region the size of the house.
+  const courts: Ring[] = [];
+  const covered = new Uint8Array(w * h);
+  const cellAt = (u: number, v: number): number => {
+    const x = u * ux - v * uz, z = u * uz + v * ux;
+    const i = Math.floor((x - x0) / C), j = Math.floor((z - z0) / C);
+    return i >= 0 && j >= 0 && i < w && j < h ? j * w + i : -1;
+  };
+  const allCourt = (u0: number, u1: number, v0: number, v1: number): boolean => {
+    for (let u = u0; u <= u1 + 1e-6; u += C * 0.7) for (let v = v0; v <= v1 + 1e-6; v += C * 0.7) {
+      const k = cellAt(u, v);
+      if (k < 0 || !court[k] || covered[k]) return false;
+    }
+    return true;
+  };
+  for (let guard = 0; guard < 80 && courts.length < 5; guard++) {
+    let bk = -1, bd = COURT_R;
+    for (let k = 0; k < w * h; k++) if (court[k] && !covered[k] && d[k] >= bd) { bd = d[k]; bk = k; }
+    if (bk < 0) break;
+    const x = x0 + ((bk % w) + 0.5) * C, z = z0 + (Math.floor(bk / w) + 0.5) * C;
+    const cu = x * ux + z * uz, cv = -x * uz + z * ux, s = bd * 0.7;
+    let u0 = cu - s, u1 = cu + s, v0 = cv - s, v1 = cv + s;
+    if (!allCourt(u0, u1, v0, v1)) { covered[bk] = 1; continue; }
+    for (let grew = true; grew;) {
+      grew = false;
+      if (allCourt(u0 - C, u0 - C, v0, v1)) { u0 -= C; grew = true; }
+      if (allCourt(u1 + C, u1 + C, v0, v1)) { u1 += C; grew = true; }
+      if (allCourt(u0, u1, v0 - C, v0 - C)) { v0 -= C; grew = true; }
+      if (allCourt(u0, u1, v1 + C, v1 + C)) { v1 += C; grew = true; }
+    }
+    for (let u = u0 - 1; u <= u1 + 1; u += C * 0.7) for (let v = v0 - 1; v <= v1 + 1; v += C * 0.7) {
+      const k = cellAt(u, v);
+      if (k >= 0) covered[k] = 1;
+    }
+    if ((u1 - u0) * (v1 - v0) < 30) continue;
+    const P = (u: number, v: number): number[] => [r1(u * ux - v * uz), r1(u * uz + v * ux)];
+    courts.push([...P(u0, v0), ...P(u1, v0), ...P(u1, v1), ...P(u0, v1)]);
+  }
+  // Courts are open sky: a house that came out mostly court is a survey gap.
+  const open = courts.reduce((s, c) => s + Math.abs(ringArea(c)), 0);
+  if (open > area * 0.65) return { courts: [], wallM: r1(wallM) };
+  return { courts, wallM: r1(wallM) };
+}
+
 // --- names ---------------------------------------------------------------------------
 const places: PompeiiPlace[] = [];
-const domus: { name: string; ring: Ring }[] = [];
+const domus: PompeiiData["domus"] = [];
 const seenPlace = new Set<string>();
 for (const e of raw.elements) {
   const name = e.tags?.name;
@@ -663,7 +792,7 @@ for (const e of raw.elements) {
   if (!inWall(cx, cz)) continue;
   const pn = plainName(name);
   if (ringArea(ring) < 0) reverseRing(ring);
-  domus.push({ name: pn, ring: ring.map(r1) });
+  domus.push({ name: pn, ring: ring.map(r1), ...houseCourts(ring) });
   if (!seenPlace.has(pn)) { seenPlace.add(pn); places.push({ name: pn, x: r1(cx), z: r1(cz), kind: "domus" }); }
 }
 for (const p of publics) {
@@ -672,6 +801,31 @@ for (const p of publics) {
 }
 places.push({ name: "Amphitheatre", x: amphitheatre.cx, z: amphitheatre.cz, kind: "public" });
 const gates = places.filter((p) => p.kind === "gate").map((p) => ({ name: p.name, x: p.x, z: p.z }));
+
+// --- towers and fountains ---------------------------------------------------------------
+// The surveyed towers, mapped as small closed ways named by their number.
+const towers: { name: string; x: number; z: number }[] = [];
+for (const w of ways.values()) {
+  const name = w.tags?.name ?? "";
+  if (!/^Torre (di Mercurio )?[IVX]+$/.test(name) || towers.some((t) => t.name === name)) continue;
+  const p = wayPts(w);
+  if (p.length < 4) continue;
+  let cx = 0, cz = 0;
+  for (let i = 0; i < p.length; i += 2) { cx += p[i]; cz += p[i + 1]; }
+  towers.push({ name, x: r1(cx / (p.length / 2)), z: r1(cz / (p.length / 2)) });
+}
+// The public fountains the excavation keeps (historic=fountain), plus the
+// drinking taps, which the park put at the ancient fountains' corners.
+const fountains: { x: number; z: number }[] = [];
+for (const e of raw.elements) {
+  const t = e.tags;
+  if (e.type !== "node" || !t) continue;
+  if (t.historic !== "fountain" && t.amenity !== "fountain" && t.amenity !== "drinking_water" && t["disused:amenity"] !== "drinking_water") continue;
+  const p = nodes.get(e.id);
+  if (!p || !inWall(p[0], p[1]) || fountains.some((f) => Math.hypot(f.x - p[0], f.z - p[1]) < 10)) continue;
+  fountains.push({ x: r1(p[0]), z: r1(p[1]) });
+}
+console.log(`${towers.length} towers (${towers.map((t) => t.name).join(", ")}), ${fountains.length} mapped fountains`);
 
 const streetM = streets.reduce((s, st) => s + polylineLength(st.pts), 0);
 const stats = {
@@ -691,7 +845,7 @@ const stats = {
   places: places.length,
 };
 const data: PompeiiData = {
-  lat0: LAT0, lon0: LON0, wall: wall.map(r1), gates, streets, insulae, publics, amphitheatre, places, domus, stats,
+  lat0: LAT0, lon0: LON0, wall: wall.map(r1), gates, towers, fountains, streets, insulae, publics, amphitheatre, places, domus, stats,
 };
 writeFileSync(OUT, JSON.stringify(data));
 console.log(JSON.stringify(stats, null, 1));

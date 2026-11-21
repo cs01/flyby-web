@@ -954,6 +954,16 @@ export const POSES: Pose[] = [
     query: "drive=1&chase=1",
   },
   {
+    // Across Via dell'Abbondanza at the Casa di Giulio Polibio from five metres: the plaster
+    // close up, its painted panels, damp and the painted election notices.
+    name: "pompeii-wall",
+    city: "pompeii",
+    lat: 40.750971, lon: 14.490369, altM: 33.8, hdgDeg: 329, pitchDeg: 6,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "A house front at arm's length: plaster, panels, notices",
+  },
+  {
     // The same town from the air at an angle, for the roofscape.
     name: "pompeii-roofs",
     city: "pompeii",

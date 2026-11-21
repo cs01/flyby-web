@@ -37,7 +37,7 @@ import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./si
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
-import { Pompeii, Cart, antiquateDrape, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
+import { Pompeii, Cart, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
@@ -518,7 +518,7 @@ async function main() {
   // The plan the drapes were stitched for. Defaulting to CITY_RINGS here gave a
   // reduced-tier device the desktop meshes under its own smaller drapes.
   const alcatrazAsset = perfOff.has("alcatraz") ? null : await alcatrazPromise;
-  const terrainFields = alcatrazAsset ? alcatrazRingFields(alcatrazAsset.patch, fields, budget.rings, origin) : fields;
+  const terrainFields = alcatrazAsset ? alcatrazRingFields(alcatrazAsset.patch, fields, budget.rings, origin) : pompeiiData ? pompeiiRingFields(fields, pompeiiData) : fields;
   const terrain = new Terrain(origin, terrainFields, drapes, sunShadow.uniforms, budget.rings);
   // Before anything reads it: every consumer below (buildings, collision,
   // trees, walking, docking) must stand on the lidar, not on the eroded field
@@ -540,6 +540,7 @@ async function main() {
     });
     scene.add(pompeii.group);
     sunShadow.setCityCasters(pompeii.buildings);
+    sunShadow.setSplits(POMPEII_SHADOW_SPLITS[0], POMPEII_SHADOW_SPLITS[1]);
     terrain.heightAt = pompeiiHeightAt(pompeiiData, terrain.heightAt, off.x, off.z);
     cart = new Cart(pompeii.uniforms);
     cart.group.visible = false;
