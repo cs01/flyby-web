@@ -711,5 +711,96 @@ let built: PompeiiModel;
   check("crossroads shrines and forum stalls built", built.sites.shrines >= 5 && built.sites.stalls >= 3, `${built.sites.shrines} shrines, ${built.sites.stalls} stalls`);
 }
 
+// --- 16. no coincident faces along the street fronts --------------------------------
+// Two differently coloured or styled faces within 2 cm of each other in the
+// same plane z-fight: a phone's coarser depth buffer shows it as a stipple of
+// one colour through the other (the kerb faces on Via di Stabia, the shop
+// floors over the block slab). Sampled along every kerb line and building
+// line, up-facing surfaces just either side of it and upright faces on it.
+{
+  type Face = { s: number; c: number; n: number[] };
+  const fights = (m: PompeiiModel): { up: number; side: number } => {
+    // The town mesh and the carriageways; the beaten-earth sheet under everything is drawn biased behind them.
+    const meshes = [m.mesh, m.streets];
+    // Inside a house that stands out over the pavement its own floors are the house rules' business.
+    const inHouse = (x: number, z: number): boolean => m.solids.some((s) => pointInRing(s.ring, x, z) && distToRing(s.ring, x, z) > 0.05);
+    const cells = new Map<number, [number, number][]>();
+    const key = (i: number, j: number): number => i * 100003 + j;
+    meshes.forEach((st, mi) => {
+      const P = st.position, I = st.index;
+      for (let t = 0; t < I.length; t += 3) {
+        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+        for (let j = 0; j < 3; j++) { const v = I[t + j]; x0 = Math.min(x0, P[v * 3]); x1 = Math.max(x1, P[v * 3]); z0 = Math.min(z0, P[v * 3 + 2]); z1 = Math.max(z1, P[v * 3 + 2]); }
+        if (x1 - x0 > 60 || z1 - z0 > 60) continue;
+        for (let i = Math.floor(x0 / 2); i <= Math.floor(x1 / 2); i++) for (let j = Math.floor(z0 / 2); j <= Math.floor(z1 / 2); j++) {
+          const k = key(i, j);
+          (cells.get(k) ?? cells.set(k, []).get(k)!).push([mi, t]);
+        }
+      }
+    });
+    // Each triangle near (x, y, z) whose plane passes within 2 cm of it and that contains its foot.
+    const at = (x: number, y: number, z: number, up: boolean): (Face & { y: number })[] => {
+      const out: (Face & { y: number })[] = [];
+      for (const [mi, t] of cells.get(key(Math.floor(x / 2), Math.floor(z / 2))) ?? []) {
+        const st = meshes[mi], P = st.position, I = st.index;
+        const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
+        const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const L = Math.hypot(nx, ny, nz);
+        if (L < 1e-9) continue;
+        nx /= L; ny /= L; nz /= L;
+        // Up-facing only: a soffit under its own eave tiles faces the other way and never fights them.
+        if (up ? ny < 0.5 : Math.abs(ny) > 0.3) continue;
+        // Height of the plane over (x, z), or the distance off it for an upright face.
+        let yy = y, dist: number;
+        if (up) { yy = P[a + 1] - (nx * (x - P[a]) + nz * (z - P[a + 2])) / ny; dist = 0; } else dist = nx * (x - P[a]) + ny * (y - P[a + 1]) + nz * (z - P[a + 2]);
+        if (Math.abs(dist) > 0.02) continue;
+        // Inside: barycentric on the plane's dominant axes.
+        const px = x - nx * dist - P[a], py = yy - ny * dist - P[a + 1], pz = z - nz * dist - P[a + 2];
+        const ax_ = Math.abs(nx), ay_ = Math.abs(ny), az_ = Math.abs(nz);
+        const [u1, u2, v1, v2, p1, p2] = ay_ >= ax_ && ay_ >= az_ ? [ux, uz, vx, vz, px, pz] : ax_ >= az_ ? [uy, uz, vy, vz, py, pz] : [ux, uy, vx, vy, px, py];
+        const den = u1 * v2 - u2 * v1;
+        if (Math.abs(den) < 1e-12) continue;
+        const s = (p1 * v2 - p2 * v1) / den, r = (u1 * p2 - u2 * p1) / den;
+        if (s < 0.001 || r < 0.001 || s + r > 0.999) continue;
+        const v = I[t];
+        out.push({ s: st.surf[v * 4], c: st.colour[v * 4] * 65536 + st.colour[v * 4 + 1] * 256 + st.colour[v * 4 + 2], y: yy, n: [nx, nz] });
+      }
+      return out;
+    };
+    const differ = (p: Face, q: Face): boolean => p.s !== q.s || p.c !== q.c;
+    let up = 0, side = 0;
+    for (const ins of data.insulae) for (const ring of [ins.kerb, ins.ring]) {
+      const n = ring.length / 2;
+      for (let i = 0; i < n; i++) {
+        const ax = ring[i * 2], az = ring[i * 2 + 1], bx = ring[((i + 1) % n) * 2], bz = ring[((i + 1) % n) * 2 + 1];
+        const L = Math.hypot(bx - ax, bz - az);
+        if (L < 0.5) continue;
+        const ox = (bz - az) / L, oz = -(bx - ax) / L;
+        for (let d = 0.5; d < L - 0.3; d += 1.5) {
+          const x = ax + ((bx - ax) * d) / L, z = az + ((bz - az) * d) / L, g = flat(x, z);
+          const sides = at(x, g + KERB_M - 0.12, z, false);
+          // Pairs with a kerb or block-step face: walls overlapping walls are the house rules' business.
+          // Parallel faces only (within half a degree): one meeting the wall square on does not fight
+          // it, and a wall crossing a kerb at a shallow angle meets it along a line, not over a face.
+          const par = (p: Face, q: Face): boolean => Math.abs(p.n[0] * q.n[0] + p.n[1] * q.n[1]) > 0.99996;
+          if (sides.some((p, k) => sides.some((q, j) => j > k && differ(p, q) && par(p, q) && (p.s === Surf.Kerb || q.s === Surf.Kerb)))) side++;
+          for (const off of [-0.15, 0.15]) {
+            if (inHouse(x + ox * off, z + oz * off)) continue;
+            // Roofs left out: their overlaps are no part of the street's ground.
+            const ups = at(x + ox * off, 0, z + oz * off, true).filter((p) => p.s !== Surf.Tile).sort((p, q) => p.y - q.y);
+            if (ups.some((p, k) => k > 0 && ups[k].y - ups[k - 1].y < 0.02 && differ(p, ups[k - 1]))) up++;
+          }
+        }
+      }
+    }
+    return { up, side };
+  };
+  const now = fights(buildPompeii({ data, groundAt: flat, suburbs: false }));
+  const old = fights(buildPompeii({ data, groundAt: flat, suburbs: false, probeCoplanar: true }));
+  check("no coincident faces along the kerbs and building lines", now.up === 0 && now.side === 0, `${now.up} up-facing, ${now.side} upright`);
+  check("probe: the old kerb faces and shop floors are caught", old.up + old.side > 0, `${old.up} up-facing, ${old.side} upright`);
+}
+
 console.log(failures ? `\n${failures} pompeii check(s) FAILED` : "\nall pompeii checks ok");
 if (failures) process.exit(1);
