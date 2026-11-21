@@ -30,6 +30,16 @@ export interface LabelTarget {
   pin?: boolean;
 }
 
+/**
+ * The labels to draw while the escape runs: its objective alone, pinned. A
+ * town of named houses on foot put "Villa Boscoreale" and the house next
+ * door in the bakery's doorway, naming everything but the way out.
+ */
+export function escapeLabelTargets(objective: { name: string; x: number; z: number } | null, groundAt: (x: number, z: number) => number): LabelTarget[] {
+  if (!objective) return [];
+  return [{ name: objective.name, x: objective.x, y: groundAt(objective.x, objective.z) + 3, z: objective.z, done: false, pin: true }];
+}
+
 /** Past this the label is more clutter than information. */
 const MAX_RANGE = 18000;
 
