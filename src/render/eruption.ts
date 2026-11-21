@@ -636,7 +636,7 @@ export class EruptionView {
       const x = vent.x + Math.sin(a) * (sg.frontM - 250), z = vent.z - Math.cos(a) * (sg.frontM - 250);
       fv.set(x, this.opts.heightAt(x, z) + 250 + hk2 * 300, z, strike * 4);
     } else {
-      fv.set(vent.x + (hk - 0.5) * 2500, vent.y + 2500 + hk2 * s.columnKm * 600, vent.z + (hash(slot + 0.75) - 0.5) * 2500, strike * 60);
+      fv.set(vent.x + (hk - 0.5) * 2500, vent.y + 2500 + hk2 * s.columnKm * 600, vent.z + (hash(slot + 0.75) - 0.5) * 2500, strike * 14);
     }
     this.drawBolt(strike, fv, slot, sg ? 120 : 700);
 
