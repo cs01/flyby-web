@@ -23,6 +23,7 @@ import type { PompeiiData } from "../data/pompeii";
 import { LampKind, LAMP_KINDS, flameOffsets, flicker, jitter, lampLevel, placeLamps, lampCensus, type Lamp, type LampSites } from "../data/pompeiilamps";
 import { POMPEII_FRAG, type PompeiiUniforms } from "./pompeii";
 import { OIL_REACH_M, buildOilGrid, townLampUniforms } from "./oillight";
+import { FOLK_HEIGHT_M, lampbearerPose, posedStatue } from "./folk";
 
 /** Per tier: lights in the shader, flame sprites, fittings drawn and how far. */
 export const LAMP_TIERS = {
@@ -47,13 +48,13 @@ const TERRACOTTA: RGB = [0.6, 0.32, 0.19];
 const BRONZE: RGB = [0.46, 0.32, 0.16];
 const DARK_BRONZE: RGB = [0.26, 0.2, 0.12];
 
-interface Part { g: THREE.BufferGeometry; rgb: RGB; style: number }
+interface Part { g: THREE.BufferGeometry; rgb: RGB; style: number; smooth?: boolean }
 
 class Parts {
   readonly list: Part[] = [];
-  add(g: THREE.BufferGeometry, rgb: RGB, style: number, m?: THREE.Matrix4): this {
+  add(g: THREE.BufferGeometry, rgb: RGB, style: number, m?: THREE.Matrix4, smooth = false): this {
     if (m) g.applyMatrix4(m);
-    this.list.push({ g, rgb, style });
+    this.list.push({ g, rgb, style, smooth });
     return this;
   }
   at(g: THREE.BufferGeometry, rgb: RGB, style: number, x: number, y: number, z: number): this {
@@ -65,7 +66,8 @@ class Parts {
     const pos: number[] = [], an: number[] = [], ac: number[] = [], as: number[] = [];
     for (const p of this.list) {
       const ng = p.g.index ? p.g.toNonIndexed() : p.g;
-      ng.computeVertexNormals();
+      // A smooth part (a lofted body) brings its own normals; the rest are faceted.
+      if (!p.smooth) ng.computeVertexNormals();
       const P = ng.getAttribute("position").array as Float32Array, N = ng.getAttribute("normal").array as Float32Array;
       for (let i = 0; i < P.length / 3; i++) {
         pos.push(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]);
@@ -190,24 +192,22 @@ function lampbearerGeometry(seg: number): THREE.BufferGeometry {
   P.at(new THREE.BoxGeometry(0.5, 0.05, 0.5), [0.78, 0.76, 0.72], STYLE.marble, 0, 0.525, 0);
   const B = DARK_BRONZE;
   const y0 = 0.55;
-  const V = (x: number, y: number, z: number): THREE.Vector3 => new THREE.Vector3(x, y0 + y, z);
-  const limb = Math.max(5, seg / 2);
-  // Legs, the weight on the left, the right foot a little back and out.
-  P.add(rod(V(0, 0, 0.075), V(0, 0.42, 0.08), 0.042, 0.05, limb), B, STYLE.bronze);
-  P.add(rod(V(0, 0.42, 0.08), V(0, 0.8, 0.08), 0.05, 0.068, limb), B, STYLE.bronze);
-  P.add(rod(V(-0.06, 0, -0.1), V(0.02, 0.42, -0.085), 0.042, 0.05, limb), B, STYLE.bronze);
-  P.add(rod(V(0.02, 0.42, -0.085), V(0, 0.8, -0.08), 0.05, 0.068, limb), B, STYLE.bronze);
-  // Hips, torso (narrow waist, broad chest), neck and head.
-  P.at(new THREE.SphereGeometry(0.12, seg, Math.max(4, seg / 2)).scale(0.75, 0.6, 1.15), B, STYLE.bronze, 0, y0 + 0.82, 0);
-  P.add(rod(V(0, 0.82, 0), V(0, 1.06, 0), 0.1, 0.11, seg), B, STYLE.bronze);
-  P.at(new THREE.SphereGeometry(0.12, seg, Math.max(4, seg / 2)).scale(0.72, 0.85, 1.4), B, STYLE.bronze, 0, y0 + 1.15, 0);
-  P.add(rod(V(0, 1.24, 0), V(0.01, 1.36, 0), 0.04, 0.04, limb), B, STYLE.bronze);
-  P.at(new THREE.SphereGeometry(0.085, seg, Math.max(4, seg / 2)).scale(0.95, 1.12, 0.9), B, STYLE.bronze, 0.015, y0 + 1.44, 0);
-  // Left arm down at the side; the right raised out to the side and forward, holding the tray.
-  P.add(rod(V(0, 1.26, 0.17), V(0.02, 0.98, 0.2), 0.034, 0.03, limb), B, STYLE.bronze);
-  P.add(rod(V(0.02, 0.98, 0.2), V(0.06, 0.74, 0.19), 0.03, 0.026, limb), B, STYLE.bronze);
-  P.add(rod(V(0, 1.26, -0.17), V(0.08, 1.24, -0.38), 0.035, 0.03, limb), B, STYLE.bronze);
-  P.add(rod(V(0.08, 1.24, -0.38), V(0.2, 1.37, -0.44), 0.03, 0.026, limb), B, STYLE.bronze);
+  // The youth: the townsfolk's body (render/folk.ts) nude in his pose, 1.5 m
+  // as the bronze is. The figure faces +z; here he faces +x, so his left
+  // hand (figure +x) comes out at -z under the tray.
+  const s = 1.5 / FOLK_HEIGHT_M;
+  const body = posedStatue({ dress: "nude" }, lampbearerPose([0.44 / s, 1.39 / s, 0.2 / s]));
+  const n = body.position.length / 3, bp = new Float32Array(n * 3), bn = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const [x, y, z] = body.position.subarray(i * 3, i * 3 + 3), [nx, ny, nz] = body.normal.subarray(i * 3, i * 3 + 3);
+    bp.set([z * s, y0 + y * s, -x * s], i * 3);
+    bn.set([nz, ny, -nx], i * 3);
+  }
+  const bg = new THREE.BufferGeometry();
+  bg.setAttribute("position", new THREE.BufferAttribute(bp, 3));
+  bg.setAttribute("normal", new THREE.BufferAttribute(bn, 3));
+  bg.setIndex(new THREE.BufferAttribute(body.index, 1));
+  P.add(bg, B, STYLE.bronze, undefined, true);
   // The tray, and two lamps on it.
   P.at(new THREE.CylinderGeometry(0.12, 0.1, 0.014, Math.max(10, seg * 2)), BRONZE, STYLE.bronze, 0.2, y0 + 1.39, -0.44);
   lucerna(P, BRONZE, STYLE.bronze, 0.16, y0 + 1.397, -0.39, seg);

@@ -330,18 +330,31 @@ export class Townsfolk {
     const d = (i: number): number => Math.hypot(P[i].x + this.offX - camX, P[i].z + this.offZ - camZ);
     const ok = (i: number): boolean => P[i].x < 5e4 && d(i) < 200;
     let best: number | null = null;
-    // A toga on the forum before one anywhere else.
-    const forumToga = what === "toga" && P.some((q, i) => ok(i) && this.looks[i].kind === 6 && !!this.forum && pointInRing(this.forum, q.x, q.z));
+    const onForum = (i: number): boolean => !!this.forum && pointInRing(this.forum, P[i].x, P[i].z);
+    const toga = (i: number): boolean => this.looks[i].kind === 6;
+    // A toga on the forum, else anyone on the forum, else a toga anywhere.
+    const any = (f: (i: number) => boolean): boolean => P.some((_, i) => ok(i) && f(i));
+    const want = what !== "toga" ? null : any((i) => toga(i) && onForum(i)) ? (i: number) => toga(i) && onForum(i) : any(onForum) ? onForum : toga;
     for (let i = 0; i < P.length; i++) {
       if (!ok(i)) continue;
       let hit = false;
-      if (what === "toga") hit = this.looks[i].kind === 6 && (!forumToga || (!!this.forum && pointInRing(this.forum, P[i].x, P[i].z)));
+      if (want) hit = want(i);
       else if (what === "lantern") hit = i % 4 === 1 && i % 3 !== 0 && (this.looks[i].arms === Arms.Free || this.looks[i].arms === Arms.Woman);
       else if (what === "pair") hit = P.some((q, j) => j !== i && Math.hypot(q.x - P[i].x, q.z - P[i].z) < 2.2 && Math.cos(q.heading - P[i].heading) > 0.9);
       else hit = String(i) === what;
-      if (hit && (best === null || d(i) < d(best))) best = i;
+      // A toga is picked for the crowd round him, the rest for being nearest.
+      const score = (k: number): number => d(k) - (want ? 25 * this.crowd(k, 12).n : 0);
+      if (hit && (best === null || score(i) < score(best))) best = i;
     }
     return best;
+  }
+
+  /** How many others are within r of walker i, and their centre (world metres). */
+  crowd(i: number, r: number): { n: number; x: number; z: number } {
+    const P = this.sim.people, p = P[i];
+    let n = 0, x = 0, z = 0;
+    for (let j = 0; j < P.length; j++) if (j !== i && Math.hypot(P[j].x - p.x, P[j].z - p.z) < r) { n++; x += P[j].x; z += P[j].z; }
+    return n ? { n, x: x / n + this.offX, z: z / n + this.offZ } : { n, x: p.x + this.offX, z: p.z + this.offZ };
   }
 
   /** Where walker i stands and faces, world metres. */
@@ -365,7 +378,7 @@ export class Townsfolk {
       return { kind, arms: kind === 5 ? Arms.Basket : Arms.Woman, scale: lerp(FOLK_SCALE.woman, h(5)), cloth, cloth2: vary(WOMEN[c2], 11), skin: skin * 0.8, hair, long: true };
     }
     const scale = lerp(FOLK_SCALE.man, h(5));
-    if (h(2) < 0.04 || (inForum && h(2) < 0.45)) return { kind: 6, arms: Arms.Toga, scale, cloth: vary(TOGA, 12), cloth2: TOGA_TUNIC, skin, hair, long: true };
+    if (h(2) < 0.04 || (inForum && h(2) < 0.6)) return { kind: 6, arms: Arms.Toga, scale, cloth: vary(TOGA, 12), cloth2: TOGA_TUNIC, skin, hair, long: true };
     const load = h(3);
     const kind = load < 0.1 ? 1 : load < 0.2 ? 2 : 0;
     return { kind, arms: kind === 1 ? Arms.Amphora : kind === 2 ? Arms.Basket : Arms.Free, scale, cloth: vary(MEN[p.tint % MEN.length], 10), cloth2: MEN[0], skin, hair, long: false };

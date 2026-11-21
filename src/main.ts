@@ -567,7 +567,7 @@ async function main() {
   // Last frame's night, for the lanterns in the townsfolk's hands (the light is worked out after they move).
   let folkNight = 0;
   const folkCam = (new URLSearchParams(location.search).get("folkcam") ?? "").split(",");
-  let folkSubject: number | null = null;
+  let folkSubject: number | null = null, folkFrames = 0;
   let cart: Cart | null = null;
   let pompeiiLamps: PompeiiLamps | null = null;
   let pompeiiWater: PompeiiWater | null = null;
@@ -2387,13 +2387,17 @@ async function main() {
       // `?folkcam=what,bearingDeg,distM,eyeM,aimM` frames a townsperson
       // (Townsfolk.subject: pair, toga or an index) from `bearingDeg` round
       // from their front, for the close shots of the figures. Latched on the
-      // first one found, so the framing holds still.
+      // first one found, so the framing holds still; not before the walkers have
+      // had a few frames to be placed round the pose rather than the start.
       if (folkCam.length >= 5 && townsfolk) {
-        if (folkSubject === null) folkSubject = townsfolk.subject(folkCam[0], camera.position.x, camera.position.z);
+        if (folkSubject === null && ++folkFrames > 5) folkSubject = townsfolk.subject(folkCam[0], camera.position.x, camera.position.z);
         if (folkSubject !== null) {
           const s = townsfolk.placeOf(folkSubject);
           const [bearing, dist, eye, aim] = folkCam.slice(1).map(Number);
-          const a = s.heading + (bearing * Math.PI) / 180;
+          let a = s.heading + (bearing * Math.PI) / 180;
+          // A toga is shot with the crowd round him behind him, `bearing` turning off that line.
+          const c = folkCam[0] === "toga" ? townsfolk.crowd(folkSubject, 12) : null;
+          if (c && c.n) a = Math.atan2(s.x - c.x, -(s.z - c.z)) + (bearing * Math.PI) / 180;
           camera.position.set(s.x + Math.sin(a) * dist, s.y + eye, s.z - Math.cos(a) * dist);
           camera.lookAt(s.x, s.y + aim, s.z);
         }

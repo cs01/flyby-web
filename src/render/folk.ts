@@ -917,10 +917,31 @@ export function faunPose(): PoseSpec {
   };
 }
 
-/** The faun's mesh with the pose applied: positions and normals in the figure's frame. */
-export function posedFaun(): { position: Float32Array; normal: Float32Array; index: Uint16Array; colour: Uint8Array } {
-  const mesh = buildFolk({ dress: "nude", faun: true });
-  const bones = solvePose(faunPose());
+/**
+ * The lampbearer (the bronze youth of the Casa di Giulio Polibio, life
+ * size): weight on the right leg, the left foot drawn back, the left hand
+ * up and forward under the lamp tray at `tray` (figure frame, scale 1).
+ */
+export function lampbearerPose(tray: V3): PoseSpec {
+  const right: FootPose = { ankle: ankleFrom([-0.08, 0, 0.0], HEEL_Z, 0, -1), pitch: 0 };
+  const lp = -0.22;
+  const left: FootPose = { ankle: ankleFrom([0.13, 0, -0.1 + BALL_Z - HEEL_Z], BALL_Z, lp, 1), pitch: lp };
+  const pelvis: [number, number, number] = [0.08, 0.0, -0.06];
+  const dx = -0.03;
+  return {
+    hip: [dx, hipLift(pelvis, dx, [left, right], -0.008) - 0.004, 0], pelvis,
+    chest: [-0.1, 0.02, 0.07], head: [0.3, 0.12, 0.04],
+    feet: [left, right],
+    wrists: [[tray[0] - 0.02, tray[1] - 0.09, tray[2] - 0.03], armAt(-1, 0.05, 0.06, 0.2)],
+    poles: [[1, -0.8, -0.3], BACK_POLE(-1)],
+    handBend: [-0.9, 0],
+  };
+}
+
+/** A nude figure (the faun, the lampbearer) with a pose applied: positions and normals in the figure's frame. */
+export function posedStatue(o: FolkOpts, spec: PoseSpec): { position: Float32Array; normal: Float32Array; index: Uint16Array; colour: Uint8Array } {
+  const mesh = buildFolk(o);
+  const bones = solvePose(spec);
   const n = mesh.position.length / 3;
   const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
@@ -939,6 +960,8 @@ export function posedFaun(): { position: Float32Array; normal: Float32Array; ind
   }
   return { position: pos, normal: nrm, index: mesh.index, colour: mesh.colour };
 }
+
+export const posedFaun = (): ReturnType<typeof posedStatue> => posedStatue({ dress: "nude", faun: true }, faunPose());
 
 /** Skinned positions of a mesh in a pose (the gate measures with it). */
 export function skinned(mesh: FolkMesh, bones: Float32Array): Float32Array {
