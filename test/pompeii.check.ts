@@ -122,14 +122,24 @@ interface Rules { failed: string[]; stats: Record<string, number> }
 function rules(m: PompeiiModel): Rules {
   const failed: string[] = [];
   const { mesh } = m;
-  let tile = 0, plaster = 0, pitched = 0, tileN = 0;
+  let tile = 0, plaster = 0, pitched = 0, tileN = 0, area = 0, plasterArea = 0;
   const colours = new Set<string>();
+  const P = mesh.position;
   for (let t = 0; t < mesh.index.length; t += 3) {
     const v = mesh.index[t];
     const s = mesh.surf[v * 4];
-    if (s === Surf.Tile) {
+    // Plaster is weighed by area: the street furniture adds many small
+    // triangles, and a count would read a town of plastered walls as less
+    // plastered for every jar on a shelf.
+    const b = mesh.index[t + 1] * 3, c = mesh.index[t + 2] * 3, a = v * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], wx = P[c] - P[a], wy = P[c + 1] - P[a + 1], wz = P[c + 2] - P[a + 2];
+    const A = Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2;
+    area += A;
+    if (s === Surf.Plaster) plasterArea += A;
+    const ny = mesh.normal[v * 4 + 1] / 127;
+    // The tile ends along an eave are upright faces by construction, not a roof slope.
+    if (s === Surf.Tile && Math.abs(ny) > 0.2) {
       tile++;
-      const ny = mesh.normal[v * 4 + 1] / 127;
       tileN++;
       // A roof pitched between 12 and 35 degrees (Roman roofs are 18-25).
       const deg = (Math.acos(Math.min(1, Math.abs(ny))) * 180) / Math.PI;
@@ -142,13 +152,13 @@ function rules(m: PompeiiModel): Rules {
   }
   const tris = mesh.triangles;
   const stats = {
-    tileFrac: tile / tris, plasterFrac: plaster / tris, pitchedFrac: pitched / Math.max(1, tileN),
+    tileFrac: tile / tris, plasterFrac: plasterArea / area, pitchedFrac: pitched / Math.max(1, tileN),
     plasterColours: colours.size, flatRoofs: m.stats.flatRoofs, lots: m.stats.lots, domus: m.stats.domus,
     tabernae: m.stats.tabernae, compluvia: m.stats.compluvia, fountains: m.stats.fountains, steppingStones: m.stats.steppingStones,
   };
   if (stats.tileFrac < 0.06) failed.push("terracotta roofs");
   if (stats.pitchedFrac < 0.95) failed.push("roofs pitched 12-35 deg");
-  if (stats.plasterFrac < 0.15) failed.push("plastered walls");
+  if (stats.plasterFrac < 0.25) failed.push("plastered walls");
   if (stats.plasterColours < 6) failed.push("plaster palette");
   if (stats.flatRoofs > 0) failed.push("no flat roofs");
   if (stats.lots < 1500) failed.push("lots");
@@ -165,8 +175,8 @@ let built: PompeiiModel;
   const r = rules(buildPompeii({ data, groundAt: flat, suburbs: false }));
   const s = r.stats;
   check("town passes every reconstruction rule", r.failed.length === 0, r.failed.join(", ") || "all");
-  check(`roofs pitched ${ROOF_PITCH_DEG} deg (12-35 window), terracotta`, s.pitchedFrac >= 0.95 && s.tileFrac >= 0.06, `${(s.pitchedFrac * 100).toFixed(0)}% pitched, ${(s.tileFrac * 100).toFixed(1)}% of tris`);
-  check("plaster: 6+ palette colours over 15%+ of the triangles", s.plasterColours >= 6 && s.plasterFrac >= 0.15, `${s.plasterColours} colours, ${(s.plasterFrac * 100).toFixed(1)}%`);
+  check(`roofs pitched ${ROOF_PITCH_DEG} deg (12-35 window), terracotta`, s.pitchedFrac >= 0.95 && s.tileFrac >= 0.06, `${(s.pitchedFrac * 100).toFixed(1)}% pitched, ${(s.tileFrac * 100).toFixed(1)}% of tris`);
+  check("plaster: 6+ palette colours over 25%+ of the surface area", s.plasterColours >= 6 && s.plasterFrac >= 0.25, `${s.plasterColours} colours, ${(s.plasterFrac * 100).toFixed(1)}%`);
   check("domus with compluvium, tabernae, fountains, stepping stones", s.domus >= 400 && s.tabernae >= 300 && s.fountains >= 10 && s.steppingStones >= 100,
     `${s.domus} domus, ${s.tabernae} tabernae, ${s.fountains} fountains, ${s.steppingStones} stones`);
   check("main-street lots are mostly shops", (() => {

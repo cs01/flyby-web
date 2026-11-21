@@ -28,7 +28,7 @@
 import type { PompeiiData, PompeiiInsula, PompeiiPublic, Ring } from "../data/pompeii";
 import { KERB_M, pointInRing, ringArea, ringCentroid, villaFloorPoint } from "../data/pompeii";
 import { ART_INDEX, ART_WORKS, ATRIUM_SCHEMES, GARDEN_SCHEMES } from "../data/pompeiiart";
-import { ORDERS, Order, TOP_DIAMETER, cube, figure, lathe, mill, oven } from "./pompeiiorders";
+import { ORDERS, Order, TOP_DIAMETER, cube, figure, lathe, mill, oven, tube, type Sink } from "./pompeiiorders";
 import { HORSE_BONES, buildHorse, poseHorse } from "./horse";
 import { buildSuburbs, type SuburbStats } from "./pompeiisuburbs";
 import type { LampSites } from "../data/pompeiilamps";
@@ -65,6 +65,15 @@ const TAN_PITCH = Math.tan((ROOF_PITCH_DEG * Math.PI) / 180);
 const ROOF_RANGE_M = 8;
 
 export { KERB_M } from "../data/pompeii";
+
+/**
+ * A shop counter, metres from the facade line and the shop floor: the top a
+ * metre up (the oil lamp stands on it, data/pompeiilamps.ts), the long arm
+ * 0.6 m deep behind the sill, the short arm reaching back into the shop.
+ */
+export const COUNTER = { topM: 1.0, frontV: 0.15, backV: 0.75, returnV: 1.9 };
+/** How far a street eave reaches past the wall, metres. */
+export const EAVE_M = 0.5;
 
 /**
  * The amphitheatre as modelled. The OSM outline fits an ellipse of about
@@ -196,7 +205,7 @@ export interface PompeiiModel {
   /** Named works placed in their houses (empty with art off). */
   art: ArtPlaced[];
   /** What was modelled at the mapped sites. */
-  sites: { mills: { x: number; z: number; site: string }[]; ovens: string[]; thermopolia: number; statues: string[] };
+  sites: { mills: { x: number; z: number; site: string }[]; ovens: string[]; thermopolia: number; statues: string[]; shrines: number; stalls: number };
   /** The town: buildings, kerbs, landmarks, walls. Single-sided. */
   mesh: PompeiiMeshData;
   /** The open ground inside the walls, drawn with a depth bias over the terrain. */
@@ -237,6 +246,11 @@ export interface BuildOptions {
   /** The tomb streets, suburbs, river and harbour outside the walls; on unless false. */
   suburbs?: boolean;
 }
+
+/** A facade's frame: origin on its wall line, e along it, o out to the street. */
+interface Frame { ax: number; az: number; ex: number; ez: number; ox: number; oz: number }
+/** Faces of an fbox to leave out. */
+const enum FB { Front = 1, Back = 2, End0 = 4, End1 = 8, Top = 16 }
 
 // --- deterministic noise ---------------------------------------------------------
 function hash(a: number, b = 0, c = 0): number {
@@ -296,9 +310,9 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   let statueHorse: { h: ReturnType<typeof buildHorse>; pos: Float32Array } | null = null;
   const orders: ColumnInstance[] = [];
   const artPlaced: ArtPlaced[] = [];
-  const siteInfo: PompeiiModel["sites"] = { mills: [], ovens: [], thermopolia: 0, statues: [] };
+  const siteInfo: PompeiiModel["sites"] = { mills: [], ovens: [], thermopolia: 0, statues: [], shrines: 0, stalls: 0 };
   /** Shop counters, emitted at the end so the mapped thermopolia can claim theirs. */
-  const counters: { a: [number, number]; b: [number, number]; ox: number; oz: number; g: number; seed: number }[] = [];
+  const counters: { F: Frame; u0: number; w: number; g: number; seed: number }[] = [];
   const sitesOf = (kind: "bakery" | "thermopolium" | "artwork"): { name: string; x: number; z: number }[] => (data.sites ?? []).filter((s) => s.kind === kind);
 
   // --- emitters ------------------------------------------------------------------
@@ -393,6 +407,118 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
   /** A peristyle's order: Doric or Ionic, by the house. */
   const houseOrder = (seed: number): Order => (hash(seed * 1e6, 23) < 0.6 ? Order.Doric : Order.Ionic);
+
+  // --- street furniture: things built square to a facade -------------------------------
+  /** u runs along the facade from its origin, v out to the street (negative is indoors). */
+  const fp = (F: Frame, u: number, v: number, y: number): V3 => [F.ax + F.ex * u + F.ox * v, y, F.az + F.ez * u + F.oz * v];
+  /**
+   * A box square to a facade, u0..u1 along it, v0..v1 out from it, y0..y1.
+   * Each side face carries its own metres (u along it, h over `gref`), so the
+   * plank, marble and plaster patterns sit on the box rather than on the
+   * facade's coordinates. `flatU` holds u fixed: wood grain along a beam
+   * instead of boards across it.
+   */
+  function fbox(F: Frame, u0: number, u1: number, v0: number, v1: number, y0: number, y1: number, c: RGB, seed: number, s: Surf,
+    o: { p1?: number; p2?: number; skip?: number; gref?: number; topS?: Surf; topC?: RGB; front?: [Surf, number, number, RGB]; bottom?: boolean; flatU?: boolean } = {}): void {
+    const skip = o.skip ?? 0, gr = o.gref ?? y0, p1 = o.p1 ?? 0, p2 = o.p2 ?? 0;
+    const h0 = y0 - gr, H = y1 - gr;
+    const side = (ua: number, va: number, ub: number, vb: number, facing: V3, len: number, fs: Surf, f1: number, f2: number, fc: RGB): void => {
+      const U0 = o.flatU ? 0.1 : 0, U1 = o.flatU ? 0.1 : len;
+      poly(S, [fp(F, ua, va, y0), fp(F, ub, vb, y0), fp(F, ub, vb, y1), fp(F, ua, va, y1)], facing, fc, seed, fs, f1, f2,
+        [[U0, h0, len, H], [U1, h0, len, H], [U1, H, len, H], [U0, H, len, H]]);
+    };
+    const fr = o.front ?? [s, p1, p2, c];
+    if (!(skip & FB.Front)) side(u0, v1, u1, v1, [F.ox, 0, F.oz], u1 - u0, fr[0], fr[1], fr[2], fr[3]);
+    if (!(skip & FB.Back)) side(u1, v0, u0, v0, [-F.ox, 0, -F.oz], u1 - u0, s, p1, p2, c);
+    if (!(skip & FB.End0)) side(u0, v0, u0, v1, [-F.ex, 0, -F.ez], v1 - v0, s, p1, p2, c);
+    if (!(skip & FB.End1)) side(u1, v1, u1, v0, [F.ex, 0, F.ez], v1 - v0, s, p1, p2, c);
+    const flat = (y: number, up: number, fs: Surf, fc: RGB): void => {
+      const pts = [fp(F, u0, v0, y), fp(F, u1, v0, y), fp(F, u1, v1, y), fp(F, u0, v1, y)];
+      poly(S, pts, [0, up, 0], fc, seed, fs, 0, 0, pts.map((p): [number, number, number, number] => [p[0], p[2], 0, 0]));
+    };
+    if (!(skip & FB.Top)) flat(y1, 1, o.topS ?? s, o.topC ?? c);
+    if (o.bottom) flat(y0, -1, s, c);
+  }
+  /**
+   * The town store seen through a tilt: whatever is drawn into it about c
+   * has its top leaned `ang` radians toward (dx, dz). For amphorae, which
+   * have pointed toes and were stood leaning on a wall.
+   */
+  function leaning(c: V3, dx: number, dz: number, ang: number): Sink {
+    const cs = Math.cos(ang), sn = Math.sin(ang);
+    // Rodrigues about k = up x dir = (dz, 0, -dx), which turns up toward dir.
+    const kx = dz, kz = -dx;
+    const rot = (x: number, y: number, z: number): V3 => {
+      const d = kx * x + kz * z;
+      const cx = -kz * y, cy = kz * x - kx * z, cz = kx * y;
+      return [x * cs + cx * sn + kx * d * (1 - cs), y * cs + cy * sn, z * cs + cz * sn + kz * d * (1 - cs)];
+    };
+    return {
+      get n() { return S.n; },
+      vert: (p, n, col, seed, s, p1, p2, w) => {
+        const q = rot(p[0] - c[0], p[1] - c[1], p[2] - c[2]);
+        return S.vert([q[0] + c[0], q[1] + c[1], q[2] + c[2]], rot(n[0], n[1], n[2]), col, seed, s, p1, p2, w);
+      },
+      tri: (a, b, d) => S.tri(a, b, d),
+    };
+  }
+  const TERRACOTTA: RGB[] = [[0.66, 0.38, 0.24], [0.72, 0.5, 0.34], [0.58, 0.32, 0.22], [0.76, 0.58, 0.42]];
+  /** A transport amphora, a metre tall at scale 1: toe, belly, shoulder, neck. */
+  function amphora(st: Sink, x: number, y: number, z: number, scale: number, seed: number): void {
+    const prof: [number, number][] = [[0.015, 0], [0.14, 0.36], [0.055, 0.74], [0.05, 0.95]];
+    lathe(st, x, y, z, prof.map(([r, h]): [number, number] => [r * scale, h * scale]), 5, TERRACOTTA[Math.floor(seed * 4) % 4], seed, Surf.Pavement);
+  }
+  /** A small storage jar for a shelf. */
+  function jar(x: number, y: number, z: number, scale: number, seed: number): void {
+    lathe(S, x, y, z, [[0.05 * scale, 0], [0.1 * scale, 0.11 * scale], [0.035 * scale, 0.24 * scale]], 5, TERRACOTTA[Math.floor(seed * 4) % 4], seed, Surf.Pavement);
+  }
+  /** A wicker basket heaped with produce. */
+  function basket(x: number, y: number, z: number, seed: number): void {
+    lathe(S, x, y, z, [[0.16, 0], [0.21, 0.27], [0.2, 0.29]], 7, [0.62, 0.5, 0.3], seed, Surf.Wood, 1);
+    const fill: RGB[] = [[0.55, 0.42, 0.16], [0.36, 0.42, 0.14], [0.5, 0.16, 0.1], [0.62, 0.52, 0.3]];
+    lathe(S, x, y, z, [[0.2, 0.25], [0.12, 0.31], [0.001, 0.33]], 7, fill[Math.floor(seed * 4) % 4], seed, Surf.Garden);
+  }
+  /** An insula's ground slab under a point, for floors that must sit on it. */
+  const insBounds = data.insulae.map((ins) => {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < ins.ring.length; i += 2) {
+      x0 = Math.min(x0, ins.ring[i]); x1 = Math.max(x1, ins.ring[i]); z0 = Math.min(z0, ins.ring[i + 1]); z1 = Math.max(z1, ins.ring[i + 1]);
+    }
+    return [x0, x1, z0, z1];
+  });
+  function insAt(x: number, z: number): PompeiiInsula | undefined {
+    for (let k = 0; k < data.insulae.length; k++) {
+      const b = insBounds[k];
+      if (x >= b[0] && x <= b[1] && z >= b[2] && z <= b[3] && pointInRing(data.insulae[k].ring, x, z)) return data.insulae[k];
+    }
+    return undefined;
+  }
+  /**
+   * Width of the pavement in front of a facade point, out along (ox, oz) to
+   * the kerb; 0 off any block. The walkers (data/pompeiilife.ts) keep to its
+   * middle, so anything stood on it has to leave them that line.
+   */
+  function pavementAt(x: number, z: number, ox: number, oz: number): number {
+    const ins = insAt(x - ox * 0.3, z - oz * 0.3);
+    if (!ins) return 0;
+    const d = rayToRing(ins.kerb, x + ox * 0.01, z + oz * 0.01, ox, oz);
+    return Number.isFinite(d) ? d : 0;
+  }
+  /** Pavement wide enough for a bench, stock or a stall without blocking the walkers' line. */
+  const WIDE_PAVEMENT_M = 1.8;
+  /**
+   * A recess floor clear of the block's ground slab: the slab is drawn over
+   * the whole insula a step above the pavement, and a floor at the
+   * pavement's level was buried under it (the green garden showing in every
+   * shop).
+   */
+  function floorOver(g: number, pts: [number, number][]): number {
+    const [mx, mz] = pts.reduce((s, p) => [s[0] + p[0] / pts.length, s[1] + p[1] / pts.length], [0, 0]);
+    const ins = insAt(mx, mz);
+    let y = g;
+    if (ins) for (const [x, z] of pts) y = Math.max(y, slabTop(ins, x, z) + 0.01);
+    return y;
+  }
 
   const ground = (x: number, z: number): number => groundAt(x, z);
 
@@ -1065,7 +1191,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           openings.push({ u0: u, u1: u + 4.2, h: 3.1, kind: "shop" });
         }
       }
-      if (openings.length) facade([e.ax, e.az], [e.bx, e.bz], g, yBot, top, e.ox, e.oz, col, seed, p1, 0, openings, 5);
+      if (openings.length) facade([e.ax, e.az], [e.bx, e.bz], g, yBot, top, e.ox, e.oz, col, seed, p1, 0, openings, 5, { main: e.main, rich: hs.surveyed && !!hs.name, house: true });
       else wall(e.ax, e.az, e.bx, e.bz, yBot, yBot, top, top, e.ox, e.oz, col, seed, Surf.Plaster, p1, 0, 0, e.L, g, top - g);
     }
 
@@ -1199,6 +1325,16 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     }
     if (!grey) stats.roofTriangles += roofTris;
     else stats.flatRoofs++;
+    // The heightfield stops at the walls; on the street the tiles run on
+    // past the wall to an eave, the line that makes a front read as a house.
+    if (!grey) for (const e of edges) {
+      if (!e.street) continue;
+      const ea: V3 = [e.ax + e.ox * EAVE_M, top - EAVE_M * TAN_PITCH, e.az + e.oz * EAVE_M], eb: V3 = [e.bx + e.ox * EAVE_M, top - EAVE_M * TAN_PITCH, e.bz + e.oz * EAVE_M];
+      const s = EAVE_M / Math.cos(Math.atan(TAN_PITCH));
+      poly(S, [ea, eb, [e.bx, top, e.bz], [e.ax, top, e.az]], [e.ox, 1, e.oz], tileC, seed, Surf.Tile, 0, 1, [[0, -s, 0, 0], [0, -s, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
+      stats.roofTriangles += 2;
+      if (!lean) eaveTrim([e.ax, e.az], [e.bx, e.bz], ea, eb, top, e.ox, e.oz, tileC, seed, e.main || (hs.surveyed && !!hs.name));
+    }
     solids.push({ ring: [...ring], baseY: yBot, topY: top + Math.min(CAP, 4) * TAN_PITCH });
     if (hs.kind === "villa" && art) {
       const m = sitesOf("artwork").find((s) => /misteri/i.test(s.name));
@@ -1546,7 +1682,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         openings.push({ u0: 0.7, u1: mid - doorW / 2 - 0.7, h: 3.1, kind: "shop" });
         openings.push({ u0: mid + doorW / 2 + 0.7, u1: width - 0.7, h: 3.1, kind: "shop" });
       }
-      band(q0, q1, q2b, q2a, g, yBot, Hf, "gable", col, tileC, seed, p1, p2, openings, true);
+      band(q0, q1, q2b, q2a, g, yBot, Hf, "gable", col, tileC, seed, p1, p2, openings, true, false, { main, house: true, grand: true });
       // Atrium band, its roof sloping in to the compluvium.
       band(q2a, q2b, q3b, q3a, g, yBot, storeyH + 0.6, "compluvium", col, tileC, seed, p1, p2, [], false);
       info.compluvium = true;
@@ -1560,7 +1696,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       else openings.push({ u0: width * 0.5 - 0.8, u1: width * 0.5 + 0.8, h: 3.0, kind: "door" });
       const deep = Math.min(d, kind === "taberna" ? 9 : 14);
       const [q0, q1] = at(0), [qa, qb] = at(deep / d);
-      band(q0, q1, qb, qa, g, yBot, Hf, kind === "taberna" && !twoStorey && hash(seed * 1e6, 12) < 0.4 ? "lean" : "gable", col, tileC, seed, p1, p2, openings, true);
+      band(q0, q1, qb, qa, g, yBot, Hf, kind === "taberna" && !twoStorey && hash(seed * 1e6, 12) < 0.4 ? "lean" : "gable", col, tileC, seed, p1, p2, openings, true, false, { main, house: kind !== "taberna" });
       if (deep < d - 3) {
         // The rest of a deep plot is the yard behind: a lower outbuilding.
         const [qc, qd] = at(Math.min(1, (deep + Math.min(6, d - deep)) / d));
@@ -1579,7 +1715,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
    * its openings when `street`.
    */
   function band(a: [number, number], b: [number, number], c: [number, number], d: [number, number], g: number, yBot: number, H: number,
-    roof: "gable" | "compluvium" | "lean" | "flat", col: RGB, tileC: RGB, seed: number, p1: number, p2: number, openings: Opening[], street: boolean, portico = false): void {
+    roof: "gable" | "compluvium" | "lean" | "flat", col: RGB, tileC: RGB, seed: number, p1: number, p2: number, openings: Opening[], street: boolean, portico = false, dress: Dress = {}): void {
     const top = g + H;
     const fl = Math.hypot(b[0] - a[0], b[1] - a[1]);
     const depth = (Math.hypot(d[0] - a[0], d[1] - a[1]) + Math.hypot(c[0] - b[0], c[1] - b[1])) / 2;
@@ -1591,12 +1727,13 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const rise = Math.min(3.2, (depth / 2) * TAN_PITCH);
     const s = seed;
     const wallTop = roof === "compluvium" ? top + rise : top;
-    // Front facade.
-    if (street && openings.length && !grey) facade(a, b, g, yBot, wallTop, ox, oz, col, s, p1, p2, openings, depth);
     // An upper floor on the street often had a timber balcony (maenianum)
     // over the pavement, under its own pent roof: the Casa del Balcone
     // Pensile is named for one.
-    if (street && !grey && !lean && H > 7 && fl > 5 && hash(s * 1e6, 33) < 0.4) {
+    const balcony = street && !grey && !lean && H > 7 && fl > 5 && hash(s * 1e6, 33) < 0.4;
+    // Front facade.
+    if (street && openings.length && !grey) facade(a, b, g, yBot, wallTop, ox, oz, col, s, p1, p2, openings, depth, { ...dress, balcony });
+    if (balcony) {
       const fx = (b[0] - a[0]) / fl, fz = (b[1] - a[1]) / fl;
       const y0 = g + H - 3.3, P = 1.05;
       const e0: [number, number] = [a[0] + fx * 0.5, a[1] + fz * 0.5], e1: [number, number] = [b[0] - fx * 0.5, b[1] - fz * 0.5];
@@ -1639,7 +1776,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       poly(S, [[a[0], wallTop, a[1]], [b[0], wallTop, b[1]], [c[0], wallTop, c[1]], [d[0], wallTop, d[1]]], [0, 1, 0], col, s, Surf.Stucco, 0, 0, uv4());
       return;
     }
-    const OH = 0.45;
+    const OH = EAVE_M;
     const eave = (p: [number, number], k: number): V3 => [p[0] + ox * OH * k, top - OH * TAN_PITCH, p[1] + oz * OH * k];
     if (roof === "gable") {
       // Ridge parallel to the street at mid-depth.
@@ -1651,11 +1788,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       poly(S, [ec, ed, r0, r1], [-ox, 1, -oz], tileC, s, Surf.Tile, 0, 0, [[0, 0, fl, halfD], [fl, 0, fl, halfD], [fl, halfD, fl, halfD], [0, halfD, fl, halfD]]);
       // The underside of the street eave: from the pavement the roof is a
       // dark timber overhang along the top of the wall, not a sharp edge.
-      if (street && !lean) {
-        poly(S, [ea, eb, [b[0], top, b[1]], [a[0], top, a[1]]], [ox * 0.3, -1, oz * 0.3], [0.32, 0.22, 0.14], s, Surf.Wood, 0, 0, uv4());
-        // The tile ends along the eave, as a thin fascia.
-        poly(S, [ea, eb, [eb[0], eb[1] - 0.12, eb[2]], [ea[0], ea[1] - 0.12, ea[2]]], [ox, 0, oz], [0.5, 0.27, 0.17], s, Surf.Wood, 0, 0, uv4());
-      }
+      if (street && !lean) eaveTrim(a, b, ea, eb, top, ox, oz, tileC, s, !!dress.main);
       // Gable ends, plastered.
       poly(S, [[b[0], top, b[1]], [c[0], top, c[1]], r1], [s1x, 0, s1z], sideC, s, Surf.Plaster, p1, 255, [[0, H, depth, H + rise], [depth, H, depth, H + rise], [depth / 2, H + rise, depth, H + rise]]);
       poly(S, [[d[0], top, d[1]], [a[0], top, a[1]], r0], [s2x, 0, s2z], sideC, s, Surf.Plaster, p1, 255, [[0, H, depth, H + rise], [depth, H, depth, H + rise], [depth / 2, H + rise, depth, H + rise]]);
@@ -1665,6 +1798,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const hb = top + Math.min(2.2, depth * TAN_PITCH * 0.6);
       const ea = eave(a, 1), eb = eave(b, 1);
       poly(S, [ea, eb, [c[0], hb, c[1]], [d[0], hb, d[1]]], [ox, 1, oz], tileC, s, Surf.Tile, 0, 0, [[0, 0, fl, depth], [fl, 0, fl, depth], [fl, depth, fl, depth], [0, depth, fl, depth]]);
+      if (street && !lean) eaveTrim(a, b, ea, eb, top, ox, oz, tileC, s, !!dress.main);
       wall(c[0], c[1], d[0], d[1], top, top, hb, hb, -ox, -oz, sideC, s, Surf.Plaster, p1, 255, 0, bl, g, hb - g);
       poly(S, [[b[0], top, b[1]], [c[0], top, c[1]], [c[0], hb, c[1]]], [s1x, 0, s1z], sideC, s, Surf.Plaster, p1, 255, uv4());
       poly(S, [[d[0], top, d[1]], [a[0], top, a[1]], [d[0], hb, d[1]]], [s2x, 0, s2z], sideC, s, Surf.Plaster, p1, 255, uv4());
@@ -1706,6 +1840,45 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     }
   }
 
+  /**
+   * What the street sees of a roof that overhangs the wall a..b (top `top`)
+   * out to the eave ea..eb: the boarded soffit, the tile ends along the edge,
+   * rafter tails under it and an antefix over every other imbrex row.
+   */
+  function eaveTrim(a: [number, number], b: [number, number], ea: V3, eb: V3, top: number, ox: number, oz: number, tileC: RGB, seed: number, rafters: boolean): void {
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (L < 0.5) return;
+    poly(S, [ea, eb, [b[0], top, b[1]], [a[0], top, a[1]]], [ox * 0.3, -1, oz * 0.3], [0.32, 0.22, 0.14], seed, Surf.Wood, 0, 0, uv4());
+    // The tile ends: the terracotta shader's imbrex rows, run along the edge.
+    const T = 0.12;
+    poly(S, [ea, eb, [eb[0], eb[1] - T, eb[2]], [ea[0], ea[1] - T, ea[2]]], [ox, 0, oz], tileC, seed, Surf.Tile, 0, 0,
+      [[0, T, L, T], [L, T, L, T], [L, 0, L, T], [0, 0, L, T]]);
+    const F: Frame = { ax: a[0], az: a[1], ex: (b[0] - a[0]) / L, ez: (b[1] - a[1]) / L, ox, oz };
+    const OH = (ea[0] - a[0]) * ox + (ea[2] - a[1]) * oz, slope = (top - ea[1]) / OH;
+    const rafter: RGB = [0.3, 0.2, 0.12], ante: RGB = [tileC[0] * 1.08, tileC[1] * 1.1, tileC[2] * 1.1];
+    // The main streets and the named houses get rafter tails and shaped
+    // antefixes; the side streets plain ones further apart (a quarter of the
+    // triangles, and seen only down a narrow lane).
+    const ye = top - OH * slope - 0.02, ve = OH + 0.01;
+    for (let u = 0.42; u < L - 0.15; u += rafters ? 0.84 : 1.26) {
+      if (!rafters) {
+        poly(S, [fp(F, u - 0.08, ve, ye), fp(F, u + 0.08, ve, ye), fp(F, u, ve, ye + 0.14)], [ox, 0, oz], ante, seed, Surf.Pavement, 0, 0, [NO_UV, NO_UV, NO_UV]);
+        continue;
+      }
+      // A rafter tail: its top under the soffit, cut square at the end.
+      const v1 = OH - 0.04, rh = 0.11, rw = 0.045;
+      const y = (v: number): number => top - v * slope;
+      const c = (du: number, v: number, dy: number): V3 => fp(F, u + du, v, y(v) - dy);
+      poly(S, [c(-rw, 0, rh), c(rw, 0, rh), c(rw, v1, rh), c(-rw, v1, rh)], [0, -1, 0], rafter, seed, Surf.Wood, 0, 0, uv4());
+      poly(S, [c(-rw, v1, 0), c(rw, v1, 0), c(rw, v1, rh), c(-rw, v1, rh)], [ox, 0, oz], rafter, seed, Surf.Wood, 0, 0, uv4());
+      poly(S, [c(-rw, 0, 0), c(-rw, v1, 0), c(-rw, v1, rh), c(-rw, 0, rh)], [-F.ex, 0, -F.ez], rafter, seed, Surf.Wood, 0, 0, uv4());
+      poly(S, [c(rw, 0, 0), c(rw, v1, 0), c(rw, v1, rh), c(rw, 0, rh)], [F.ex, 0, F.ez], rafter, seed, Surf.Wood, 0, 0, uv4());
+      // An antefix standing on the eave over the imbrex row's end.
+      poly(S, [fp(F, u - 0.08, ve, ye), fp(F, u + 0.08, ve, ye), fp(F, u + 0.065, ve, ye + 0.08), fp(F, u, ve, ye + 0.15), fp(F, u - 0.065, ve, ye + 0.08)],
+        [ox, 0, oz], ante, seed, Surf.Pavement, 0, 0, [NO_UV, NO_UV, NO_UV, NO_UV, NO_UV]);
+    }
+  }
+
   /** A peristyle walk along the back of a domus: columns and a lean-to roof. */
   function porticoBehind(c: [number, number], d: [number, number], g: number, top: number, ox: number, oz: number, tileC: RGB, seed: number): void {
     const L = Math.hypot(c[0] - d[0], c[1] - d[1]);
@@ -1728,20 +1901,38 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     poly(S, [p3, p2, [p2[0], y1 - 0.4, p2[2]], [p3[0], y1 - 0.4, p3[2]]], [ox, 0, oz], [0.86, 0.82, 0.74], seed, Surf.Stucco, 0, 0, uv4());
   }
 
+  /** What a street front is dressed with beyond its openings (full builds only). */
+  interface Dress {
+    /** On a main street: pent roofs and awnings over the shops, more wares outside. */
+    main?: boolean;
+    /** A named house: tuff pilasters with cubic capitals round the door. */
+    rich?: boolean;
+    /** A house front: sometimes a masonry bench by the door. */
+    house?: boolean;
+    /** An atrium house's front: sometimes pilasters round the door. */
+    grand?: boolean;
+    /** A balcony runs over this front, so no pent roof under it. */
+    balcony?: boolean;
+  }
+
   /**
    * A street facade with its openings: piers, lintels, and behind each
    * opening a recess (a shop's dark room with its counter, or a doorway with
    * the wooden door set back).
    */
   function facade(a: [number, number], b: [number, number], g: number, yBot: number, top: number, ox: number, oz: number,
-    col: RGB, seed: number, p1: number, p2: number, openings: Opening[], depth: number): void {
+    col: RGB, seed: number, p1: number, p2: number, openings: Opening[], depth: number, dress: Dress = {}): void {
     const fl = Math.hypot(b[0] - a[0], b[1] - a[1]);
     const ex = (b[0] - a[0]) / fl, ez = (b[1] - a[1]) / fl;
+    const F: Frame = { ax: a[0], az: a[1], ex, ez, ox, oz };
     const P = (u: number): [number, number] => [a[0] + ex * u, a[1] + ez * u];
     const H = top - g;
     const sorted = [...openings].sort((p, q) => p.u0 - q.u0);
+    const dressed = !lean && !grey;
+    // Props are not roof: the collapse (surf.w) is only for the pent roofs.
+    const tag = S.tag;
     let u = 0;
-    for (const o of sorted) {
+    sorted.forEach((o, oi) => {
       if (o.u0 > u + 0.01) {
         const [x0, z0] = P(u), [x1, z1] = P(o.u0);
         wall(x0, z0, x1, z1, yBot, yBot, top, top, ox, oz, col, seed, Surf.Plaster, p1, p2, u, fl, g, H);
@@ -1749,34 +1940,226 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const [x0, z0] = P(o.u0), [x1, z1] = P(o.u1);
       // Lintel over the opening.
       wall(x0, z0, x1, z1, g + o.h, g + o.h, top, top, ox, oz, col, seed, Surf.Plaster, p1, p2, o.u0, fl, g, H);
-      if (o.kind === "open") { u = o.u1; continue; }
+      u = o.u1;
+      const r = (k: number): number => hash(seed * 1e6, 40 + oi * 7, k);
+      const leftFree = o.u0 - (oi > 0 ? sorted[oi - 1].u1 : 0), rightFree = (oi + 1 < sorted.length ? sorted[oi + 1].u0 : fl) - o.u1;
+      const pave = pavementAt((x0 + x1) / 2, (z0 + z1) / 2, ox, oz);
+      if (dressed && o.kind !== "shop") {
+        S.tag = 0;
+        doorFrame(F, o, g, leftFree, rightFree, pave, dress, r);
+        S.tag = tag;
+      }
+      if (o.kind === "open") return;
       const rd = o.kind === "shop" ? Math.min(3.6, depth - 0.6) : 0.55;
       const ix = -ox * rd, iz = -oz * rd;
       const w = o.u1 - o.u0;
       const inC: RGB = o.kind === "shop" ? [0.62, 0.52, 0.4] : [0.6, 0.5, 0.42];
-      lampSites.openings.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, g, ox, oz, ex, ez, w, h: o.h, depth: rd, kind: o.kind, counter: o.kind === "shop" && !lean });
+      // An open door shows a passage behind it; there has to be room for one.
+      const vd = o.kind === "door" && dressed && r(1) < 0.3 ? Math.min(3, depth - rd - 0.8) : 0;
+      const reach = rd + Math.max(0, vd);
+      const gf = floorOver(g, [[x0, z0], [x1, z1], [x1 - ox * reach, z1 - oz * reach], [x0 - ox * reach, z0 - oz * reach]]);
+      lampSites.openings.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, g: gf, ox, oz, ex, ez, w, h: g + o.h - gf, depth: rd, kind: o.kind, counter: o.kind === "shop" && !lean });
       // Reveals, back, ceiling, floor.
       wall(x0, z0, x0 + ix, z0 + iz, g, g, g + o.h, g + o.h, ex, ez, inC, seed, Surf.Interior, 0, 0, 0, rd, g, o.h);
       wall(x1 + ix, z1 + iz, x1, z1, g, g, g + o.h, g + o.h, -ex, -ez, inC, seed, Surf.Interior, 0, 0, 0, rd, g, o.h);
       if (o.kind === "shop") {
         wall(x0 + ix, z0 + iz, x1 + ix, z1 + iz, g, g, g + o.h, g + o.h, ox, oz, inC, seed, Surf.Interior, 1, 0, 0, w, g, o.h);
         poly(S, [[x0, g + o.h, z0], [x1, g + o.h, z1], [x1 + ix, g + o.h, z1 + iz], [x0 + ix, g + o.h, z0 + iz]], [0, -1, 0], [0.4, 0.3, 0.22], seed, Surf.Wood, 0, 0, uv4());
-        if (!lean) {
-          // The masonry counter across part of the threshold, marble on top.
-          const c0 = o.u0 + 0.15, c1 = o.u0 + w * 0.62;
-          counters.push({ a: P(c0), b: P(c1), ox, oz, g, seed });
+        if (!lean) counters.push({ F, u0: o.u0, w, g: gf, seed: r(0) });
+        if (dressed) {
+          S.tag = 0;
+          shopDress(F, o, g, gf, rd, leftFree, rightFree, pave, !!dress.main, r);
+          S.tag = tag;
+          if (dress.main && !dress.balcony) shopRoof(F, o, g, fl, pave, r);
         }
-      } else {
+      } else if (!dressed) {
         wall(x0 + ix, z0 + iz, x1 + ix, z1 + iz, g, g, g + o.h, g + o.h, ox, oz, [0.42, 0.27, 0.15], seed, Surf.Wood, 0, 0, 0, w, g, o.h);
-        poly(S, [[x0, g + o.h, z0], [x1, g + o.h, z1], [x1 + ix, g + o.h, z1 + iz], [x0 + ix, g + o.h, z0 + iz]], [0, -1, 0], inC, seed, Surf.Interior, 0, 0, uv4());
+      } else {
+        S.tag = 0;
+        doorLeaves(F, o, g, gf, rd, vd, seed, r);
+        S.tag = tag;
       }
-      poly(S, [[x0, g + 0.01, z0], [x1, g + 0.01, z1], [x1 + ix, g + 0.01, z1 + iz], [x0 + ix, g + 0.01, z0 + iz]], [0, 1, 0], [0.5, 0.45, 0.4], seed, Surf.Pavement, 0, 0, uv4());
-      u = o.u1;
-    }
+      if (o.kind !== "shop") poly(S, [[x0, g + o.h, z0], [x1, g + o.h, z1], [x1 + ix, g + o.h, z1 + iz], [x0 + ix, g + o.h, z0 + iz]], [0, -1, 0], inC, seed, Surf.Interior, 0, 0, uv4());
+      if (dressed && o.kind === "door") {
+        // A stone sill out to the pavement and the raised threshold the
+        // leaves close against.
+        fbox(F, o.u0, o.u1, -rd, 0.04, gf - 0.2, gf + 0.02, [0.54, 0.52, 0.48], seed, Surf.Kerb, { skip: FB.Back | FB.End0 | FB.End1 });
+        fbox(F, o.u0, o.u1, -rd - 0.01, -rd + 0.14, gf + 0.02, gf + 0.13, [0.36, 0.34, 0.32], seed, Surf.Kerb, { skip: FB.Back | FB.End0 | FB.End1 });
+      } else poly(S, [[x0, gf, z0], [x1, gf, z1], [x1 + ix, gf, z1 + iz], [x0 + ix, gf, z0 + iz]], [0, 1, 0], [0.5, 0.45, 0.4], seed, Surf.Pavement, 0, 0, uv4());
+    });
     if (u < fl - 0.01) {
       const [x0, z0] = P(u);
       wall(x0, z0, b[0], b[1], yBot, yBot, top, top, ox, oz, col, seed, Surf.Plaster, p1, p2, u, fl, g, H);
     }
+  }
+
+  /** Pilasters round a house door, and a bench beside some. */
+  function doorFrame(F: Frame, o: Opening, g: number, leftFree: number, rightFree: number, pave: number, dress: Dress, r: (k: number) => number): void {
+    const seed = r(20);
+    if ((dress.rich || (dress.grand && r(12) < 0.3)) && leftFree > 0.6 && rightFree > 0.6) {
+      // Tuff pilasters with cubic capitals carrying the lintel, as on the
+      // Casa del Fauno and the Casa di Pansa.
+      const tuff: RGB = [0.6, 0.56, 0.46], cap: RGB = [0.68, 0.64, 0.54];
+      for (const [pa, pb] of [[o.u0 - 0.42, o.u0 - 0.04], [o.u1 + 0.04, o.u1 + 0.42]]) {
+        fbox(F, pa, pb, -0.02, 0.14, g - 0.3, g + o.h - 0.02, tuff, seed, Surf.Kerb, { skip: FB.Back | FB.Top });
+        fbox(F, pa - 0.05, pb + 0.05, -0.02, 0.2, g - 0.3, g + 0.24, tuff, seed, Surf.Kerb, { skip: FB.Back });
+        fbox(F, pa - 0.07, pb + 0.07, -0.02, 0.25, g + o.h - 0.02, g + o.h + 0.3, cap, seed, Surf.Kerb, { skip: FB.Back, bottom: true });
+      }
+    }
+    if (dress.house && pave >= WIDE_PAVEMENT_M && r(13) < 0.35) {
+      // A masonry bench against the front, for clients waiting on the patron.
+      const L = 1.4 + r(14) * 0.6;
+      let s0 = NaN;
+      if (leftFree > L + 0.85) s0 = o.u0 - 0.6 - L;
+      else if (rightFree > L + 0.85) s0 = o.u1 + 0.6;
+      if (!Number.isNaN(s0)) {
+        fbox(F, s0, s0 + L, -0.02, 0.42, g - 0.3, g + 0.45, [0.5, 0.2, 0.15], seed, Surf.Plaster, { p2: 255, gref: g, topS: Surf.Kerb, topC: [0.62, 0.6, 0.55] });
+      }
+    }
+  }
+
+  /** The timber, stone and stock that make an opening a shop. */
+  function shopDress(F: Frame, o: Opening, g: number, gf: number, rd: number, leftFree: number, rightFree: number, pave: number, main: boolean, r: (k: number) => number): void {
+    const seed = r(20);
+    const u0 = o.u0, u1 = o.u1, w = u1 - u0;
+    // The lintel: a timber beam over the opening, its ends bedded in the piers.
+    fbox(F, u0 - 0.18, u1 + 0.18, -0.06, 0.06, g + o.h - 0.02, g + o.h + 0.22, [0.36, 0.25, 0.15], seed, Surf.Wood, { skip: FB.Back, bottom: true, flatU: true });
+    // The sill: one stone across the opening with the groove the shutter boards stood in.
+    fbox(F, u0, u1, -0.36, 0.03, gf - 0.2, gf + 0.03, [0.54, 0.52, 0.48], seed, Surf.Kerb, { skip: FB.Back | FB.End0 | FB.End1 });
+    const gy = gf + 0.032;
+    poly(S, [fp(F, u0 + 0.05, -0.1, gy), fp(F, u1 - 0.05, -0.1, gy), fp(F, u1 - 0.05, -0.06, gy), fp(F, u0 + 0.05, -0.06, gy)], [0, 1, 0], [0.12, 0.11, 0.1], seed, Surf.Kerb, 0, 0, uv4());
+    const gap = counterGap(w);
+    if (r(2) < 0.4) {
+      // Part shut: boards slid along the groove in front of the counter, the doorway left open.
+      const cov = (w - gap) * (0.35 + 0.6 * r(3));
+      fbox(F, u0 + 0.04, u0 + 0.04 + cov, -0.1, -0.065, gy, g + o.h - 0.02, [0.42, 0.29, 0.17], seed, Surf.Wood, { skip: FB.End0 | FB.Top });
+    }
+    if (r(4) < 0.55) {
+      // Shelves on the back wall with jars on them.
+      for (const [k, sy] of [[0, 1.5], [1, 2.1]] as const) {
+        if (sy + 0.35 > o.h) continue;
+        fbox(F, u0 + 0.25, u1 - 0.25, -rd, -rd + 0.32, gf + sy - 0.04, gf + sy, [0.4, 0.28, 0.17], seed, Surf.Wood, { skip: FB.Back | FB.End0 | FB.End1, flatU: true });
+        for (let j = 0, ju = u0 + 0.45; ju < u1 - 0.4; j++, ju += 0.55) {
+          const jr = r(30 + k * 16 + j);
+          if (jr < 0.5) continue;
+          const [jx, , jz] = fp(F, ju, -rd + 0.16, 0);
+          jar(jx, gf + sy, jz, 0.8 + 0.5 * jr, jr);
+        }
+      }
+      // Amphorae leaning in the back corner, away from the counter's doorway.
+      const na = 1 + Math.floor(r(5) * 2);
+      for (let k = 0; k < na; k++) {
+        const [ax, , az] = fp(F, u0 + 0.32 + k * 0.32, -rd + 0.3, 0);
+        amphora(leaning([ax, gf, az], -F.ox, -F.oz, 0.2), ax, gf, az, 0.8 + 0.25 * r(6 + k), r(9 + k));
+      }
+      // A bench down the side wall at the back.
+      if (rd > 3) fbox(F, u1 - 0.4, u1, -rd, -2.2, gf, gf + 0.45, [0.6, 0.55, 0.47], seed, Surf.Masonry, { skip: FB.Back | FB.End1, topS: Surf.Wood, topC: [0.4, 0.28, 0.17] });
+    }
+    // Stock out on the pavement against a pier: amphorae or baskets.
+    if (pave >= WIDE_PAVEMENT_M && r(8) < (main ? 0.35 : 0.12)) {
+      const room = rightFree > 1.2 ? 1 : leftFree > 1.2 ? -1 : 0;
+      if (room !== 0) {
+        const at = (k: number): number => (room > 0 ? u1 + 0.3 + k * 0.32 : u0 - 0.3 - k * 0.32);
+        if (r(15) < 0.6) {
+          for (let k = 0; k < 3; k++) {
+            const [ax, , az] = fp(F, at(k), 0.22, 0);
+            const y = ground(ax, az) + KERB_M;
+            amphora(leaning([ax, y, az], -F.ox, -F.oz, 0.17), ax, y, az, 0.85 + 0.2 * r(16 + k), r(18 + k));
+          }
+        } else {
+          for (let k = 0; k < 2; k++) {
+            const [bx, , bz] = fp(F, at(k * 1.4), 0.32, 0);
+            basket(bx, ground(bx, bz) + KERB_M, bz, r(21 + k));
+          }
+        }
+      }
+    }
+  }
+
+  /** The doorway left open between a counter's end and the far pier. */
+  function counterGap(w: number): number { return Math.max(0.95, w * 0.28); }
+
+  /**
+   * Over a main-street shop: a pent roof of tiles on timber brackets, or a
+   * cloth awning on two poles. Both stop short of the walkers' line down the
+   * pavement's middle.
+   */
+  function shopRoof(F: Frame, o: Opening, g: number, fl: number, pave: number, r: (k: number) => number): void {
+    const kind = r(11);
+    if (kind > 0.75) return;
+    const seed = r(20);
+    const ua = Math.max(0, o.u0 - 0.25), ub = Math.min(fl, o.u1 + 0.25), L = ub - ua;
+    if (kind < 0.45 || pave < WIDE_PAVEMENT_M) {
+      const Pd = 1.1, y0 = g + o.h + 0.72, y1 = y0 - Pd * TAN_PITCH;
+      const q: V3[] = [fp(F, ua, 0, y0), fp(F, ub, 0, y0), fp(F, ub, Pd, y1), fp(F, ua, Pd, y1)];
+      const tileC: RGB = [0.62 + r(22) * 0.08, 0.31, 0.2];
+      poly(S, q, [F.ox, 1, F.oz], tileC, seed, Surf.Tile, 0, 0, [[0, Pd, L, Pd], [L, Pd, L, Pd], [L, 0, L, Pd], [0, 0, L, Pd]]);
+      poly(S, q, [F.ox * 0.3, -1, F.oz * 0.3], [0.36, 0.25, 0.15], seed, Surf.Wood, 0, 0, uv4());
+      // The tile ends along the front edge.
+      poly(S, [q[3], q[2], [q[2][0], y1 - 0.09, q[2][2]], [q[3][0], y1 - 0.09, q[3][2]]], [F.ox, 0, F.oz], tileC, seed, Surf.Tile, 0, 0,
+        [[0, 0, L, 0.1], [L, 0, L, 0.1], [L, 0.09, L, 0.1], [0, 0.09, L, 0.1]]);
+      for (const bu of [ua + 0.3, ub - 0.3]) {
+        tube(S, fp(F, bu, 0, g + o.h + 0.12), fp(F, bu, Pd - 0.12, y1 - 0.05), 0.045, 0.04, 4, [0.34, 0.23, 0.13], seed, Surf.Wood);
+      }
+      return;
+    }
+    // A sagging cloth on a bar, the bar on two poles at the pavement's edge side.
+    const Pd = Math.min(2, pave - 0.25), y0 = g + o.h + 0.55, y1 = g + o.h + 0.02;
+    const cloth: RGB[] = [[0.8, 0.74, 0.6], [0.62, 0.26, 0.18], [0.7, 0.6, 0.42], [0.45, 0.4, 0.32]];
+    const cc = cloth[Math.floor(r(23) * cloth.length)];
+    const vm = Pd * 0.55, ym = lerp(y0, y1, 0.55) - 0.14;
+    const strips: [number, number, number, number][] = [[0, y0, vm, ym], [vm, ym, Pd, y1]];
+    for (const [va, ya, vb, yb] of strips) {
+      const q: V3[] = [fp(F, ua, va, ya), fp(F, ub, va, ya), fp(F, ub, vb, yb), fp(F, ua, vb, yb)];
+      poly(S, q, [0, 1, 0], cc, seed, Surf.Stucco, 0, 0, uv4());
+      poly(S, q, [0, -1, 0], [cc[0] * 0.85, cc[1] * 0.85, cc[2] * 0.85], seed, Surf.Stucco, 0, 0, uv4());
+    }
+    fbox(F, ua, ub, Pd - 0.04, Pd + 0.02, y1 - 0.06, y1, [0.36, 0.25, 0.15], seed, Surf.Wood, { flatU: true, bottom: true });
+    for (const pu of [ua + 0.05, ub - 0.11]) {
+      const [px, , pz] = fp(F, pu, Pd, 0);
+      fbox(F, pu, pu + 0.06, Pd - 0.05, Pd + 0.01, ground(px, pz) + KERB_M, y1, [0.36, 0.25, 0.15], seed, Surf.Wood, { flatU: true, skip: FB.Top });
+    }
+  }
+
+  /** Double plank doors: shut, or one leaf swung in on the passage behind. */
+  function doorLeaves(F: Frame, o: Opening, g: number, gf: number, rd: number, vd: number, seed: number, r: (k: number) => number): void {
+    const u0 = o.u0, u1 = o.u1, mid = (u0 + u1) / 2, hw = (u1 - u0) / 2;
+    const y0 = gf + 0.13, y1 = g + o.h;
+    const wood: RGB = [0.42 + r(24) * 0.08, 0.27 + r(25) * 0.05, 0.15];
+    const leaf = (ua: number, ub: number, c: RGB): void => {
+      const pa = fp(F, ua, -rd, 0), pb = fp(F, ub, -rd, 0);
+      wall(pa[0], pa[2], pb[0], pb[2], y0, y0, y1, y1, F.ox, F.oz, c, seed, Surf.Wood, 0, 0, ua - u0, 2 * hw, y0, y1 - y0);
+    };
+    const rails = (ua: number, ub: number): void => {
+      for (const ry of [0.75, 2.1]) fbox(F, ua + 0.06, ub - 0.06, -rd, -rd + 0.045, y0 + ry, y0 + ry + 0.11, [wood[0] * 0.8, wood[1] * 0.8, wood[2] * 0.8], seed, Surf.Wood, { skip: FB.Back | FB.End0 | FB.End1, flatU: true });
+    };
+    if (vd < 1.2) {
+      leaf(u0, mid, wood);
+      leaf(mid, u1, [wood[0] * 0.94, wood[1] * 0.94, wood[2] * 0.94]);
+      rails(u0, u1);
+      fbox(F, mid - 0.012, mid + 0.012, -rd, -rd + 0.006, y0, y1, [0.08, 0.06, 0.05], seed, Surf.Interior, { skip: FB.Back | FB.End0 | FB.End1 | FB.Top });
+      return;
+    }
+    leaf(u0, mid, wood);
+    rails(u0, mid);
+    // The other leaf swung in against the passage wall.
+    const sw = (70 * Math.PI) / 180;
+    const h0 = fp(F, u1, -rd, 0), h1 = fp(F, u1 - hw * Math.cos(sw), -rd - hw * Math.sin(sw), 0);
+    const lq: V3[] = [[h0[0], y0, h0[2]], [h1[0], y0, h1[2]], [h1[0], y1, h1[2]], [h0[0], y1, h0[2]]];
+    const luv: [number, number, number, number][] = [[0, 0, hw, y1 - y0], [hw, 0, hw, y1 - y0], [hw, y1 - y0, hw, y1 - y0], [0, y1 - y0, hw, y1 - y0]];
+    const nx = h1[2] - h0[2], nz = -(h1[0] - h0[0]);
+    poly(S, lq, [nx, 0, nz], wood, seed, Surf.Wood, 0, 0, luv);
+    poly(S, lq, [-nx, 0, -nz], [wood[0] * 0.8, wood[1] * 0.8, wood[2] * 0.8], seed, Surf.Wood, 0, 0, luv);
+    // The passage: dim walls, a floor, a ceiling and a far wall, so the
+    // open leaf shows a way in rather than the inside of a hollow block.
+    const v0 = -rd, v1 = -rd - vd, ytop = g + o.h;
+    const pass: RGB = [0.55, 0.3, 0.22];
+    const A = fp(F, u0, v0, 0), B = fp(F, u0, v1, 0), C = fp(F, u1, v1, 0), D = fp(F, u1, v0, 0);
+    wall(A[0], A[2], B[0], B[2], gf, gf, ytop, ytop, F.ex, F.ez, pass, seed, Surf.Interior, 0, 0, 0, vd, gf, ytop - gf);
+    wall(C[0], C[2], D[0], D[2], gf, gf, ytop, ytop, -F.ex, -F.ez, pass, seed, Surf.Interior, 0, 0, 0, vd, gf, ytop - gf);
+    wall(B[0], B[2], C[0], C[2], gf, gf, ytop, ytop, F.ox, F.oz, [0.6, 0.5, 0.42], seed, Surf.Interior, 0, 0, 0, 2 * hw, gf, ytop - gf);
+    poly(S, [A, B, C, D].map((p): V3 => [p[0], ytop, p[2]]), [0, -1, 0], [0.4, 0.3, 0.22], seed, Surf.Interior, 0, 0, uv4());
+    poly(S, [A, B, C, D].map((p): V3 => [p[0], gf, p[2]]), [0, 1, 0], [0.55, 0.5, 0.44], seed, Surf.Pavement, 0, 0, uv4());
   }
 
   // =====================================================================================
@@ -1958,9 +2341,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       // The bases face into the square; the two at the ends carry
       // equestrian bronzes (long bases, as the surviving ones on the west
       // side are), the rest togate magistrates.
+      const bases: [number, number][] = [];
       for (let k = -3; k <= 3; k++) {
         if (k === 0) continue;
         const x = o.cx + o.ux * k * (o.hu / 4.5) - o.uz * (o.hv * 0.55), z = o.cz + o.uz * k * (o.hu / 4.5) + o.ux * (o.hv * 0.55);
+        bases.push([x, z]);
         const rider = Math.abs(k) === 3;
         const hl = rider ? 1.7 : 0.75, hw = rider ? 0.75 : 0.65;
         const q = [x - o.ux * hl - o.uz * hw, z - o.uz * hl + o.ux * hw, x + o.ux * hl - o.uz * hw, z + o.uz * hl + o.ux * hw,
@@ -1988,7 +2373,49 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           siteInfo.statues.push("togate");
         }
       }
+      // Market stalls along the long sides, in front of the colonnade:
+      // trestle tables under cloth roofs, with jars and baskets. Clear of
+      // the statue bases and the temples at the ends.
+      for (let i = 0; i < n; i++) {
+        const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
+        const L = Math.hypot(bx - ax, bz - az);
+        if (L < 40) continue;
+        const nx = -(bz - az) / L, nz = (bx - ax) / L, tx = (bx - ax) / L, tz = (bz - az) / L;
+        for (let k = 1; k <= 4; k++) {
+          const t = (L * k) / 5 + (hash(seed * 1e6, i, k) - 0.5) * 4;
+          const cx = ax + tx * t + nx * 7.4, cz = az + tz * t + nz * 7.4;
+          if (inTemple(cx, cz) || !pointInRing(r, cx, cz) || bases.some(([x, z]) => Math.hypot(x - cx, z - cz) < 4.5)) continue;
+          stall({ ax: cx, az: cz, ex: tx, ez: tz, ox: nx, oz: nz }, ground(cx, cz) + KERB_M + 0.05, hash(seed * 1e6, i, k + 10));
+        }
+      }
     }
+  }
+
+  /** A market stall: a trestle table under a cloth roof on four posts, wares on and beside it. */
+  function stall(F: Frame, g: number, seed: number): void {
+    const wood: RGB = [0.42, 0.3, 0.18];
+    fbox(F, -0.95, 0.95, -0.42, 0.42, g + 0.78, g + 0.84, wood, seed, Surf.Wood, { bottom: true });
+    for (const [pu, pv] of [[-0.98, -0.62], [0.92, -0.62], [-0.98, 0.56], [0.92, 0.56]]) {
+      fbox(F, pu, pu + 0.06, pv, pv + 0.06, g, pv < 0 ? g + 2.35 : g + 2.0, wood, seed, Surf.Wood, { flatU: true, skip: FB.Top });
+    }
+    for (const [pu, pv] of [[-0.8, -0.3], [0.74, -0.3], [-0.8, 0.24], [0.74, 0.24]]) fbox(F, pu, pu + 0.06, pv, pv + 0.06, g, g + 0.78, wood, seed, Surf.Wood, { flatU: true, skip: FB.Top });
+    const cloth: RGB[] = [[0.8, 0.74, 0.6], [0.62, 0.26, 0.18], [0.7, 0.6, 0.42], [0.5, 0.42, 0.3]];
+    const cc = cloth[Math.floor(hash(seed * 1e6, 1) * cloth.length)];
+    const q: V3[] = [fp(F, -1.15, -0.75, g + 2.4), fp(F, 1.1, -0.75, g + 2.4), fp(F, 1.1, 0.75, g + 1.98), fp(F, -1.15, 0.75, g + 1.98)];
+    poly(S, q, [F.ox, 1, F.oz], cc, seed, Surf.Stucco, 0, 0, uv4());
+    poly(S, q, [-F.ox * 0.3, -1, -F.oz * 0.3], [cc[0] * 0.8, cc[1] * 0.8, cc[2] * 0.8], seed, Surf.Stucco, 0, 0, uv4());
+    // Wares: jars on the table, a basket or two at its foot.
+    for (let k = 0; k < 3; k++) {
+      const [x, , z] = fp(F, -0.6 + k * 0.6, -0.1 + 0.2 * hash(seed * 1e6, 2, k), 0);
+      jar(x, g + 0.84, z, 1.0 + 0.4 * hash(seed * 1e6, 3, k), hash(seed * 1e6, 4, k));
+    }
+    const [bx, , bz] = fp(F, 1.3, 0.25, 0);
+    basket(bx, g, bz, hash(seed * 1e6, 5));
+    if (hash(seed * 1e6, 6) < 0.5) {
+      const [x, , z] = fp(F, -1.35, -0.4, 0);
+      amphora(leaning([x, g, z], F.ex, F.ez, -0.15), x, g, z, 0.9, hash(seed * 1e6, 7));
+    }
+    siteInfo.stalls++;
   }
 
   function buildTemple(p: PompeiiPublic, r: Ring, seed: number): void {
@@ -2439,54 +2866,113 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
 
   // --- shop counters, and the thermopolia's ---
-  // Each mapped thermopolium claims the nearest counter within 12 m: an L of
-  // masonry faced with offcuts of coloured marble, the mouths of the dolia
-  // that held the food and wine set in its top. The rest are plain.
+  // Each mapped thermopolium claims the nearest counter within 12 m. Every
+  // counter is an L of masonry standing on the shop floor behind the sill:
+  // the long arm across the front, the short arm returning into the shop at
+  // the doorway left between it and the far pier. A thermopolium's is faced
+  // with offcuts of coloured marble, the mouths of the dolia that held the
+  // food and wine set in its top, a stepped shelf for the jugs at the pier
+  // end; some plain shops faced theirs the same way, most painted them.
   const claimed = new Set<number>();
+  const counterMid = (c: (typeof counters)[number]): V3 => fp(c.F, c.u0 + c.w * 0.4, -0.45, c.g);
   if (!lean && !grey) for (const t of sitesOf("thermopolium")) {
     let best = -1, bd = 12;
     counters.forEach((c, i) => {
       if (claimed.has(i)) return;
-      const d = Math.hypot((c.a[0] + c.b[0]) / 2 - t.x, (c.a[1] + c.b[1]) / 2 - t.z);
+      const m = counterMid(c);
+      const d = Math.hypot(m[0] - t.x, m[2] - t.z);
       if (d < bd) { bd = d; best = i; }
     });
     if (best >= 0) claimed.add(best);
   }
   counters.forEach((c, i) => {
-    const { a, b, ox, oz, g, seed } = c;
-    const q = [a[0] - ox * 0.12, a[1] - oz * 0.12, b[0] - ox * 0.12, b[1] - oz * 0.12, b[0] - ox * 0.75, b[1] - oz * 0.75, a[0] - ox * 0.75, a[1] - oz * 0.75];
-    if (!claimed.has(i)) {
-      box(q, g, g + 1.0, [0.7, 0.64, 0.56], seed, Surf.Marble, Surf.Marble, [0.85, 0.83, 0.78]);
-      return;
-    }
-    siteInfo.thermopolia++;
-    const L = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1, tx = (b[0] - a[0]) / L, tz = (b[1] - a[1]) / L;
-    const veneer = (qq: number[], top: number): void => {
-      const [cx, cz] = ringCentroid(qq);
-      for (let e = 0; e < 4; e++) {
-        const ax = qq[e * 2], az = qq[e * 2 + 1], bx = qq[((e + 1) % 4) * 2], bz = qq[((e + 1) % 4) * 2 + 1];
-        let nx = bz - az, nz = -(bx - ax);
-        const l = Math.hypot(nx, nz) || 1; nx /= l; nz /= l;
-        if (((ax + bx) / 2 - cx) * nx + ((az + bz) / 2 - cz) * nz < 0) { nx = -nx; nz = -nz; }
-        wall(ax, az, bx, bz, g, g, g + top, g + top, nx, nz, [0.8, 0.76, 0.7], seed, Surf.Marble, 1, 0, 0, l, g, top);
-      }
-      poly(S, [0, 1, 2, 3].map((k): V3 => [qq[k * 2], g + top, qq[k * 2 + 1]]), [0, 1, 0], [0.86, 0.84, 0.8], seed, Surf.Marble, 0, 0, uv4());
+    const { F, u0, w, g, seed } = c;
+    const thermo = claimed.has(i);
+    if (thermo) siteInfo.thermopolia++;
+    const r = (k: number): number => hash(seed * 1e6, 77, k);
+    const ua = u0 + 0.1, ub = w > 2.2 ? u0 + w - counterGap(w) : u0 + w * 0.55;
+    const vb = -COUNTER.backV, vf = -COUNTER.frontV, top = g + COUNTER.topM, body = top - 0.05;
+    const chips = thermo || r(1) < 0.12;
+    const paint: RGB = LOWER[Math.floor(r(2) * 4)];
+    // Front: marble chips, or a painted dado (plaster read from a metre up, so no socle band).
+    const front: [Surf, number, number, RGB] = chips ? [Surf.Marble, 1, 0, [0.8, 0.76, 0.7]] : [Surf.Plaster, 80, 255, paint];
+    const gref = chips ? g : g - 1;
+    const slabC: RGB = [0.86, 0.84, 0.8];
+    const arm = (u0a: number, u1a: number, v0: number, v1: number, skip: number): void => {
+      fbox(F, u0a, u1a, v0, v1, g - 0.02, body, front[3], seed, front[0], { p1: front[1], p2: front[2], skip: skip | FB.Top, gref });
+      // The marble top, a few centimetres proud of the masonry.
+      fbox(F, u0a - 0.03, u1a + 0.03, v0 - 0.03, v1 + 0.03, body, top, slabC, seed, Surf.Marble, { skip: skip & ~(FB.End0 | FB.End1) });
     };
-    veneer(q, 1.0);
-    // The return leg into the shop at the far end.
-    const leg = [b[0] - ox * 0.75 - tx * 0.65, b[1] - oz * 0.75 - tz * 0.65, b[0] - ox * 0.75, b[1] - oz * 0.75, b[0] - ox * 2.1, b[1] - oz * 2.1, b[0] - ox * 2.1 - tx * 0.65, b[1] - oz * 2.1 - tz * 0.65];
-    veneer(leg, 1.0);
+    // Long arm along the front; the short arm back into the shop at the doorway.
+    arm(ua, ub, vb, vf, FB.End0);
+    const retU = Math.min(0.55, (ub - ua) * 0.4), retV = -Math.min(COUNTER.returnV, 0.6 + w * 0.35);
+    if (retV < vb - 0.3) arm(ub - retU, ub, retV, vb, FB.Front);
     const mouths: [number, number][] = [];
-    for (let k = 0; k < Math.max(1, Math.floor((L - 0.4) / 0.75)); k++) mouths.push([a[0] + tx * (0.55 + k * 0.75) - ox * 0.43, a[1] + tz * (0.55 + k * 0.75) - oz * 0.43]);
-    mouths.push([b[0] - tx * 0.33 - ox * 1.5, b[1] - tz * 0.33 - oz * 1.5]);
-    for (const [mx, mz] of mouths) {
+    const lampU = u0 + w * 0.31 + 0.075;
+    if (thermo) {
+      // The stepped shelf against the pier, three treads.
+      for (let k = 1; k <= 3; k++) {
+        const su = ua + 0.6 - k * 0.17;
+        fbox(F, ua, su, vb, vf, top, top + k * 0.13, front[3], seed, front[0], { p1: front[1], p2: front[2], skip: FB.End0, gref, topS: Surf.Marble, topC: slabC });
+      }
+      for (let mu = ua + 0.95; mu < ub - 0.35; mu += 0.75) if (Math.abs(mu - lampU) > 0.35) mouths.push([mu, (vb + vf) / 2]);
+      if (retV < vb - 0.6) mouths.push([ub - retU / 2, (retV + vb) / 2]);
+    } else if (r(3) < 0.3) {
+      const mu = ub - 0.4;
+      if (mu > ua + 0.3 && Math.abs(mu - lampU) > 0.35) mouths.push([mu, (vb + vf) / 2]);
+    }
+    for (const [mu, mv] of mouths) {
+      const [mx, , mz] = fp(F, mu, mv, 0);
       // The jar's rim proud of the counter top, and its dark mouth.
       // (A lathe profile faces outward and up when it runs outward going up, inward going across.)
-      lathe(S, mx, g + 1.0, mz, [[0.2, 0.0], [0.23, 0.03], [0.19, 0.035], [0.17, -0.05]], 12, [0.6, 0.36, 0.24], seed, Surf.Pavement);
-      lathe(S, mx, g + 1.0, mz, [[0.17, -0.02], [0.001, -0.02]], 12, [0.05, 0.04, 0.035], seed, Surf.Interior);
+      lathe(S, mx, top, mz, [[0.17, 0.0], [0.2, 0.03], [0.16, 0.035], [0.14, -0.05]], 8, [0.6, 0.36, 0.24], seed, Surf.Pavement);
+      lathe(S, mx, top, mz, [[0.14, -0.02], [0.001, -0.02]], 8, [0.05, 0.04, 0.035], seed, Surf.Interior);
     }
   });
 
+
+  // --- crossroads shrines ---
+  // The Lares Compitales had a shrine at about one crossroads in three: a
+  // masonry altar against the corner house, the gods painted on the wall
+  // over it under a small tiled roof. Not at a fountain's corner, and
+  // never across a doorway.
+  if (!lean && !grey) junctions.forEach(([jx, jz], ji) => {
+    if (hash(ji, 51) > 0.6) return;
+    if (waterSites.fountains.some((f) => Math.hypot(f.x - jx, f.z - jz) < 14)) return;
+    // The nearest building line, and a point on it 1.6 m along from the corner.
+    let best: { ax: number; az: number; bx: number; bz: number; d: number } | null = null;
+    for (const ins of data.insulae) {
+      if (ins.garden || !pointInRing(data.wall, ins.ring[0], ins.ring[1])) continue;
+      const r = ins.ring, n = r.length / 2;
+      for (let i = 0; i < n; i++) {
+        const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
+        const d = distSeg(jx, jz, ax, az, bx, bz);
+        if (d < 14 && (!best || d < best.d) && Math.hypot(bx - ax, bz - az) > 5) best = { ax, az, bx, bz, d };
+      }
+    }
+    if (!best) return;
+    const { ax, az, bx, bz } = best;
+    const L = Math.hypot(bx - ax, bz - az), ex = (bx - ax) / L, ez = (bz - az) / L;
+    const t = Math.max(0, Math.min(L, (jx - ax) * ex + (jz - az) * ez));
+    const tt = t < L / 2 ? Math.min(L / 2, t + 1.6) : Math.max(L / 2, t - 1.6);
+    let ox = ez, oz = -ex;
+    if ((jx - ax) * ox + (jz - az) * oz < 0) { ox = -ox; oz = -oz; }
+    const F: Frame = { ax: ax + ex * tt, az: az + ez * tt, ex, ez, ox, oz };
+    if (publicRings.some((pr) => distToRing(pr, F.ax, F.az) < 3) || pavementAt(F.ax, F.az, ox, oz) < WIDE_PAVEMENT_M) return;
+    if (lampSites.openings.some((o) => Math.hypot(o.x - F.ax, o.z - F.az) < o.w / 2 + 1.1)) return;
+    const g = ground(F.ax, F.az) + KERB_M, seed = hash(ji, 52);
+    // Altar with its cornice, plastered white.
+    fbox(F, -0.42, 0.42, -0.02, 0.5, g - 0.1, g + 0.92, [0.86, 0.82, 0.72], seed, Surf.Stucco, { skip: FB.Back | FB.Top });
+    fbox(F, -0.5, 0.5, -0.02, 0.58, g + 0.92, g + 1.04, [0.9, 0.87, 0.8], seed, Surf.Marble, { skip: FB.Back });
+    // The painting over it, and the little roof that kept the rain off it.
+    const p0 = fp(F, -0.75, 0.012, 0), p1 = fp(F, 0.75, 0.012, 0);
+    wall(p0[0], p0[2], p1[0], p1[2], g + 1.25, g + 1.25, g + 2.65, g + 2.65, ox, oz, [0.6, 0.14, 0.08], seed, Surf.Fresco, 0, 0, 0, 1.5, g + 0.3, 2.35);
+    const q: V3[] = [fp(F, -0.9, 0, g + 3.0), fp(F, 0.9, 0, g + 3.0), fp(F, 0.9, 0.75, g + 2.7), fp(F, -0.9, 0.75, g + 2.7)];
+    poly(S, q, [ox, 1, oz], [0.64, 0.32, 0.2], seed, Surf.Tile, 0, 0, [[0, 0.8, 1.8, 0.8], [1.8, 0.8, 1.8, 0.8], [1.8, 0, 1.8, 0.8], [0, 0, 1.8, 0.8]]);
+    poly(S, q, [ox * 0.3, -1, oz * 0.3], [0.36, 0.25, 0.15], seed, Surf.Wood, 0, 0, uv4());
+    for (const bu of [-0.7, 0.7]) tube(S, fp(F, bu, 0, g + 2.35), fp(F, bu, 0.62, g + 2.7), 0.035, 0.03, 4, [0.34, 0.23, 0.13], seed, Surf.Wood);
+    siteInfo.shrines++;
+  });
   // Outside the walls, drawn with the same emitters into the same stores.
   const suburbs = data.suburbs && opts.suburbs !== false
     ? buildSuburbs({ S, F, R, poly, wall, box, column, ground, solids, lean }, data.suburbs)

@@ -376,8 +376,9 @@ export interface PompeiiPlan {
 // test/pompeii.check.ts holds the real build under these and within a
 // quarter of them, so they can neither be exceeded nor drift into fiction.
 // The suburbs outside the walls (tombs, villas, roads, river) are about 6 MB
-// of the full build and 3 of the lean.
-export const POMPEII_FULL_BYTES = Math.round(38 * 1048576);
+// of the full build and 3 of the lean; the street furniture (counters, shop
+// fittings, doors, eave trim) about 22 MB of the full build and none of the lean.
+export const POMPEII_FULL_BYTES = Math.round(62 * 1048576);
 export const POMPEII_LEAN_BYTES = Math.round(19.5 * 1048576);
 
 /** The art atlas on the GPU: RGBA8 with its mip chain. */
