@@ -751,6 +751,47 @@ export const POSES: Pose[] = [
     wx: "low:0.85:600:1400,mid:0.6:3000:4200,high:0:8500:9400,precip:0,wind:12:265",
     what: "SF bay from ten metres up in a westerly, toward the Gate",
   },
+  // Alcatraz (render/alcatraz.ts): the lidar island, its z19 drape and the
+  // modelled cellhouse, lighthouse, water tower and stack, at the three
+  // ranges people see it from: the ferry, the air and its own paths.
+  {
+    // From the south, 260 m off the island's south-west shore, at a ferry's
+    // upper deck: the view of the cliffs and the cellhouse broadside on.
+    name: "alcatraz-ferry",
+    city: "sf",
+    lat: 37.8232, lon: -122.4245, altM: 10, hdgDeg: 22, pitchDeg: 3,
+    t: D("2025-06-21T21:00:00Z"), // 14:00 PDT: sun in the south-west, on the faces we see
+    wx: CLEAR,
+    what: "Alcatraz from a ferry 300 m south, clear afternoon",
+  },
+  {
+    // The same water at dusk: the lantern lit and its beam turning.
+    name: "alcatraz-ferry-dusk",
+    city: "sf",
+    lat: 37.8232, lon: -122.4245, altM: 10, hdgDeg: 22, pitchDeg: 3,
+    t: D("2025-06-22T03:55:00Z"), // 20:55 PDT, twenty minutes after sunset
+    wx: CLEAR,
+    what: "Alcatraz from a ferry 300 m south, dusk",
+  },
+  {
+    name: "alcatraz-flyover",
+    city: "sf",
+    lat: 37.8243, lon: -122.4190, altM: 150, hdgDeg: 312, pitchDeg: -24,
+    t: D("2025-06-21T21:00:00Z"),
+    wx: CLEAR,
+    what: "Alcatraz from 150 m over the water to the south-east",
+  },
+  {
+    // In the recreation yard, eye height, looking south-east past the yard
+    // wall to the dining-hall end of the cellhouse. Lidar ground here is
+    // 34.0 m, so 35.7 m AMSL is 1.7 m up.
+    name: "alcatraz-walk",
+    city: "sf",
+    lat: 37.82728, lon: -122.4239, altM: 35.7, hdgDeg: 125, pitchDeg: 8,
+    t: D("2025-06-21T21:00:00Z"),
+    wx: CLEAR,
+    what: "Standing by the cellhouse on Alcatraz, eye height",
+  },
   {
     // The same water from 300 m: the FFT sea seen as a texture rather than as
     // geometry, and the range where its tiling, its rim and its foam coverage

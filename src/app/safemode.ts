@@ -32,7 +32,7 @@ export const LADDER: SafeRung[] = [
   {
     off: [
       "ao", "ssr", "shadow", "skyprobe", "cloudshadow", "clouds", "bloom", "aircraft", "foliage", "shrubs", "ocean",
-      "buildings", "traffic", "parkedcars", "transit", "lamps", "live", "airtraffic",
+      "buildings", "traffic", "parkedcars", "transit", "lamps", "live", "airtraffic", "alcatraz",
     ],
     scale: 0.35,
     msaa: false,

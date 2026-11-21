@@ -249,7 +249,7 @@ export async function measure(
 export const TOGGLES = [
   "shadow", "aircraft", "ao", "ssr", "clouds", "cloudshadow", "bloom", "skyprobe",
   "terrain", "buildings", "roads", "pavement", "bridges", "lamps", "traffic", "parkedcars",
-  "foliage", "shrubs", "live", "airtraffic", "transit", "sky", "ocean",
+  "foliage", "shrubs", "live", "airtraffic", "transit", "sky", "ocean", "alcatraz",
 ];
 
 /**
