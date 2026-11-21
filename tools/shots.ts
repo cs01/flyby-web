@@ -1731,7 +1731,7 @@ export const POSES: Pose[] = [
   {
     name: "pompeii-up-jupiter",
     city: "pompeii",
-    lat: 40.749780, lon: 14.484508, altM: 1.7, hdgDeg: 357, pitchDeg: 30,
+    lat: 40.749680, lon: 14.484508, altM: 1.7, hdgDeg: 357, pitchDeg: 22,
     t: D("0079-08-22T09:30:00Z"),
     wx: POMPEII_WX,
     what: "Up at the Temple of Jupiter's porch from the foot of its steps",
