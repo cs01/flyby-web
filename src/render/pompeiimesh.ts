@@ -1625,7 +1625,12 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           [[0, il, L, il], [L, il, L, il], [L, 0, L, il], [0, 0, L, il]]);
         // The light well: the atrium's walls seen through the opening.
         const wl = Math.hypot(qi[0] - pi[0], qi[1] - pi[1]);
-        wall(pi[0], pi[1], qi[0], qi[1], g, g, lo, lo, -inx / il, -inz / il, [0.55, 0.12, 0.08], s, Surf.Fresco, 0, 0, 0, wl, g, lo - g);
+        // The light well: the atrium's walls seen through the opening, in one
+        // of the restored wall schemes (the procedural one with the art off).
+        if (art) {
+          const sch = ATRIUM_SCHEMES[Math.floor(hash(s * 1e6, 61) * ATRIUM_SCHEMES.length)];
+          wall(pi[0], pi[1], qi[0], qi[1], g, g, lo, lo, -inx / il, -inz / il, ART_WORKS[sch].ground, s, Surf.Art, sch, 1, 0, wl, g, lo - g);
+        } else wall(pi[0], pi[1], qi[0], qi[1], g, g, lo, lo, -inx / il, -inz / il, [0.55, 0.12, 0.08], s, Surf.Fresco, 0, 0, 0, wl, g, lo - g);
       }
       poly(S, inner.map((p): V3 => [p[0], g + 0.02, p[1]]), [0, 1, 0], [0.55, 0.38, 0.3], s, Surf.Pavement, 0, 0, inner.map((p) => [p[0], p[1], 0, 0]));
       const pool = inner.map((p): V3 => [mx + (p[0] - mx) * 0.6, g + 0.06, mz + (p[1] - mz) * 0.6]);

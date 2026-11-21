@@ -544,7 +544,7 @@ async function main() {
     // The restored paintings and mosaics; `?off=pompeiiart` leaves them out of the town and skips the download.
     // A shot waits for it, so a frame is never taken of the ground colours alone.
     if (!perfOff.has("pompeiiart")) {
-      const art = loadPompeiiArt(`${import.meta.env.BASE_URL}landmarks`, pompeii.uniforms, budget.pompeii.lean);
+      const art = loadPompeiiArt(`${import.meta.env.BASE_URL}landmarks`, pompeii.uniforms, budget.pompeii.artPx < 2048);
       if (shotMode) await art;
     }
     sunShadow.setCityCasters(pompeii.buildings);

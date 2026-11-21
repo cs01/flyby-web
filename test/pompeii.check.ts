@@ -10,16 +10,19 @@
 
 import { readFileSync } from "node:fs";
 import { parsePompeii, plainName, pointInRing, polylineLength, ringArea, ringCentroid } from "../src/data/pompeii";
-import { AMPHI, ROOF_PITCH_DEG, Surf, buildPompeii, distToRing, type PompeiiModel } from "../src/render/pompeiimesh";
+import { AMPHI, ROOF_PITCH_DEG, Store, Surf, buildPompeii, distToRing, type PompeiiModel } from "../src/render/pompeiimesh";
 import { pompeiiRoadPack, pompeiiHeightAt } from "../src/data/pompeiiroads";
 import { buildRoadGraph, componentLengths, connectedComponents } from "../src/data/roadgraph";
-import { budgetForTier, pompeiiBytes, type DeviceDescriptor } from "../src/render/budget";
+import { budgetForTier, pompeiiArtBytes, pompeiiBytes, type DeviceDescriptor } from "../src/render/budget";
 import { AmphitheatreField, DIPINTI, POMPEII_SHADOW_SPLITS, VESUVIUS, dipintiTables, restoreVesuvius, vesuviusCone } from "../src/render/pompeii";
 import { LocalClock, zoneLabel } from "../src/app/timebar";
 import { LIFE_RADIUS_M, PompeiiLife } from "../src/data/pompeiilife";
 import { Heightfield } from "../src/data/dem";
 import { CITIES } from "../src/cities";
 import { HORSE_BONES, buildHorse, hoofPoints, poseHorse } from "../src/render/horse";
+import { ART_WORKS } from "../src/data/pompeiiart";
+import { ORDERS, Order, columnTemplate, shaftRadius } from "../src/render/pompeiiorders";
+import { statSync } from "node:fs";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -193,7 +196,8 @@ let built: PompeiiModel;
   const PHONE: DeviceDescriptor = { coarsePointer: true, deviceMemoryGb: 4, maxTextureSize: 4096, drawingBufferWidth: 618, drawingBufferHeight: 1373, pixelRatio: 1.5 };
   const phone = budgetForTier("reduced", PHONE);
   const line = phone.memory.items.find((i) => i.what.startsWith("building geometry"))!;
-  check("phone: the lean town fits the building line it replaces", phone.pompeii.lean && pompeiiBytes(phone.pompeii) < line.bytes, `${(pompeiiBytes(phone.pompeii) / MB).toFixed(1)} of ${(line.bytes / MB).toFixed(1)} MB`);
+  const phoneTown = pompeiiBytes(phone.pompeii) + pompeiiArtBytes(phone.pompeii);
+  check("phone: the lean town and its art atlas fit the building line they replace", phone.pompeii.lean && phoneTown < line.bytes, `${(phoneTown / MB).toFixed(1)} of ${(line.bytes / MB).toFixed(1)} MB`);
 }
 
 // --- 7. the cart's streets and the walker's ground -----------------------------------
@@ -358,6 +362,78 @@ let built: PompeiiModel;
     worst = Math.max(worst, Math.abs(ys[1]));
   }
   check("at a walk two or more hooves stay planted within 6 cm of the ground", worst < 0.06, `${(worst * 100).toFixed(1)} cm`);
+}
+
+// --- 11. the art: restored works in their houses, the atlas in budget ------------------
+{
+  const want: Record<string, string> = {
+    "alexander": "Casa del Fauno", "faun-have": "Casa del Fauno", "dancing-faun": "Casa del Fauno",
+    "cave-canem": "Casa del Poeta Tragico", "vettii-ixion": "Casa dei Vettii", "vettii-wall": "Casa dei Vettii",
+    "misteri-north": "Villa dei Misteri", "misteri-east": "Villa dei Misteri",
+  };
+  // In the house by name, and inside that house's surveyed outline.
+  const ringOf = (name: string): number[] | undefined => name === "Villa dei Misteri" ? data.villa?.ring : data.domus.find((d) => d.name === name)?.ring;
+  const placedIn = (m: PompeiiModel, id: string): boolean => {
+    const a = m.art.find((x) => x.id === id);
+    const r = ringOf(want[id]);
+    return !!a && !!r && a.house === want[id] && (pointInRing(r, a.x, a.z) || distToRing(r, a.x, a.z) < 3);
+  };
+  for (const id of Object.keys(want)) check(`art in its house: ${id} in ${want[id]}`, placedIn(built, id), "");
+  const off = buildPompeii({ data, groundAt: flat, art: false });
+  check("probe: with the art off nothing is placed", Object.keys(want).every((id) => !placedIn(off, id)), `${off.art.length} placed`);
+  // A mosaic moved to another house is caught.
+  const moved = { ...built, art: built.art.map((a) => (a.id === "alexander" ? { ...a, x: a.x + 120 } : a)) };
+  check("probe: the Alexander Mosaic 120 m away fails", !placedIn(moved, "alexander"), "");
+  const MB = 1048576;
+  // Every tile drawn exists in the atlas, the files are in budget.
+  const dir = new URL("../public/landmarks/pompeii-art/", import.meta.url);
+  const atlas = JSON.parse(readFileSync(new URL("atlas.json", dir), "utf8")) as { size: number; tiles: { id: string; rect: number[] }[] };
+  check("atlas has a tile for every work, inside the image", ART_WORKS.every((w) => atlas.tiles.some((t) => t.id === w.id && t.rect[0] + t.rect[2] <= atlas.size && t.rect[1] + t.rect[3] <= atlas.size)), `${atlas.tiles.length} tiles`);
+  const big = statSync(new URL("atlas.jpg", dir)).size, small = statSync(new URL("atlas-small.jpg", dir)).size;
+  check("atlas download under 4 MB (desktop) and 1 MB (phone)", big + small < 4 * MB && small < MB, `${(big / MB).toFixed(2)} + ${(small / MB).toFixed(2)} MB`);
+  const credits = readFileSync(new URL("CREDITS.md", dir), "utf8");
+  const usedSources = (credits.match(/^\| [a-z]/gm) ?? []).length;
+  check("every atlas source credited with a free licence", usedSources >= 10 && !/\| \?|NC|ND/.test(credits), `${usedSources} sources`);
+}
+
+// --- 12. the orders: Vitruvius's proportions ------------------------------------------
+{
+  const within = (v: number, ref: number, tol: number): boolean => Math.abs(v - ref) <= tol;
+  // Height in lower diameters: Doric 7, Ionic 9, Corinthian 10 (V. IV.1-3).
+  const ratio = { 0: 7, 1: 9, 2: 10 } as Record<number, number>;
+  const offProportion = (cols: PompeiiModel["orders"]): number => cols.filter((c) => !within(c.h / c.d, ratio[c.order], 0.3)).length;
+  const bad = offProportion(built.orders);
+  check("every column's height / lower diameter is its order's (7, 9, 10)", built.orders.length > 1000 && bad === 0, `${built.orders.length} columns, ${bad} off`);
+  const kinds = [0, 1, 2].map((o) => built.orders.filter((c) => c.order === o).length);
+  check("all three orders stand in the town (temples Corinthian, forum Doric and Ionic)", kinds.every((k) => k > 0), kinds.join(" / "));
+  // The peristyle prisms this replaced were 0.4 m across at any height.
+  const old = built.orders.map((c) => ({ ...c, d: 0.4 }));
+  check("probe: the old 0.4 m prisms are caught as off-proportion", offProportion(old) > old.length * 0.9, `${offProportion(old)} of ${old.length}`);
+  // The template: the shaft tapers to 5/6 (III.3.12), the Doric capital is
+  // D/2 high, the Corinthian a full D.
+  check("shaft tapers to 5/6 of the lower diameter", within(shaftRadius(1) * 2, 5 / 6, 0.01) && within(shaftRadius(0) * 2, 1, 0.01), `${(shaftRadius(1) * 2).toFixed(3)}`);
+  const topOf = (o: Order): number => {
+    const st = new Store();
+    columnTemplate(st, o, false);
+    let m = 0;
+    for (let i = 0; i < st.n; i++) m = Math.max(m, st.pos[i * 3 + 1]);
+    return m;
+  };
+  check("templates stand their order's height in diameters", within(topOf(Order.Doric), 7, 0.01) && within(topOf(Order.Ionic), 9, 0.01) && within(topOf(Order.Corinthian), 10, 0.01),
+    `${topOf(Order.Doric).toFixed(2)} / ${topOf(Order.Ionic).toFixed(2)} / ${topOf(Order.Corinthian).toFixed(2)}`);
+  check("Doric capital D/2, Corinthian D (in the order table)", ORDERS[Order.Doric].capital === 0.5 && ORDERS[Order.Corinthian].capital === 1, "");
+}
+
+// --- 13. bakeries and thermopolia ----------------------------------------------------
+{
+  const modestus = (data.sites ?? []).find((s) => /Modestus/.test(s.name));
+  const millsAt = (m: PompeiiModel): number => m.sites.mills.filter((q) => /Modestus/.test(q.site) && !!modestus && Math.hypot(q.x - modestus.x, q.z - modestus.z) < 15).length;
+  check("the Bakery of Modestus (VII.1.36) has its three mills and its oven", !!modestus && millsAt(built) === 3 && built.sites.ovens.some((o) => /Modestus/.test(o)), `${millsAt(built)} mills`);
+  check("8+ mapped bakeries built with mills and an oven", new Set(built.sites.mills.map((q) => q.site)).size >= 8 && built.sites.ovens.length >= 8, `${built.sites.ovens.length} ovens`);
+  const noSites = buildPompeii({ data: { ...data, sites: [] }, groundAt: flat });
+  check("probe: without the mapped sites there are no mills", millsAt(noSites) === 0 && noSites.sites.mills.length === 0, "");
+  check("10+ thermopolia with dolia counters at mapped sites", built.sites.thermopolia >= 10 && noSites.sites.thermopolia === 0, `${built.sites.thermopolia}`);
+  check("forum: equestrian and togate statues on the bases", built.sites.statues.filter((s) => s === "equestrian").length === 2 && built.sites.statues.filter((s) => s === "togate").length >= 4, built.sites.statues.join(", "));
 }
 
 console.log(failures ? `\n${failures} pompeii check(s) FAILED` : "\nall pompeii checks ok");

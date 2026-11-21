@@ -77,7 +77,6 @@ const D = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
 const POMPEII_WX = "low:0:900:2100,mid:0:3800:5000,high:0.12:8500:9400,precip:0,wind:3:240";
 
 export const POSES: Pose[] = [
-  { name: "pompeii-debug", city: "pompeii", lat: 40.751416, lon: 14.484450, altM: 3.2, hdgDeg: 0, pitchDeg: -89, t: D("0079-08-22T09:30:00Z"), wx: POMPEII_WX, what: "debug", query: "agl&fov=90" },
   {
     name: "sf-vanness",
     city: "sf",
