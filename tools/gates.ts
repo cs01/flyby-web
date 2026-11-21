@@ -43,6 +43,7 @@ const GATES: Gate[] = [
   R("water", "verify-water", "water reflects, glints and does not tile"),
   R("ground", "verify-ground", "ground texture detail and no tiling"),
   R("shadow", "verify-shadow", "sun shadows land where they should"),
+  R("shadowedge", "verify-shadowedge", "sun shadow edges have no staircase and reach their casters"),
   R("clouds", "verify-clouds", "volumetric clouds shape, light and move"),
   R("night", "verify-night", "night city lights"),
   R("buildings", "verify-buildings", "facade, roof and silhouette detail"),
