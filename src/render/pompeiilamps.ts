@@ -23,7 +23,7 @@ import type { PompeiiData } from "../data/pompeii";
 import { LampKind, LAMP_KINDS, flameOffsets, flicker, jitter, lampLevel, placeLamps, lampCensus, type Lamp, type LampSites } from "../data/pompeiilamps";
 import { POMPEII_FRAG, type PompeiiUniforms } from "./pompeii";
 import { OIL_REACH_M, buildOilGrid, townLampUniforms } from "./oillight";
-import { FOLK_HEIGHT_M, lampbearerPose, posedStatue } from "./folk";
+import { buildStatue } from "./statues";
 
 /** Per tier: lights in the shader, flame sprites, fittings drawn and how far. */
 export const LAMP_TIERS = {
@@ -69,10 +69,13 @@ class Parts {
       // A smooth part (a lofted body) brings its own normals; the rest are faceted.
       if (!p.smooth) ng.computeVertexNormals();
       const P = ng.getAttribute("position").array as Float32Array, N = ng.getAttribute("normal").array as Float32Array;
+      // A part may bring its own colours (a statue's patina).
+      const Cv = ng.getAttribute("color")?.array as Float32Array | undefined;
       for (let i = 0; i < P.length / 3; i++) {
         pos.push(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]);
         an.push(Math.round(N[i * 3] * 127), Math.round(N[i * 3 + 1] * 127), Math.round(N[i * 3 + 2] * 127), 0);
-        ac.push(p.rgb[0] * 255, p.rgb[1] * 255, p.rgb[2] * 255, 128);
+        if (Cv) ac.push(Cv[i * 3] * 255, Cv[i * 3 + 1] * 255, Cv[i * 3 + 2] * 255, 128);
+        else ac.push(p.rgb[0] * 255, p.rgb[1] * 255, p.rgb[2] * 255, 128);
         as.push(p.style, 0, 0, 0);
       }
     }
@@ -192,21 +195,22 @@ function lampbearerGeometry(seg: number): THREE.BufferGeometry {
   P.at(new THREE.BoxGeometry(0.5, 0.05, 0.5), [0.78, 0.76, 0.72], STYLE.marble, 0, 0.525, 0);
   const B = DARK_BRONZE;
   const y0 = 0.55;
-  // The youth: the townsfolk's body (render/folk.ts) nude in his pose, 1.5 m
-  // as the bronze is. The figure faces +z; here he faces +x, so his left
-  // hand (figure +x) comes out at -z under the tray.
-  const s = 1.5 / FOLK_HEIGHT_M;
-  const body = posedStatue({ dress: "nude" }, lampbearerPose([0.44 / s, 1.39 / s, 0.2 / s]));
+  // The youth, sculpted (render/statues.ts) and 1.5 m as the bronze is, with
+  // its patina. The figure faces +z; here he faces +x, so his left hand
+  // (figure +x) comes out at -z under the tray.
+  const s = 1.5 / 1.7;
+  const body = buildStatue("lampbearer", seg <= 8, { tray: [0.44 / s, 1.39 / s, 0.2 / s] });
   const n = body.position.length / 3, bp = new Float32Array(n * 3), bn = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
-    const [x, y, z] = body.position.subarray(i * 3, i * 3 + 3), [nx, ny, nz] = body.normal.subarray(i * 3, i * 3 + 3);
+    const x = body.position[i * 3], y = body.position[i * 3 + 1], z = body.position[i * 3 + 2];
     bp.set([z * s, y0 + y * s, -x * s], i * 3);
-    bn.set([nz, ny, -nx], i * 3);
+    bn.set([body.normal[i * 3 + 2], body.normal[i * 3 + 1], -body.normal[i * 3]], i * 3);
   }
   const bg = new THREE.BufferGeometry();
   bg.setAttribute("position", new THREE.BufferAttribute(bp, 3));
   bg.setAttribute("normal", new THREE.BufferAttribute(bn, 3));
-  bg.setIndex(new THREE.BufferAttribute(body.index, 1));
+  bg.setAttribute("color", new THREE.BufferAttribute(new Float32Array(body.colour), 3));
+  bg.setIndex(body.index);
   P.add(bg, B, STYLE.bronze, undefined, true);
   // The tray, and two lamps on it.
   P.at(new THREE.CylinderGeometry(0.12, 0.1, 0.014, Math.max(10, seg * 2)), BRONZE, STYLE.bronze, 0.2, y0 + 1.39, -0.44);

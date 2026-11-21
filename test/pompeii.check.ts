@@ -22,6 +22,7 @@ import { CITIES } from "../src/cities";
 import { HORSE_BONES, buildHorse, hoofPoints, poseHorse } from "../src/render/horse";
 import { Arms, FOLK_SCALE, FOLK_STRIDE_M, Gait, buildFolk, buildFolkFar, clipPose, skinned, solePoints, solvePose, type FolkMesh, type FolkOpts, type PoseSpec } from "../src/render/folk";
 import { FOLK_LOD, folkFragment, folkLevels } from "../src/render/pompeiifolk";
+import { STATUE_KINDS, buildStatue, statueBase } from "../src/render/statues";
 import { ART_WORKS } from "../src/data/pompeiiart";
 import { ORDERS, Order, columnTemplate, shaftRadius } from "../src/render/pompeiiorders";
 import { statSync } from "node:fs";
@@ -433,6 +434,26 @@ let built: PompeiiModel;
   const frag = folkFragment();
   check("the town's fragment shader carries the figures' materials", frag.includes("style > 22.5 && style < 23.5"), "");
   check("probe: a shader without the anchor line gets none", !folkFragment("void main() {}").includes("style > 22.5"), "");
+}
+
+// --- 10c. the statues: sculpted fields, on moulded bases with their dedications --------
+{
+  const kinds = STATUE_KINDS.filter((k) => k !== "diana");
+  const full = kinds.map((k) => buildStatue(k, false)), lean = kinds.map((k) => buildStatue(k, true));
+  const tris = (m: { index: number[] }): number => m.index.length / 3;
+  const band = (t: number[]): boolean => t.every((v) => v >= 2500 && v <= 10500);
+  check("statues 2.5k..10.5k tris each in full, under 2.5k reduced", band(full.map(tris)) && lean.every((m) => tris(m) < 2500), `${full.map(tris).join("/")} | ${lean.map(tris).join("/")}`);
+  check("probe: a townsperson's 1k figure is too coarse for a statue", !band([buildFolk({ dress: "toga" }).triangles]), "");
+  // Standing statues touch their base; the rider sits a horse's height up.
+  const low = (m: { position: number[] }): number => { let t = Infinity; for (let i = 1; i < m.position.length; i += 3) t = Math.min(t, m.position[i]); return t; };
+  const standing = full.filter((_, i) => kinds[i] !== "rider");
+  check("standing statues' feet on the base within 2 cm", standing.every((m) => Math.abs(low(m)) < 0.02), standing.map((m) => low(m).toFixed(3)).join(" "));
+  check("probe: a statue raised 5 cm is caught", Math.abs(low({ position: standing[0].position.map((v, i) => (i % 3 === 1 ? v + 0.05 : v)) })) >= 0.02, "");
+  // The base's dedication is cut letter by letter: a line of text costs triangles.
+  const sink = { n: 0, vert: () => sink.n++, tri: () => {} };
+  const withText = statueBase(sink, 0, 0, 0, 0, 0.5, 0.5, 2, ["M.HOLCONIO.M.F", "RVFO"], 0.5), bare = statueBase(sink, 0, 0, 0, 0, 0.5, 0.5, 2, [], 0.5);
+  check("statue bases carry their dedications in letters", withText > bare + 100, `${withText} vs ${bare} tris`);
+  check("probe: an uninscribed base has none", bare < 200, `${bare}`);
 }
 
 // --- 11. the art: restored works in their houses, the atlas in budget ------------------

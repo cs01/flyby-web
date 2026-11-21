@@ -63,6 +63,8 @@ const SHOULDER: V3 = [0.175, 1.39, -0.02];
 const ELBOW: V3 = [0.2, 1.095, -0.045];
 const WRIST: V3 = [0.21, 0.85, -0.015];
 const HEEL_Z = ANKLE[2] - 0.055, BALL_Z = ANKLE[2] + 0.145, TOE_Z = ANKLE[2] + 0.205;
+/** The rest skeleton's joints (left side), for builders that model round it (render/statues.ts). */
+export const FOLK_REST = { PELVIS_PIVOT, CHEST_PIVOT, NECK_PIVOT, HIP, KNEE, ANKLE, SHOULDER, ELBOW, WRIST, HEEL_Z, BALL_Z, TOE_Z } as const;
 
 const mir = (p: V3, s: number): V3 => [p[0] * s, p[1], p[2]];
 const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
@@ -185,7 +187,7 @@ export function solvePose(spec: PoseSpec, out = new Float32Array(FOLK_BONES * 16
 const footRot = (pitch: number, s: number): M4 => mul(rotAxis([0, 1, 0], 0.08 * s), rotAxis([1, 0, 0], -pitch));
 
 /** Ankle of a foot whose sole point `pivotZ` (rest z, on y 0) sits at `at`, pitched by `pitch`. */
-function ankleFrom(at: V3, pivotZ: number, pitch: number, s: number): V3 {
+export function ankleFrom(at: V3, pivotZ: number, pitch: number, s: number): V3 {
   const rel = sub(mir(ANKLE, s), [ANKLE[0] * s, 0, pivotZ]);
   return add(at, applyDir(footRot(pitch, s), rel));
 }
@@ -229,7 +231,7 @@ function walkFoot(phi: number, s: number): FootPose {
 }
 
 /** Highest hip lift (above the rest pose) each pelvis pose allows, by bisection: the planted feet must reach. */
-function hipLift(pelvis: [number, number, number], dx: number, feet: (FootPose | null)[], cap: number): number {
+export function hipLift(pelvis: [number, number, number], dx: number, feet: (FootPose | null)[], cap: number): number {
   const reach = THIGH + SHIN - 0.004;
   let lo = -0.2, hi = cap;
   const ok = (dy: number): boolean => {
@@ -300,7 +302,7 @@ function idleBody(p: number): Body {
 }
 
 /** A hanging arm's wrist in the chest's rest frame: flexed forward, out to the side, the elbow bent. */
-function armAt(s: number, flex: number, abd: number, elbow: number): V3 {
+export function armAt(s: number, flex: number, abd: number, elbow: number): V3 {
   const d = (a: number): V3 => applyDir(mul(rotAxis([0, 0, 1], abd * s), rotAxis([1, 0, 0], -a)), [0, -1, 0]);
   const sh = mir(SHOULDER, s);
   return add(add(sh, scl(d(flex), UPPER_ARM)), scl(d(flex + elbow), FOREARM));
@@ -961,73 +963,6 @@ export function buildFolkFar(): FolkMesh {
   }
   return B.finish();
 }
-
-// --- the Dancing Faun -------------------------------------------------------------
-
-/** The bronze's pose (Naples, MANN 5002): up on the balls of both feet, arms up and out, head back. */
-export function faunPose(): PoseSpec {
-  const lp = -0.75, rp = -0.62;
-  return {
-    hip: [0.03, -0.035, -0.01],
-    pelvis: [0.18, -0.04, 0.05],
-    chest: [-0.28, -0.12, -0.06],
-    head: [-0.35, -0.45, -0.12],
-    feet: [
-      { ankle: ankleFrom([0.19, 0, 0.12 + BALL_Z - HEEL_Z], BALL_Z, lp, 1), pitch: lp },
-      { ankle: ankleFrom([-0.1, 0, -0.12 + BALL_Z - HEEL_Z], BALL_Z, rp, -1), pitch: rp },
-    ],
-    // The right hand high over the head, the left out level with the shoulder and forward.
-    wrists: [[0.6, 1.5, 0.18], [-0.36, 1.87, 0.05]],
-    poles: [[0.2, -1, -0.6], [-1, -0.3, -0.4]],
-    handBend: [0.5, 0.4],
-  };
-}
-
-/**
- * The lampbearer (the bronze youth of the Casa di Giulio Polibio, life
- * size): weight on the right leg, the left foot drawn back, the left hand
- * up and forward under the lamp tray at `tray` (figure frame, scale 1).
- */
-export function lampbearerPose(tray: V3): PoseSpec {
-  const right: FootPose = { ankle: ankleFrom([-0.08, 0, 0.0], HEEL_Z, 0, -1), pitch: 0 };
-  const lp = -0.22;
-  const left: FootPose = { ankle: ankleFrom([0.13, 0, -0.1 + BALL_Z - HEEL_Z], BALL_Z, lp, 1), pitch: lp };
-  const pelvis: [number, number, number] = [0.08, 0.0, -0.06];
-  const dx = -0.03;
-  return {
-    hip: [dx, hipLift(pelvis, dx, [left, right], -0.008) - 0.004, 0], pelvis,
-    chest: [-0.1, 0.02, 0.07], head: [0.3, 0.12, 0.04],
-    feet: [left, right],
-    wrists: [[tray[0] - 0.02, tray[1] - 0.09, tray[2] - 0.03], armAt(-1, 0.05, 0.06, 0.2)],
-    poles: [[1, -0.8, -0.3], BACK_POLE(-1)],
-    handBend: [-0.9, 0],
-  };
-}
-
-/** A nude figure (the faun, the lampbearer) with a pose applied: positions and normals in the figure's frame. */
-export function posedStatue(o: FolkOpts, spec: PoseSpec): { position: Float32Array; normal: Float32Array; index: Uint16Array; colour: Uint8Array } {
-  const mesh = buildFolk(o);
-  const bones = solvePose(spec);
-  const n = mesh.position.length / 3;
-  const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    const p: V3 = [mesh.position[i * 3], mesh.position[i * 3 + 1], mesh.position[i * 3 + 2]];
-    const nv: V3 = [mesh.normal[i * 4] / 127, mesh.normal[i * 4 + 1] / 127, mesh.normal[i * 4 + 2] / 127];
-    let P: V3 = [0, 0, 0], N: V3 = [0, 0, 0];
-    for (let k = 0; k < 3; k++) {
-      const w = mesh.weight[i * 4 + k] / 255;
-      if (w <= 0) continue;
-      const m = Array.from(bones.subarray(mesh.skin[i * 4 + k] * 16, mesh.skin[i * 4 + k] * 16 + 16));
-      P = add(P, scl(apply(m, p), w));
-      N = add(N, scl(applyDir(m, nv), w));
-    }
-    N = norm(N);
-    pos.set(P, i * 3); nrm.set(N, i * 3);
-  }
-  return { position: pos, normal: nrm, index: mesh.index, colour: mesh.colour };
-}
-
-export const posedFaun = (): ReturnType<typeof posedStatue> => posedStatue({ dress: "nude", faun: true }, faunPose());
 
 /** Skinned positions of a mesh in a pose (the gate measures with it). */
 export function skinned(mesh: FolkMesh, bones: Float32Array): Float32Array {
