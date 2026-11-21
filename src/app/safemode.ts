@@ -40,12 +40,21 @@ export const LADDER: SafeRung[] = [
 ];
 
 export const SETTLE_S = 20;
+/**
+ * Settled loads in a row at one rung before the next load tries the rung
+ * above. Without this a rung was forever: two bad loads (a driver hiccup, a
+ * tab killed mid-load) left a device at the bare rung for good, and the bare
+ * rung renders Pompeii black.
+ */
+export const RECOVER_RUNS = 3;
 const KEY = "flyby.safe";
 
 interface Stored {
   level: number;
   /** True from load until SETTLE_S of rendering or a clean unload. */
   armed: boolean;
+  /** Consecutive loads that reached SETTLE_S at this level. */
+  good?: number;
 }
 
 export interface KV {
@@ -73,6 +82,7 @@ export class SafeMode {
   readonly level: number;
   readonly rung: SafeRung;
   private settled = false;
+  private good: number;
 
   /** `override` is `?safe=N`; it replaces the stored level (`?safe=0` resets). */
   constructor(private readonly kv: KV, override: string | null) {
@@ -81,7 +91,8 @@ export class SafeMode {
     // A load still armed from last time died without unloading: that is a crash too.
     this.level = Number.isFinite(n) ? clamp(n) : clamp(prev.armed ? prev.level + 1 : prev.level);
     this.rung = LADDER[this.level];
-    write(kv, { level: this.level, armed: true });
+    this.good = prev.armed || this.level !== prev.level ? 0 : (prev.good ?? 0);
+    write(kv, { level: this.level, armed: true, good: this.good });
   }
 
   /** The context was lost: the next load starts one rung lower. */
@@ -90,15 +101,20 @@ export class SafeMode {
     write(this.kv, { level: clamp(this.level + 1), armed: false });
   }
 
-  /** A clean unload or SETTLE_S of frames: keep this rung, count nothing. */
+  /** A clean unload before settling: keep this rung, count nothing. */
   disarm(): void {
     if (this.settled) return;
     this.settled = true;
-    write(this.kv, { level: this.level, armed: false });
+    write(this.kv, { level: this.level, armed: false, good: this.good });
   }
 
+  /** SETTLE_S of frames is a good load; RECOVER_RUNS of them step back up. */
   frame(elapsedS: number): void {
-    if (!this.settled && elapsedS >= SETTLE_S) this.disarm();
+    if (this.settled || elapsedS < SETTLE_S) return;
+    this.settled = true;
+    const good = this.good + 1;
+    if (this.level > 0 && good >= RECOVER_RUNS) write(this.kv, { level: this.level - 1, armed: false, good: 0 });
+    else write(this.kv, { level: this.level, armed: false, good });
   }
 }
 

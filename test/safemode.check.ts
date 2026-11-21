@@ -1,7 +1,7 @@
 // Gate on src/app/safemode.ts: a crash steps down one rung, a clean load or
 // close does not, a silent kill counts as a crash, ?safe=N overrides.
 
-import { LADDER, SETTLE_S, SafeMode, type KV } from "../src/app/safemode";
+import { LADDER, RECOVER_RUNS, SETTLE_S, SafeMode, type KV } from "../src/app/safemode";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -53,6 +53,28 @@ check("each rung disables at least as much as the last",
 
 const bad = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
 check("blocked storage does not throw", new SafeMode(bad, null).level === 0, "");
+
+// Recovery: a rung is not forever.
+kv = store();
+new SafeMode(kv, null).lost();
+new SafeMode(kv, null).lost(); // now at 2
+for (let i = 0; i < RECOVER_RUNS; i++) new SafeMode(kv, null).frame(SETTLE_S);
+check("RECOVER_RUNS good loads step back up one rung", new SafeMode(kv, null).level === 1, "");
+kv = store();
+new SafeMode(kv, null).lost();
+for (let i = 0; i < RECOVER_RUNS - 1; i++) new SafeMode(kv, null).frame(SETTLE_S);
+check("fewer good loads keep the rung", new SafeMode(kv, null).level === 1, "");
+kv = store();
+new SafeMode(kv, null).lost();
+for (let i = 0; i < RECOVER_RUNS; i++) { const m = new SafeMode(kv, null); m.frame(SETTLE_S - 1); m.disarm(); }
+check("closes before settling are not good loads", new SafeMode(kv, null).level === 1, "");
+kv = store();
+new SafeMode(kv, null).lost();
+new SafeMode(kv, null).frame(SETTLE_S);
+new SafeMode(kv, null).lost(); // crash resets the streak and steps down
+new SafeMode(kv, null).frame(SETTLE_S);
+new SafeMode(kv, null).frame(SETTLE_S);
+check("a crash resets the good streak", new SafeMode(kv, null).level === 2, "");
 
 if (failures) {
   console.log(`${failures} safemode check(s) failed`);
