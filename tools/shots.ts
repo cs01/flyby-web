@@ -1006,6 +1006,18 @@ export const POSES: Pose[] = [
     query: "eruption=1&fov=70",
   },
   {
+    // From the bay, 12 km west of the town at 15:00: outside the fall, where
+    // the sky stays open and the whole column and the umbrella drifting
+    // south-east over Pompeii stand in view, as Pliny saw it from Misenum.
+    name: "eruption-column-bay-1500",
+    city: "pompeii",
+    lat: 40.7470, lon: 14.3460, altM: 250, hdgDeg: 62, pitchDeg: 14,
+    t: D("0079-08-22T14:10:04Z"),
+    wx: POMPEII_WX,
+    what: "The column and umbrella from the bay at 15:00",
+    query: "eruption=1&fov=75",
+  },
+  {
     // Via dell'Abbondanza in the fall at 16:30: 40 cm down, lamp in hand.
     name: "eruption-street-1630",
     city: "pompeii",

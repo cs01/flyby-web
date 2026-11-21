@@ -341,3 +341,12 @@ export function resolveEscape(run: EscapeRun, runout: (h: number) => number = su
   }
   return { ending: "survived", h, distM: d, arrived };
 }
+
+/**
+ * Walking pace on loose pumice, as a share of the normal pace: each step
+ * sinks in and slides back. The same law as roadSpeedMH, with a floor so a
+ * walker in two metres of it still gets somewhere.
+ */
+export function walkPace(depthM: number): number {
+  return Math.max(0.4, 1 / (1 + 0.8 * Math.max(0, depthM)));
+}

@@ -24,6 +24,8 @@ import { eruptionAt, type EruptionState } from "../sim/eruption";
 export interface EruptionSurfaceUniforms {
   /** x pumice lift in metres (floor and streets), y whiteness, z cover 0..1, w lightning flash on the town. */
   uAsh: THREE.IUniform<THREE.Vector4>;
+  /** The fall's footprint: vent x, vent z, pumice depth at Pompeii (m), whiteness. */
+  uAshFan: THREE.IUniform<THREE.Vector4>;
   /** The carried lamp: xyz, w intensity (0 off). */
   uLamp: THREE.IUniform<THREE.Vector4>;
   /** Torches carried by the townsfolk near the camera. */
@@ -35,14 +37,68 @@ export const TORCH_SLOTS = 6;
 /** One set, spread by reference into the town's uniforms, like streetLightUniforms. */
 export const eruptionSurfaceUniforms: EruptionSurfaceUniforms = {
   uAsh: { value: new THREE.Vector4(0, 1, 0, 0) },
+  uAshFan: { value: new THREE.Vector4(0, 0, 0, 1) },
   uLamp: { value: new THREE.Vector4(0, 0, 0, 0) },
   uTorch: { value: Array.from({ length: TORCH_SLOTS }, () => new THREE.Vector4(0, 0, 0, 0)) },
 };
 
-/** Declared in the vertex stage too, for the pumice lift. */
+/** Downwind: the plume's axis ran south-east over Pompeii (bearing toward, radians). */
+export const WIND_TOWARD = (150 * Math.PI) / 180;
+
+/**
+ * Share of Pompeii's pumice depth lying at (x, z), 0..1: the fan downwind of
+ * the vent that the deposit maps show, widening south-east. 1 over the town
+ * and for kilometres round it, so the town floor and the countryside rise
+ * together and there is no step at the gates. Mirrored in ASH_FAN_GLSL.
+ */
+export function ashFanAt(ventX: number, ventZ: number, x: number, z: number): number {
+  const fx = Math.sin(WIND_TOWARD), fz = -Math.cos(WIND_TOWARD);
+  const dx = x - ventX, dz = z - ventZ;
+  const along = dx * fx + dz * fz, cross = Math.abs(-dx * fz + dz * fx);
+  const half = 5000 + 0.35 * Math.max(0, along);
+  const c = Math.min(1, Math.max(0, (half + 2500 - cross) / 5000));
+  return c * Math.min(1, Math.max(0, (along + 2000) / 3000));
+}
+
+/** Metres the ground at (x, z) is raised by pumice: none on the sea or the shore line. */
+export function ashLiftAt(fan: THREE.Vector4, x: number, z: number, groundY: number): number {
+  if (fan.z <= 0) return 0;
+  const shore = Math.min(1, Math.max(0, (groundY - 0.3) / 1.2));
+  return fan.z * ashFanAt(fan.x, fan.y, x, z) * shore * shore * (3 - 2 * shore);
+}
+
+const ASH_FAN_GLSL = /* glsl */ `
+uniform vec4 uAshFan;
+float ashFan(vec2 xz) {
+  vec2 f = vec2(${Math.sin(WIND_TOWARD).toFixed(6)}, ${(-Math.cos(WIND_TOWARD)).toFixed(6)});
+  vec2 d = xz - uAshFan.xy;
+  float along = dot(d, f), cross = abs(-d.x * f.y + d.y * f.x);
+  float half_ = 5000.0 + 0.35 * max(0.0, along);
+  return clamp((half_ + 2500.0 - cross) / 5000.0, 0.0, 1.0) * clamp((along + 2000.0) / 3000.0, 0.0, 1.0);
+}
+float ashLift(vec3 p) {
+  if (uAshFan.z <= 0.0) return 0.0;
+  return uAshFan.z * ashFan(p.xz) * smoothstep(0.3, 1.5, p.y);
+}
+// Grey-white pumice on open ground outside the town, as deep as the fan says.
+vec3 ashGround(vec3 albedo, vec3 n, vec3 p) {
+  if (uAshFan.z <= 0.0) return albedo;
+  float cover = smoothstep(0.0, 0.05, uAshFan.z * ashFan(p.xz)) * smoothstep(0.45, 0.85, n.y) * smoothstep(0.3, 1.5, p.y);
+  float g = fract(sin(dot(floor(p.xz * 0.7), vec2(12.9898, 78.233))) * 43758.5453);
+  vec3 pum = mix(vec3(0.26, 0.25, 0.24), vec3(0.40, 0.38, 0.35), uAshFan.w) * (0.88 + 0.2 * g);
+  return mix(albedo, pum, cover);
+}
+`;
+
+/** Vertex stage: the pumice lift for the town floor and the terrain. */
 export const ERUPTION_VERT_GLSL = /* glsl */ `
 uniform vec4 uAsh;
+${ASH_FAN_GLSL}
 `;
+
+/** For the terrain: its lift and its pumice colour. */
+export const ERUPTION_TERRAIN_VERT_GLSL = ASH_FAN_GLSL;
+export const ERUPTION_TERRAIN_FRAG_GLSL = ASH_FAN_GLSL;
 
 export const ERUPTION_SURFACE_GLSL = /* glsl */ `
 uniform vec4 uAsh;
@@ -67,7 +123,7 @@ vec3 ashCover(vec3 albedo, vec3 n, vec3 p, float covered) {
   float h00 = fract(sin(dot(i, vec2(12.9898, 78.233))) * 43758.5453), h10 = fract(sin(dot(i + vec2(1, 0), vec2(12.9898, 78.233))) * 43758.5453);
   float h01 = fract(sin(dot(i + vec2(0, 1), vec2(12.9898, 78.233))) * 43758.5453), h11 = fract(sin(dot(i + vec2(1, 1), vec2(12.9898, 78.233))) * 43758.5453);
   float g = mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
-  vec3 pum = mix(vec3(0.34, 0.33, 0.32), vec3(0.80, 0.76, 0.67), uAsh.y) * (0.8 + 0.34 * g);
+  vec3 pum = mix(vec3(0.30, 0.29, 0.28), vec3(0.56, 0.53, 0.49), uAsh.y) * (0.8 + 0.34 * g);
   return mix(albedo, pum, up * uAsh.z);
 }
 
@@ -113,6 +169,7 @@ uniform vec4 uFlash;    // lightning: xyz, w strength
 uniform vec3 uCamPos;
 uniform vec3 uNearAmb;  // the dimmed light under the plume, as the town gets it
 uniform float uShade;   // how much sun gets under the plume
+uniform float uUmbY;    // world height of the umbrella's base: below it the column is in its shadow
 `;
 
 // Billows: one camera-facing quad each, shaded as a lumpy sphere.
@@ -155,29 +212,59 @@ out vec4 fragColor;
 ${COMMON_UNIFORMS}
 ${NOISE}
 ${ERUPTION_SURFACE_GLSL}
+uniform vec4 uCanopy;   // vent x, vent z, base height, thickness
+uniform vec4 uShape;    // upwind m, downwind m, half width m, wind bearing
+// 1 where the sun's ray up from p passes through the umbrella sheet: the
+// column below it stands in the umbrella's shadow from most sides, but the
+// low sun can still reach in under the upwind edge.
+float umbrellaShadow(vec3 p) {
+  if (uUmbY < -1.0e8 || p.y > uUmbY) return 0.0;
+  float t = (uUmbY - p.y) / max(uSunDir.y, 0.05);
+  vec2 q = p.xz + uSunDir.xz * t - uCanopy.xy;
+  vec2 f = vec2(sin(uShape.w), -cos(uShape.w));
+  vec2 r = vec2(-f.y, f.x);
+  float along = dot(q, f), cross = dot(q, r);
+  float u = along < 0.0 ? along / uShape.x : along / uShape.y;
+  float v = cross / (uShape.z * (0.55 + 0.45 * clamp(1.0 + u, 0.0, 1.0)));
+  return 1.0 - smoothstep(0.7, 1.0, length(vec2(u, v)));
+}
 void main() {
   float r2 = dot(vUv, vUv);
   if (r2 > 1.0) discard;
+  // Cauliflower lobes: a few big bumps on the outline, smaller ones on those.
   float n1 = fbm3(vUv * 2.4 + vLook.x * 31.0);
-  float edge = sqrt(r2) + 0.38 * (n1 - 0.5);
-  float a = smoothstep(1.0, 0.5, edge) * vLook.z;
+  float lobes = vnoise(vec2(atan(vUv.y, vUv.x) * 1.6, vLook.x * 17.0)) * 0.7 + vnoise(vec2(atan(vUv.y, vUv.x) * 4.1, vLook.x * 5.0)) * 0.3;
+  float edge = sqrt(r2) + 0.3 * (n1 - 0.5) + 0.28 * (lobes - 0.5);
+  float a = smoothstep(1.0, 0.62, edge) * vLook.z;
   if (a < 0.004) discard;
   vec3 back = normalize(uCamPos - vCentre);
   vec3 nrm = normalize(vRight * vUv.x + vUp * vUv.y + back * sqrt(max(0.0, 1.0 - r2)));
-  float sun = max(0.0, dot(nrm, uSunDir)) * 0.6 + 0.4;
+  vec3 p = vCentre + (vRight * vUv.x + vUp * vUv.y) * vRadius;
+  float ndl = dot(nrm, uSunDir);
+  float sun = max(0.0, ndl);
   float under = mix(1.0, 0.25 + 0.75 * smoothstep(-0.6, 0.8, nrm.y), vLook.w);
   // Surge and roof dust (w > 0.88) are under the plume: its light, not the open sky's.
   bool shaded = vLook.w > 0.88;
-  vec3 sunE = shaded ? uSunE * uShade : uSunE;
-  vec3 amb = shaded ? uNearAmb * 3.0 : uAmb;
-  vec3 col = vLook.y * (sunE * sun * under + amb * (0.5 + 0.5 * nrm.y * 0.5 + 0.25));
+  // The column below the umbrella stands in the umbrella's shadow; only the
+  // top and the spreading cloud are in the sun.
+  float sunVis = shaded ? uShade : 1.0 - 0.92 * umbrellaShadow(p);
+  // The shaded trunk still sees the open sky round the umbrella's edge.
+  // Sky light on a cloud is about an eighth of the sun's (uAmb alone, the
+  // ground's ambient, left the shaded trunk black). The trunk under the
+  // umbrella still sees the open sky round its edge.
+  vec3 sky = uSunE * 0.3 + uAmb;
+  vec3 amb = shaded ? uNearAmb * 3.0 : sky * mix(0.65, 1.0, sunVis);
+  // A dense ash cloud is dark inside: the sunlit side is lit, the rest is
+  // its own shadow, and the outline catches the light (the lit rim).
+  float rim = pow(1.0 - max(0.0, dot(nrm, back)), 2.0) * smoothstep(-0.2, 0.5, ndl);
+  vec3 col = vLook.y * (uSunE * sunVis * (sun * under + 0.8 * rim) + amb * (0.35 + 0.3 * nrm.y));
+  col *= vec3(1.0, 0.9, 0.78);
   // Lightning lights the cloud it is in from inside.
-  vec3 p = vCentre + (vRight * vUv.x + vUp * vUv.y) * vRadius;
   vec3 fd = p - uFlash.xyz;
   col += vec3(0.75, 0.8, 1.0) * uFlash.w * exp(-dot(fd, fd) / 4.5e6);
   // Dust from a fallen roof, close by, is lit by the lamps round it.
   col += vLook.y * eruptionLamps(p, nrm) * 1.5;
-  col *= 0.82 + 0.36 * n1;
+  col *= 0.7 + 0.6 * n1;
   float T = exp(-distance(uCamPos, p) / uVis);
   col = mix(uHaze, col, T);
   fragColor = vec4(col, a);
@@ -204,7 +291,8 @@ void main() {
   float rr = clamp(u * u + v * v, 0.0, 1.0);
   // Thickest over the vent, thinning to the spreading edge, sagging as it
   // drifts downwind and its stones drop out.
-  float y = uCanopy.z - uCanopy.w * 0.4 * max(0.0, u) + uCanopy.w * (1.0 - rr) * 0.3;
+  // Sagging downwind toward the horizon as the sheet drops its stones.
+  float y = uCanopy.z - uCanopy.w * 1.4 * max(0.0, u) + uCanopy.w * (1.0 - rr) * 0.3;
   vWorld = vec3(xz.x, y, xz.y);
   vUv = position.xy;
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
@@ -237,6 +325,40 @@ void main() {
   col += vec3(0.75, 0.8, 1.0) * uFlash.w * 0.3 * exp(-dot(fd, fd) / 3.2e7);
   float T = exp(-distance(uCamPos, vWorld) / uVis);
   fragColor = vec4(mix(uHaze, col, T), a);
+}
+`;
+
+// The sky under the plume. The sky shader's own answer under this much
+// aerosol is black (no sun gets in to scatter), and between the umbrella's
+// edge and the horizon that read as a clear night. Under the real cloud the
+// horizon is a dim brown-grey, a little lighter where the open sky is,
+// upwind. A sphere round the camera, drawn behind everything nearer.
+const DOME_VERT = /* glsl */ `
+precision highp float;
+in vec3 position;
+uniform mat4 viewMatrix;
+uniform mat4 projectionMatrix;
+uniform vec3 uCamPos;
+out vec3 vDir;
+void main() {
+  vDir = position;
+  gl_Position = projectionMatrix * viewMatrix * vec4(uCamPos + position * 120000.0, 1.0);
+}
+`;
+
+const DOME_FRAG = /* glsl */ `
+precision highp float;
+in vec3 vDir;
+out vec4 fragColor;
+uniform vec3 uDomeColor;
+uniform vec2 uUpwind;     // unit, x and z
+uniform float uDomeAlpha;
+void main() {
+  vec3 d = normalize(vDir);
+  float horizon = 1.0 - smoothstep(0.0, 0.45, d.y);
+  float open = max(0.0, dot(normalize(d.xz + 1e-5), uUpwind)) * horizon;
+  vec3 c = uDomeColor * (0.55 + 0.6 * horizon + 0.9 * open);
+  fragColor = vec4(c, uDomeAlpha);
 }
 `;
 
@@ -378,7 +500,6 @@ interface Collapse { x: number; y: number; z: number; startH: number; seed: numb
 /** Downwind: the plume's axis ran south-east over Pompeii (bearing toward, radians). */
 const _grey = new THREE.Color();
 const _fwd = new THREE.Vector3();
-const WIND_TOWARD = (150 * Math.PI) / 180;
 
 export class EruptionView {
   readonly group = new THREE.Group();
@@ -393,6 +514,8 @@ export class EruptionView {
   private readonly lAttr: THREE.InstancedBufferAttribute;
   private readonly cap: number;
   private readonly canopy: THREE.Mesh;
+  private readonly dome: THREE.Mesh;
+  private readonly domeU: { uCamPos: THREE.IUniform<THREE.Vector3>; uDomeColor: THREE.IUniform<THREE.Color>; uUpwind: THREE.IUniform<THREE.Vector2>; uDomeAlpha: THREE.IUniform<number> };
   private readonly canopyU: { uCanopy: THREE.IUniform<THREE.Vector4>; uShape: THREE.IUniform<THREE.Vector4>; uCanopyAlpha: THREE.IUniform<number> };
   private readonly pumice: THREE.Mesh;
   private readonly pGeo: THREE.InstancedBufferGeometry;
@@ -428,6 +551,8 @@ export class EruptionView {
   torches: { x: number; y: number; z: number }[] = [];
   /** Extra darkness at the camera, 0..1: inside the surge cloud. */
   inSurge = 0;
+  /** 1 inside the fall's footprint (Pompeii), 0 well outside it; see locate. */
+  fallHere = 1;
 
   constructor(private readonly opts: EruptionViewOpts) {
     this.group.name = "eruption";
@@ -442,11 +567,12 @@ export class EruptionView {
       uCamPos: { value: new THREE.Vector3() },
       uNearAmb: { value: new THREE.Color() },
       uShade: { value: 1 },
+      uUmbY: { value: -1e9 },
     };
     const red = opts.reduced;
 
     // Column + rim + surge + roof dust share one sorted instanced draw.
-    this.cap = red ? 150 : 260;
+    this.cap = red ? 210 : 360;
     this.bGeo = quadGeometry(0);
     this.bAttr = new THREE.InstancedBufferAttribute(new Float32Array(this.cap * 4), 4);
     this.lAttr = new THREE.InstancedBufferAttribute(new Float32Array(this.cap * 4), 4);
@@ -454,19 +580,19 @@ export class EruptionView {
     this.lAttr.setUsage(THREE.DynamicDrawUsage);
     this.bGeo.setAttribute("aBillow", this.bAttr);
     this.bGeo.setAttribute("aLook", this.lAttr);
+    this.canopyU = {
+      uCanopy: { value: new THREE.Vector4() },
+      uShape: { value: new THREE.Vector4(1, 1, 1, WIND_TOWARD) },
+      uCanopyAlpha: { value: 0 },
+    };
     this.billows = new THREE.Mesh(this.bGeo, new THREE.RawShaderMaterial({
-      vertexShader: BILLOW_VERT, fragmentShader: BILLOW_FRAG, uniforms: { ...this.common, ...eruptionSurfaceUniforms },
+      vertexShader: BILLOW_VERT, fragmentShader: BILLOW_FRAG, uniforms: { ...this.common, ...eruptionSurfaceUniforms, uCanopy: this.canopyU.uCanopy, uShape: this.canopyU.uShape },
       glslVersion: THREE.GLSL3, transparent: true, depthWrite: false,
     }));
     this.billows.frustumCulled = false;
     this.billows.name = "eruption-billows";
     this.billows.renderOrder = 20;
 
-    this.canopyU = {
-      uCanopy: { value: new THREE.Vector4() },
-      uShape: { value: new THREE.Vector4(1, 1, 1, WIND_TOWARD) },
-      uCanopyAlpha: { value: 0 },
-    };
     this.canopy = new THREE.Mesh(gridGeometry(red ? 24 : 40), new THREE.RawShaderMaterial({
       vertexShader: CANOPY_VERT, fragmentShader: CANOPY_FRAG, uniforms: { ...this.common, ...this.canopyU },
       glslVersion: THREE.GLSL3, transparent: true, depthWrite: false, side: THREE.DoubleSide,
@@ -519,7 +645,21 @@ export class EruptionView {
     this.bolt.frustumCulled = false;
     this.bolt.visible = false;
 
-    this.group.add(this.canopy, this.billows, this.pumice, this.glow, this.bolt);
+    this.domeU = {
+      uCamPos: this.common.uCamPos as THREE.IUniform<THREE.Vector3>,
+      uDomeColor: { value: new THREE.Color() },
+      uUpwind: { value: new THREE.Vector2(-Math.sin(WIND_TOWARD), Math.cos(WIND_TOWARD)) },
+      uDomeAlpha: { value: 0 },
+    };
+    this.dome = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 16), new THREE.RawShaderMaterial({
+      vertexShader: DOME_VERT, fragmentShader: DOME_FRAG, uniforms: this.domeU,
+      glslVersion: THREE.GLSL3, transparent: true, depthWrite: false, side: THREE.BackSide,
+    }));
+    this.dome.frustumCulled = false;
+    this.dome.name = "eruption-sky";
+    this.dome.renderOrder = 18;
+
+    this.group.add(this.dome, this.canopy, this.billows, this.pumice, this.glow, this.bolt);
   }
 
   /** The state at local hour h, or the untouched eve when switched off. */
@@ -546,18 +686,39 @@ export class EruptionView {
   }
 
   private visibility(): number {
-    return Math.max(25, this.state.visibilityM * (1 - 0.85 * this.inSurge));
+    const v = 40000 + (this.state.visibilityM - 40000) * this.fallHere;
+    return Math.max(25, v * (1 - 0.85 * this.inSurge));
+  }
+
+  /** The plume's light factor where the camera is: the timeline's inside the fall, open daylight outside it. */
+  private lightHere(): number {
+    const l = 1 + (this.state.light - 1) * this.fallHere;
+    return Math.max(0.002, l * (1 - 0.9 * this.inSurge));
+  }
+
+  /**
+   * 0..1, whether the camera stands in the fall: the fan downwind of the vent
+   * the deposit maps show, widening south-east. The timeline's darkness and
+   * visibility are Pompeii's, which is inside it; across the bay (where Pliny
+   * watched from) the sky stayed open and the column stood in plain view.
+   */
+  private locate(cam: THREE.Vector3): void {
+    const v = this.opts.vent;
+    const fx = Math.sin(WIND_TOWARD), fz = -Math.cos(WIND_TOWARD);
+    const dx = cam.x - v.x, dz = cam.z - v.z;
+    const along = dx * fx + dz * fz, cross = Math.abs(-dx * fz + dz * fx);
+    const half = 5000 + 0.35 * Math.max(0, along);
+    this.fallHere = Math.min(1, Math.max(0, (half + 2500 - cross) / 5000)) * Math.min(1, Math.max(0, (along + 2000) / 3000));
   }
 
   /** Dim the sun and sky to the plume's light; lift the exposure as an eye would. */
   light(light: SceneLighting): void {
     if (!this.active) return;
-    const s = this.state;
     this.rawSun = light.sunIntensity;
     this.rawAmb.copy(light.ambient);
     this.sunDir.copy(light.sunDir);
     this.sunColor.copy(light.sunColor);
-    const f = Math.max(0.002, s.light * (1 - 0.9 * this.inSurge));
+    const f = this.lightHere();
     light.sunIntensity *= f * f;
     // The light that does get through is grey-brown, not sky blue.
     const g = (light.ambient.r + light.ambient.g + light.ambient.b) * 0.36;
@@ -566,10 +727,9 @@ export class EruptionView {
     light.moonLight.multiplyScalar(f * 0.1);
     light.nightGlow.multiplyScalar(f);
     // Extinction 3.9 / visibility, in the atmosphere shader's own aerosol units.
-    light.turbidity = Math.max(light.turbidity, 3.9 / (4.44e-6 * this.visibility()));
-    light.mieG = 0.35;
-    // Pumice on the open ground outside the town, through the terrain's snow term.
-    light.snow = Math.max(light.snow, Math.min(1, s.pumiceM * 12) * (0.45 + 0.3 * s.whiteness));
+    // Only inside the fall: across the bay the air is the day's own.
+    if (this.fallHere > 0.01) light.turbidity = Math.max(light.turbidity, this.fallHere * 3.9 / (4.44e-6 * this.visibility()));
+    if (this.fallHere > 0.5) light.mieG = 0.35;
     const adapt = Math.min(5, Math.pow(f, -0.45));
     light.exposure = Math.max(light.exposure, 0.54 * adapt);
     // A flash lights the whole town for an instant.
@@ -581,9 +741,9 @@ export class EruptionView {
   /** The sky shader takes its own sun and aerosol from the weather; put the plume's in. */
   sky(u: Record<string, THREE.IUniform>): void {
     if (!this.active) return;
-    const f = Math.max(0.002, this.state.light * (1 - 0.9 * this.inSurge));
+    const f = this.lightHere();
     u.uSunIntensity.value = 22 * f * f;
-    u.uTurbidity.value = 3.9 / (4.44e-6 * this.visibility());
+    if (this.fallHere > 0.01) u.uTurbidity.value = Math.max(u.uTurbidity.value, this.fallHere * 3.9 / (4.44e-6 * this.visibility()));
     if (f < 0.6) u.uNightAmount.value = 0;
   }
 
@@ -598,20 +758,22 @@ export class EruptionView {
     this.group.visible = on || (this.enabled && this.pickup !== null);
     const su = eruptionSurfaceUniforms;
     su.uAsh.value.set(on ? s.pumiceM : 0, s.whiteness, on ? Math.min(1, s.pumiceM / 0.04) : 0, 0);
+    su.uAshFan.value.set(this.opts.vent.x, this.opts.vent.z, on ? s.pumiceM : 0, s.whiteness);
     this.updateLamps(t, camera);
     if (!on) {
-      this.billows.visible = this.canopy.visible = this.pumice.visible = this.bolt.visible = false;
+      this.billows.visible = this.canopy.visible = this.pumice.visible = this.bolt.visible = this.dome.visible = false;
       this.glow.visible = this.pickup !== null;
       return;
     }
     const c = this.common;
     const cam = camera.position;
     (c.uCamPos.value as THREE.Vector3).copy(cam);
+    this.locate(cam);
     (c.uSunDir.value as THREE.Vector3).copy(this.sunDir);
     (c.uSunE.value as THREE.Color).copy(this.sunColor).multiplyScalar(this.rawSun * 0.105);
     (c.uAmb.value as THREE.Color).copy(this.rawAmb);
     c.uVis.value = this.visibility();
-    const f = Math.max(0.002, s.light);
+    const f = this.lightHere();
     const lum = this.rawAmb.r * 0.3 + this.rawAmb.g * 0.45 + this.rawAmb.b * 0.25;
     (c.uHaze.value as THREE.Color).setRGB(lum, lum * 0.9, lum * 0.78).multiplyScalar(0.55 * f).addScalar(0.003 + 0.004 * this.flash);
 
@@ -636,7 +798,7 @@ export class EruptionView {
       const x = vent.x + Math.sin(a) * (sg.frontM - 250), z = vent.z - Math.cos(a) * (sg.frontM - 250);
       fv.set(x, this.opts.heightAt(x, z) + 250 + hk2 * 300, z, strike * 4);
     } else {
-      fv.set(vent.x + (hk - 0.5) * 2500, vent.y + 2500 + hk2 * s.columnKm * 600, vent.z + (hash(slot + 0.75) - 0.5) * 2500, strike * 14);
+      fv.set(vent.x + (hk - 0.5) * 2500, vent.y + 2500 + hk2 * s.columnKm * 600, vent.z + (hash(slot + 0.75) - 0.5) * 2500, strike * 5);
     }
     this.drawBolt(strike, fv, slot, sg ? 120 : 700);
 
@@ -654,6 +816,12 @@ export class EruptionView {
     this.canopyU.uShape.value.set(up, Math.max(3000, reachM), half, WIND_TOWARD);
     this.canopyU.uCanopyAlpha.value = Math.min(0.97, s.columnKm / 12);
     this.canopy.visible = s.columnKm > 8;
+    this.common.uUmbY.value = this.canopy.visible ? s.umbrellaKm * 1000 : -1e9;
+    // The sky closes over as the umbrella arrives overhead (about 13:10).
+    this.domeU.uDomeAlpha.value = Math.min(0.97, Math.max(0, (s.h - 13.05) / 0.35)) * (0.25 + 0.75 * this.fallHere);
+    const a = this.rawAmb, lum = a.r * 0.3 + a.g * 0.45 + a.b * 0.25 + this.rawSun * 0.105 * 0.12;
+    this.domeU.uDomeColor.value.setRGB(1.0, 0.88, 0.74).multiplyScalar(lum * 0.6 * Math.max(0.12, Math.sqrt(this.lightHere())));
+    this.dome.visible = this.domeU.uDomeAlpha.value > 0;
   }
 
   private push(x: number, y: number, z: number, r: number, seed: number, alb: number, a: number, dark: number, cam: THREE.Vector3): void {
@@ -668,37 +836,57 @@ export class EruptionView {
     const H = s.columnKm * 1000;
     const umb = s.umbrellaKm * 1000;
     const grey = 1 - s.whiteness;
-    const alb = 0.62 - 0.25 * grey;
-    // The column: billows rising up a widening, wind-bent trunk.
-    const nCol = red ? 56 : 110;
-    const drift = frozen ? 0 : t * 0.004;
+    // Ash, not steam: a grey-brown cloud, darker still once the grey pumice
+    // phase starts. The sunlit tops come from the shader, not the albedo.
+    const alb = 0.5 - 0.16 * grey;
+    // The column: a straight trunk kilometres wide at the vent, widening as
+    // it entrains air, bent downwind near the top. Billows keep their place
+    // on the trunk and swell and roll slowly; the motion is the convection,
+    // not a conveyor.
+    const nCol = red ? 70 : 150;
+    const R4 = this.colRand;
+    const roll = frozen ? 0 : t * 0.0012;
     for (let i = 0; i < nCol && H > 0; i++) {
-      const R4 = this.colRand, sd = R4[i * 4];
-      const k = ((i / nCol + drift + sd * 0.013) % 1 + 1) % 1;
-      const z = Math.pow(k, 0.85) * Math.max(H * 0.98, 100) + (R4[(i * 4 + 5) % 512] - 0.5) * 500;
-      if (z > H) continue;
-      const R = 650 + 0.11 * z;
-      const ang = R4[i * 4 + 1] * Math.PI * 2, rad = Math.sqrt(R4[i * 4 + 2]) * R * 0.6;
-      const lean = 3500 * (z / Math.max(H, 1)) ** 2;
-      // Fade in as each billow leaves the vent and out as it enters the umbrella.
-      const a = Math.min(1, k * 25) * (z > umb ? 0.85 : 0.95);
-      this.push(v.x + Math.cos(ang) * rad + fx * lean, v.y + z, v.z + Math.sin(ang) * rad + fz * lean, R * (1.0 + 0.7 * R4[i * 4 + 3]), sd, alb, a, 0.2, cam);
+      const sd = R4[(i * 4) % 512];
+      const k = ((i + 0.5) / nCol + (R4[(i * 4 + 5) % 512] - 0.5) / nCol + roll * (0.6 + 0.4 * sd)) % 1;
+      const z = k * Math.min(H, umb + 2500);
+      const R = 1400 + 0.16 * z;
+      const ang = R4[(i * 4 + 1) % 512] * Math.PI * 2 + roll * 3, rad = Math.sqrt(R4[(i * 4 + 2) % 512]) * R * 0.75;
+      const lean = 3000 * (z / Math.max(H, 1)) ** 2;
+      // Fade in at the vent and as the top of the trunk folds into the umbrella.
+      const a = Math.min(1, k * 30) * (z > umb ? 0.8 : 0.97);
+      // Darker toward the vent, where the cloud is densest and in its own shade.
+      const shade = 0.6 + 0.4 * Math.min(1, z / Math.max(umb, 1));
+      this.push(v.x + Math.cos(ang) * rad + fx * lean, v.y + z, v.z + Math.sin(ang) * rad + fz * lean,
+        R * (0.75 + 0.55 * R4[(i * 4 + 3) % 512]), sd, alb * shade, a, 0.35, cam);
     }
-    // The overshooting top and the umbrella's rim, which is what shows from
-    // the town before the fall closes in: the pine tree's spreading branches.
+    // The branches of Pliny's pine: the cloud spreading out on every side
+    // from the top of the trunk before the wind carries it off.
     if (H > 8000) {
-      const nRim = red ? 26 : 52;
+      const nBr = red ? 18 : 36;
+      const spread = Math.min(14000, 3000 + s.umbrellaReachKm * 220);
+      for (let i = 0; i < nBr; i++) {
+        const ang = (i / nBr) * Math.PI * 2 + hash(i * 3.7) * 0.4;
+        const r = spread * (0.35 + 0.65 * hash(i * 1.9));
+        const y = umb + 600 + hash(i * 2.3) * 2200 - (r / spread) * 1200;
+        this.push(v.x + Math.cos(ang) * r + fx * r * 0.3, y, v.z + Math.sin(ang) * r + fz * r * 0.3,
+          2200 + hash(i * 4.4) * 1800, hash(i * 8.8), alb * 1.05, 0.9, 0.7, cam);
+      }
+      // The plume sheet drifting south-east, sagging as it drops its stones.
+      const nRim = red ? 22 : 44;
       const reach = Math.max(3000, s.umbrellaReachKm * 1000);
       for (let i = 0; i < nRim; i++) {
-        const u = hash(i * 5.3) * 2 - 1, w = hash(i * 9.1) * 2 - 1;
-        const along = u < 0 ? u * Math.min(14000, 2500 + reach * 0.25) : u * Math.min(reach, 40000);
-        const cross = w * Math.min(32000, 3000 + reach * 0.38) * 0.8;
+        const u = hash(i * 5.3), w = hash(i * 9.1) * 2 - 1;
+        const along = u * Math.min(reach, 60000);
+        const cross = w * Math.min(26000, 4000 + along * 0.4) * 0.8;
         const x = v.x + fx * along - fz * cross, z = v.z + fz * along + fx * cross;
-        const y = umb + 1500 + hash(i * 2.7) * 3500 - Math.max(0, u) * 1500;
-        this.push(x, y, z, 2600 + hash(i * 4.4) * 2600, hash(i * 6.6), alb, 0.85, 0.8, cam);
+        const y = umb + 800 + hash(i * 2.7) * 2500 - u * 5000;
+        this.push(x, y, z, 3000 + hash(i * 4.4) * 3000, hash(i * 6.6), alb * 0.9, 0.85, 0.8, cam);
       }
-      for (let i = 0; i < (red ? 4 : 8); i++) {
-        this.push(v.x + fx * 3000 + (hash(i + 0.3) - 0.5) * 3000, H - 1500 + hash(i + 0.6) * 1500, v.z + fz * 3000 + (hash(i + 0.9) - 0.5) * 3000, 3500, hash(i), alb + 0.05, 0.9, 0.4, cam);
+      // The overshooting top, above the trunk: the brightest thing in the sky.
+      for (let i = 0; i < (red ? 5 : 10); i++) {
+        this.push(v.x + fx * 2500 + (hash(i + 0.3) - 0.5) * 5000, H - 2000 + hash(i + 0.6) * 1800, v.z + fz * 2500 + (hash(i + 0.9) - 0.5) * 5000,
+          3200 + hash(i + 0.1) * 1500, hash(i), alb * 1.15, 0.92, 0.4, cam);
       }
     }
     this.pushSurge(cam);
@@ -788,7 +976,7 @@ export class EruptionView {
 
   private updatePumice(t: number): void {
     const s = this.state;
-    const k = Math.min(1, s.fallRateCmH / 15) * (1 - this.inSurge);
+    const k = Math.min(1, s.fallRateCmH / 15) * (1 - this.inSurge) * this.fallHere;
     this.pGeo.instanceCount = Math.round(this.pumiceN * k);
     this.pumice.visible = this.pGeo.instanceCount > 0;
     this.pumiceU.uTime.value = t;

@@ -9,13 +9,14 @@
 
 import { readFileSync } from "node:fs";
 import {
-  clockRate, columnKm, eruptionAt, fallRateCmH, lightFactor, localHours, pumiceDepthM, quake,
+  clockRate, columnKm, eruptionAt, walkPace, fallRateCmH, lightFactor, localHours, pumiceDepthM, quake,
   realSecondsBetween, resolveEscape, roofFailure, surgeFront, surgeReachM, utcMsAt, S4,
   type EscapeRun,
 } from "../src/sim/eruption";
 import { COAST_ROUTE, ENDINGS, GATE_ROUTES, STARTS, VENT, routeFor } from "../src/data/escape";
 import { Origin } from "../src/geo";
 import { parsePompeii } from "../src/data/pompeii";
+import { ashFanAt } from "../src/render/eruption";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -150,6 +151,23 @@ check("coast route goes south (radial > 0.5)", COAST_ROUTE.radial > 0.5, "");
 const banned = /enslaved person/i;
 check('the story says "slave", not "enslaved person"', !banned.test(JSON.stringify([STARTS, ENDINGS])), "");
 probe("the wording check sees the phrase", banned.test("an enslaved person"), "");
+
+// --- walking in it, and the ground it lies on --------------------------------
+check("bare ground walks at full pace", walkPace(0) === 1, "");
+check("half a metre of pumice costs a quarter of the pace or more", walkPace(0.5) <= 0.75, `${walkPace(0.5).toFixed(2)}`);
+check("deep pumice still moves you (pace >= 0.4)", walkPace(3) >= 0.4, `${walkPace(3).toFixed(2)}`);
+let prevP = 2, paceMono = true;
+for (let d = 0; d <= 3; d += 0.05) { if (walkPace(d) > prevP) paceMono = false; prevP = walkPace(d); }
+check("pace never rises with depth", paceMono, "");
+// The town floor rises by the full depth; the countryside by depth x fan. At
+// every gate the fan must be 1, or the gate is a step.
+const fans = data.gates.map((g) => ashFanAt(vent.x, vent.z, g.x, g.z));
+check("the pumice fan is whole at every gate (no step)", fans.every((x) => x > 0.999), fans.map((x) => x.toFixed(2)).join(","));
+const bay = o.toWorld(40.747, 14.346);
+check("across the bay, 12 km west, no pumice", ashFanAt(vent.x, vent.z, bay.x, bay.z) === 0, `${ashFanAt(vent.x, vent.z, bay.x, bay.z).toFixed(2)}`);
+const stab = o.toWorld(40.704, 14.483);
+check("Stabiae is under the fall (Pliny 6.16)", ashFanAt(vent.x, vent.z, stab.x, stab.z) > 0.5, `${ashFanAt(vent.x, vent.z, stab.x, stab.z).toFixed(2)}`);
+probe("the gate test sees a fan that misses the town", !data.gates.every((g) => ashFanAt(vent.x + 20000, vent.z, g.x, g.z) > 0.999), "");
 
 if (failures) {
   console.log(`${failures} eruption check(s) failed`);

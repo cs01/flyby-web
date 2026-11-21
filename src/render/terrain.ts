@@ -32,6 +32,7 @@ import { CITY_RINGS, type TerrainRing } from "./budget";
 import { WATER_SSR_GLSL, WATER_SSR_UNIFORMS, type WaterSsrUniforms } from "./waterssr";
 import { GROUND_DETAIL_GLSL } from "./grounddetail";
 import { OCEAN_FS_GLSL, OCEAN_VS_GLSL, SWELL_GLSL, oceanLinkUniforms, type OceanLinkUniforms } from "./oceanglsl";
+import { ERUPTION_TERRAIN_FRAG_GLSL, ERUPTION_TERRAIN_VERT_GLSL, eruptionSurfaceUniforms } from "./eruption";
 
 const VERT = /* glsl */ `
 precision highp float;
@@ -43,6 +44,7 @@ uniform mat4 projectionMatrix;
 uniform mat3 normalMatrix;
 uniform vec3 uCameraPos;
 ${OCEAN_VS_GLSL}
+${ERUPTION_TERRAIN_VERT_GLSL}
 out vec2 vUv;
 out vec3 vNormal;
 out vec3 vWorld;
@@ -54,6 +56,8 @@ void main() {
   // render/ocean.ts. Zero everywhere else and whenever the ocean is off.
   vec3 p = position;
   p.y -= oceanSinkAt(p);
+  // Pompeii in 79: the pumice the eruption has laid (render/eruption.ts).
+  p.y += ashLift(p);
   vWorld = p;
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   vViewDist = length(p - uCameraPos);
@@ -139,6 +143,7 @@ ${WATER_SSR_GLSL}
 ${waveTableGlsl()}
 ${SWELL_GLSL}
 ${GROUND_DETAIL_GLSL}
+${ERUPTION_TERRAIN_FRAG_GLSL}
 
 uniform sampler2D uDrape;
 uniform vec3  uCameraPos;
@@ -755,6 +760,7 @@ void main() {
   // is what keeps a snowy city from looking like it was dipped in paint.
   float flat_ = smoothstep(0.55, 0.85, n.y);
   albedo = mix(albedo, vec3(0.92, 0.94, 0.98), uSnow * flat_);
+  albedo = ashGround(albedo, n, vWorld);
 
   // Wet ground is darker and shinier. Both, or it reads as mud.
   albedo *= (1.0 - 0.42 * uWetness);
@@ -1672,6 +1678,7 @@ export interface TerrainUniforms
   uAmbient: THREE.IUniform<THREE.Color>;
   uWetness: THREE.IUniform<number>;
   uSnow: THREE.IUniform<number>;
+  uAshFan: THREE.IUniform<THREE.Vector4>;
   uNight: THREE.IUniform<number>;
   uNightGlow: THREE.IUniform<THREE.Color>;
   uMoonDir: THREE.IUniform<THREE.Vector3>;
@@ -1727,6 +1734,8 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uAmbient: { value: new THREE.Color(0.28, 0.36, 0.5) },
     uWetness: { value: 0 },
     uSnow: { value: 0 },
+    // Shared by reference: one eruption, one footprint.
+    uAshFan: eruptionSurfaceUniforms.uAshFan,
     uNight: { value: 0 },
     uNightGlow: { value: new THREE.Color(0, 0, 0) },
     uMoonDir: { value: new THREE.Vector3(0, -1, 0) },

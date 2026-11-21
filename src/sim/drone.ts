@@ -174,6 +174,8 @@ export class Drone {
   /** The nose-down the same tilt logic produces when accelerating forward. */
   private noseDeg = 0;
 
+  /** Multiplies the on-foot pace: deep loose ground (Pompeii's pumice) is slow going. */
+  walkPace = 1;
   /** True while on foot: see WALK_SPEED. */
   walk = false;
   /**
@@ -249,7 +251,7 @@ export class Drone {
       -Math.cos(yawRad) * clamp(input.forward, -1, 1) + Math.sin(yawRad) * clamp(input.strafe, -1, 1),
     );
     if (_move.lengthSq() > 1) _move.normalize();
-    const speed = THREE.MathUtils.lerp(WALK_SPEED, WALK_RUN_SPEED, run);
+    const speed = THREE.MathUtils.lerp(WALK_SPEED, WALK_RUN_SPEED, run) * this.walkPace;
     const wx = _move.x * speed;
     const wz = _move.z * speed;
     const dx = wx - this.velocity.x;

@@ -40,9 +40,9 @@ import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, Townsfolk, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
-import { EruptionView, eruptionSurfaceUniforms } from "./render/eruption";
+import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
 import { EscapeUi } from "./app/escape";
-import { localHours } from "./sim/eruption";
+import { localHours, walkPace } from "./sim/eruption";
 import { insideWalls, VESUVIUS } from "./render/pompeii";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
@@ -560,7 +560,9 @@ async function main() {
       terrain.heightAt = (x, z) => {
         const lift = eruptionSurfaceUniforms.uAsh.value.x;
         const g = bare(x, z);
-        return lift > 0 && insideWalls(d, x - off.x, z - off.z) ? g + lift : g;
+        if (lift <= 0) return g;
+        // Outside the walls the terrain rises by the same fan its shader uses.
+        return insideWalls(d, x - off.x, z - off.z) ? g + lift : g + ashLiftAt(eruptionSurfaceUniforms.uAshFan.value, x, z, g);
       };
     }
     cart = new Cart(pompeii.uniforms);
@@ -2868,6 +2870,7 @@ async function main() {
       }
     }
     eruptView?.update(camera, elapsed, shotMode);
+    drone.walkPace = eruptView?.active ? walkPace(eruptView.state.pumiceM * eruptView.fallHere) : 1;
     if (!droneActive && !carActive) {
       osd.update({
         pitchDeg: ac.pitchDeg,
