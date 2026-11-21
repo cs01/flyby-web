@@ -348,13 +348,17 @@ void main() {
     // mostly fell inside the shop openings and was never seen.
     float y0 = H > 4.4 ? 3.45 : bandTop + 0.4;
     if (notice) {
+      // A wall's u can run either way along the street. Where it runs right
+      // to left on screen the letters would come out mirrored, so read the
+      // line from the other end.
+      float nu = dFdx(u) < 0.0 ? len - u : u;
       vec2 sp = dipintoSpan(seed, len);
-      if (full && sp.y > 0.0 && abs(u - sp.x - sp.y * 0.5) < sp.y * 0.5 + 0.22 && abs(h - y0 - CHAR_H * 0.5) < CHAR_H * 0.5 + 0.16) {
+      if (full && sp.y > 0.0 && abs(nu - sp.x - sp.y * 0.5) < sp.y * 0.5 + 0.22 && abs(h - y0 - CHAR_H * 0.5) < CHAR_H * 0.5 + 0.16) {
         // The panel's brush edge is ragged.
         float rag = vnoise(vec2(u, h) * 9.0 + seed);
-        if (abs(u - sp.x - sp.y * 0.5) < sp.y * 0.5 + 0.15 + 0.07 * rag && abs(h - y0 - CHAR_H * 0.5) < CHAR_H * 0.5 + 0.1 + 0.06 * rag) c = mix(c, CREAM * 0.97, 0.88);
+        if (abs(nu - sp.x - sp.y * 0.5) < sp.y * 0.5 + 0.15 + 0.07 * rag && abs(h - y0 - CHAR_H * 0.5) < CHAR_H * 0.5 + 0.1 + 0.06 * rag) c = mix(c, CREAM * 0.97, 0.88);
       }
-      float ink = dipinto(u, h, seed, len, y0);
+      float ink = dipinto(nu, h, seed, len, y0);
       ink *= mix(1.0, smoothstep(0.12, 0.32, vnoise(vec2(u, h) * 4.0 + seed * 40.0)), nearF);
       // Strokes are 3 cm: past about two pixels a stroke they would alias,
       // so they fade to the tint the line of letters averages to.
@@ -905,11 +909,14 @@ void main() {
   } else if (style < 11.5 && p1 > 0.5) {
     // A thermopolium's counter front: offcuts of coloured marble set as
     // crazy paving (giallo antico, pavonazzetto, cipollino, rosso, white).
-    vec3 vo = voronoi(vec2(u, h) / 0.16);
+    vec3 vo = voronoi(vec2(u, h) / 0.075);
     float k = h21(vo.yz);
     vec3 c = k < 0.25 ? vec3(0.78, 0.62, 0.32) : k < 0.45 ? vec3(0.82, 0.76, 0.74) : k < 0.62 ? vec3(0.42, 0.5, 0.4) : k < 0.78 ? vec3(0.55, 0.2, 0.16) : vec3(0.86, 0.84, 0.8);
     c *= 0.9 + 0.15 * vnoise(vec2(u, h) * 18.0 + k * 9.0);
-    albedo = mix(vec3(0.7, 0.66, 0.6), c, smoothstep(0.02, 0.05, vo.x));
+    // Offcuts a hand across, dulled by grease and handling: at full
+    // saturation the counters were the loudest thing in the street.
+    c = mix(c, vec3(0.74, 0.7, 0.63), 0.4);
+    albedo = mix(vec3(0.62, 0.58, 0.52), c, smoothstep(0.03, 0.09, vo.x));
     gloss = 0.3;
   } else if (style < 11.5) {
     // Travertine and marble: big slabs in running bond, warm cream, banded
