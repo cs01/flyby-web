@@ -695,7 +695,11 @@ void main() {
     }
     gloss = 0.1;
   } else if (style < 5.5) {
-    if (p1 > 0.5) {
+    if (p1 > 254.5) {
+      // A block's open ground (INTERIOR_GLSL plotGround): beaten earth,
+      // vegetable beds, vines and grass in plots, never a lawn.
+      albedo = plotGround(vWorld.xz, vViewDist);
+    } else if (p1 > 0.5) {
       // A peristyle (INTERIOR_GLSL gardenPaint): vWall.xy metres from the
       // court's corner, zw its size, p1 the colonnade's depth in decimetres,
       // the walk under it floored in p2 - 1 (a FloorKind).
@@ -865,7 +869,7 @@ void main() {
       sky = mix(walls * 0.32, sky * 1.6, open);
     }
     // The pool's floor through a hand's depth of water: marble or signinum, lit.
-    vec3 floorLit = vec3(0.6, 0.56, 0.5) * (occludedSkyIrradiance(vec3(0.0, 1.0, 0.0)) + sunE * max(0.0, uSunDir.y) * sv + townLamps(vWorld, vec3(0.0, 1.0, 0.0)));
+    vec3 floorLit = vec3(0.6, 0.56, 0.5) * (mix(occludedSkyIrradiance(vec3(0.0, 1.0, 0.0)), shIrradiance(vec3(0.0, 1.0, 0.0)), 0.5) + sunE * max(0.0, uSunDir.y) * sv + townLamps(vWorld, vec3(0.0, 1.0, 0.0)));
     // Caustics: the ripples focus the sun into a moving net on the floor.
     float caus = pow(1.0 - abs(vnoise(q * 4.1 + 5.0) - vnoise(q * 4.1 + vec2(3.3, 1.1))), 10.0) * sv * (1.0 - smoothstep(8.0, 25.0, vViewDist));
     vec3 col = mix(floorLit * vec3(0.4, 0.5, 0.5) * (1.0 + 0.35 * caus), sky, fres);

@@ -1569,7 +1569,65 @@ export const POSES: Pose[] = [
     t: D("0079-08-22T09:30:00Z"),
     wx: POMPEII_WX,
     what: "The bronze Dancing Faun close up, filling the frame",
-    query: "agl&fov=27",
+    query: "agl&fov=27&near=0.3",
+  },
+  // Inside the houses (render/pompeiiinterior.ts): rooms off the atria, read
+  // off PompeiiModel.interiors.
+  {
+    // From the pavement through an ordinary rule-built house's open door, down the fauces to the atrium.
+    name: "pompeii-atrium-fauces",
+    city: "pompeii",
+    lat: 40.749069, lon: 14.487661, altM: 1.6, hdgDeg: 329, pitchDeg: -3,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "An ordinary atrium house seen from its front door: fauces, atrium, tablinum",
+    query: "agl&fov=62&near=0.3",
+  },
+  {
+    name: "pompeii-tablinum",
+    city: "pompeii",
+    lat: 40.749327, lon: 14.487226, altM: 1.6, hdgDeg: 345, pitchDeg: -2,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Casa della Calce: across the atrium into the tablinum",
+    query: "agl&fov=62&near=0.3",
+  },
+  {
+    name: "pompeii-cubiculum",
+    city: "pompeii",
+    lat: 40.749309, lon: 14.487261, altM: 1.6, hdgDeg: 75, pitchDeg: -8,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Casa della Calce: through a cubiculum's door to its couch",
+    query: "agl&fov=62&near=0.3",
+  },
+  {
+    name: "pompeii-peristyle",
+    city: "pompeii",
+    lat: 40.749459, lon: 14.488125, altM: 1.6, hdgDeg: 18, pitchDeg: -6,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Casa di Cornelio Rufo: the peristyle garden from the colonnade",
+    query: "agl&fov=62&near=0.3",
+  },
+  {
+    name: "pompeii-atrium-night",
+    city: "pompeii",
+    lat: 40.749810, lon: 14.488755, altM: 1.6, hdgDeg: 228, pitchDeg: -4,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "Casa del Citarista: the atrium at 21:30 by lamplight",
+    query: "agl&fov=62&near=0.3",
+  },
+  {
+    // A block whose open ground ran as a lawn to the kerb: now a walled plot behind its pavement.
+    name: "pompeii-plot-wall",
+    city: "pompeii",
+    lat: 40.748452, lon: 14.488229, altM: 1.6, hdgDeg: 7, pitchDeg: -4,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Unbuilt frontage near Porta di Stabia: a plot wall, a gate, the pavement in front",
+    query: "agl&fov=62&near=0.3",
   },
   {
     // A walker with a lantern on Via dell'Abbondanza at 21:30 (the lamps poses' time).

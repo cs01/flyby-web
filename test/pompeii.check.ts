@@ -891,5 +891,69 @@ let built: PompeiiModel;
   check("probe: the old kerb faces and shop floors are caught", old.up + old.side > 0, `${old.up} up-facing, ${old.side} upright`);
 }
 
+// --- 17. inside the houses, and the open frontage ------------------------------------
+// The full build furnishes its atrium houses (render/pompeiiinterior.ts): a
+// fauces from the street into each rule-built atrium, a tablinum and
+// cubicula off the surveyed ones, peristyle gardens. Floors and ceilings are
+// their own styles. Ground a block leaves open at its street edge is walled,
+// never a lawn to the kerb, and no house's colonnade stands out on a
+// pavement. Each is held against a build that lacks it.
+{
+  const full = buildPompeii({ data, groundAt: flat, suburbs: false });
+  const lean = buildPompeii({ data, groundAt: flat, suburbs: false, lean: true });
+  type Counts = { fauces: number; tablinum: number; cubiculum: number; peristyle: number; furnished: number; floors: number; ceilings: number };
+  const rooms = (m: PompeiiModel): Counts => {
+    const n = (k: string): number => m.interiors.filter((v) => v.kind === k).length;
+    let floors = 0, ceilings = 0;
+    for (let t = 0; t < m.mesh.index.length; t += 3) {
+      const s = m.mesh.surf[m.mesh.index[t] * 4];
+      if (s === Surf.Floor) floors++;
+      if (s === Surf.Ceiling) ceilings++;
+    }
+    return { fauces: n("fauces"), tablinum: n("tablinum"), cubiculum: n("cubiculum"), peristyle: n("peristyle"), furnished: m.interiors.filter((v) => v.kind === "atrium" && v.furniture >= 2).length, floors, ceilings };
+  };
+  const ok = (c: Counts): boolean => c.fauces >= 400 && c.tablinum >= 40 && c.cubiculum >= 60 && c.peristyle >= 10 && c.furnished >= 20 && c.floors > 2000 && c.ceilings > 2000;
+  const fc = rooms(full), lc = rooms(lean);
+  check("full build: fauces, tablina, cubicula, peristyles, furnished atria, floors, ceilings", ok(fc), JSON.stringify(fc));
+  check("probe: the phone build, with no rooms inside, fails it", !ok(lc), JSON.stringify(lc));
+
+  // No house colonnade on a pavement: every column inside a block's kerb
+  // stands inside its building line.
+  // A public building (the Temple of Vespasian) can stand inside a block's kerb on its own podium.
+  const onPavement = (m: PompeiiModel): number => m.orders.filter((c) => !data.publics.some((p) => pointInRing(p.ring, c.x, c.z)) && data.insulae.some((i) => pointInRing(i.kerb, c.x, c.z) && !pointInRing(i.ring, c.x, c.z))).length;
+  const pv = onPavement(full), pvProbe = onPavement(buildPompeii({ data, groundAt: flat, suburbs: false, probePorticoOut: true }));
+  check("no column stands on a pavement", pv === 0, `${pv} columns`);
+  check("probe: the colonnades left unchecked are caught", pvProbe > 0, `${pvProbe} columns`);
+
+  // Open frontage on the kerb line: metres of building line with the kerb on
+  // it and nothing standing within 3 m inside (sampled every 25 cm in).
+  const bare = (m: PompeiiModel): number => {
+    let metres = 0;
+    for (const ins of data.insulae) {
+      if (ins.garden) continue;
+      const r = ins.ring, n = r.length / 2;
+      for (let i = 0; i < n; i++) {
+        const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
+        const L = Math.hypot(bx - ax, bz - az);
+        if (L < 1) continue;
+        const nx = -(bz - az) / L, nz = (bx - ax) / L;
+        for (let d = 0.5; d < L; d += 1) {
+          const x = ax + ((bx - ax) * d) / L, z = az + ((bz - az) * d) / L;
+          if (distToRing(ins.kerb, x, z) > 0.15) continue;
+          const s = pointInRing(r, x + nx, z + nz) ? 1 : -1;
+          if (data.publics.some((p) => pointInRing(p.ring, x + nx * s, z + nz * s))) continue;
+          let hit = false;
+          for (let k = 0.15; k < 3 && !hit; k += 0.25) hit = m.solids.some((so) => pointInRing(so.ring, x + nx * s * k, z + nz * s * k));
+          if (!hit) metres++;
+        }
+      }
+    }
+    return metres;
+  };
+  const bm = bare(full), bmProbe = bare(buildPompeii({ data, groundAt: flat, suburbs: false, probeNoPlotWalls: true }));
+  check("open frontage on the kerb line is walled (under 120 m of the town's left bare)", bm < 120, `${bm} m bare, ${full.stats.plotWallM.toFixed(0)} m of plot wall`);
+  check("probe: without the plot walls it is caught", bmProbe > 500, `${bmProbe} m bare`);
+}
+
 console.log(failures ? `\n${failures} pompeii check(s) FAILED` : "\nall pompeii checks ok");
 if (failures) process.exit(1);

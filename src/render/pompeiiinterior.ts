@@ -366,6 +366,41 @@ vec3 ceilingPaint(vec2 q, float kind, float seed, float dist, out float aoOut) {
   return c;
 }
 
+// The open ground inside a block, in plots about 9 x 6 m: beaten earth with
+// a path worn across it, beds of vegetables in rows, vines on stakes in
+// rows, rough grass. World xz metres.
+vec3 plotGround(vec2 p, float dist) {
+  float aa = 0.002 + 0.0012 * dist;
+  float near = 1.0 - smoothstep(25.0, 70.0, dist);
+  vec2 cs = vec2(9.0, 6.0);
+  vec2 ci = floor(p / cs), f = fract(p / cs) * cs;
+  float r = h21(ci + 0.37);
+  vec3 earth = vec3(0.43, 0.35, 0.25) * (0.82 + 0.3 * fbm(p * 0.7));
+  vec3 green = vec3(0.24, 0.33, 0.13) * (0.75 + 0.45 * vnoise(p * 1.7));
+  float along = fract(r * 7.0) < 0.5 ? f.x : f.y;
+  float across = fract(r * 7.0) < 0.5 ? f.y : f.x;
+  vec3 c;
+  if (r < 0.32) {
+    // Vegetable beds: rows 0.7 m apart, plants along them.
+    float row = abs(fract(across / 0.7) - 0.5) * 0.7;
+    float plant = ln(row, 0.16 + 0.05 * vnoise(p * 6.0), aa) * smoothstep(0.3, 0.6, vnoise(vec2(along * 3.0, floor(across / 0.7))));
+    c = mix(earth * 0.9, green * 1.1, mix(0.35, plant, near));
+  } else if (r < 0.58) {
+    // Vines: a stake and its plant every 1.2 m in rows 1.8 m apart.
+    vec2 q = vec2(fract(along / 1.2) - 0.5, fract(across / 1.8) - 0.5) * vec2(1.2, 1.8);
+    float vine = ln(length(q * vec2(0.7, 1.0)), 0.42, aa) ;
+    c = mix(earth, vec3(0.2, 0.3, 0.12) * (0.8 + 0.4 * vnoise(p * 4.0)), mix(0.45, vine, near));
+  } else if (r < 0.78) {
+    c = mix(earth, green, 0.55 + 0.35 * vnoise(p * 0.9));
+  } else {
+    c = earth * (1.0 + 0.08 * vnoise(p * 9.0));
+  }
+  // A beaten path round each plot.
+  float edge = min(min(f.x, cs.x - f.x), min(f.y, cs.y - f.y));
+  c = mix(c, earth * 1.08, ln(edge, 0.35, aa) * near);
+  return c;
+}
+
 // A peristyle's garden: the walk under the colonnade, then box-edged beds
 // with gravel paths round and across them. q metres from the court's
 // corner, size the court; walk the colonnade's depth.

@@ -379,7 +379,7 @@ export interface PompeiiPlan {
 // of the full build and 3 of the lean; the street furniture (counters, shop
 // fittings, doors, eave trim) about 22 MB of the full build and 7.5 of the lean
 // (counters, sills, beams, shutters, door leaves and the eave soffits only).
-export const POMPEII_FULL_BYTES = Math.round(62 * 1048576);
+export const POMPEII_FULL_BYTES = Math.round(72 * 1048576);
 export const POMPEII_LEAN_BYTES = Math.round(26 * 1048576);
 
 /** The art atlas on the GPU: RGBA8 with its mip chain. */
