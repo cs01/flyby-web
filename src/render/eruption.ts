@@ -1089,6 +1089,9 @@ export class EruptionView {
     if (this.lamp) {
       su.uLamp.value.set(this.lamp.x, this.lamp.y, this.lamp.z, 2.2 * flick(0));
       flame(this.lamp.x, this.lamp.y, this.lamp.z, 0.05, 0, flick(0));
+    } else if (this.pickup) {
+      // The lamp on the counter is lit, and lights the room it stands in.
+      su.uLamp.value.set(this.pickup.x, this.pickup.y + 0.1, this.pickup.z, 1.4 * flick(3));
     } else su.uLamp.value.w = 0;
     if (this.pickup) flame(this.pickup.x, this.pickup.y + 0.1, this.pickup.z, 0.06, 3, flick(3));
     const dark = this.active && this.state.light < 0.3;

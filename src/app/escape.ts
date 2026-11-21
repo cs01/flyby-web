@@ -17,6 +17,7 @@ import {
 import { ENDINGS, GATE_ROUTES, HISTORY_NOTE, STARTS, VENT, clockText, fill, routeFor, type StartId } from "../data/escape";
 import type { PompeiiData } from "../data/pompeii";
 import type { EruptionView } from "../render/eruption";
+import { EscapeRoom, planRoom } from "../render/escaperoom";
 import type { Origin } from "../geo";
 
 /** Start: a quarter of an hour before the column. */
@@ -40,6 +41,13 @@ export interface EscapeHost {
   openAhead: (x: number, z: number, dx: number, dz: number) => number;
   groundAt: (x: number, z: number) => number;
   toast: (s: string) => void;
+  scene: THREE.Scene;
+  /** Footprints of the town's solids (x,z pairs). */
+  solids: () => number[][];
+  /** Ground height with no pumice on it. */
+  bareGround: (x: number, z: number) => number;
+  /** Stand on foot exactly at (x, z), facing (fx, fz), with no spawn search. */
+  placeExact: (x: number, z: number, fx: number, fz: number) => void;
 }
 
 type Mode = "off" | "running" | "gate" | "shelter" | "ending";
@@ -55,6 +63,8 @@ export class EscapeUi {
   private start: StartId = "bakery";
   private run: EscapeRun = { lampH: null, exit: null, roofH: null };
   private pickup: THREE.Vector3 | null = null;
+  /** The room the story starts in, while it stands; main.ts keeps the walker in it. */
+  room: EscapeRoom | null = null;
   private gate: { name: string; x: number; z: number } | null = null;
   private declined: string | null = null;
   private shelterH = 0;
@@ -147,6 +157,40 @@ export class EscapeUi {
     return [dx, dz];
   }
 
+  /** The room the story starts in: in the house at the start, or the nearest one that has space. */
+  private buildRoom(id: StartId): EscapeRoom | null {
+    const s = STARTS[id];
+    const solids = this.host.solids()
+      .map((r) => {
+        let cx = 0, cz = 0;
+        for (let i = 0; i < r.length; i += 2) { cx += r[i]; cz += r[i + 1]; }
+        const n = r.length / 2;
+        return { r, d: Math.hypot(cx / n - s.x, cz / n - s.z) };
+      })
+      .filter((q) => q.d < 25)
+      .sort((a, b) => a.d - b.d);
+    const streets = this.host.data.streets.map((st) => st.pts);
+    for (const { r } of solids) {
+      let cx = 0, cz = 0;
+      for (let i = 0; i < r.length; i += 2) { cx += r[i]; cz += r[i + 1]; }
+      const plan = planRoom(r, streets, this.host.bareGround(cx / (r.length / 2), cz / (r.length / 2)));
+      if (!plan) continue;
+      const room = new EscapeRoom(plan, id);
+      this.setRoom(room);
+      return room;
+    }
+    return null;
+  }
+
+  private setRoom(room: EscapeRoom | null): void {
+    if (this.room) {
+      this.host.scene.remove(this.room.group);
+      this.room.dispose();
+    }
+    this.room = room;
+    if (room) this.host.scene.add(room.group);
+  }
+
   /** Start the story from one of the two houses. */
   begin(id: StartId): void {
     const s = STARTS[id];
@@ -154,17 +198,28 @@ export class EscapeUi {
     this.host.view.enabled = true;
     this.toggle.checked = true;
     this.setHour(START_H);
-    let at = this.host.placeOnFoot(s.x, s.z, s.faceX, s.faceZ);
-    if (!at) {
-      this.host.toast("Could not find the door: the town is not loaded");
-      return;
+    this.setRoom(null);
+    const room = this.buildRoom(id);
+    if (room) {
+      // Inside, at the back of the room, facing the doorway; the lamp on the
+      // counter behind.
+      const p = room.plan, hw = p.width / 2;
+      const me = room.at(0, p.depth * 0.5), door = room.at(0, -2);
+      this.host.placeExact(me.x, me.z, door.x, door.z);
+      const lamp = room.at(id === "bakery" ? hw - 2.6 : hw - 0.8, p.depth - 0.35);
+      this.pickup = new THREE.Vector3(lamp.x, p.floorY + 0.98, lamp.z);
+    } else {
+      let at = this.host.placeOnFoot(s.x, s.z, s.faceX, s.faceZ);
+      if (!at) {
+        this.host.toast("Could not find the door: the town is not loaded");
+        return;
+      }
+      const [fx, fz] = this.openWay(at.x, at.z);
+      at = this.host.placeOnFoot(at.x, at.z, at.x + fx * 10, at.z + fz * 10) ?? at;
+      const d = Math.hypot(fx, fz) || 1;
+      const px = at.x + (fx / d) * 3.5, pz = at.z + (fz / d) * 3.5;
+      this.pickup = new THREE.Vector3(px, this.host.groundAt(px, pz) + 0.9, pz);
     }
-    const [fx, fz] = this.openWay(at.x, at.z);
-    at = this.host.placeOnFoot(at.x, at.z, at.x + fx * 10, at.z + fz * 10) ?? at;
-    // The lamp is on a counter a few steps ahead: the first thing to do.
-    const d = Math.hypot(fx, fz) || 1;
-    const px = at.x + (fx / d) * 3.5, pz = at.z + (fz / d) * 3.5;
-    this.pickup = new THREE.Vector3(px, this.host.groundAt(px, pz) + 0.9, pz);
     this.run = { lampH: null, exit: null, roofH: null };
     this.gate = null;
     this.declined = null;

@@ -42,6 +42,7 @@ import { Pompeii, Cart, Townsfolk, POMPEII_SHADOW_SPLITS, antiquateDrape, pompei
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
 import { EscapeUi } from "./app/escape";
+import { roomLight } from "./render/escaperoom";
 import { localHours, walkPace } from "./sim/eruption";
 import { Flee, FleeField, crowdShare } from "./sim/flee";
 import { insideWalls, VESUVIUS } from "./render/pompeii";
@@ -545,6 +546,9 @@ async function main() {
   let cart: Cart | null = null;
   let eruptView: EruptionView | null = null;
   let flee: Flee | null = null;
+  // Set by the escape (app/escape.ts): the room it starts in, and the ground under no pumice.
+  let escapeRoom: { inside(x: number, z: number): boolean } | null = null;
+  let bareHeight: ((x: number, z: number) => number) | null = null;
   if (pompeiiData) {
     const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
     pompeii = new Pompeii({
@@ -559,9 +563,12 @@ async function main() {
     // the town's floor and streets rise by the same lift (render/eruption.ts).
     if (!perfOff.has("eruption")) {
       const bare = terrain.heightAt, d = pompeiiData;
+      bareHeight = bare;
       terrain.heightAt = (x, z) => {
         const lift = eruptionSurfaceUniforms.uAsh.value.x;
         const g = bare(x, z);
+        // The room the escape starts in is indoors: no pumice on its floor.
+        if (escapeRoom?.inside(x, z)) return g;
         if (lift <= 0) return g;
         // Outside the walls the terrain rises by the same fan its shader uses.
         return insideWalls(d, x - off.x, z - off.z) ? g + lift : g + ashLiftAt(eruptionSurfaceUniforms.uAshFan.value, x, z, g);
@@ -1672,6 +1679,7 @@ async function main() {
   // The 79 AD switch and the escape mission (app/escape.ts). The walker is
   // placed through a closure: the spawn search is defined further down.
   let escapePlace: (x: number, z: number, fx: number, fz: number) => { x: number; z: number } | null = () => null;
+  let escapeExact: (x: number, z: number, fx: number, fz: number) => void = () => {};
   let escapeBlocked: (x: number, z: number) => boolean = () => false;
   const escape = eruptView && pompeiiData ? new EscapeUi({
     ui, data: pompeiiData, view: eruptView, origin,
@@ -1681,6 +1689,10 @@ async function main() {
     // Metres of open ground ahead, in 2 m steps up to 30: to face the street, not a wall.
     openAhead: (x, z, dx, dz) => { let m = 0; while (m < 30 && !escapeBlocked(x + dx * (m + 2), z + dz * (m + 2))) m += 2; return m; },
     groundAt: (x, z) => terrain.heightAt(x, z),
+    scene,
+    solids: () => (pack?.buildings ?? []).map((b) => Array.from(b.ring)),
+    bareGround: (x, z) => (bareHeight ?? terrain.heightAt)(x, z),
+    placeExact: (x, z, fx, fz) => escapeExact(x, z, fx, fz),
     toast: (t) => hud.toast(t),
   }) : null;
   const escapeWanted = new URLSearchParams(location.search).get("escape");
@@ -1784,6 +1796,13 @@ async function main() {
     }
   }
   escapeBlocked = (x, z) => { const u = unstandable(x, z); return u === "building" || u === "water"; };
+  escapeExact = (x, z, fx, fz) => {
+    const hdg = (Math.atan2(fx - x, -(fz - z)) * 180) / Math.PI;
+    carActive = false;
+    droneActive = true;
+    drone.blocked = (bx, bz) => terrain.heightAt(bx, bz) < waterLevel + 0.4;
+    drone.enterWalk(x, z, terrain.heightAt(x, z), (hdg + 360) % 360);
+  };
   escapePlace = (x, z, fx, fz) => {
     // Pavement first: a wish inside a house can land in a walled courtyard.
     const at = findSpawn(x, z, true);
@@ -2129,7 +2148,9 @@ async function main() {
         // The DRONE only. Flying the Cessna into a tower would end the flight,
         // which nobody asked for, and the aeroplane already has the rooftop
         // height field as a floor keeping it over the city rather than in it.
-        collision?.resolve(drone.position, drone.velocity, drone.walk ? WALK_RADIUS : DRONE_RADIUS);
+        // In the escape's starting room its own walls hold the walker, doorway open.
+        if (!(drone.walk && escape?.room?.contain(drone.position, drone.velocity, WALK_RADIUS)))
+          collision?.resolve(drone.position, drone.velocity, drone.walk ? WALK_RADIUS : DRONE_RADIUS);
       }
     }
 
@@ -2400,6 +2421,8 @@ async function main() {
     const solar = solarState(now, city.lat, city.lon);
     const light = computeLighting(solar, wx);
     eruptView?.light(light);
+    // Daylight through the escape room's door (render/escaperoom.ts).
+    roomLight.value.copy(light.ambient).multiplyScalar(1.5).addScalar(light.sunIntensity * 0.105 * 0.04);
 
     renderer.getDrawingBufferSize(drawSize);
     prof.cpuBegin("airtraffic");
@@ -2877,6 +2900,7 @@ async function main() {
         }
         if (escape.running && missions.active) missions.cancel();
         escape.update(shotMode || input.paused ? 0 : dt, camera, Math.atan2(look.x, -look.z), leg === "plane" || leg === "drone");
+        escapeRoom = escape.room;
       }
     }
     eruptView?.update(camera, elapsed, shotMode);

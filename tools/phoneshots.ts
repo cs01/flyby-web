@@ -65,6 +65,8 @@ const SCENES: Scene[] = [
   { name: "desktop-pompeii-escape-end", query: "city=pompeii&intro=0", act: "flybyEscape.forceEnding('town')", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 1500 },
   // At the Porta di Stabia an hour into the fall: the road out offered.
   { name: "desktop-pompeii-escape-gate", query: "city=pompeii&intro=0&escape=bakery", act: "setTimeout(() => { flybyEscape.setHourForTest(14.3); flyby.drone.enterWalk(161, 64, flyby.terrain.heightAt(161, 64), 160); }, 1500)", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 5000 },
+  // Walk straight out of the starting room through its doorway: proves the room lets you go.
+  { name: "desktop-pompeii-escape-out", query: "city=pompeii&intro=0&escape=bakery", act: "setTimeout(() => { dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyW', key: 'w' })); setTimeout(() => dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyW', key: 'w' })), 4000); }, 1500)", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 7000 },
   { name: "desktop-sf-plane", query: "city=sf&intro=0&start=plane", w: 1280, h: 720, dpr: 1, desktop: true },
 ];
 const failures: string[] = [];
