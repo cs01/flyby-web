@@ -415,6 +415,46 @@ void main() {
 }
 `;
 
+// Bundles: what the fleeing carried on their backs, a box of cloth each.
+const BUNDLE_VERT = /* glsl */ `
+precision highp float;
+in vec3 position;
+in vec3 normal;
+in vec4 aAt;   // feet x, y, z, heading (radians clockwise from north)
+uniform mat4 viewMatrix;
+uniform mat4 projectionMatrix;
+out vec3 vWorld;
+out vec3 vN;
+out float vTone;
+void main() {
+  float c = cos(aAt.w), s = sin(aAt.w);
+  // Forward is (sin h, -cos h); the bundle rides high on the back.
+  vec3 local = position * vec3(0.42, 0.34, 0.30) + vec3(0.0, 1.38, 0.24);
+  vec3 p = vec3(local.x * c - local.z * s, local.y, local.x * s + local.z * c);
+  vN = vec3(normal.x * c - normal.z * s, normal.y, normal.x * s + normal.z * c);
+  vWorld = aAt.xyz + p;
+  vTone = fract(sin(aAt.x * 12.9898 + aAt.z * 78.233) * 43758.5453);
+  gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
+}
+`;
+
+const BUNDLE_FRAG = /* glsl */ `
+precision highp float;
+in vec3 vWorld;
+in vec3 vN;
+in float vTone;
+out vec4 fragColor;
+${COMMON_UNIFORMS}
+${ERUPTION_SURFACE_GLSL}
+void main() {
+  vec3 n = normalize(vN);
+  vec3 cloth = mix(vec3(0.55, 0.47, 0.36), vec3(0.42, 0.25, 0.18), step(0.6, vTone));
+  vec3 col = cloth * (uNearAmb * (2.0 + n.y) + eruptionLamps(vWorld, n));
+  float T = exp(-distance(uCamPos, vWorld) / uVis);
+  fragColor = vec4(mix(uHaze, col, T), 1.0);
+}
+`;
+
 // Flames: additive, HDR, a hot core in a soft halo.
 const GLOW_VERT = /* glsl */ `
 precision highp float;
@@ -515,6 +555,11 @@ export class EruptionView {
   private readonly cap: number;
   private readonly canopy: THREE.Mesh;
   private readonly dome: THREE.Mesh;
+  private readonly bundleGeo: THREE.InstancedBufferGeometry;
+  private readonly bundleAttr: THREE.InstancedBufferAttribute;
+  private readonly bundleMesh: THREE.Mesh;
+  /** The fleeing who carry something, set by main.ts from sim/flee.ts. */
+  bundles: { x: number; z: number; heading: number }[] = [];
   private readonly domeU: { uCamPos: THREE.IUniform<THREE.Vector3>; uDomeColor: THREE.IUniform<THREE.Color>; uUpwind: THREE.IUniform<THREE.Vector2>; uDomeAlpha: THREE.IUniform<number> };
   private readonly canopyU: { uCanopy: THREE.IUniform<THREE.Vector4>; uShape: THREE.IUniform<THREE.Vector4>; uCanopyAlpha: THREE.IUniform<number> };
   private readonly pumice: THREE.Mesh;
@@ -659,7 +704,23 @@ export class EruptionView {
     this.dome.name = "eruption-sky";
     this.dome.renderOrder = 18;
 
-    this.group.add(this.dome, this.canopy, this.billows, this.pumice, this.glow, this.bolt);
+    const box = new THREE.BoxGeometry(1, 1, 1);
+    this.bundleGeo = new THREE.InstancedBufferGeometry();
+    this.bundleGeo.setAttribute("position", box.getAttribute("position"));
+    this.bundleGeo.setAttribute("normal", box.getAttribute("normal"));
+    this.bundleGeo.setIndex(box.getIndex());
+    this.bundleAttr = new THREE.InstancedBufferAttribute(new Float32Array(64 * 4), 4);
+    this.bundleAttr.setUsage(THREE.DynamicDrawUsage);
+    this.bundleGeo.setAttribute("aAt", this.bundleAttr);
+    this.bundleGeo.instanceCount = 0;
+    this.bundleMesh = new THREE.Mesh(this.bundleGeo, new THREE.RawShaderMaterial({
+      vertexShader: BUNDLE_VERT, fragmentShader: BUNDLE_FRAG, uniforms: { ...this.common, ...eruptionSurfaceUniforms },
+      glslVersion: THREE.GLSL3,
+    }));
+    this.bundleMesh.frustumCulled = false;
+    this.bundleMesh.name = "eruption-bundles";
+
+    this.group.add(this.dome, this.canopy, this.billows, this.pumice, this.glow, this.bolt, this.bundleMesh);
   }
 
   /** The state at local hour h, or the untouched eve when switched off. */
@@ -761,7 +822,7 @@ export class EruptionView {
     su.uAshFan.value.set(this.opts.vent.x, this.opts.vent.z, on ? s.pumiceM : 0, s.whiteness);
     this.updateLamps(t, camera);
     if (!on) {
-      this.billows.visible = this.canopy.visible = this.pumice.visible = this.bolt.visible = this.dome.visible = false;
+      this.billows.visible = this.canopy.visible = this.pumice.visible = this.bolt.visible = this.dome.visible = this.bundleMesh.visible = false;
       this.glow.visible = this.pickup !== null;
       return;
     }
@@ -803,6 +864,7 @@ export class EruptionView {
     this.drawBolt(strike, fv, slot, sg ? 120 : 700);
 
     this.updateCanopy();
+    this.updateBundles();
     this.updateBillows(cam, t, frozen, camera);
     this.updatePumice(t);
   }
@@ -821,7 +883,22 @@ export class EruptionView {
     this.domeU.uDomeAlpha.value = Math.min(0.97, Math.max(0, (s.h - 13.05) / 0.35)) * (0.25 + 0.75 * this.fallHere);
     const a = this.rawAmb, lum = a.r * 0.3 + a.g * 0.45 + a.b * 0.25 + this.rawSun * 0.105 * 0.12;
     this.domeU.uDomeColor.value.setRGB(1.0, 0.88, 0.74).multiplyScalar(lum * 0.6 * Math.max(0.12, Math.sqrt(this.lightHere())));
+    // In the thick of the fall the sky is gone too: the dome fades to the haze.
+    const seen = Math.min(1, Math.max(0, (this.visibility() - 300) / 4000));
+    this.domeU.uDomeColor.value.lerp(this.common.uHaze.value as THREE.Color, 1 - seen);
     this.dome.visible = this.domeU.uDomeAlpha.value > 0;
+  }
+
+  private updateBundles(): void {
+    const B = this.bundleAttr.array as Float32Array;
+    const n = Math.min(64, this.bundles.length);
+    for (let i = 0; i < n; i++) {
+      const b = this.bundles[i];
+      B.set([b.x, this.opts.heightAt(b.x, b.z), b.z, b.heading], i * 4);
+    }
+    this.bundleGeo.instanceCount = n;
+    this.bundleAttr.needsUpdate = true;
+    this.bundleMesh.visible = n > 0;
   }
 
   private push(x: number, y: number, z: number, r: number, seed: number, alb: number, a: number, dark: number, cam: THREE.Vector3): void {

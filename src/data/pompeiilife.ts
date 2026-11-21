@@ -83,6 +83,8 @@ export class PompeiiLife {
   private readonly cartPaths: Path[] = [];
   private readonly rand: () => number;
   private started = false;
+  /** Takes over the walking when set: see sim/flee.ts. */
+  steer: ((people: LifeAgent[], carts: LifeAgent[], dt: number, cx: number, cz: number) => void) | null = null;
   private readonly kerbs: number[][];
 
   constructor(data: PompeiiData, opts: { people: number; carts: number; seed?: number }) {
@@ -172,6 +174,8 @@ export class PompeiiLife {
 
   /** Advance by dt seconds; (cx, cz) is the camera in pack metres. */
   update(dt: number, cx: number, cz: number): void {
+    // During the eruption sim/flee.ts walks these same people out of the town.
+    if (this.steer && this.started) { this.steer(this.people, this.carts, dt, cx, cz); return; }
     const first = !this.started;
     this.started = true;
     const nearPeople = first || this.people.some((a) => a.path < 0 || Math.hypot(a.x - cx, a.z - cz) > LIFE_RADIUS_M) ? this.near(this.paths, cx, cz, LIFE_RADIUS_M * 0.8) : [];

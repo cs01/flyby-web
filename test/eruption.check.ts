@@ -17,6 +17,7 @@ import { COAST_ROUTE, ENDINGS, GATE_ROUTES, STARTS, VENT, routeFor } from "../sr
 import { Origin } from "../src/geo";
 import { parsePompeii } from "../src/data/pompeii";
 import { ashFanAt } from "../src/render/eruption";
+import { FleeField, crowdShare } from "../src/sim/flee";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -168,6 +169,34 @@ check("across the bay, 12 km west, no pumice", ashFanAt(vent.x, vent.z, bay.x, b
 const stab = o.toWorld(40.704, 14.483);
 check("Stabiae is under the fall (Pliny 6.16)", ashFanAt(vent.x, vent.z, stab.x, stab.z) > 0.5, `${ashFanAt(vent.x, vent.z, stab.x, stab.z).toFixed(2)}`);
 probe("the gate test sees a fan that misses the town", !data.gates.every((g) => ashFanAt(vent.x + 20000, vent.z, g.x, g.z) > 0.999), "");
+
+// --- the townsfolk leaving (sim/flee.ts) -----------------------------------
+const field = new FleeField(data);
+const reach = field.open.length;
+check("the flow field covers the streets (> 3000 cells)", reach > 3000, `${reach} cells`);
+const forum = data.publics.find((p) => p.kind === "forum")!;
+const fx0 = forum.ring.filter((_, i) => i % 2 === 0).reduce((a, b) => a + b, 0) / (forum.ring.length / 2);
+const fz0 = forum.ring.filter((_, i) => i % 2 === 1).reduce((a, b) => a + b, 0) / (forum.ring.length / 2);
+check("the forum has a way out", Number.isFinite(field.distanceAt(fx0, fz0)), `${field.distanceAt(fx0, fz0)} cells`);
+// Walk a person from the forum: they must reach a gate, and never climb the field.
+{
+  let x = fx0, z = fz0, steps = 0, climbed = false, last = field.distanceAt(x, z);
+  for (; steps < 2000; steps++) {
+    const n = field.downhill(x, z);
+    if (!n) break;
+    [x, z] = n;
+    const d = field.distanceAt(x, z);
+    if (d >= last) climbed = true;
+    last = d;
+  }
+  const gd = Math.min(...data.gates.map((g) => Math.hypot(g.x - x, g.z - z)));
+  check("a walker from the forum reaches a gate", gd < 12, `${gd.toFixed(1)} m from a gate after ${steps} steps`);
+  check("every step is nearer a gate", !climbed, "");
+}
+const gatesReached = data.gates.filter((g) => field.distanceAt(g.x, g.z) === 0).length;
+check("every gate is a way out", gatesReached === data.gates.length, `${gatesReached}/${data.gates.length}`);
+check("the crowd thins through the night", crowdShare(15) === 1 && crowdShare(22) < 0.25 && crowdShare(28) < 0.1, `${crowdShare(15)} ${crowdShare(22).toFixed(2)} ${crowdShare(28).toFixed(2)}`);
+probe("a cell off the streets has no way out", field.distanceAt(1e6, 1e6) === Infinity, "");
 
 if (failures) {
   console.log(`${failures} eruption check(s) failed`);

@@ -43,6 +43,7 @@ import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
 import { EscapeUi } from "./app/escape";
 import { localHours, walkPace } from "./sim/eruption";
+import { Flee, FleeField, crowdShare } from "./sim/flee";
 import { insideWalls, VESUVIUS } from "./render/pompeii";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
@@ -543,6 +544,7 @@ async function main() {
   let townsfolk: Townsfolk | null = null;
   let cart: Cart | null = null;
   let eruptView: EruptionView | null = null;
+  let flee: Flee | null = null;
   if (pompeiiData) {
     const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
     pompeii = new Pompeii({
@@ -2143,9 +2145,17 @@ async function main() {
     }
     if (townsfolk) {
       // Once the column is up everyone is hurrying, and after dark one in three carries a torch.
-      const hurry = eruptView?.active ? 2.2 : 1;
+      // From the first stones (13:30) everyone heads for a gate (sim/flee.ts),
+      // fewer of them as the night goes on; before that they only hurry.
+      const er = eruptView?.active ? eruptView.state : null;
+      if (er && er.h >= 13.5 && pompeiiData && !flee) flee = new Flee(new FleeField(pompeiiData));
+      const f = er && er.h >= 13.5 ? flee : null;
+      const share = er ? crowdShare(er.h) : 1, pace = er ? walkPace(er.pumiceM) : 1;
+      townsfolk.sim.steer = f ? (p, c, d, x, z) => { f.update(p, c, d, x, z, share, pace); } : null;
+      const hurry = er ? (f ? 1.2 : 2.2) : 1;
       townsfolk.update(shotMode || input.paused ? 0 : dt * hurry, camera.position.x, camera.position.z);
       if (eruptView) {
+        eruptView.bundles = f ? f.bundles(townsfolk.sim.people) : [];
         townsfolk.group.visible = eruptView.inSurge < 0.6;
         const cx = camera.position.x, cz = camera.position.z;
         eruptView.torches = townsfolk.sim.people
