@@ -76,6 +76,14 @@ const CITY_MIN_INTERVAL_MS = 200;
 /** Metres added round the city's footprint, so the PCF taps at its rim stay on the map. */
 const CITY_MARGIN_M = 100;
 
+/**
+ * Radius of the PCF disk in the sampled map's own texels. Large enough that
+ * the texel grid no longer shows along an edge (tools/verify-shadowedge.ts
+ * measures that), small enough that the penumbra stays near the real sun's
+ * at street scale.
+ */
+const SHADOW_KERNEL_TEXELS = 1.0;
+
 /** Sine of the sun altitude below which shadows are off. ~1.1 degrees. */
 const SUN_MIN_Y = 0.02;
 /** Fully on by this sun altitude. ~3.4 degrees. */
@@ -100,6 +108,8 @@ export interface SunShadowUniforms extends Record<string, THREE.IUniform> {
   uCascadeDepth: THREE.IUniform<THREE.Vector3>;
   uShadowTexel: THREE.IUniform<number>;
   uShadowStrength: THREE.IUniform<number>;
+  /** x: taps (4 or 8), y: kernel radius in texels, z: probe sampler (0 off, 1 one nearest tap, 2 the old 3x3); see shadowFilter. */
+  uShadowKernel: THREE.IUniform<THREE.Vector4>;
   /** The city-wide map, sampled wherever the cascades have run out. */
   uCityShadowMap: THREE.IUniform<THREE.Texture | null>;
   uCityShadowMat: THREE.IUniform<THREE.Matrix4>;
@@ -124,9 +134,9 @@ export interface SunShadowUniforms extends Record<string, THREE.IUniform> {
  * ATMOSPHERE_GLSL are: one implementation, so the two cannot drift apart.
  */
 export const SUN_SHADOW_GLSL = /* glsl */ `
-uniform sampler2D uShadowMap0;
-uniform sampler2D uShadowMap1;
-uniform sampler2D uShadowMap2;
+uniform highp sampler2DShadow uShadowMap0;
+uniform highp sampler2DShadow uShadowMap1;
+uniform highp sampler2DShadow uShadowMap2;
 uniform mat4  uShadowMat0;
 uniform mat4  uShadowMat1;
 uniform mat4  uShadowMat2;
@@ -135,7 +145,8 @@ uniform vec3  uCascadeTexelWorld;
 uniform vec3  uCascadeDepth;
 uniform float uShadowTexel;
 uniform float uShadowStrength;
-uniform sampler2D uCityShadowMap;
+uniform vec4  uShadowKernel;
+uniform highp sampler2DShadow uCityShadowMap;
 uniform mat4  uCityShadowMat;
 uniform vec4  uCityShadow;
 uniform sampler2D uCloudShadowMap;
@@ -152,10 +163,26 @@ uniform vec4  uCloudShadow;
 // sun 5 degrees up is ten times the texel size, and no pure depth bias small
 // enough to keep the wing of a shadow attached is large enough to stop that
 // acneing. Moving the sample off the surface sidesteps the whole problem.
-const float SHADOW_NORMAL_OFFSET = 1.5;
-const float SHADOW_SLOPE_OFFSET  = 4.5;
-const float SHADOW_DEPTH_BIAS    = 1.0;
-const float SHADOW_SLOPE_BIAS    = 3.0;
+//
+// But every metre the sample is lifted is a metre of occluder height lost: on
+// flat ground under a 25 degree sun the old 1.5 + 4.5 * (1 - ndl) texels
+// lifted it about 4 texels, which ended every shadow on the ground 1.35 m
+// short of its caster in Pompeii (0.18 m texels) and 2.7 m on a phone
+// (tools/verify-shadowedge.ts). The lift now only has to cover the receiver
+// across ONE texel (the hardware's 2x2 compare footprint), which on a plane
+// is texelWorld * sin(angle) of height; the disk's wider taps get the
+// receiver plane's own depth instead (see shadowFilter), which costs no lift
+// at all. SHADOW_OLD_* are the previous constants, kept for the probes.
+const float SHADOW_NORMAL_OFFSET = 0.25;
+const float SHADOW_SLOPE_OFFSET  = 1.0;
+const float SHADOW_DEPTH_BIAS    = 0.5;
+// tan(angle) of the receiver plane, capped: past this (a sun under ~3 degrees
+// to the surface) the lift above already dwarfs the plane's depth change.
+const float SHADOW_MAX_SLOPE     = 20.0;
+const float SHADOW_OLD_NORMAL_OFFSET = 1.5;
+const float SHADOW_OLD_SLOPE_OFFSET  = 4.5;
+const float SHADOW_OLD_DEPTH_BIAS    = 1.0;
+const float SHADOW_OLD_SLOPE_BIAS    = 3.0;
 
 // The city map needs none of the above, because it is drawn from BACK faces
 // only (see CityShadow): what it stores along a sun ray is where the ray LEAVES
@@ -172,45 +199,132 @@ const float SHADOW_SLOPE_BIAS    = 3.0;
 // just outside it.
 const float CITY_SHADOW_BIAS_M = 1.0;
 
-/**
- * 3x3 PCF. sp is the shadow-map coordinate in 0..1, bias in depth units, texel
- * the map's 1 / size. c is 0..2 for the cascades, 3 for the city map.
- */
-float shadowPcf(int c, vec3 sp, float bias, float texel) {
-  float lit = 0.0;
-  for (int y = -1; y <= 1; y++) {
-    for (int x = -1; x <= 1; x++) {
-      vec2 o = vec2(float(x), float(y)) * texel;
-      float d;
-      // GLSL ES 3.0 will not index an array of samplers dynamically, so the
-      // cascade choice has to be a branch.
-      if (c == 0)      d = texture(uShadowMap0, sp.xy + o).r;
-      else if (c == 1) d = texture(uShadowMap1, sp.xy + o).r;
-      else if (c == 2) d = texture(uShadowMap2, sp.xy + o).r;
-      else             d = texture(uCityShadowMap, sp.xy + o).r;
-      lit += (sp.z - bias > d) ? 0.0 : 1.0;
-    }
-  }
-  return lit * (1.0 / 9.0);
+/** One hardware PCF tap: the 2x2 compare, bilinearly weighted. c as in shadowFilter. */
+float shadowTap(int c, vec3 p) {
+  // GLSL ES 3.0 will not index an array of samplers dynamically, so the
+  // cascade choice has to be a branch.
+  if (c == 0) return texture(uShadowMap0, p);
+  if (c == 1) return texture(uShadowMap1, p);
+  if (c == 2) return texture(uShadowMap2, p);
+  return texture(uCityShadowMap, p);
 }
 
-float cascadeVisibility(int c, vec3 worldPos, vec3 normal, vec3 sunDir) {
-  float texelWorld = c == 0 ? uCascadeTexelWorld.x : (c == 1 ? uCascadeTexelWorld.y : (c == 2 ? uCascadeTexelWorld.z : uCityShadow.y));
+// Vogel (golden-angle) disks, unit radius, the i-th tap at radius
+// sqrt((i + 0.5) / n). Constants rather than sin/cos per tap: the per-pixel
+// rotation below is one sin/cos pair for the whole kernel.
+const vec2 VOGEL4[4] = vec2[4](
+  vec2( 0.353553,  0.000000), vec2(-0.451544,  0.413652),
+  vec2( 0.069116, -0.787542), vec2( 0.569142,  0.742346));
+const vec2 VOGEL8[8] = vec2[8](
+  vec2( 0.250000,  0.000000), vec2(-0.319290,  0.292496),
+  vec2( 0.048872, -0.556877), vec2( 0.402444,  0.524918),
+  vec2(-0.738535, -0.130636), vec2( 0.699605, -0.445031),
+  vec2(-0.234004,  0.870484), vec2(-0.446271, -0.859268));
+
+/** Interleaved gradient noise (Jimenez 2014): 0..1, decorrelated between neighbouring pixels. */
+float shadowIgn(vec2 px) {
+  return fract(52.9829189 * fract(dot(px, vec2(0.06711056, 0.00583715))));
+}
+
+/**
+ * Filtered visibility. sp is the shadow-map coordinate in 0..1, bias in depth
+ * units, texel the map's 1 / size, radius the kernel radius in texels. c is
+ * 0..2 for the cascades, 3 for the city map.
+ *
+ * A disk of hardware PCF taps, rotated per pixel. Each tap is already a
+ * bilinear blend of four compares, so the 50% contour is continuous rather
+ * than snapped to the texel grid; the rotated disk then spreads that over a
+ * couple of texels so the corners of the grid round off: on an edge at a
+ * shallow angle to the grid it still waves, but softly. The old filter (3x3 nearest
+ * compares) only ever produced ten grey levels on the texel grid itself,
+ * which is exactly the stair-step it was supposed to hide.
+ *
+ * grad is the receiver plane's depth change per unit of map coordinate. Each
+ * tap compares against the plane's depth AT THAT TAP rather than at the
+ * centre, so a tap two texels out on a sloped roof is not shadowed by the
+ * roof itself, and no bias or lift has to grow with the kernel.
+ *
+ * uShadowKernel.z selects the old samplers in the same binary, for the
+ * vacuity probes in tools/verify-shadowedge.ts: 1 one nearest compare, 2 the
+ * old 3x3 nearest. Both snap to the texel centre, so the LINEAR compare
+ * returns that one texel's answer.
+ */
+float shadowFilter(int c, vec3 sp, float bias, float texel, float radius, vec2 grad) {
+  float z = sp.z - bias;
+  if (uShadowKernel.z > 0.5) {
+    vec2 base = (floor(sp.xy / texel) + 0.5) * texel;
+    if (uShadowKernel.z < 1.5) return shadowTap(c, vec3(base, z));
+    float lit = 0.0;
+    for (int y = -1; y <= 1; y++)
+      for (int x = -1; x <= 1; x++) lit += shadowTap(c, vec3(base + vec2(float(x), float(y)) * texel, z));
+    return lit * (1.0 / 9.0);
+  }
+  float a = shadowIgn(gl_FragCoord.xy) * 6.2831853;
+  float s = sin(a), co = cos(a);
+  mat2 rot = mat2(co, s, -s, co) * radius * texel;
+  float lit = 0.0;
+  if (uShadowKernel.x < 6.0) {
+    for (int i = 0; i < 4; i++) {
+      vec2 o = rot * VOGEL4[i];
+      lit += shadowTap(c, vec3(sp.xy + o, z + dot(grad, o)));
+    }
+    return lit * 0.25;
+  }
+  for (int i = 0; i < 8; i++) {
+    vec2 o = rot * VOGEL8[i];
+    lit += shadowTap(c, vec3(sp.xy + o, z + dot(grad, o)));
+  }
+  return lit * 0.125;
+}
+
+float cascadeTexelWorld(int c) {
+  return c == 0 ? uCascadeTexelWorld.x : (c == 1 ? uCascadeTexelWorld.y : (c == 2 ? uCascadeTexelWorld.z : uCityShadow.y));
+}
+
+/**
+ * radiusWorld is the kernel radius in metres, or 0 for uShadowKernel.y of
+ * this map's own texels. A cascade being cross-faded into the next is handed
+ * a radius growing toward the next one's, so the two penumbrae agree where
+ * they meet and the split does not show as a change of edge softness.
+ */
+float cascadeVisibility(int c, vec3 worldPos, vec3 normal, vec3 sunDir, float radiusWorld) {
+  float texelWorld = cascadeTexelWorld(c);
   float depthRange = c == 0 ? uCascadeDepth.x     : (c == 1 ? uCascadeDepth.y     : (c == 2 ? uCascadeDepth.z     : uCityShadow.z));
 
-  float ndl = clamp(dot(normal, sunDir), 0.0, 1.0);
-  vec3 p = c == 3 ? worldPos
-         : worldPos + normal * texelWorld * (SHADOW_NORMAL_OFFSET + SHADOW_SLOPE_OFFSET * (1.0 - ndl));
+  float texel = c == 3 ? uCityShadow.w : uShadowTexel;
+  mat4 m = c == 0 ? uShadowMat0 : (c == 1 ? uShadowMat1 : (c == 2 ? uShadowMat2 : uCityShadowMat));
 
-  vec4 sc = c == 0 ? uShadowMat0 * vec4(p, 1.0)
-          : (c == 1 ? uShadowMat1 * vec4(p, 1.0)
-          : (c == 2 ? uShadowMat2 * vec4(p, 1.0) : uCityShadowMat * vec4(p, 1.0)));
+  float ndl = clamp(dot(normal, sunDir), 0.0, 1.0);
+  float sinA = sqrt(1.0 - ndl * ndl);
+  bool old = uShadowKernel.z > 0.5;
+  float lift = old ? SHADOW_OLD_NORMAL_OFFSET + SHADOW_OLD_SLOPE_OFFSET * (1.0 - ndl)
+                   : SHADOW_NORMAL_OFFSET + SHADOW_SLOPE_OFFSET * sinA;
+  vec3 p = c == 3 ? worldPos : worldPos + normal * texelWorld * lift;
+
+  vec4 sc = m * vec4(p, 1.0);
   vec3 sp = sc.xyz / sc.w * 0.5 + 0.5;
   if (sp.x < 0.0 || sp.x > 1.0 || sp.y < 0.0 || sp.y > 1.0 || sp.z > 1.0) return 1.0;
 
   float bias = c == 3 ? CITY_SHADOW_BIAS_M / depthRange
-             : (SHADOW_DEPTH_BIAS + SHADOW_SLOPE_BIAS * (1.0 - ndl)) * texelWorld / depthRange;
-  return shadowPcf(c, sp, bias, c == 3 ? uCityShadow.w : uShadowTexel);
+             : old ? (SHADOW_OLD_DEPTH_BIAS + SHADOW_OLD_SLOPE_BIAS * (1.0 - ndl)) * texelWorld / depthRange
+             : SHADOW_DEPTH_BIAS * texelWorld / depthRange;
+
+  // The receiver plane's depth gradient in map units. The matrix is an ortho
+  // light camera, so its linear part maps the normal to light space with x
+  // and y scaled alike: q.xy is the normal's direction across the map, and
+  // the plane's depth rises along it by tan(angle) metres per metre. The city
+  // map is left at zero: it is drawn from back faces, so a receiver is never
+  // in it (see CITY_SHADOW_BIAS_M).
+  vec2 grad = vec2(0.0);
+  if (c != 3) {
+    vec2 q = (mat3(m) * normal).xy;
+    float l = length(q);
+    float tanA = min(sinA / max(ndl, 1e-3), SHADOW_MAX_SLOPE);
+    if (l > 1e-6) grad = q / l * tanA * (texelWorld / texel) / depthRange;
+  }
+
+  float radius = radiusWorld > 0.0 ? radiusWorld / texelWorld : uShadowKernel.y;
+  return shadowFilter(c, sp, bias, texel, radius, grad);
 }
 
 /**
@@ -225,9 +339,9 @@ float cascadeVisibility(int c, vec3 worldPos, vec3 normal, vec3 sunDir) {
  * the same gap at the 1.4 km handover from cascade 1 (0.94 inside it, 0.11
  * just past it before, against 0.98 and 0.30 from the map).
  */
-float bandVisibility(int c, vec3 worldPos, vec3 normal, vec3 sunDir) {
-  float v = cascadeVisibility(c, worldPos, normal, sunDir);
-  if (c == 2 && uCityShadow.x > 0.5) v = min(v, cascadeVisibility(3, worldPos, normal, sunDir));
+float bandVisibility(int c, vec3 worldPos, vec3 normal, vec3 sunDir, float radiusWorld) {
+  float v = cascadeVisibility(c, worldPos, normal, sunDir, radiusWorld);
+  if (c == 2 && uCityShadow.x > 0.5) v = min(v, cascadeVisibility(3, worldPos, normal, sunDir, 0.0));
   return v;
 }
 
@@ -273,7 +387,7 @@ float geometrySunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewD
   // measures the cascades against it.
   bool city = uCityShadow.x > 0.5;
   if (viewDist >= uCascadeFar.z || uCityShadow.x > 1.5) {
-    return city ? mix(1.0, cascadeVisibility(3, worldPos, normal, sunDir), uShadowStrength) : 1.0;
+    return city ? mix(1.0, cascadeVisibility(3, worldPos, normal, sunDir, 0.0), uShadowStrength) : 1.0;
   }
 
   // Shadows must not end at a hard circle round the aircraft, so the last
@@ -288,18 +402,24 @@ float geometrySunVisibility(vec3 worldPos, vec3 normal, vec3 sunDir, float viewD
   else if (viewDist < uCascadeFar.y) { c = 1; nearD = uCascadeFar.x;  farD = uCascadeFar.y; }
   else                               { c = 2; nearD = uCascadeFar.y;  farD = uCascadeFar.z; }
 
-  float vis = bandVisibility(c, worldPos, normal, sunDir);
-
   // Cross-fade into the next cascade over the last 12% of this one. Without it
   // the resolution step draws a visible line straight across the city.
   // The second test is what keeps a DISABLED outer cascade (whose far equals
   // the previous one's) from being blended in as a stale map.
-  if (c < 2 && farD < uCascadeFar.z) {
-    float t = smoothstep(farD - (farD - nearD) * 0.12, farD, viewDist);
-    if (t > 0.0) vis = mix(vis, bandVisibility(c + 1, worldPos, normal, sunDir), t);
+  float t = 0.0;
+  if (c < 2 && farD < uCascadeFar.z) t = smoothstep(farD - (farD - nearD) * 0.12, farD, viewDist);
+
+  float vis;
+  if (t > 0.0) {
+    float rNext = uShadowKernel.y * cascadeTexelWorld(c + 1);
+    float rHere = uShadowKernel.y * cascadeTexelWorld(c);
+    vis = mix(bandVisibility(c, worldPos, normal, sunDir, mix(rHere, rNext, t)),
+              bandVisibility(c + 1, worldPos, normal, sunDir, rNext), t);
+  } else {
+    vis = bandVisibility(c, worldPos, normal, sunDir, 0.0);
   }
 
-  if (handoff > 0.0) vis = mix(vis, city ? cascadeVisibility(3, worldPos, normal, sunDir) : 1.0, handoff);
+  if (handoff > 0.0) vis = mix(vis, city ? cascadeVisibility(3, worldPos, normal, sunDir, 0.0) : 1.0, handoff);
   return mix(1.0, vis, uShadowStrength);
 }
 
@@ -348,11 +468,13 @@ function makeTarget(size: number, depthType: THREE.TextureDataType = THREE.Unsig
   const depth = new THREE.DepthTexture(size, size);
   depth.type = depthType;
   depth.format = THREE.DepthFormat;
-  depth.minFilter = THREE.NearestFilter;
-  depth.magFilter = THREE.NearestFilter;
-  // Sampled as an ordinary sampler2D, not as a sampler2DShadow: the PCF loop
-  // wants the raw depth so it can apply its own bias.
-  depth.compareFunction = null;
+  // Sampled as a sampler2DShadow with LINEAR filtering: the hardware does the
+  // 2x2 compare and blends the four answers bilinearly, which is what makes a
+  // shadow edge continuous instead of snapped to texels. The bias is still
+  // ours, subtracted from the reference depth before the compare.
+  depth.minFilter = THREE.LinearFilter;
+  depth.magFilter = THREE.LinearFilter;
+  depth.compareFunction = THREE.LessEqualCompare;
 
   // A colour attachment because three always makes one; nothing ever reads it,
   // the depth material has colorWrite off and the pass never clears it, so it
@@ -436,6 +558,14 @@ export class SunShadow {
   readonly cityStats = { renders: 0, cpuMs: 0 };
   /** The city map everywhere and no cascades: the reference frame tools/verify-shadow.ts measures against. */
   cityOnly = false;
+  /**
+   * The old samplers, for the vacuity probes of tools/verify-shadowedge.ts
+   * (`?shadowprobe=1` one nearest tap, `=2` the old 3x3 nearest); 0 is the
+   * real filter.
+   */
+  kernelProbe = 0;
+  /** Radius of the PCF disk in texels; a field so the edge harness can sweep it. */
+  kernelRadius = SHADOW_KERNEL_TEXELS;
 
   private cascades: Cascade[] = [];
   /** The split distances in use: CASCADE_FAR unless a place set its own. */
@@ -446,14 +576,26 @@ export class SunShadow {
   private cityDepthMaterial: THREE.RawShaderMaterial;
   private size: number;
   private readonly budget: Budget;
+  /**
+   * What an unallocated slot (a cascade this tier never draws, the city map
+   * before a pack) is bound to. It has to be a depth texture with compare on:
+   * three's own placeholder is RGBA, and a colour texture on a
+   * sampler2DShadow fails every draw that names it, sampled or not.
+   */
+  private readonly placeholder: THREE.DepthTexture;
 
   constructor(budget: Budget) {
     this.budget = budget;
     const size = budget.shadowCascadeSize;
     this.size = size;
+    this.placeholder = new THREE.DepthTexture(1, 1);
+    this.placeholder.type = THREE.UnsignedIntType;
+    this.placeholder.compareFunction = THREE.LessEqualCompare;
+    // Never a render target's attachment, so three only allocates it if asked.
+    this.placeholder.needsUpdate = true;
     // Three slots, but a map only for the cascades this tier can ever draw.
     // The shader names three samplers unconditionally, and an unallocated one
-    // is bound to three's 1x1 placeholder, which is never read because a
+    // is bound to the 1x1 placeholder, which is never read because a
     // cascade past `shadowCascadeCount` is never selected. The reduced tier
     // used to allocate its third 1024 map anyway: 5 MB of a phone's memory for
     // a texture nothing ever drew into.
@@ -476,9 +618,9 @@ export class SunShadow {
     this.cityDepthMaterial.side = THREE.BackSide;
 
     this.uniforms = {
-      uShadowMap0: { value: this.cascades[0].target?.depthTexture ?? null },
-      uShadowMap1: { value: this.cascades[1].target?.depthTexture ?? null },
-      uShadowMap2: { value: this.cascades[2].target?.depthTexture ?? null },
+      uShadowMap0: { value: this.cascades[0].target?.depthTexture ?? this.placeholder },
+      uShadowMap1: { value: this.cascades[1].target?.depthTexture ?? this.placeholder },
+      uShadowMap2: { value: this.cascades[2].target?.depthTexture ?? this.placeholder },
       uShadowMat0: { value: this.cascades[0].matrix },
       uShadowMat1: { value: this.cascades[1].matrix },
       uShadowMat2: { value: this.cascades[2].matrix },
@@ -487,7 +629,8 @@ export class SunShadow {
       uCascadeDepth: { value: new THREE.Vector3(1, 1, 1) },
       uShadowTexel: { value: 1 / size },
       uShadowStrength: { value: 0 },
-      uCityShadowMap: { value: null },
+      uShadowKernel: { value: new THREE.Vector4(budget.shadowTaps, SHADOW_KERNEL_TEXELS, 0, 0) },
+      uCityShadowMap: { value: this.placeholder },
       uCityShadowMat: { value: new THREE.Matrix4() },
       uCityShadow: { value: new THREE.Vector4(0, 1, 1, 1) },
       uCloudShadowMap: { value: null },
@@ -643,6 +786,14 @@ export class SunShadow {
   ): void {
     const u = this.uniforms;
 
+    // A depth texture exists on the GPU only once its target has been set up,
+    // and until then three binds its RGBA placeholder in its place, which on a
+    // sampler2DShadow fails every draw naming it, sampled or not: a city
+    // loaded at dusk (shadows off, so no pass ever ran) drew no buildings.
+    // A no-op once each target is set up.
+    for (const c of this.cascades) if (c.target) renderer.initRenderTarget(c.target);
+    if (this.city) renderer.initRenderTarget(this.city.target);
+
     // Below the horizon the fit goes singular and a shadow would be meaningless
     // anyway: there is no beam left to block.
     const strength = THREE.MathUtils.smoothstep(sunDir.y, SUN_MIN_Y, SUN_FULL_Y);
@@ -736,6 +887,8 @@ export class SunShadow {
     );
     u.uShadowTexel.value = 1 / this.size;
     u.uShadowStrength.value = strength;
+    // The adaptive step that halves the maps also halves the taps.
+    u.uShadowKernel.value.set(lowTier ? Math.min(this.budget.shadowTaps, 4) : this.budget.shadowTaps, this.kernelRadius, this.kernelProbe, 0);
 
     this.updateCity(renderer, scene, sunDir);
   }
@@ -823,14 +976,15 @@ export class SunShadow {
       c.target?.setSize(size, size);
       c.drawn = false;
     }
-    this.uniforms.uShadowMap0.value = this.cascades[0].target?.depthTexture ?? null;
-    this.uniforms.uShadowMap1.value = this.cascades[1].target?.depthTexture ?? null;
-    this.uniforms.uShadowMap2.value = this.cascades[2].target?.depthTexture ?? null;
+    this.uniforms.uShadowMap0.value = this.cascades[0].target?.depthTexture ?? this.placeholder;
+    this.uniforms.uShadowMap1.value = this.cascades[1].target?.depthTexture ?? this.placeholder;
+    this.uniforms.uShadowMap2.value = this.cascades[2].target?.depthTexture ?? this.placeholder;
   }
 
   dispose(): void {
     for (const c of this.cascades) c.target?.dispose();
     this.city?.target.dispose();
+    this.placeholder.dispose();
     this.depthMaterial.dispose();
     this.cityDepthMaterial.dispose();
   }

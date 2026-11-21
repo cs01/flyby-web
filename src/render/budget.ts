@@ -210,6 +210,8 @@ export interface Budget {
    * three's placeholder, so the estimate below counts this, not three.
    */
   shadowCascadeCount: number;
+  /** Hardware PCF taps per shadow lookup, 4 or 8; see shadowFilter in render/sunshadow.ts. */
+  shadowTaps: number;
   /**
    * Edge length of the city-wide static shadow map (render/sunshadow.ts), the
    * one that takes over where the cascades run out.
@@ -529,6 +531,7 @@ const FULL_PLAN: Plan = {
   msaaSamples: 4,
   shadowCascadeSize: 2048,
   shadowCascadeCount: 3,
+  shadowTaps: 8,
   // 4096 over Manhattan's ~17 km is 4 m a texel: a street-scale shadow seen
   // from beyond the 6 km cascade, where a pixel already covers several metres.
   cityShadowSize: 4096,
@@ -605,6 +608,9 @@ const REDUCED_PLAN: Plan = {
   // The outermost cascade draws the whole city a third time and carries the
   // least visible detail, so it is what goes first.
   shadowCascadeCount: 2,
+  // Half the desktop's: every lit fragment pays this, on the GPU with the
+  // least fill rate to spare.
+  shadowTaps: 4,
   // A phone's cascades end 1.4 km out, so this map draws most of the city's
   // shadows on one. 1792 is 9.5 m a texel over Manhattan: a block's shadow,
   // not a cornice's, which is what a phone screen resolves at that range.

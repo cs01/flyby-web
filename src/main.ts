@@ -502,6 +502,8 @@ async function main() {
   // cascade uniforms are spread by reference into the terrain and building
   // materials at the moment those materials are created.
   const sunShadow = new SunShadow(budget);
+  // `?shadowprobe=1|2`: the old hard samplers, the probes of tools/verify-shadowedge.ts.
+  sunShadow.kernelProbe = Number(new URLSearchParams(location.search).get("shadowprobe") ?? 0) || 0;
   composite.attachShadow(sunShadow.uniforms);
   // One environment probe for the whole scene: sky irradiance for every diffuse
   // surface and a prefiltered cube for the glass and the wet tarmac.
