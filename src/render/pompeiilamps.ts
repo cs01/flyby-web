@@ -22,7 +22,7 @@ import * as THREE from "three";
 import type { PompeiiData } from "../data/pompeii";
 import { LampKind, LAMP_KINDS, flameOffsets, flicker, jitter, lampLevel, placeLamps, lampCensus, type Lamp, type LampSites } from "../data/pompeiilamps";
 import { POMPEII_FRAG, type PompeiiUniforms } from "./pompeii";
-import { OIL_REACH_M, townLampUniforms } from "./oillight";
+import { OIL_REACH_M, buildOilGrid, townLampUniforms } from "./oillight";
 
 /** Per tier: lights in the shader, flame sprites, fittings drawn and how far. */
 export const LAMP_TIERS = {
@@ -312,14 +312,14 @@ void main() {
   vec4 vc = viewMatrix * vec4(aGlow.xyz, 1.0);
   float w = max(0.05, -vc.z);
   float s = aGlow.w;
-  float floorS = 2.5 * w / uPxPerM;
+  float floorS = 2.0 * w / uPxPerM;
   float k = s / max(s, floorS);
   s = max(s, floorS);
   // Toward the eye a little, so the lamp's own body does not cut the halo.
   vc.xyz += normalize(-vc.xyz) * min(0.12, w * 0.3);
   vc.xy += position.xy * s;
   vUv = position.xy;
-  vTint = vec4(aTint.rgb * max(k * k, 0.035), aTint.w);
+  vTint = vec4(aTint.rgb * max(k * k, 0.3), aTint.w);
   gl_Position = projectionMatrix * vc;
 }
 `;
@@ -331,10 +331,10 @@ in vec4 vTint;
 out vec4 fragColor;
 void main() {
   // The flame: a teardrop over the wick, then a soft halo round it.
-  vec2 f = vec2(vUv.x * 7.0, (vUv.y + 0.03) * 3.2);
+  vec2 f = vec2(vUv.x * 10.0, (vUv.y + 0.02) * 4.2);
   f.x /= max(0.25, 1.0 - 0.55 * clamp(vUv.y * 3.0, -0.5, 1.0));
-  float core = exp(-dot(f, f) * 2.2) * 9.0 * (1.0 - vTint.w);
-  float halo = exp(-dot(vUv, vUv) * 7.0) * (0.25 + 0.6 * vTint.w);
+  float core = exp(-dot(f, f) * 2.2) * 3.0 * (1.0 - vTint.w);
+  float halo = exp(-dot(vUv, vUv) * 9.0) * (0.12 + 0.6 * vTint.w);
   vec3 c = vTint.rgb * halo + vTint.rgb * core * vec3(1.0, 0.85, 0.6);
   fragColor = vec4(c, 1.0);
 }
@@ -366,6 +366,8 @@ export class PompeiiLamps {
   /** Lights handed to the shader last frame, for the gate and the HUD. */
   lightsUsed = 0;
   flamesDrawn = 0;
+  /** Mean lights a lit grid cell's pixels loop over. */
+  lightsPerCell = 0;
   private readonly flames: Flame[] = [];
   private readonly world: Float32Array; // per lamp: light x,y,z
   private readonly level: Float32Array;
@@ -532,6 +534,7 @@ export class PompeiiLamps {
       }
     }
     townLampUniforms.uOilLampN.value = N;
+    this.lightsPerCell = buildOilGrid(N);
     this.lightsUsed = N;
 
     // --- flames: nearest first, in front of the camera ---
@@ -602,8 +605,15 @@ export class PompeiiLamps {
     }
   }
 
+  /** No lights handed to the town this frame. */
+  dark(): void {
+    townLampUniforms.uOilLampN.value = 0;
+    buildOilGrid(0);
+  }
+
   dispose(): void {
     townLampUniforms.uOilLampN.value = 0;
+    buildOilGrid(0);
     townLampUniforms.uLampNight.value = 0;
   }
 }

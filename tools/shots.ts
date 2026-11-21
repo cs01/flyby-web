@@ -1069,14 +1069,6 @@ export const POSES: Pose[] = [
     wx: POMPEII_WX,
     what: "Pompeii from the air at 21:30",
   },
-  {
-    name: "pompeii-lamps-debug",
-    city: "pompeii",
-    lat: 40.750909, lon: 14.490194, altM: 43.24, hdgDeg: 150, pitchDeg: -59,
-    t: D("0079-08-22T20:40:04Z"),
-    wx: POMPEII_WX,
-    what: "debug",
-  },
   // The eruption (sim/eruption.ts, render/eruption.ts), on its own clock:
   // the town clock the app shows is UTC + 0:49:56, so 13:10Z is 14:00 there.
   {

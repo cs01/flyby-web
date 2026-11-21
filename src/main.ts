@@ -2442,7 +2442,10 @@ async function main() {
       const people = townsfolk && townsfolk.group.visible
         ? townsfolk.sim.people.map((p) => ({ x: p.x + pompeiiOff.x, z: p.z + pompeiiOff.z, heading: p.heading }))
         : undefined;
-      pompeiiLamps.update({ hour: localHours(now.getTime()), night: light.night, t: elapsed, camera, viewH: drawSize.y, people, groundAt: terrain.heightAt });
+      // Toggled off by name (tools/profile.ts --attrib) the lights go too, so the
+      // toggle prices the shader loop as well as the meshes.
+      if (perfOff.has("pompeii-lamps")) pompeiiLamps.dark();
+      else pompeiiLamps.update({ hour: localHours(now.getTime()), night: light.night, t: elapsed, camera, viewH: drawSize.y, people, groundAt: terrain.heightAt });
       prof.cpuEnd("pompeiilamps");
     }
     prof.cpuBegin("airtraffic");
@@ -2529,8 +2532,10 @@ async function main() {
     const hf = hourFactors(localHour);
     // The city's own light on its sky and cloud base; ?noskyglow=1 is the
     // pitch-black sky the skyglow gate's probe renders.
+    // A town lit by oil lamps put no glow on its sky worth drawing: under the
+    // lamps (render/pompeiilamps.ts) Pompeii's sky is the stars and the moon.
     updateSkyglow(urban.glow, camera.position.x, camera.position.z, light.night, hf.residential,
-      noSkyglow, wx.low.cover > 0.03 ? wx.low.base : wx.mid.base, cityUplight);
+      noSkyglow || (!!era && !!pompeiiLamps), wx.low.cover > 0.03 ? wx.low.base : wx.mid.base, cityUplight);
     // ?nodetail=1: no camera-centred detail layer, a probe for the gates.
     prof.cpuBegin("bldgdetail");
     if (!noDetail) buildings?.updateDetail(camera.position.x, camera.position.z);

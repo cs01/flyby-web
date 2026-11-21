@@ -56,6 +56,8 @@ const BASE: { name: string; query: string; act?: string; settleMs?: number; atMs
   { name: "pompeii-escape", query: "city=pompeii&intro=0&escape=bakery", settleMs: 3000 },
   { name: "pompeii-escape-end", query: "city=pompeii&intro=0", act: "flybyEscape.forceEnding('road')", settleMs: 1500 },
   { name: "pompeii-eruption-menu", query: "city=pompeii&intro=0", act: "document.querySelector('.topbar-menu')?.click()", settleMs: 600 },
+  // The town by lamplight at 21:30 on the lean tier: 16 lights, 128 flames (render/pompeiilamps.ts).
+  { name: "pompeii-lamps", query: "city=pompeii&intro=0&t=-59653941596", act: tap("walk"), settleMs: 3000 },
 ];
 
 const SCENES: Scene[] = [

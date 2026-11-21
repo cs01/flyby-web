@@ -14,7 +14,7 @@ import {
   FLAME_JITTER_M, LAMPBEARER_AT, LampKind, flicker, jitter, lampCensus, lampLevel, placeLamps, type Lamp, type LampSites,
 } from "../src/data/pompeiilamps";
 import { LAMP_TIERS, PompeiiLamps } from "../src/render/pompeiilamps";
-import { OIL_LIGHTS_MAX, TOWN_LAMPS_GLSL, townLampUniforms } from "../src/render/oillight";
+import { OIL_LIGHTS_MAX, OIL_REACH_M, TOWN_LAMPS_GLSL, oilMaskAt, townLampUniforms } from "../src/render/oillight";
 import { budgetForTier, type DeviceDescriptor } from "../src/render/budget";
 import { pompeiiHeightAt } from "../src/data/pompeiiroads";
 
@@ -204,7 +204,26 @@ console.log(`lamps ${lamps.length}: ${JSON.stringify(census.byRole)}`);
       maxN = Math.max(maxN, townLampUniforms.uOilLampN.value);
       if (k < 2) minN = Math.min(minN, townLampUniforms.uOilLampN.value);
       maxF = Math.max(maxF, pl.flamesDrawn);
-      if (k === 0) w = townLampUniforms.uOilLamp.value.slice(0, townLampUniforms.uOilLampN.value).map((v) => v.w);
+      if (k === 0) {
+        w = townLampUniforms.uOilLamp.value.slice(0, townLampUniforms.uOilLampN.value).map((v) => v.w);
+        // The grid must hold every light whose reach covers a point (it may
+        // hold more), and must cut the loop well below all of them.
+        const L = townLampUniforms.uOilLamp.value, n = townLampUniforms.uOilLampN.value;
+        rule(`${lean ? "lean" : "full"}: the light grid misses no light in reach of a pixel`, (probe) => {
+          let missed = 0, tested = 0;
+          for (let q = 0; q < 4000; q++) {
+            const px = x - 60 + ((q * 7919) % 120), pz = z - 60 + ((q * 104729) % 120) * 1.0;
+            const m = probe ? oilMaskAt(px, pz) & ~1 : oilMaskAt(px, pz);
+            for (let i = 0; i < n; i++) {
+              if (L[i].w <= 0 || (L[i].x - px) ** 2 + (L[i].z - pz) ** 2 >= OIL_REACH_M * OIL_REACH_M) continue;
+              tested++;
+              if (!((m >>> i) & 1)) missed++;
+            }
+          }
+          return [tested > 100 && missed === 0, `${missed} of ${tested}`];
+        });
+        check(`${lean ? "lean" : "full"}: a lit cell loops over a fraction of the lights`, pl.lightsPerCell > 0 && pl.lightsPerCell < n * 0.35, `${pl.lightsPerCell.toFixed(1)} of ${n}`);
+      }
     });
     check(`${lean ? "lean" : "full"}: lights handed to the shader <= ${tier.lights}, and filled at street level`, maxN <= tier.lights && minN === tier.lights, `${minN}..${maxN}`);
     check(`${lean ? "lean" : "full"}: flames drawn <= ${tier.glows}`, maxF <= tier.glows && maxF > 0, `${maxF}`);

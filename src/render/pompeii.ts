@@ -447,7 +447,7 @@ void main() {
   float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
   // Under the lamps the night sky is starlight and airglow only: no town of
   // thousands of electric lights round it, so the street between pools goes dark.
-  vec3 ambient = occludedSkyIrradiance(n) * (1.0 - 0.55 * uLampNight * uNight);
+  vec3 ambient = occludedSkyIrradiance(n) * (1.0 - 0.65 * uLampNight * uNight);
   vec3 moon = uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
   // Sunlit paving and plaster throw a lot of light into a narrow street:
   // onto the walls from the paving, and back down onto shaded ground from
