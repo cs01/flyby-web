@@ -24,6 +24,7 @@
 // part that touches `navigator`.
 
 import type { OceanCascadePlan } from "./oceanspectrum";
+import { STATUE_FULL_BYTES, STATUE_LEAN_BYTES } from "./statues";
 
 /** Cap on the device pixel ratio, applied by render/renderer.ts.
  *
@@ -390,7 +391,8 @@ export function pompeiiArtBytes(p: PompeiiPlan): number {
 }
 
 export function pompeiiBytes(p: PompeiiPlan): number {
-  return p.lean ? POMPEII_LEAN_BYTES : POMPEII_FULL_BYTES;
+  // The sculpted statues are a mesh of their own, built after the town.
+  return p.lean ? POMPEII_LEAN_BYTES + STATUE_LEAN_BYTES : POMPEII_FULL_BYTES + STATUE_FULL_BYTES;
 }
 
 /** Alcatraz (render/alcatraz.ts): its own drape and the lidar ground's grid step. */

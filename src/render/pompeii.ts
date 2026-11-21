@@ -25,6 +25,7 @@ import { Order, columnTemplate } from "./pompeiiorders";
 import { INTERIOR_GLSL } from "./pompeiiinterior";
 import { ART_WORKS, type ArtAtlas } from "../data/pompeiiart";
 import { HORSE_BONES, STRIDE_M, buildHorse, poseHorse, type Gait, type HorseMesh } from "./horse";
+import { runStatueJob, takeStatueJobs, type StatueJob } from "./statues";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
 import { Land, LandGrid, type PompeiiSuburbs } from "../data/pompeiisuburbs";
 import { BuildingKind, RoofShape, type Building, type CityPack } from "../data/citypack";
@@ -1067,14 +1068,15 @@ void main() {
     // court walls, not as dark as a shop's back room.
     if (mode > 1.5) covered = 0.4;
   } else if (style < 17.5) {
-    // Bronze (17, render/pompeiilamps.ts, the statues): mottled like cast
-    // metal, green verdigris gathered where the rain and handling did not
-    // reach (faces turned down and away), a polished sheen on the rest.
-    albedo *= 0.9 + 0.15 * vnoise(vWorld.xz * 5.0 + vWorld.y * 3.0);
-    float nearB = 1.0 - smoothstep(4.0, 20.0, vViewDist);
-    float hollow = smoothstep(0.1, -0.5, n.y) * 0.6 + smoothstep(0.55, 0.75, vnoise(vWorld.xz * 31.0 + vWorld.y * 47.0)) * 0.5;
-    albedo = mix(albedo, vec3(0.16, 0.27, 0.2), clamp(hollow, 0.0, 1.0) * 0.55 * nearB);
-    gloss = 0.75 - 0.4 * clamp(hollow, 0.0, 1.0) * nearB;
+    // Bronze (17, render/pompeiilamps.ts, render/statues.ts): the vertex
+    // colour carries the patina the statue builder baked from its shape
+    // (dark in the hollows, verdigris only in the deepest, worn bright on
+    // the high points). Polished metal where it is bright, a dull crust
+    // where it is dark or green.
+    albedo *= 0.93 + 0.1 * vnoise(vWorld.xz * 5.0 + vWorld.y * 3.0);
+    float lumB = dot(albedo, vec3(0.3, 0.55, 0.15));
+    float green = clamp((albedo.g - albedo.r) * 6.0, 0.0, 1.0);
+    gloss = mix(0.3, 0.9, smoothstep(0.08, 0.3, lumB)) * (1.0 - 0.7 * green);
   } else if (style > 19.5 && style < 20.5) {
     // A bath's rooms (render/pompeiiwater.ts): p1 the finish, p2 how much
     // of the sky the room keeps out (0..255). u, h the wall's own metres.
@@ -1265,10 +1267,15 @@ void main() {
     shut = mix(0.5, 0.95, uNight);
   } else if (style > 24.5 && style < 25.5) {
     // A marble statue (render/statues.ts): the vertex colour is its paint
-    // and baked fold shading. Fine grain and a soft polish only; the paving
-    // marble's slab joints (style 11) would cut across a figure.
-    albedo *= 0.96 + 0.06 * vnoise(vWorld.xz * 40.0 + vWorld.y * 31.0);
-    gloss = 0.3;
+    // and the occlusion baked from its shape; the seed is how thin the stone
+    // is there. Marble lets light into it: the terminator wraps round (the
+    // normal leans toward the sun, more where the stone is thin) and thin
+    // edges, fingers and fold lips glow warm when lit from behind.
+    albedo *= 0.97 + 0.05 * vnoise(vWorld.xz * 40.0 + vWorld.y * 31.0);
+    n = normalize(n + uSunDir * (0.25 + 0.3 * seed));
+    float back = clamp(-dot(normalize(vNormal), uSunDir), 0.0, 1.0);
+    albedo += vec3(0.1, 0.05, 0.025) * seed * (0.3 + 0.7 * back) * step(0.0, uSunDir.y);
+    gloss = 0.35;
   }
 
 #ifdef ROOF_COLLAPSE
@@ -1606,6 +1613,7 @@ export class Pompeii {
     for (const m of [town, floor, streets]) m.position.set(opts.offsetX, 0, opts.offsetZ);
     this.buildings.add(town);
     this.group.add(this.buildings, floor, streets);
+    this.buildStatues(takeStatueJobs(), opts.offsetX, opts.offsetZ);
     const bytes = (m: PompeiiMeshData): number => m.position.byteLength + m.normal.byteLength + m.colour.byteLength + m.surf.byteLength + m.wall.byteLength + m.index.byteLength;
     this.stats = {
       triangles: this.model.mesh.triangles,
@@ -1613,6 +1621,32 @@ export class Pompeii {
       gpuBytes: bytes(this.model.mesh) + bytes(this.model.floor) + bytes(this.model.streets),
       buildMs: performance.now() - t0,
     };
+  }
+
+  /**
+   * The sculpted statues (render/statues.ts). The town's build only lays
+   * their bases and lists them, since sculpting all of them takes a second
+   * or two; they are built here a few at a time once the town is up, into a
+   * mesh of their own drawn with the town's material.
+   */
+  private buildStatues(jobs: StatueJob[], ox: number, oz: number): void {
+    const st = new Store();
+    const step = (): void => {
+      const t = performance.now();
+      while (jobs.length && performance.now() - t < 30) runStatueJob(st, jobs.shift()!);
+      if (jobs.length) { setTimeout(step, 0); return; }
+      if (!st.n) return;
+      const m: PompeiiMeshData = {
+        position: st.pos.slice(0, st.n * 3), normal: st.nrm.slice(0, st.n * 4), colour: st.col.slice(0, st.n * 4),
+        surf: st.surf.slice(0, st.n * 4), wall: st.wall.slice(0, st.n * 4), index: st.idx.slice(0, st.ni), triangles: st.ni / 3,
+      };
+      const mesh = new THREE.Mesh(geometry(m), pompeiiMaterial(this.uniforms));
+      mesh.name = "pompeii-statues";
+      mesh.layers.enable(SHADOW_CASTER_LAYER);
+      mesh.position.set(ox, 0, oz);
+      this.buildings.add(mesh);
+    };
+    setTimeout(step, 0);
   }
 
   /** Per frame: the near columns. Cheap unless the camera has moved 6 m. */

@@ -2881,7 +2881,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const forum = data.publics.find((p) => p.kind === "forum");
   const forumC = forum ? ringCentroid(forum.ring) : null;
   for (let pi = 0; pi < data.publics.length; pi++) { buildPublic(data.publics[pi], pi); S.tag = 0; }
-  if (!grey) siteInfo.statues.push(...placeTownStatues(S, data, ground, KERB_M, lean, 0.5).placed);
+  if (!grey) siteInfo.statues.push(...placeTownStatues(S, data, ground, KERB_M, lean, 0.5, statueBases).placed);
 
   function buildPublic(p: PompeiiPublic, pi: number): void {
     const r = cleanRing(p.ring) ?? p.ring;
