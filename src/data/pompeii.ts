@@ -91,6 +91,13 @@ export interface PompeiiData {
   towers?: PompeiiGate[];
   /** Public fountains mapped in the excavation. */
   fountains?: { x: number; z: number }[];
+  /**
+   * Mapped bakeries, thermopolia, and the works of art the park marks (the
+   * Dancing Faun, the Alexander Mosaic, the Mysteries frieze), as points.
+   */
+  sites?: { name: string; kind: "bakery" | "thermopolium" | "artwork"; x: number; z: number }[];
+  /** The Villa dei Misteri, outside the wall to the north-west. */
+  villa?: { name: string; ring: Ring; courts?: Ring[]; wallM?: number };
   stats: Record<string, number>;
 }
 
@@ -135,6 +142,17 @@ export function polylineLength(p: number[]): number {
   let s = 0;
   for (let i = 2; i < p.length; i += 2) s += Math.hypot(p[i] - p[i - 2], p[i + 1] - p[i - 1]);
   return s;
+}
+
+/** Where the Villa dei Misteri's floor level is taken: the middle of its outline's longest side. */
+export function villaFloorPoint(r: Ring): [number, number] {
+  let best = 0, bl = 0;
+  const n = r.length / 2;
+  for (let k = 0; k < n; k++) {
+    const L = Math.hypot(r[((k + 1) % n) * 2] - r[k * 2], r[((k + 1) % n) * 2 + 1] - r[k * 2 + 1]);
+    if (L > bl) { bl = L; best = k; }
+  }
+  return [(r[best * 2] + r[((best + 1) % n) * 2]) / 2, (r[best * 2 + 1] + r[((best + 1) % n) * 2 + 1]) / 2];
 }
 
 /** Display name without the regio.insula.door address OSM carries. */

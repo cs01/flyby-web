@@ -827,6 +827,36 @@ for (const e of raw.elements) {
 }
 console.log(`${towers.length} towers (${towers.map((t) => t.name).join(", ")}), ${fountains.length} mapped fountains`);
 
+// --- sites: bakeries, thermopolia, and the works of art the park maps ----------------
+// Points only (a node, or a way's centroid): what stands there is modelled by
+// render/pompeiimesh.ts. Inside the wall, except the Villa dei Misteri's.
+const sites: NonNullable<PompeiiData["sites"]> = [];
+let villa: PompeiiData["villa"];
+for (const e of raw.elements) {
+  const t = e.tags;
+  if (!t?.name) continue;
+  let p: [number, number] | null = null;
+  if (e.type === "node") p = nodes.get(e.id) ?? null;
+  else if (e.type === "way" || e.type === "relation") {
+    const r = outerRing(e);
+    if (r) p = ringCentroid(r) as [number, number];
+    if (r && t.name === "Villa dei Misteri") {
+      if (ringArea(r) < 0) reverseRing(r);
+      villa = { name: t.name, ring: r.map(r1), ...houseCourts(r) };
+    }
+  }
+  if (!p) continue;
+  const site = /affreschi della sala dei misteri/i.test(t.name);
+  if (!inWall(p[0], p[1]) && !site) continue;
+  let kind: "bakery" | "thermopolium" | "artwork" | null = null;
+  if (/panific|pistrin|forno|bakery/i.test(t.name) || t["disused:shop"] === "bakery") kind = "bakery";
+  else if (/thermopol|termopol/i.test(t.name) || /thermopolium/.test(t.archaeological_site ?? "")) kind = "thermopolium";
+  else if (t.tourism === "artwork" && t.artwork_type !== undefined && !t.artist_name) kind = "artwork";
+  if (!kind || sites.some((s) => s.kind === kind && Math.hypot(s.x - p![0], s.z - p![1]) < 6)) continue;
+  sites.push({ name: plainName(t.name), kind, x: r1(p[0]), z: r1(p[1]) });
+}
+console.log(`sites: ${["bakery", "thermopolium", "artwork"].map((k) => `${sites.filter((s) => s.kind === k).length} ${k}`).join(", ")}; villa ${villa ? "found" : "missing"}`);
+
 const streetM = streets.reduce((s, st) => s + polylineLength(st.pts), 0);
 const stats = {
   rawElements: raw.elements.length,
@@ -845,7 +875,7 @@ const stats = {
   places: places.length,
 };
 const data: PompeiiData = {
-  lat0: LAT0, lon0: LON0, wall: wall.map(r1), gates, towers, fountains, streets, insulae, publics, amphitheatre, places, domus, stats,
+  lat0: LAT0, lon0: LON0, wall: wall.map(r1), gates, towers, fountains, streets, insulae, publics, amphitheatre, places, domus, sites, villa, stats,
 };
 writeFileSync(OUT, JSON.stringify(data));
 console.log(JSON.stringify(stats, null, 1));

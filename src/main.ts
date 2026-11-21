@@ -38,7 +38,7 @@ import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M, WALK_EYE_M } from "./sim/drone";
 import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
-import { Pompeii, Cart, Townsfolk, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
+import { Pompeii, Cart, Townsfolk, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
 import { EscapeUi } from "./app/escape";
@@ -472,6 +472,7 @@ async function main() {
   // runs of the same URL is nailed down here in one place.
   const shotMode = new URLSearchParams(location.search).has("shot");
   const shotCam = pinnedCam();
+  const shotAgl = new URLSearchParams(location.search).has("agl");
   const driveFromShot = new URLSearchParams(location.search).has("drive");
   const headlightsOff = new URLSearchParams(location.search).has("noheadlights");
   const lampLightOff = new URLSearchParams(location.search).has("nolamplight");
@@ -553,9 +554,15 @@ async function main() {
     const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
     pompeii = new Pompeii({
       data: pompeiiData, heightAt: terrain.heightAt, shadow: sunShadow.uniforms,
-      lean: budget.pompeii.lean, offsetX: off.x, offsetZ: off.z,
+      lean: budget.pompeii.lean, offsetX: off.x, offsetZ: off.z, art: !perfOff.has("pompeiiart"),
     });
     scene.add(pompeii.group);
+    // The restored paintings and mosaics; `?off=pompeiiart` leaves them out of the town and skips the download.
+    // A shot waits for it, so a frame is never taken of the ground colours alone.
+    if (!perfOff.has("pompeiiart")) {
+      const art = loadPompeiiArt(`${import.meta.env.BASE_URL}landmarks`, pompeii.uniforms, budget.pompeii.artPx < 2048);
+      if (shotMode) await art;
+    }
     sunShadow.setCityCasters(pompeii.buildings);
     sunShadow.setSplits(POMPEII_SHADOW_SPLITS[0], POMPEII_SHADOW_SPLITS[1]);
     terrain.heightAt = pompeiiHeightAt(pompeiiData, terrain.heightAt, off.x, off.z);
@@ -1379,6 +1386,20 @@ async function main() {
   /** Chase view while driving: an odd count of CAM presses since the car was
    *  entered. The driver's seat is the default. */
   let carCamBase = 0;
+  // `?carorbit=yawDeg,distM,upM` with `?drive=1&chase=1`: the chase camera
+  // swung round the cart to a fixed angle, for the close-up shots of it.
+  // `?horsegait=walk,0.3` holds the horse at a phase of a gait in shot mode.
+  const carOrbit = (new URLSearchParams(location.search).get("carorbit") ?? "").split(",").map(Number);
+  const horseGait = (new URLSearchParams(location.search).get("horsegait") ?? "").split(",");
+  const orbitCar = (o: number[], c: NonNullable<typeof car>, cam: THREE.PerspectiveCamera): void => {
+    if (o.length < 3 || o.some((v) => !Number.isFinite(v))) return;
+    const h = (c.headingDeg * Math.PI) / 180, fx = Math.sin(h), fz = -Math.cos(h);
+    // Aim between the cart and the horse's shoulder, 1.8 m ahead of the axle.
+    const tx = c.position.x + fx * 1.8, tz = c.position.z + fz * 1.8, ty = c.position.y + 1.1;
+    const a = h + (o[0] * Math.PI) / 180;
+    cam.position.set(tx + Math.sin(a) * o[1], ty + o[2], tz - Math.cos(a) * o[1]);
+    cam.lookAt(tx, ty, tz);
+  };
   const carChase = (): boolean => carActive && ((input.cameraCycled - carCamBase) & 1) === 1;
   /**
    * Height above the ground under which the detail ring follows the camera.
@@ -2162,8 +2183,12 @@ async function main() {
     }
     if (cart) {
       cart.group.visible = carActive && !!car;
-      if (carActive && car) cart.update(car.position.x, car.position.y, car.position.z, car.headingDeg, car.speed, input.paused ? 0 : dt);
+      if (carActive && car) {
+        cart.update(car.position.x, car.position.y, car.position.z, car.headingDeg, car.speed, input.paused ? 0 : dt, camera.position);
+        if (horseGait.length === 2) cart.horse.pose(horseGait[0] === "trot" ? "trot" : "walk", Number(horseGait[1]) || 0, 1);
+      }
     }
+    pompeii?.update(camera.position);
     if (townsfolk) {
       // Once the column is up everyone is hurrying, and after dark one in three carries a torch.
       // From the first stones (13:30) everyone heads for a gate (sim/flee.ts),
@@ -2254,6 +2279,7 @@ async function main() {
       dash.style.display = carChase() || era ? "none" : "block";
       if (carChase()) {
         car.chaseEye(camera.position, camera.quaternion);
+        orbitCar(carOrbit, car, camera);
       } else {
         // Straight off the car, like the drone: the camera IS the driver's
         // head, in the driver's seat over the carriageway.
@@ -2287,7 +2313,9 @@ async function main() {
     // Aircraft.reset carries a note about.
     if (shotCam && !carActive) {
       const w = origin.toWorld(shotCam.lat, shotCam.lon);
-      camera.position.set(w.x, shotCam.altM, w.z);
+      // `?agl` reads the pose altitude as metres over the ground there: the
+      // indoor shots need an eye height, not a guess at the terrain.
+      camera.position.set(w.x, shotCam.altM + (shotAgl ? terrain.heightAt(w.x, w.z) : 0), w.z);
       camera.quaternion.setFromEuler(
         new THREE.Euler(
           (shotCam.pitchDeg * Math.PI) / 180,
@@ -2342,7 +2370,7 @@ async function main() {
 
     // Ease the lens. ~0.4 s to settle, and the projection matrix is rebuilt
     // only while it is actually moving.
-    const wantFov = carActive ? CAR_FOV : droneActive ? DRONE_FOV : PLANE_FOV;
+    const wantFov = carActive ? (shotFov > 5 && shotFov < 120 ? shotFov : CAR_FOV) : droneActive ? DRONE_FOV : PLANE_FOV;
     if (Math.abs(camera.fov - wantFov) > 0.01) {
       camera.fov += (wantFov - camera.fov) * (1 - Math.pow(0.0006, dt));
       if (Math.abs(camera.fov - wantFov) <= 0.01) camera.fov = wantFov;

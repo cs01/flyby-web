@@ -368,6 +368,8 @@ const PAVEMENT_BYTES_PER_TRIANGLE = 36 + 1.5 * 4;
 /** Pompeii (render/pompeii.ts): lean drops the stepping stones, counters, merlons and most columns. */
 export interface PompeiiPlan {
   lean: boolean;
+  /** The restored art atlas's width in texels (tools/bake-pompeii-art.ts): 2048, or the 1024 copy. */
+  artPx: number;
 }
 
 // Measured off buildPompeii over the committed pack, with a little headroom;
@@ -375,6 +377,11 @@ export interface PompeiiPlan {
 // quarter of them, so they can neither be exceeded nor drift into fiction.
 export const POMPEII_FULL_BYTES = Math.round(31 * 1048576);
 export const POMPEII_LEAN_BYTES = Math.round(17.5 * 1048576);
+
+/** The art atlas on the GPU: RGBA8 with its mip chain. */
+export function pompeiiArtBytes(p: PompeiiPlan): number {
+  return p.artPx * p.artPx * 4 * MIPMAP_FACTOR;
+}
 
 export function pompeiiBytes(p: PompeiiPlan): number {
   return p.lean ? POMPEII_LEAN_BYTES : POMPEII_FULL_BYTES;
@@ -596,7 +603,7 @@ const FULL_PLAN: Plan = {
     farRings: 45,
   },
   alcatraz: { drapePx: 2048, gridStep: 1 },
-  pompeii: { lean: false },
+  pompeii: { lean: false, artPx: 2048 },
 };
 
 const REDUCED_PLAN: Plan = {
@@ -659,7 +666,7 @@ const REDUCED_PLAN: Plan = {
   // anyway) and the lidar every third cell: 2.3 MB against 25 MB on the
   // full plan, while the cliffs keep their shape at 3 m.
   alcatraz: { drapePx: 512, gridStep: 3 },
-  pompeii: { lean: true },
+  pompeii: { lean: true, artPx: 1024 },
 };
 
 const PLANS: Record<QualityTier, Plan> = { full: FULL_PLAN, reduced: REDUCED_PLAN };
@@ -741,9 +748,10 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
       what: `alcatraz drape ${plan.alcatraz.drapePx} px, ground every ${plan.alcatraz.gridStep} m`,
       bytes: alcatrazBytes(plan.alcatraz),
     },
-    // No line for Pompeii's town: it is the place's buildings, drawn instead
-    // of a .city pack (it has none), so it is paid for out of the building
-    // line above. test/pompeii.check.ts holds pompeiiBytes() under that line.
+    // No line for Pompeii's town or its art atlas: they are the place's
+    // buildings, drawn instead of a .city pack (it has none), so they are paid for out of the building
+    // line above. test/pompeii.check.ts holds pompeiiBytes() plus
+    // pompeiiArtBytes() under that line.
   ];
 
   let totalBytes = 0;
