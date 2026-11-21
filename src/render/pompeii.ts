@@ -487,7 +487,7 @@ void main() {
     albedo *= 1.0 - 0.18 * inFlute * (1.0 - q * q) * near;
     if (p2 > 1.5 && h < H * 0.36) albedo = vec3(0.56, 0.14, 0.09) * (0.92 + 0.08 * (1.0 - q * q));
     gloss = 0.12;
-  } else {
+  } else if (style < 16.5) {
     // A tile of the art atlas (data/pompeiiart.ts): p1 the tile; p2 bit 0
     // repeats it along the wall at its own proportions over the wall's full
     // height, bit 1 says indoors.

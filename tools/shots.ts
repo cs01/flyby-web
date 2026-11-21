@@ -1635,6 +1635,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
 
   const bad = cdp.problems.filter((m) => FATAL.some((r) => r.test(m)));
   if (bad.length) {
+    if (process.env.SHOTS_DUMP) console.error(cdp.problems.join("\n").slice(0, 6000));
     throw new Error(`${p.name}: the page is broken, refusing to screenshot it\n  ${bad[0]}`);
   }
 
