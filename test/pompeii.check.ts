@@ -10,7 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { parsePompeii, plainName, pointInRing, polylineLength, ringArea, ringCentroid } from "../src/data/pompeii";
-import { AMPHI, ROOF_PITCH_DEG, Store, Surf, buildPompeii, distToRing, type PompeiiModel } from "../src/render/pompeiimesh";
+import { AMPHI, KERB_M, ROOF_PITCH_DEG, Store, Surf, buildPompeii, distToRing, type PompeiiModel } from "../src/render/pompeiimesh";
 import { pompeiiRoadPack, pompeiiHeightAt } from "../src/data/pompeiiroads";
 import { buildRoadGraph, componentLengths, connectedComponents } from "../src/data/roadgraph";
 import { budgetForTier, pompeiiArtBytes, pompeiiBytes, type DeviceDescriptor } from "../src/render/budget";
@@ -122,14 +122,24 @@ interface Rules { failed: string[]; stats: Record<string, number> }
 function rules(m: PompeiiModel): Rules {
   const failed: string[] = [];
   const { mesh } = m;
-  let tile = 0, plaster = 0, pitched = 0, tileN = 0;
+  let tile = 0, plaster = 0, pitched = 0, tileN = 0, area = 0, plasterArea = 0;
   const colours = new Set<string>();
+  const P = mesh.position;
   for (let t = 0; t < mesh.index.length; t += 3) {
     const v = mesh.index[t];
     const s = mesh.surf[v * 4];
-    if (s === Surf.Tile) {
+    // Plaster is weighed by area: the street furniture adds many small
+    // triangles, and a count would read a town of plastered walls as less
+    // plastered for every jar on a shelf.
+    const b = mesh.index[t + 1] * 3, c = mesh.index[t + 2] * 3, a = v * 3;
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2], wx = P[c] - P[a], wy = P[c + 1] - P[a + 1], wz = P[c + 2] - P[a + 2];
+    const A = Math.hypot(uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx) / 2;
+    area += A;
+    if (s === Surf.Plaster) plasterArea += A;
+    const ny = mesh.normal[v * 4 + 1] / 127;
+    // The tile ends along an eave are upright faces by construction, not a roof slope.
+    if (s === Surf.Tile && Math.abs(ny) > 0.2) {
       tile++;
-      const ny = mesh.normal[v * 4 + 1] / 127;
       tileN++;
       // A roof pitched between 12 and 35 degrees (Roman roofs are 18-25).
       const deg = (Math.acos(Math.min(1, Math.abs(ny))) * 180) / Math.PI;
@@ -142,13 +152,13 @@ function rules(m: PompeiiModel): Rules {
   }
   const tris = mesh.triangles;
   const stats = {
-    tileFrac: tile / tris, plasterFrac: plaster / tris, pitchedFrac: pitched / Math.max(1, tileN),
+    tileFrac: tile / tris, plasterFrac: plasterArea / area, pitchedFrac: pitched / Math.max(1, tileN),
     plasterColours: colours.size, flatRoofs: m.stats.flatRoofs, lots: m.stats.lots, domus: m.stats.domus,
     tabernae: m.stats.tabernae, compluvia: m.stats.compluvia, fountains: m.stats.fountains, steppingStones: m.stats.steppingStones,
   };
   if (stats.tileFrac < 0.06) failed.push("terracotta roofs");
   if (stats.pitchedFrac < 0.95) failed.push("roofs pitched 12-35 deg");
-  if (stats.plasterFrac < 0.15) failed.push("plastered walls");
+  if (stats.plasterFrac < 0.25) failed.push("plastered walls");
   if (stats.plasterColours < 6) failed.push("plaster palette");
   if (stats.flatRoofs > 0) failed.push("no flat roofs");
   if (stats.lots < 1500) failed.push("lots");
@@ -165,8 +175,8 @@ let built: PompeiiModel;
   const r = rules(buildPompeii({ data, groundAt: flat, suburbs: false }));
   const s = r.stats;
   check("town passes every reconstruction rule", r.failed.length === 0, r.failed.join(", ") || "all");
-  check(`roofs pitched ${ROOF_PITCH_DEG} deg (12-35 window), terracotta`, s.pitchedFrac >= 0.95 && s.tileFrac >= 0.06, `${(s.pitchedFrac * 100).toFixed(0)}% pitched, ${(s.tileFrac * 100).toFixed(1)}% of tris`);
-  check("plaster: 6+ palette colours over 15%+ of the triangles", s.plasterColours >= 6 && s.plasterFrac >= 0.15, `${s.plasterColours} colours, ${(s.plasterFrac * 100).toFixed(1)}%`);
+  check(`roofs pitched ${ROOF_PITCH_DEG} deg (12-35 window), terracotta`, s.pitchedFrac >= 0.95 && s.tileFrac >= 0.06, `${(s.pitchedFrac * 100).toFixed(1)}% pitched, ${(s.tileFrac * 100).toFixed(1)}% of tris`);
+  check("plaster: 6+ palette colours over 25%+ of the surface area", s.plasterColours >= 6 && s.plasterFrac >= 0.25, `${s.plasterColours} colours, ${(s.plasterFrac * 100).toFixed(1)}%`);
   check("domus with compluvium, tabernae, fountains, stepping stones", s.domus >= 400 && s.tabernae >= 300 && s.fountains >= 10 && s.steppingStones >= 100,
     `${s.domus} domus, ${s.tabernae} tabernae, ${s.fountains} fountains, ${s.steppingStones} stones`);
   check("main-street lots are mostly shops", (() => {
@@ -543,6 +553,162 @@ let built: PompeiiModel;
       [Land.Tombs, Land.Suburb, Land.Garden, Land.Vineyard, Land.Fields].map((c) => md(c).toFixed(0)).join(" < "));
     check("missions reach the suburbs: tombs, Villa di Diomede, the harbour", ["Villa di Diomede", "Porto alla foce del Sarno", "Necropoli di Porta Ercolano", "Necropoli di Porta Nocera"].every((n) => data.places.some((p) => p.name === n && p.kind === "suburb")), "");
   }
+}
+
+// --- 15. the street: counters, eaves, and the walkers' line kept clear -----------------
+// Measured on the built mesh, not read back from the builder's constants:
+// counter tops are the up-facing marble near each shop opening, eaves the
+// terracotta past each street wall, obstacles any vertex at body height.
+{
+  const { mesh, lampSites } = built;
+  const P = mesh.position, I = mesh.index;
+  const shops = lampSites.openings.filter((o) => o.kind === "shop" && o.counter);
+  // Up-facing marble triangles near the street, gridded by centroid.
+  const cell = (x: number, z: number): number => Math.floor(x / 4) * 100003 + Math.floor(z / 4);
+  const tops = new Map<number, number[]>();
+  const tileV = new Map<number, number[]>();
+  for (let t = 0; t < I.length; t += 3) {
+    const a = I[t], s = mesh.surf[a * 4];
+    if (s === Surf.Marble && mesh.normal[a * 4 + 1] > 100) {
+      const k = cell((P[a * 3] + P[I[t + 1] * 3] + P[I[t + 2] * 3]) / 3, (P[a * 3 + 2] + P[I[t + 1] * 3 + 2] + P[I[t + 2] * 3 + 2]) / 3);
+      (tops.get(k) ?? tops.set(k, []).get(k)!).push(t);
+    }
+  }
+  const near = <T>(m: Map<number, T[]>, x: number, z: number): T[] => {
+    const out: T[] = [];
+    for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) out.push(...(m.get(cell(x + i * 4, z + j * 4)) ?? []));
+    return out;
+  };
+  // Every shop's counter: a top 0.8..1.0 m over the shop floor across the
+  // front, behind the facade line and inside the opening, a doorway of
+  // 0.85 m+ left at one end, and the L's arm going back into the shop.
+  // `out` looks for it on the pavement instead: the probe.
+  const counterFaults = (out: boolean): number => {
+    let bad = 0;
+    for (const o of shops) {
+      const sx = out ? -o.ox : o.ox, sz = out ? -o.oz : o.oz;
+      let lo = Infinity, hi = -Infinity, amin = Infinity, amax = -Infinity, arm = false;
+      for (const t of near(tops, o.x, o.z)) {
+        let cx = 0, cy = 0, cz = 0;
+        for (let j = 0; j < 3; j++) { const v = I[t + j]; cx += P[v * 3] / 3; cy += P[v * 3 + 1] / 3; cz += P[v * 3 + 2] / 3; }
+        const into = -((cx - o.x) * sx + (cz - o.z) * sz), along = (cx - o.x) * o.ex + (cz - o.z) * o.ez, h = cy - o.g;
+        if (Math.abs(along) > o.w / 2 || h < 0.3 || h > 1.05) continue;
+        if (into > 1.0 && into < 2.2) arm = true;
+        if (into < 0.1 || into > 0.85) continue;
+        lo = Math.min(lo, h); hi = Math.max(hi, h);
+        for (let j = 0; j < 3; j++) {
+          const v = I[t + j];
+          const a = (P[v * 3] - o.x) * o.ex + (P[v * 3 + 2] - o.z) * o.ez;
+          amin = Math.min(amin, a); amax = Math.max(amax, a);
+        }
+      }
+      const gap = Math.max(amin + o.w / 2, o.w / 2 - amax);
+      if (!(lo >= 0.8 && hi <= 1.0 + 1e-3 && gap >= 0.85 && (arm || o.w < 1.5))) bad++;
+    }
+    return bad;
+  };
+  const cf = counterFaults(false);
+  check("every shop counter: top 0.8-1.0 m over its floor, behind the sill, a doorway, an L", shops.length > 600 && cf === 0, `${cf} of ${shops.length} wrong`);
+  check("probe: the same counters looked for out on the pavement are missed", counterFaults(true) > shops.length * 0.9, `${counterFaults(true)} missed`);
+
+  // The street eave: over every opening the roof's tiles reach 0.3..0.7 m
+  // past the wall, read off the roof's section through the opening's middle.
+  // `bare` ignores tile past the wall line: the roofs that stopped at the
+  // wall, which is what the probe must catch.
+  const tiles = new Map<number, number[]>();
+  for (let t = 0; t < I.length; t += 3) {
+    if (mesh.surf[I[t] * 4] !== Surf.Tile) continue;
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let j = 0; j < 3; j++) { const v = I[t + j]; x0 = Math.min(x0, P[v * 3]); x1 = Math.max(x1, P[v * 3]); z0 = Math.min(z0, P[v * 3 + 2]); z1 = Math.max(z1, P[v * 3 + 2]); }
+    for (let i = Math.floor(x0 / 4); i <= Math.floor(x1 / 4); i++) for (let j = Math.floor(z0 / 4); j <= Math.floor(z1 / 4); j++) {
+      const k = i * 100003 + j;
+      (tiles.get(k) ?? tiles.set(k, []).get(k)!).push(t);
+    }
+  }
+  const openings = lampSites.openings;
+  const eaveReach = (o: (typeof openings)[number], bare: boolean): number => {
+    let reach = 0;
+    for (const t of tiles.get(cell(o.x, o.z)) ?? []) for (let j = 0; j < 3; j++) {
+      const p = I[t + j] * 3, q = I[t + ((j + 1) % 3)] * 3;
+      const ap = (P[p] - o.x) * o.ex + (P[p + 2] - o.z) * o.ez, aq = (P[q] - o.x) * o.ex + (P[q + 2] - o.z) * o.ez;
+      if ((ap > 0) === (aq > 0) || ap === aq) continue;
+      const f = ap / (ap - aq);
+      const x = P[p] + (P[q] - P[p]) * f, y = P[p + 1] + (P[q + 1] - P[p + 1]) * f, z = P[p + 2] + (P[q + 2] - P[p + 2]) * f;
+      const r = (x - o.x) * o.ox + (z - o.z) * o.oz;
+      // Above the shop roofs (o.h + 0.72) and inside a balcony roof's reach.
+      if (y < o.g + o.h + 1.0 || r > 0.9 || (bare && r > 0.05)) continue;
+      reach = Math.max(reach, r);
+    }
+    return reach;
+  };
+  const eaved = (bare: boolean): number => openings.filter((o) => { const r = eaveReach(o, bare); return r >= 0.3 && r <= 0.7; }).length;
+  const ok = eaved(false);
+  check("street eaves: tiles 0.3-0.7 m past the wall over 95%+ of the openings", ok >= openings.length * 0.95, `${ok} of ${openings.length}`);
+  check("probe: roofs stopped at the wall line fail it", eaved(true) < openings.length * 0.95, `${eaved(true)} of ${openings.length}`);
+
+  // Nothing stood on a pavement blocks the walkers' line down its middle
+  // (data/pompeiilife.ts): no vertex at body height within 0.15 m of it.
+  // The probe walks a line 0.3 m off the wall, where the stock and benches are.
+  // Furniture is small: triangles under 2.5 m an edge. Walls, columns and
+  // the like that stand on a pavement are buildings, which the walker's
+  // collider and the house rules answer for.
+  const body = new Map<number, number[]>();
+  for (let t = 0; t < I.length; t += 3) {
+    let big = false;
+    for (let j = 0; j < 3 && !big; j++) {
+      const a = I[t + j] * 3, b = I[t + ((j + 1) % 3)] * 3;
+      big = Math.hypot(P[a] - P[b], P[a + 1] - P[b + 1], P[a + 2] - P[b + 2]) > 2.5;
+    }
+    if (big) continue;
+    for (let j = 0; j < 3; j++) {
+      const v = I[t + j], x = P[v * 3], y = P[v * 3 + 1], z = P[v * 3 + 2], g = flat(x, z) + KERB_M;
+      if (y < g + 0.1 || y > g + 1.9) continue;
+      const k = Math.floor(x * 2) * 100003 + Math.floor(z * 2);
+      (body.get(k) ?? body.set(k, []).get(k)!).push(v);
+    }
+  }
+  // Where a house or a public building stands out over the pavement the
+  // walkers cannot pass anyway: those stretches are building, not furniture.
+  const solidCells = new Map<number, [number[], number][]>();
+  for (const [s, pad] of [...built.solids.map((s) => [s, 0.3] as const), ...data.publics.map((p) => [p, 3] as const)]) {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (let i = 0; i < s.ring.length; i += 2) { x0 = Math.min(x0, s.ring[i]); x1 = Math.max(x1, s.ring[i]); z0 = Math.min(z0, s.ring[i + 1]); z1 = Math.max(z1, s.ring[i + 1]); }
+    for (let i = Math.floor((x0 - 1) / 8); i <= Math.floor((x1 + 1) / 8); i++) for (let j = Math.floor((z0 - 1) / 8); j <= Math.floor((z1 + 1) / 8); j++) {
+      const k = i * 100003 + j;
+      (solidCells.get(k) ?? solidCells.set(k, []).get(k)!).push([s.ring, pad]);
+    }
+  }
+  const byBuilding = (x: number, z: number): boolean =>
+    (solidCells.get(Math.floor(x / 8) * 100003 + Math.floor(z / 8)) ?? []).some(([r, pad]) => pointInRing(r, x, z) || distToRing(r, x, z) < pad);
+  const styles = new Map<number, number>();
+  const blocked = (wallSide: boolean): number => {
+    let hits = 0;
+    for (const s of data.streets) {
+      const off = s.carriageM / 2 + (wallSide ? s.sidewalkM - 0.3 : s.sidewalkM / 2);
+      for (let i = 0; i + 3 < s.pts.length; i += 2) {
+        const ax = s.pts[i], az = s.pts[i + 1], bx = s.pts[i + 2], bz = s.pts[i + 3];
+        const L = Math.hypot(bx - ax, bz - az), nx = -(bz - az) / L, nz = (bx - ax) / L;
+        for (const side of [-1, 1]) for (let d = 0.5; d < L; d += 0.5) {
+          const x = ax + ((bx - ax) * d) / L + nx * off * side, z = az + ((bz - az) * d) / L + nz * off * side;
+          if (!data.insulae.some((ins) => pointInRing(ins.kerb, x, z) && !pointInRing(ins.ring, x, z)) || byBuilding(x, z)) continue;
+          let hit = -1;
+          for (let ci = -1; ci <= 1 && hit < 0; ci++) for (let cj = -1; cj <= 1 && hit < 0; cj++) {
+            for (const v of body.get((Math.floor(x * 2) + ci) * 100003 + Math.floor(z * 2) + cj) ?? []) {
+              if (Math.hypot(P[v * 3] - x, P[v * 3 + 2] - z) < 0.15) { hit = v; break; }
+            }
+          }
+          if (hit < 0) continue;
+          hits++;
+          if (!wallSide) styles.set(mesh.surf[hit * 4], (styles.get(mesh.surf[hit * 4]) ?? 0) + 1);
+        }
+      }
+    }
+    return hits;
+  };
+  const walk = blocked(false), hug = blocked(true);
+  check("the walkers' line down every pavement is clear at body height", walk === 0, `${walk} blocked samples ${JSON.stringify([...styles])}`);
+  check("probe: a line hugging the wall runs into the stock and benches", hug > 10, `${hug} blocked samples`);
+  check("crossroads shrines and forum stalls built", built.sites.shrines >= 5 && built.sites.stalls >= 3, `${built.sites.shrines} shrines, ${built.sites.stalls} stalls`);
 }
 
 console.log(failures ? `\n${failures} pompeii check(s) FAILED` : "\nall pompeii checks ok");

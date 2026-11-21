@@ -995,6 +995,34 @@ export const POSES: Pose[] = [
     what: "A house front at arm's length: plaster, panels, notices",
   },
   {
+    // The street furniture of Via dell'Abbondanza (render/pompeiimesh.ts
+    // facade): a house door between two shops, straight on from the street.
+    name: "pompeii-door",
+    city: "pompeii",
+    lat: 40.750934, lon: 14.490275, altM: 33.6, hdgDeg: 329, pitchDeg: 2,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "A house door and its neighbouring shops, straight on",
+  },
+  {
+    // A shop obliquely from the kerb: counter, sill, beam, shutters, shelves.
+    name: "pompeii-shopfront",
+    city: "pompeii",
+    lat: 40.750955, lon: 14.490321, altM: 33.6, hdgDeg: 355, pitchDeg: -4,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "A shop front from the kerb: counter, sill, lintel beam, shelves",
+  },
+  {
+    // Looking up along the street at the eaves: rafters, antefixes, pent roofs.
+    name: "pompeii-eaves",
+    city: "pompeii",
+    lat: 40.750971, lon: 14.490369, altM: 33.6, hdgDeg: 58, pitchDeg: 16,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Eaves and shop roofs along Via dell'Abbondanza from the pavement",
+  },
+  {
     // From the Abbondanza pose, turned to the south side's shop fronts and
     // the upper storey: window reveals, notices, shop interiors.
     name: "pompeii-facade-windows",
