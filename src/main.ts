@@ -42,6 +42,7 @@ import { Pompeii, Cart, Townsfolk, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiqu
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { restoreCoast79 } from "./data/pompeiisuburbs";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
+import { PompeiiLamps } from "./render/pompeiilamps";
 import { EscapeUi } from "./app/escape";
 import { roomLight } from "./render/escaperoom";
 import { localHours, walkPace } from "./sim/eruption";
@@ -548,6 +549,8 @@ async function main() {
   let pompeii: Pompeii | null = null;
   let townsfolk: Townsfolk | null = null;
   let cart: Cart | null = null;
+  let pompeiiLamps: PompeiiLamps | null = null;
+  let pompeiiOff = { x: 0, z: 0 };
   let eruptView: EruptionView | null = null;
   let flee: Flee | null = null;
   // Set by the escape (app/escape.ts): the room it starts in, and the ground under no pumice.
@@ -591,6 +594,15 @@ async function main() {
       scene.add(townsfolk.group);
     }
     scene.add(cart.group);
+    // The town by lamplight at night (render/pompeiilamps.ts); `?off=pompeiilamps`.
+    pompeiiOff = off;
+    if (!perfOff.has("pompeiilamps")) {
+      pompeiiLamps = new PompeiiLamps({
+        data: pompeiiData, sites: pompeii.model.lampSites, uniforms: pompeii.uniforms, groundAt: terrain.heightAt,
+        offX: off.x, offZ: off.z, lean: budget.pompeii.lean,
+      });
+      scene.add(pompeiiLamps.group);
+    }
     // The eruption: `?eruption=1` starts with it following the clock,
     // `?off=eruption` leaves the town as it was the day before.
     if (!perfOff.has("eruption")) {
@@ -2457,6 +2469,17 @@ async function main() {
     roomLight.value.copy(light.ambient).multiplyScalar(1.5).addScalar(light.sunIntensity * 0.105 * 0.04);
 
     renderer.getDrawingBufferSize(drawSize);
+    if (pompeiiLamps) {
+      prof.cpuBegin("pompeiilamps");
+      const people = townsfolk && townsfolk.group.visible
+        ? townsfolk.sim.people.map((p) => ({ x: p.x + pompeiiOff.x, z: p.z + pompeiiOff.z, heading: p.heading }))
+        : undefined;
+      // Toggled off by name (tools/profile.ts --attrib) the lights go too, so the
+      // toggle prices the shader loop as well as the meshes.
+      if (perfOff.has("pompeii-lamps")) pompeiiLamps.dark();
+      else pompeiiLamps.update({ hour: localHours(now.getTime()), night: light.night, t: elapsed, camera, viewH: drawSize.y, people, groundAt: terrain.heightAt });
+      prof.cpuEnd("pompeiilamps");
+    }
     prof.cpuBegin("airtraffic");
     airTraffic.update(camera, drawSize.y, dt, light.night, layers.traffic && !era, droneActive ? drone.position : carActive ? undefined : ac.position);
     prof.cpuEnd("airtraffic");
@@ -2541,8 +2564,10 @@ async function main() {
     const hf = hourFactors(localHour);
     // The city's own light on its sky and cloud base; ?noskyglow=1 is the
     // pitch-black sky the skyglow gate's probe renders.
+    // A town lit by oil lamps put no glow on its sky worth drawing: under the
+    // lamps (render/pompeiilamps.ts) Pompeii's sky is the stars and the moon.
     updateSkyglow(urban.glow, camera.position.x, camera.position.z, light.night, hf.residential,
-      noSkyglow, wx.low.cover > 0.03 ? wx.low.base : wx.mid.base, cityUplight);
+      noSkyglow || (!!era && !!pompeiiLamps), wx.low.cover > 0.03 ? wx.low.base : wx.mid.base, cityUplight);
     // ?nodetail=1: no camera-centred detail layer, a probe for the gates.
     prof.cpuBegin("bldgdetail");
     if (!noDetail) buildings?.updateDetail(camera.position.x, camera.position.z);
@@ -3387,7 +3412,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean, pompeii,
+      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean, pompeii, pompeiiLamps, origin,
       get droneActive() { return droneActive; },
       get carActive() { return carActive; },
       get wx() { return wx; },

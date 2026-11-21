@@ -86,6 +86,10 @@ export const PROFILE_POSES: ProfilePose[] = [
   // prices the "ocean" toggle (render/ocean.ts) where it is largest.
   { name: "sf-bay-low", city: "sf", lat: 37.8240, lon: -122.4150, altM: 10, hdgDeg: 262, pitchDeg: -4,
     t: D("2025-06-21T20:00:00Z"), wx: `${CUMULUS},wind:12:265` },
+  // Via dell'Abbondanza at 21:30 by lamplight (render/pompeiilamps.ts): the
+  // town shader's lamp loop at its fullest, every shop front in reach.
+  { name: "pompeii-lamps-street", city: "pompeii", lat: 40.75092, lon: 14.49024, altM: 33.6, hdgDeg: 58, pitchDeg: 1,
+    t: D("0079-08-22T20:40:04Z"), wx: "low:0:900:2100,mid:0:3800:5000,high:0.12:8500:9400,precip:0,wind:3:240" },
 ];
 
 /** A viewport: CSS size and device pixel ratio, as the page is told it. */
@@ -249,7 +253,7 @@ export async function measure(
 export const TOGGLES = [
   "shadow", "aircraft", "ao", "ssr", "clouds", "cloudshadow", "bloom", "skyprobe",
   "terrain", "buildings", "roads", "pavement", "bridges", "lamps", "traffic", "parkedcars",
-  "foliage", "shrubs", "live", "airtraffic", "transit", "sky", "ocean", "alcatraz",
+  "foliage", "shrubs", "live", "airtraffic", "transit", "sky", "ocean", "alcatraz", "pompeii-lamps",
 ];
 
 /**
