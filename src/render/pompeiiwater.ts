@@ -288,6 +288,8 @@ export interface WaterBuild {
   /** Droplet emitters: x, y, z, seed; and (spread m/s, up m/s, rate /s, size m). */
   drops: number[][];
   steam: SteamSource[];
+  /** Sunbeams down from each oculus: x, crown y, z, radius, height to the floor, the room's radius. */
+  beams: number[][];
   sites: BathSite[];
   fountains: Fountain[];
   towers: WaterTower[];
@@ -340,10 +342,17 @@ export function buildWater(opts: WaterOptions): WaterBuild {
     return { ...s, levels };
   });
   const steam: SteamSource[] = [];
+  const beams: number[][] = [];
   for (const site of sites) {
     const r = buildBath(site, G, Wt, J, drops, probe, groundAt);
     report.baths.push(r);
     steam.push(...steamSources(site));
+    for (const q of site.plan.rooms) {
+      if (!q.round || !q.oculus) continue;
+      const [x, z] = toWorld(site.frame, q.round.e, q.round.n);
+      const fy = (site.levels?.[q.id] ?? site.g) + q.floor;
+      beams.push([x, fy + q.spring + domeRise(q), z, q.oculus, q.spring + domeRise(q), q.round.r]);
+    }
     let li = 0;
     for (const l of bathLamps(site)) {
       lamps.push({
@@ -383,7 +392,7 @@ export function buildWater(opts: WaterOptions): WaterBuild {
   report.waterTris = Wt.triangles + Fm.triangles;
   report.jetTris = J.triangles;
   report.bytes = G.bytes + Wt.bytes + Fm.bytes + J.bytes + drops.length * 32 + report.steamSprites * 48;
-  return { stone: G, water: Wt, film: Fm, jets: J, drops, steam, sites, fountains, towers, castellum, lamps, report };
+  return { stone: G, water: Wt, film: Fm, jets: J, drops, steam, beams, sites, fountains, towers, castellum, lamps, report };
 }
 
 // =====================================================================================
@@ -793,14 +802,19 @@ function rectRoom(
     const outN = dirW(-w.inE, -w.inN);
     const exM = mat(creamC, S.plaster, 60, 255);
     const shift = <Q extends { u0: number; u1: number }>(q: Q): Q => ({ ...q, u0: q.u0 + WALL_T, u1: q.u1 + WALL_T });
-    if (!nb) {
+    // The apse side has its own curved outside wall; a flat one here would stand inside the apse.
+    if (!nb && r.apse?.side !== s) {
       wallFace(G, W(...xa), W(...xb), g, eave, [outN[0], outN[2]], {
         doors: mine.map((q) => ({ ...shift(q), h: q.sill - g + q.d.h })), windows: windows.map(shift),
         arch: arch ? { u0: arch.u0 + WALL_T, u1: arch.u1 + WALL_T, spring: arch.spring } : undefined, m: exM, floorY: g, H: eave - g,
       });
-    } else {
+    } else if (nb) {
       const ne = eaveOf(nb) + 0.4;
       if (ne < eave) wallFace(G, W(...xa), W(...xb), ne, eave, [outN[0], outN[2]], { m: exM, floorY: g, H: eave - g });
+    } else if (r.apse) {
+      // Over the apse's roof, up to the eave.
+      const top = eave - 0.6 + (r.apse.r + WALL_T + 0.2) * ROOF_PITCH;
+      if (top < eave) wallFace(G, W(...xa), W(...xb), top, eave, [outN[0], outN[2]], { m: exM, floorY: g, H: eave - g });
     }
     // Reveals of the doors and windows through the wall's thickness.
     const rev = (u0: number, u1: number, ya: number, yb: number, depth: number, bottom: boolean): void => {
@@ -1042,8 +1056,8 @@ function roundRoom(G: Geo, r: RoomPlan, W3: (e: number, n: number, y: number) =>
     if (oc > 0) {
       // The oculus's throat, from the painted cone up through the roof.
       const inN = N(t0), inN1 = N(t1);
-      G.tri(P(t0, crown, oc), P(t1, crown, oc), P(t1, ctop, oc), inN, inN1, inN1, wallM, Z4, Z4, Z4);
-      G.tri(P(t0, crown, oc), P(t1, ctop, oc), P(t0, ctop, oc), inN, inN1, inN, wallM, Z4, Z4, Z4);
+      G.tri(P(t0, crown, oc), P(t1, crown, oc), P(t1, ctop, oc), inN, inN1, inN1, domeM, Z4, Z4, Z4);
+      G.tri(P(t0, crown, oc), P(t1, ctop, oc), P(t0, ctop, oc), inN, inN1, inN, domeM, Z4, Z4, Z4);
     }
   }
 }
@@ -1419,7 +1433,8 @@ void main() {
   vec3 up = vec3(0.0, 1.0, 0.0);
   vec3 sunE = sunAt(vWorld);
   float sv = sunVisibility(vWorld, up, uSunDir, vViewDist);
-  vec3 amb = occludedSkyIrradiance(up) * (1.0 - 0.9 * shut) * (1.0 - 0.65 * uLampNight * uNight);
+  // The sky, and the sunlit paving and walls round the pool, as the town shader's bounce.
+  vec3 amb = (occludedSkyIrradiance(up) + sunE * max(0.0, uSunDir.y) * 0.12) * (1.0 - 0.9 * shut) * (1.0 - 0.65 * uLampNight * uNight);
   vec3 lamps = townLamps(vWorld, up);
   // What the surface mirrors: the sky, or in a room its walls, with the sky
   // only where the reflected ray goes out through the oculus.
@@ -1628,10 +1643,12 @@ void main() {
   float r = length(vUv);
   if (r > 1.0) discard;
   float puff = wn(vUv * 2.2 + vSeed * 40.0 + uTime * 0.05) * 0.6 + wn(vUv * 4.7 - vSeed * 13.0) * 0.4;
-  float a = (1.0 - smoothstep(0.2, 1.0, r)) * (0.55 + 0.6 * puff) * vFade * 0.6;
+  // Soft all through: a Gaussian blob broken up by the puffs, never a disc with an edge.
+  float a = exp(-r * r * 3.5) * smoothstep(0.25, 0.9, puff + 0.25) * vFade * 0.55;
   vec3 up = vec3(0.0, 1.0, 0.0);
   // Lit as the room is: a little sky, the sun where the shaft crosses it, the lamps.
-  vec3 amb = shIrradiance(up) * 0.3 * (1.0 - 0.65 * uLampNight * uNight);
+  // Grey: steam scatters every colour alike, so it takes the sky's brightness, not its blue.
+  vec3 amb = vec3(dot(shIrradiance(up), vec3(0.3, 0.5, 0.2))) * 0.6 * (1.0 - 0.65 * uLampNight * uNight);
 #ifdef LEAN
   float sv = 0.0;
 #else
@@ -1639,6 +1656,56 @@ void main() {
 #endif
   vec3 c = vec3(0.9) * (amb + sunAt(vWorld) * sv * 0.35 + townLamps(vWorld, up) * 0.8);
   fragColor = vec4(c, a);
+}
+`;
+
+/** The oculus's beam: a unit tube (cos, y 0..1, sin) placed from aBeam (x, crown y, z, radius), aDrop the height to the floor. */
+const BEAM_VERT = /* glsl */ `
+precision highp float;
+in vec3 position;
+in vec4 aBeam;
+in vec2 aDrop;
+uniform mat4 modelMatrix;
+uniform mat4 viewMatrix;
+uniform mat4 projectionMatrix;
+uniform vec3 uCameraPos;
+uniform vec3 uSunDir;
+out vec3 vWorld;
+out vec3 vSide;
+out float vAlong;
+out float vLit;
+void main() {
+  vec3 d = -uSunDir;
+  // Down the sun from the crown until it meets the floor or, with the sun
+  // lower, the round wall (aDrop.y the room's radius): never out through it.
+  float t = min(aDrop.x / max(0.25, -d.y), (aDrop.y - aBeam.w) / max(0.05, length(d.xz)));
+  vec3 side = vec3(position.x, 0.0, position.z);
+  vec3 p = aBeam.xyz + side * aBeam.w + d * t * position.y;
+  vec4 w = modelMatrix * vec4(p, 1.0);
+  vWorld = w.xyz;
+  vSide = side;
+  vAlong = position.y;
+  // Only with the sun well up: low sun goes into the cone's side, not down the oculus.
+  vLit = smoothstep(0.25, 0.45, uSunDir.y);
+  gl_Position = projectionMatrix * viewMatrix * w;
+  if (vLit <= 0.0) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+}
+`;
+
+const BEAM_FRAG = /* glsl */ `
+precision highp float;
+in vec3 vWorld;
+in vec3 vSide;
+in float vAlong;
+in float vLit;
+out vec4 fragColor;
+${SHARED_HEAD}
+void main() {
+  vec3 v = normalize(uCameraPos - vWorld);
+  // Thick through the middle, nothing at the silhouette, faded at both ends.
+  float edge = 1.0 - pow(abs(dot(normalize(vSide), v)), 2.0);
+  float a = edge * (0.35 + 0.65 * vAlong) * (1.0 - smoothstep(0.85, 1.0, vAlong)) * smoothstep(0.0, 0.06, vAlong) * vLit;
+  fragColor = vec4(sunAt(vWorld) * 0.012 * a, 1.0);
 }
 `;
 
@@ -1731,6 +1798,33 @@ export class PompeiiWater {
       this.group.add(m);
       this.steamMesh = m;
     } else this.steamMesh = null;
+
+    // The sunbeam from each oculus: an open tube swung along the sun in the
+    // vertex shader, so the clock needs no rebuild.
+    if (this.build.beams.length) {
+      const seg = 12;
+      const pos: number[] = [], beam: number[] = [];
+      for (const b of this.build.beams) {
+        for (let k = 0; k < seg; k++) {
+          const a0 = (k / seg) * Math.PI * 2, a1 = ((k + 1) / seg) * Math.PI * 2;
+          const q = (a: number, y: number): void => { pos.push(Math.cos(a), y, Math.sin(a)); beam.push(...b.slice(0, 6)); };
+          q(a0, 0); q(a1, 0); q(a1, 1); q(a0, 0); q(a1, 1); q(a0, 1);
+        }
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+      const B = new Float32Array(beam);
+      g.setAttribute("aBeam", new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(B, 6), 4, 0));
+      g.setAttribute("aDrop", new THREE.InterleavedBufferAttribute(new THREE.InterleavedBuffer(B, 6), 2, 4));
+      const m = new THREE.Mesh(g, new THREE.RawShaderMaterial({
+        vertexShader: BEAM_VERT, fragmentShader: BEAM_FRAG, uniforms: u, defines, glslVersion: THREE.GLSL3,
+        transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+      }));
+      m.frustumCulled = false;
+      m.name = "pompeii-water-beams";
+      m.renderOrder = 25;
+      this.group.add(m);
+    }
 
     const r = this.build.report;
     console.log(`[flyby] pompeii water: ${r.baths.length} baths (${r.baths.map((b) => b.rooms.length).join("+")} rooms), ${r.fountains.length} fountains, ${r.towers} towers, ` +

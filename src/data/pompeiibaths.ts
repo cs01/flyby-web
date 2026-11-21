@@ -166,14 +166,14 @@ export const BATH_PLANS: BathPlan[] = [
       { id: "m-apo", kind: "apodyterium", section: "men", rect: [-10, 8.6, -5.4, 0.8], floor: 0.05, spring: 3.4, windows: ["e0"], niches: true },
       { id: "m-frig", kind: "frigidarium", section: "men", round: { e: -6, n: 4.4, r: 2.6 }, floor: 0.05, spring: 2.5, oculus: 0.45 },
       { id: "m-tep", kind: "tepidarium", section: "men", rect: [-1.2, 8.6, 1.4, 8.6], floor: HOT, spring: 3.2, windows: ["e1"] },
-      { id: "m-cal", kind: "caldarium", section: "men", rect: [-7.6, 10.6, 9.2, 16.4], floor: HOT, spring: 3.4, apse: { side: "e0", r: 2.2 }, windows: ["n1"] },
+      { id: "m-cal", kind: "caldarium", section: "men", rect: [-7, 10.6, 9.2, 16.4], floor: HOT, spring: 3.4, apse: { side: "e0", r: 2.0 }, windows: ["n1"] },
       { id: "west", kind: "service", section: "common", rect: [-9.6, -5.8, -18.6, -6], floor: 0.05, spring: 2.6 },
     ],
     pools: [
       { id: "m-frig-pool", kind: "frigida", room: "m-frig", round: { e: -6, n: 4.4, r: 1.9 }, rim: 0.35, water: 0.2, bottom: -1.0, hot: false },
       { id: "m-alveus", kind: "alveus", room: "m-cal", rect: [6.8, 10.3, 9.5, 16.1], rim: HOT + 0.5, water: HOT + 0.38, bottom: 0.08, hot: true },
     ],
-    labra: [{ room: "m-cal", e: -8.3, n: 12.8, r: 1.1, rim: HOT + 1.05, jet: 0.3 }],
+    labra: [{ room: "m-cal", e: -7.8, n: 12.8, r: 0.85, rim: HOT + 1.05, jet: 0.3 }],
     doors: [
       { e: -2, n: -5.4, axis: "n", w: 1.4, h: 2.7 },
       { e: -6, n: 1.5, axis: "n", w: 1.1, h: 2.3 },
@@ -333,7 +333,7 @@ export function steamSources(site: BathSite): SteamSource[] {
   }
   for (const l of plan.labra) {
     const [x, z] = toWorld(f, l.e, l.n);
-    out.push({ x, y: lv(l.room) + l.rim, z, hu: l.r * 0.6, hv: l.r * 0.6, ux: f.ex, uz: f.ez, rate: 0.4 });
+    out.push({ x, y: lv(l.room) + l.rim, z, hu: l.r * 0.6, hv: l.r * 0.6, ux: f.ex, uz: f.ez, rate: 0.25 });
   }
   return out;
 }

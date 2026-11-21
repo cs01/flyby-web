@@ -551,7 +551,9 @@ void main() {
       // Damp: steam condensing low on the walls of the hot rooms.
       albedo *= 1.0 - 0.15 * smoothstep(1.2, 0.0, h) * step(0.5, fract(seed * 3.3));
     } else if (p1 < 1.5) {
-      // Marble: white slabs on the floors and the pool rims, faint veins.
+      // Marble: white slabs on the floors and the pool rims, faint veins,
+      // warmed for the light off the ochre walls the sky term leaves out.
+      albedo *= vec3(1.06, 1.0, 0.88);
       vec2 b = abs(n.y) > 0.6 ? vWorld.xz / 0.9 : vec2(u / 0.9, h / 0.45);
       albedo *= 0.88 + 0.14 * h21(floor(b) + seed);
       albedo *= 0.94 + 0.08 * vnoise(vWorld.xz * 5.0 + vWorld.y * 2.0);

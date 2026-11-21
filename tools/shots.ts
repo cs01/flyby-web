@@ -1213,6 +1213,15 @@ export const POSES: Pose[] = [
     query: "fov=72&near=0.3",
   },
   {
+    name: "pompeii-baths-forum",
+    city: "pompeii",
+    lat: 40.750471, lon: 14.484118, altM: 42.2, hdgDeg: 247, pitchDeg: -6,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Forum baths: the caldarium toward the labrum in its apse",
+    query: "fov=72&near=0.3",
+  },
+  {
     name: "pompeii-baths-air",
     city: "pompeii",
     lat: 40.749602, lon: 14.487962, altM: 38, hdgDeg: 324, pitchDeg: -40,
