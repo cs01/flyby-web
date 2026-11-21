@@ -507,6 +507,19 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   /** Pavement wide enough for a bench, stock or a stall without blocking the walkers' line. */
   const WIDE_PAVEMENT_M = 1.8;
   /**
+   * Whether a point keeps `r` metres off every walkers' line: the middle of
+   * each pavement as data/pompeiilife.ts lays it, offset from the street's
+   * centreline, which is not always where the kerb puts the middle.
+   */
+  function walkClear(x: number, z: number, r: number): boolean {
+    for (const s of data.streets) {
+      const off = s.carriageM / 2 + s.sidewalkM / 2;
+      if (Math.abs(distToPolyline(s.pts, x, z) - off) < r) return false;
+    }
+    return true;
+  }
+  const clearAt = (F: Frame, pts: [number, number][], r = 0.3): boolean => pts.every(([u, v]) => { const p = fp(F, u, v, 0); return walkClear(p[0], p[2], r); });
+  /**
    * A recess floor clear of the block's ground slab: the slab is drawn over
    * the whole insula a step above the pavement, and a floor at the
    * pavement's level was buried under it (the green garden showing in every
@@ -1191,7 +1204,10 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           openings.push({ u0: u, u1: u + 4.2, h: 3.1, kind: "shop" });
         }
       }
-      if (openings.length) facade([e.ax, e.az], [e.bx, e.bz], g, yBot, top, e.ox, e.oz, col, seed, p1, 0, openings, 5, { main: e.main, rich: hs.surveyed && !!hs.name, house: true });
+      if (openings.length) facade([e.ax, e.az], [e.bx, e.bz], g, yBot, top, e.ox, e.oz, col, seed, p1, 0, openings, 5, {
+        main: e.main, rich: hs.surveyed && !!hs.name, house: true,
+        room: (x, z, ix, iz) => Math.min(rayToRing(ring, x + ix * 0.05, z + iz * 0.05, ix, iz), ...courts.map((c) => rayToRing(c, x + ix * 0.05, z + iz * 0.05, ix, iz) || Infinity)),
+      });
       else wall(e.ax, e.az, e.bx, e.bz, yBot, yBot, top, top, e.ox, e.oz, col, seed, Surf.Plaster, p1, 0, 0, e.L, g, top - g);
     }
 
@@ -1732,7 +1748,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     // Pensile is named for one.
     const balcony = street && !grey && !lean && H > 7 && fl > 5 && hash(s * 1e6, 33) < 0.4;
     // Front facade.
-    if (street && openings.length && !grey) facade(a, b, g, yBot, wallTop, ox, oz, col, s, p1, p2, openings, depth, { ...dress, balcony });
+    if (street && openings.length && !grey) facade(a, b, g, yBot, wallTop, ox, oz, col, s, p1, p2, openings, depth, { ...dress, balcony, room: (x, z, ix, iz) => rayToRing([...a, ...b, ...c, ...d], x + ix * 0.05, z + iz * 0.05, ix, iz) });
     if (balcony) {
       const fx = (b[0] - a[0]) / fl, fz = (b[1] - a[1]) / fl;
       const y0 = g + H - 3.3, P = 1.05;
@@ -1913,6 +1929,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     grand?: boolean;
     /** A balcony runs over this front, so no pent roof under it. */
     balcony?: boolean;
+    /** How far in from a point on the front, along (ix, iz), the building goes: how deep a room behind an opening can be. */
+    room?: (x: number, z: number, ix: number, iz: number) => number;
   }
 
   /**
@@ -1950,12 +1968,17 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         S.tag = tag;
       }
       if (o.kind === "open") return;
-      const rd = o.kind === "shop" ? Math.min(3.6, depth - 0.6) : 0.55;
+      // The room behind, measured at both jambs: a skewed lot is shallower
+      // at one end than its mean depth, and a recess cut to the mean came
+      // out through the back wall onto the next street.
+      const room = (uu: number): number => { const [px, pz] = P(uu); const t = dress.room ? dress.room(px, pz, -ox, -oz) : NaN; return Number.isFinite(t) && t > 0 ? t : depth; };
+      const deep = Math.min(depth, room(o.u0), room(o.u1));
+      const rd = o.kind === "shop" ? Math.max(0.8, Math.min(3.6, deep - 0.6)) : 0.55;
       const ix = -ox * rd, iz = -oz * rd;
       const w = o.u1 - o.u0;
       const inC: RGB = o.kind === "shop" ? [0.62, 0.52, 0.4] : [0.6, 0.5, 0.42];
       // An open door shows a passage behind it; there has to be room for one.
-      const vd = o.kind === "door" && dressed && r(1) < 0.3 ? Math.min(3, depth - rd - 0.8) : 0;
+      const vd = o.kind === "door" && dressed && r(1) < 0.3 ? Math.min(3, deep - rd - 0.8) : 0;
       const reach = rd + Math.max(0, vd);
       const gf = floorOver(g, [[x0, z0], [x1, z1], [x1 - ox * reach, z1 - oz * reach], [x0 - ox * reach, z0 - oz * reach]]);
       lampSites.openings.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, g: gf, ox, oz, ex, ez, w, h: g + o.h - gf, depth: rd, kind: o.kind, counter: o.kind === "shop" && !lean });
@@ -1999,10 +2022,12 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     if ((dress.rich || (dress.grand && r(12) < 0.3)) && leftFree > 0.6 && rightFree > 0.6) {
       // Tuff pilasters with cubic capitals carrying the lintel, as on the
       // Casa del Fauno and the Casa di Pansa.
+      // On a lane whose walkers pass close to the wall they stand flatter.
+      const k = clearAt(F, [[o.u0 - 0.47, 0.2], [o.u1 + 0.47, 0.2]], 0.2) ? 1 : 0.45;
       const tuff: RGB = [0.6, 0.56, 0.46], cap: RGB = [0.68, 0.64, 0.54];
       for (const [pa, pb] of [[o.u0 - 0.42, o.u0 - 0.04], [o.u1 + 0.04, o.u1 + 0.42]]) {
-        fbox(F, pa, pb, -0.02, 0.14, g - 0.3, g + o.h - 0.02, tuff, seed, Surf.Kerb, { skip: FB.Back | FB.Top });
-        fbox(F, pa - 0.05, pb + 0.05, -0.02, 0.2, g - 0.3, g + 0.24, tuff, seed, Surf.Kerb, { skip: FB.Back });
+        fbox(F, pa, pb, -0.02, 0.14 * k, g - 0.3, g + o.h - 0.02, tuff, seed, Surf.Kerb, { skip: FB.Back | FB.Top });
+        fbox(F, pa - 0.05, pb + 0.05, -0.02, 0.2 * k, g - 0.3, g + 0.24, tuff, seed, Surf.Kerb, { skip: FB.Back });
         fbox(F, pa - 0.07, pb + 0.07, -0.02, 0.25, g + o.h - 0.02, g + o.h + 0.3, cap, seed, Surf.Kerb, { skip: FB.Back, bottom: true });
       }
     }
@@ -2012,7 +2037,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       let s0 = NaN;
       if (leftFree > L + 0.85) s0 = o.u0 - 0.6 - L;
       else if (rightFree > L + 0.85) s0 = o.u1 + 0.6;
-      if (!Number.isNaN(s0)) {
+      if (!Number.isNaN(s0) && clearAt(F, [[s0, 0.42], [s0 + L, 0.42]], 0.25)) {
         fbox(F, s0, s0 + L, -0.02, 0.42, g - 0.3, g + 0.45, [0.5, 0.2, 0.15], seed, Surf.Plaster, { p2: 255, gref: g, topS: Surf.Kerb, topC: [0.62, 0.6, 0.55] });
       }
     }
@@ -2058,8 +2083,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     // Stock out on the pavement against a pier: amphorae or baskets.
     if (pave >= WIDE_PAVEMENT_M && r(8) < (main ? 0.35 : 0.12)) {
       const room = rightFree > 1.2 ? 1 : leftFree > 1.2 ? -1 : 0;
-      if (room !== 0) {
-        const at = (k: number): number => (room > 0 ? u1 + 0.3 + k * 0.32 : u0 - 0.3 - k * 0.32);
+      const at = (k: number): number => (room > 0 ? u1 + 0.3 + k * 0.32 : u0 - 0.3 - k * 0.32);
+      if (room !== 0 && clearAt(F, [[at(0), 0.55], [at(1.4), 0.55]], 0.25)) {
         if (r(15) < 0.6) {
           for (let k = 0; k < 3; k++) {
             const [ax, , az] = fp(F, at(k), 0.22, 0);
@@ -2089,7 +2114,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     if (kind > 0.75) return;
     const seed = r(20);
     const ua = Math.max(0, o.u0 - 0.25), ub = Math.min(fl, o.u1 + 0.25), L = ub - ua;
-    if (kind < 0.45 || pave < WIDE_PAVEMENT_M) {
+    const poles = (Pd: number): boolean => clearAt(F, [[ua + 0.08, Pd], [ub - 0.08, Pd]], 0.3);
+    if (kind < 0.45 || pave < WIDE_PAVEMENT_M || !poles(Math.min(2, pave - 0.25))) {
       const Pd = 1.1, y0 = g + o.h + 0.72, y1 = y0 - Pd * TAN_PITCH;
       const q: V3[] = [fp(F, ua, 0, y0), fp(F, ub, 0, y0), fp(F, ub, Pd, y1), fp(F, ua, Pd, y1)];
       const tileC: RGB = [0.62 + r(22) * 0.08, 0.31, 0.2];
@@ -2958,12 +2984,12 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     let ox = ez, oz = -ex;
     if ((jx - ax) * ox + (jz - az) * oz < 0) { ox = -ox; oz = -oz; }
     const F: Frame = { ax: ax + ex * tt, az: az + ez * tt, ex, ez, ox, oz };
-    if (publicRings.some((pr) => distToRing(pr, F.ax, F.az) < 3) || pavementAt(F.ax, F.az, ox, oz) < WIDE_PAVEMENT_M) return;
+    if (publicRings.some((pr) => distToRing(pr, F.ax, F.az) < 3) || pavementAt(F.ax, F.az, ox, oz) < 1.2 || !clearAt(F, [[-0.5, 0.46], [0.5, 0.46]], 0.2)) return;
     if (lampSites.openings.some((o) => Math.hypot(o.x - F.ax, o.z - F.az) < o.w / 2 + 1.1)) return;
     const g = ground(F.ax, F.az) + KERB_M, seed = hash(ji, 52);
     // Altar with its cornice, plastered white.
-    fbox(F, -0.42, 0.42, -0.02, 0.5, g - 0.1, g + 0.92, [0.86, 0.82, 0.72], seed, Surf.Stucco, { skip: FB.Back | FB.Top });
-    fbox(F, -0.5, 0.5, -0.02, 0.58, g + 0.92, g + 1.04, [0.9, 0.87, 0.8], seed, Surf.Marble, { skip: FB.Back });
+    fbox(F, -0.42, 0.42, -0.02, 0.38, g - 0.1, g + 0.92, [0.86, 0.82, 0.72], seed, Surf.Stucco, { skip: FB.Back | FB.Top });
+    fbox(F, -0.5, 0.5, -0.02, 0.44, g + 0.92, g + 1.04, [0.9, 0.87, 0.8], seed, Surf.Marble, { skip: FB.Back });
     // The painting over it, and the little roof that kept the rain off it.
     const p0 = fp(F, -0.75, 0.012, 0), p1 = fp(F, 0.75, 0.012, 0);
     wall(p0[0], p0[2], p1[0], p1[2], g + 1.25, g + 1.25, g + 2.65, g + 2.65, ox, oz, [0.6, 0.14, 0.08], seed, Surf.Fresco, 0, 0, 0, 1.5, g + 0.3, 2.35);
