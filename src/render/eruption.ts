@@ -505,8 +505,10 @@ void main() {
   // flickers) and never over about a degree: the few closest stones once
   // filled a fifth of the screen as slabs.
   float size = clamp(r, d * 0.0016, d * 0.018);
-  // A 1/200 s smear, but never longer than the stone is wide: a stone, not a streak.
-  float tail = fine ? 0.0 : min(0.5 * speed / 200.0, size);
+  // The eye holds a falling stone for about 1/60 s, in which it drops some
+  // 20 cm: a thin tapered streak, which is what a pumice fall looks like.
+  // Capped against the stone's width so the nearest ones stay stones.
+  float tail = fine ? 0.0 : min(0.5 * speed / 60.0, size * 9.0);
   vec3 along = normalize(vel) * (size + tail);
   // Minus: the fall points down, and right x down would turn the quad away from the camera.
   vec3 w = c + right * position.x * size - along * position.y;
@@ -545,7 +547,7 @@ ${ERUPTION_SURFACE_GLSL}
 void main() {
   float T = exp(-distance(uCamPos, vWorld) / uVis);
   if (uKind > 0.5) {
-    float a = smoothstep(1.0, 0.1, length(vUv)) * 0.25 * vFade;
+    float a = smoothstep(1.0, 0.1, length(vUv)) * 0.4 * vFade;
     if (a < 0.01) discard;
     vec3 col = vec3(0.55, 0.52, 0.47) * (uNearAmb * 3.0 + uSunE * uShade * 0.3 + eruptionLamps(vWorld, vec3(0.0, 1.0, 0.0)));
     fragColor = vec4(mix(uHaze, col, T), a);
@@ -556,8 +558,11 @@ void main() {
   // An irregular outline: pumice is a broken froth, not a bead.
   float ang = atan(q.y, q.x) + vSpin;
   float rim = 0.84 + 0.09 * sin(3.0 * ang + vSeed * 17.0) + 0.06 * sin(5.0 * ang + vSeed * 31.0);
-  float rr = length(q) / rim;
-  float a = smoothstep(1.0, 0.78, rr) * vFade * min(1.0, 1.5 / vStretch);
+  // The smear narrows to a point at both ends and thins out along its
+  // length: with square ends it read as a falling rectangle.
+  float along = abs(vUv.y) * step(1.01, vStretch);
+  float rr = length(vec2(q.x / (1.0 - 0.7 * along), q.y)) / rim;
+  float a = smoothstep(1.0, 0.78, rr) * vFade * max(0.4, min(1.0, 1.5 / vStretch)) * (1.0 - 0.6 * along);
   if (a < 0.01) discard;
   // Shaded as a lump in the scene's own light: pale where the light falls on
   // it, dim in its own shade, mottled with vesicles that turn as it tumbles.
@@ -760,6 +765,8 @@ export class EruptionView {
    *  integers is correlated enough to wind the column into a spiral. */
   private readonly colRand = new Float32Array(512).map(rng(1979));
   private rawSun = 0;
+  /** The exposure lift under the plume, 1 in open daylight. */
+  private adapt = 1;
   private readonly rawAmb = new THREE.Color();
   private readonly sunDir = new THREE.Vector3(0, 1, 0);
   private readonly sunColor = new THREE.Color(1, 1, 1);
@@ -830,7 +837,7 @@ export class EruptionView {
     this.canopy.name = "eruption-umbrella";
     this.canopy.renderOrder = 19;
 
-    this.pumiceN = red ? 600 : 1800;
+    this.pumiceN = red ? 1500 : 5000;
     this.pGeo = quadGeometry(0);
     const seeds = new Float32Array(this.pumiceN * 4);
     const r = rng(79);
@@ -842,7 +849,7 @@ export class EruptionView {
       uTime: { value: 0 },
       // Smaller than the old 22 m box at the same count: about 0.6 stones
       // a cubic metre, the number a 15 cm/h fall of 1-3 cm lapilli at 14 m/s gives.
-      uBox: { value: new THREE.Vector3(16, 12, 16) },
+      uBox: { value: new THREE.Vector3(22, 14, 22) },
       uDrift: { value: new THREE.Vector3(1.2, 14, 2.0) },
       uPumice: { value: new THREE.Color(0.8, 0.76, 0.68) },
       uKind: { value: 0 },
@@ -857,7 +864,7 @@ export class EruptionView {
 
     // The fine ash: a second draw of the same shader, its own seeds and a
     // smaller box (a mote further than a few metres is below a pixel).
-    this.ashN = red ? 400 : 900;
+    this.ashN = red ? 900 : 2500;
     this.aGeo = quadGeometry(0);
     const aSeeds = new Float32Array(this.ashN * 4);
     const ra = rng(1979);
@@ -1004,6 +1011,7 @@ export class EruptionView {
     if (this.fallHere > 0.01) light.turbidity = Math.max(light.turbidity, this.fallHere * 3.9 / (4.44e-6 * this.visibility()));
     if (this.fallHere > 0.5) light.mieG = 0.35;
     const adapt = Math.min(5, Math.pow(f, -0.45));
+    this.adapt = adapt;
     light.exposure = Math.max(light.exposure, 0.54 * adapt);
     // A flash lights the whole town for an instant.
     light.ambient.addScalar(this.flash * 0.02);
@@ -1103,6 +1111,7 @@ export class EruptionView {
         amb: this.rawAmb,
         nearAmb: c.uNearAmb.value as THREE.Color,
         shade: c.uShade.value as number,
+        adapt: this.adapt,
         flash: fv,
         townBearing: Math.atan2(town.x - vent.x, -(town.z - vent.z)),
         outside: 1 - this.fallHere,

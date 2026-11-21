@@ -523,7 +523,7 @@ vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout float through, i
         float alb = ${ashAlbedo(0).toFixed(3)} + ${(ashAlbedo(1) - ashAlbedo(0)).toFixed(3)} * smoothstep(0.0, 0.45, hf);
         alb *= 1.0 - 0.2 * grey;
         // Tephra-laden and brown low down, paler ash grey in the umbrella.
-        vec3 tint = mix(vec3(1.0, 0.8, 0.62), vec3(1.0, 0.94, 0.86), smoothstep(0.1, 0.6, hf));
+        vec3 tint = mix(vec3(1.0, 0.8, 0.62), vec3(0.94, 0.86, 0.76), smoothstep(0.1, 0.6, hf));
         float s = 0.0;
         float aw = alb;
         float b = 1.0;
@@ -541,7 +541,7 @@ vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout float through, i
         // The phase and octaves above are the water-cloud calibration (render/
         // composite.ts sunScatter); ash scatters less of the beam back out of
         // its sunlit face than a cumulus of the same albedo would.
-        s *= 0.55;
+        s *= 0.4;
         vec3 sun = plumeSunAt(p.y, sunLo, sunHi);
         // Sky light from above, from the side facing the eye and from the
         // ground below, each through the envelope in its own direction: the
@@ -552,7 +552,11 @@ vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout float through, i
         float odDn = (plumeDensityCheap(p - vec3(0.0, 0.25 * D, 0.0)) * 0.5 + plumeEnvAt(p - vec3(0.0, 0.5 * D, 0.0)) + plumeEnvAt(p - vec3(0.0, 1.5 * D, 0.0))) * D;
         float ka = P_SIGMA * 0.35;
         vec3 amb = (uPlumeAmb * (0.55 * exp(-ka * odUp) + 0.3 * exp(-ka * odSide)) + uPlumeGround * exp(-ka * odDn)) * alb;
-        lum = (sun * s * powder + amb) * tint;
+        // The upper column and the dome are thin enough at their edges to pass
+        // the full sun with no shadow of their own, and came out white as steam.
+        // Ash that high is still ash: hold its sunlit face to a mid grey.
+        float topHold = mix(1.0, 0.42, smoothstep(0.3, 0.75, hf));
+        lum = (sun * s * powder * topHold + amb * mix(1.0, 0.7, smoothstep(0.3, 0.75, hf))) * tint;
         vec3 q = p - uPlumeVent.xyz;
         if (uPlumeGlow.w > 0.0) {
           // Incandescent clasts in the jet, and their light inside the column.
@@ -645,6 +649,8 @@ export interface PlumeFrame {
   nearAmb: THREE.Color;
   /** Share of the sun under the plume. */
   shade: number;
+  /** The exposure lift the dark under the plume asked for, 1 in open daylight. */
+  adapt: number;
   flash: THREE.Vector4;
   /** Bearing from the vent toward the town, radians clockwise from north. */
   townBearing: number;
@@ -724,17 +730,27 @@ export class EruptionVolume {
     u.uPlumeD.value.x = sh.rising ? 1.7 : 1.15;
     u.uPlumeD.value.y = fr.outside;
     u.uPlumeD.value.z = fr.visibilityM;
-    u.uPlumeSun.value.copy(fr.sun);
+    // Under the plume the exposure is lifted several stops for the dark
+    // street, which blew the sunlit upper column out to a white blob. Seen
+    // from in there the eye is not adapted to it either: hold it to a pale
+    // grey that still reads as lit ash.
+    const held = 1 / Math.pow(Math.max(1, fr.adapt), 0.85);
+    u.uPlumeSun.value.copy(fr.sun).multiplyScalar(held);
     // Half the sky light's blue: much of what reaches a shaded flank has
     // bounced off the rest of the cloud first, and ash is grey-brown. At full
     // sky blue the column read lavender from across the bay.
     const al = fr.amb.r * 0.3 + fr.amb.g * 0.45 + fr.amb.b * 0.25;
-    u.uPlumeAmb.value.copy(fr.amb).lerp(_c.setRGB(al, al * 0.95, al * 0.88), 0.5);
+    u.uPlumeAmb.value.copy(fr.amb).lerp(_c.setRGB(al, al * 0.95, al * 0.88), 0.5).multiplyScalar(held);
     // Light from below: the landscape round the umbrella's shadow (albedo about
     // 0.12, half of what the underside sees is in that shadow) and the sky it
     // reflects. What lights the underside, a few stops under its sunlit top.
     u.uPlumeGround.value.copy(fr.sun).multiplyScalar(0.15 * Math.max(0, fr.sunY)).add(_c.copy(fr.amb).multiplyScalar(0.4)).multiply(_c.setRGB(1.0, 0.9, 0.78));
     u.uPlumeFlash.value.copy(fr.flash);
+    // A bolt lights kilometres of column at night. Against a sunlit column
+    // in a daylight exposure it is a spark: at full strength it painted a
+    // white blob on the column in every daytime view.
+    const day = Math.min(1, Math.max(0, fr.sunY / 0.25)) * Math.max(fr.shade, 1 - (fr.adapt - 1) / 3);
+    u.uPlumeFlash.value.w *= 1 - 0.94 * day;
     // The vent's glow: constant in radiance, so it only tells once the day goes.
     const glow = sh.topM > 0 ? 1 : 0;
     u.uPlumeGlow.value.set(0.7 * glow, 0.2 * glow, 0.04 * glow, glow);
