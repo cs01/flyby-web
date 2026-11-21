@@ -632,6 +632,8 @@ export class LandGrid {
   readonly dRoad: Uint16Array;
   readonly dWall: Uint16Array;
   readonly dFarm: Uint16Array;
+  /** Metres to the river's centreline: the exact (slow) river test runs only near it. */
+  readonly dRiver: Uint16Array;
   readonly inside: Uint8Array;
 
   constructor(readonly sub: PompeiiSuburbs, readonly wall: Ring, readonly gradient = true) {
@@ -659,6 +661,7 @@ export class LandGrid {
     const ringPts = polyPts([...wall, wall[0], wall[1]], C / 2);
     this.dWall = seedPoints(ringPts);
     this.dFarm = seedPoints(sub.buildings.filter((b) => b.kind === "farm").map((b) => [b.x, b.z]));
+    this.dRiver = seedPoints(polyPts(sub.river.pts, C / 2));
     this.inside = new Uint8Array(N);
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     for (let i = 0; i < wall.length; i += 2) { x0 = Math.min(x0, wall[i]); x1 = Math.max(x1, wall[i]); z0 = Math.min(z0, wall[i + 1]); z1 = Math.max(z1, wall[i + 1]); }
@@ -682,13 +685,15 @@ export class LandGrid {
       if (sh.s < 40) return Land.Beach;
       if (sh.s < 150) return Land.Dunes;
     }
-    const rv = riverAt(this.sub.river, x, z);
-    if (rv.d < rv.halfW) return Land.River;
-    if (rv.d < rv.halfW + 35) return Land.Banks;
     const n = this.n, C = LandGrid.CELL, H = LandGrid.HALF;
     const i = Math.floor((x + H) / C), j = Math.floor((z + H) / C);
     if (i < 0 || j < 0 || i >= n || j >= n) return crop();
     const k = j * n + i;
+    if (this.dRiver[k] < 80) {
+      const rv = riverAt(this.sub.river, x, z);
+      if (rv.d < rv.halfW) return Land.River;
+      if (rv.d < rv.halfW + 35) return Land.Banks;
+    }
     if (this.inside[k]) return Land.Town;
     if (!this.gradient) return crop();
     const dR = this.dRoad[k], dT = this.dTomb[k], dW = this.dWall[k], dF = this.dFarm[k];

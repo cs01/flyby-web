@@ -1112,13 +1112,21 @@ function suburbColour(lc: Land, x: number, y: number, under: [number, number, nu
     }
     case Land.Garden: {
       // Horti: long narrow beds of greens, onions, cabbage and beans, earth between, a channel every few beds.
+      // Plots of 30-50 m, each with its beds running one way or the other,
+      // so the whole does not read as one grid.
       const tilt = (-24 * Math.PI) / 180;
       const gu = x * Math.cos(tilt) - y * Math.sin(tilt), gv = x * Math.sin(tilt) + y * Math.cos(tilt);
-      const bed = Math.floor(gu / 7), blk = Math.floor(gv / 46);
-      const h = hash2(bed * 7 + blk, blk * 13 - bed);
-      if (((gu % 7) + 7) % 7 < 1.1) return [146, 126, 92];
-      if (((gv % 46) + 46) % 46 < 1.5) return [120, 140, 120];
-      return h < 0.6 ? mixC([74, 106, 48], [104, 126, 58], h / 0.6) : h < 0.85 ? [142, 120, 86] : [118, 116, 64];
+      const pu = Math.floor(gu / 38), pv = Math.floor(gv / 52);
+      const plot = hash2(pu * 11 + 3, pv * 17 - 5);
+      const bw = 4 + 5 * hash2(pu, pv * 3);
+      const a = plot < 0.5 ? gu : gv;
+      const bed = Math.floor(a / bw);
+      const h = hash2(bed * 7 + pu, pv * 13 - bed);
+      const tone = 0.9 + 0.2 * hash2(pu + 1, pv);
+      let c: [number, number, number] = plot < 0.12 ? [138, 120, 86] : h < 0.6 ? mixC([78, 104, 50], [108, 124, 62], h / 0.6) : h < 0.85 ? [136, 118, 84] : [116, 114, 66];
+      if (((a % bw) + bw) % bw < 0.7) c = [128, 112, 82];
+      if (((gu % 38) + 38) % 38 < 1 || ((gv % 52) + 52) % 52 < 1) c = [104, 110, 66];
+      return [c[0] * tone, c[1] * tone, c[2] * tone];
     }
     case Land.Beach: return mixC([222, 208, 172], [176, 164, 132], n * 0.3);
     case Land.Dunes: return mixC([200, 188, 146], [128, 138, 88], hash2(Math.floor(x / 5), Math.floor(y / 5)) > 0.6 ? 0.7 : 0.1);
