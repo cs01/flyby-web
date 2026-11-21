@@ -127,6 +127,9 @@ export function placeLamps(data: PompeiiData, sites: LampSites, opts: PlaceOptio
     for (const h of named) if (x >= h.x0 - 3 && x <= h.x1 + 3 && z >= h.z0 - 3 && z <= h.z1 + 3 && pointInRing(h.ring, x, z)) return h.name;
     return null;
   };
+  // On a main street: the same test the builder uses for its shopfronts.
+  const mains = data.streets.filter((s) => s.main);
+  const onMain = (x: number, z: number): boolean => mains.some((s) => distToPolyline(s.pts, x, z) < s.carriageM / 2 + s.sidewalkM + 2.5);
   const tavernName = (n: string | null): boolean => !!n && /caupona|thermopol|lupanar|popina|hospitium/i.test(n);
   const push = (p: Omit<Lamp, "face"> & { face?: number }): void => {
     const l: Lamp = { ...p, face: p.face ?? p.yaw };
@@ -140,9 +143,11 @@ export function placeLamps(data: PompeiiData, sites: LampSites, opts: PlaceOptio
     const owner = houseOf(o.x - o.ox * 1.5, o.z - o.oz * 1.5);
     if (o.kind === "shop") {
       // A shop in a named caupona is a tavern; so are about one in seven of
-      // the rest, the thermopolia and popinae that lined the main streets.
-      const tavern = tavernName(owner) || r < 0.14;
-      if (!tavern && r2 > 0.62) return;
+      // the rest on the main streets, the thermopolia and popinae that lined
+      // them, and fewer down the side streets, where most shops shut at dusk.
+      const main = onMain(o.x, o.z);
+      const tavern = tavernName(owner) || r < (main ? 0.14 : 0.04);
+      if (!tavern && r2 > (main ? 0.62 : 0.3)) return;
       const outH = tavern ? 24.0 + 2.5 * r3 : 21.0 + 2.0 * r3;
       const role: LampRole = tavern ? "tavern" : "shop";
       if (o.counter) {
@@ -206,7 +211,8 @@ export function placeLamps(data: PompeiiData, sites: LampSites, opts: PlaceOptio
       ix /= il; iz /= il;
       const t = Math.min(0.8, Math.max(0.2, 0.5 + (hash(k, 25) - 0.5) * 0.4));
       const x = ax + (bx - ax) * t + ix * 0.16, z = az + (bz - az) * t + iz * 0.16;
-      push({ kind: LampKind.Lararium, role: "lararium", x, y: c.g + 1.45, z, yaw: Math.atan2(iz, ix), nozzles: 1, power: 0.55,
+      // A sliver of a court can leave the point outside it: no shrine there.
+      if (pointInRing(c.ring, x, z)) push({ kind: LampKind.Lararium, role: "lararium", x, y: c.g + 1.45, z, yaw: Math.atan2(iz, ix), nozzles: 1, power: 0.55,
         outH: 21.0 + 2.0 * r3, seed: hash(k, 27), rich });
     }
     if (k === bearer) {
@@ -254,6 +260,16 @@ export function lampCensus(lamps: Lamp[]): { byRole: Record<LampRole, number>; b
 }
 
 // --- tiny deterministic helpers ---------------------------------------------
+
+function distToPolyline(p: number[], x: number, z: number): number {
+  let best = Infinity;
+  for (let i = 2; i < p.length; i += 2) {
+    const ax = p[i - 2], az = p[i - 1], dx = p[i] - ax, dz = p[i + 1] - az;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+    best = Math.min(best, Math.hypot(x - ax - t * dx, z - az - t * dz));
+  }
+  return best;
+}
 
 function clamp01(v: number): number { return v < 0 ? 0 : v > 1 ? 1 : v; }
 
