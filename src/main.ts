@@ -2898,13 +2898,13 @@ async function main() {
         sortByRange();
       }
       timebar.update(now, solar.sun.altitude);
+      // Switches for what this place has: no aircraft, trains or boats in
+      // 79 AD, and no trains or boats where no transit pack loaded.
+      const transitHere = !era && transit.pack !== null;
+      layers.setApplicable({ traffic: !era, trains: transitHere, boats: transitHere });
       if (phone) {
         phone.setTime(wallClock.parts(now).time);
         phone.setCity(city.name);
-        // Switches for what this place has: no aircraft, trains or boats in
-        // 79 AD, and no trains or boats where no transit pack loaded.
-        const transitHere = !era && transit.pack !== null;
-        layers.setApplicable({ traffic: !era, trains: transitHere, boats: transitHere });
         // The band labels may use: below the bar, above the highest bottom
         // control. Measured here, at 2.5 Hz, because reading layout every
         // frame would force a reflow per frame.
