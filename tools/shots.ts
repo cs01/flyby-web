@@ -1516,6 +1516,49 @@ export const POSES: Pose[] = [
     what: "pompeii-fountain on the reduced tier",
     query: "agl&fov=55&tier=reduced",
   },
+  // The townsfolk up close (render/folk.ts): `folkcam=` finds the walkers to
+  // frame near the pose (render/pompeiifolk.ts Townsfolk.subject) and moves
+  // the lens to them, so the framing survives changes to where the sim puts people.
+  {
+    // Two walking together on Via dell'Abbondanza, 4 m off, at eye height.
+    name: "pompeii-folk-pair",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 1.6, hdgDeg: 58, pitchDeg: 0,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "A pair of townsfolk walking, 4 m off: dress, gait, feet on the pavement",
+    query: "agl&fov=50&folkcam=pair,70,4,1.6,0.95",
+  },
+  {
+    // The forum's open square: a man in a toga about 8 m off, the crowd round him.
+    name: "pompeii-folk-forum",
+    city: "pompeii",
+    lat: 40.74888, lon: 14.48514, altM: 1.6, hdgDeg: 336, pitchDeg: 0,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "A toga in the forum crowd at 8 m",
+    query: "agl&fov=45&folkcam=toga,15,8,1.65,1.0",
+  },
+  {
+    // Two metres from the Dancing Faun on his plinth by the impluvium.
+    name: "pompeii-faun-close",
+    city: "pompeii",
+    lat: 40.7510725, lon: 14.4846052, altM: 2.0, hdgDeg: 64, pitchDeg: -4,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Close on the bronze Dancing Faun",
+    query: "agl&fov=40",
+  },
+  {
+    // A walker with a lantern on Via dell'Abbondanza at 21:30 (the lamps poses' time).
+    name: "pompeii-folk-night",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 1.6, hdgDeg: 58, pitchDeg: 0,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "A walker carrying a lantern by night, 3.5 m off",
+    query: "agl&fov=50&folkcam=lantern,35,3.5,1.6,1.0",
+  },
   {
     name: "pompeii-impluvium",
     city: "pompeii",
@@ -1862,6 +1905,8 @@ interface Shot {
   shrubs: number;
   treeLods: number[];
   treeTriangles: number;
+  /** Pompeii's people: figures drawn full and far, and their triangles. */
+  folk: { near: number; far: number; triangles: number } | null;
   lod: number;
   pavementTriangles: number;
   /** The street: columns, moving cars, parked cars, and what they cost. */
@@ -1950,6 +1995,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   const shrubs = await cdp.eval<number>("window.flybyShot.shrubs ?? 0");
   const treeLods = await cdp.eval<number[]>("window.flybyShot.treeLods ?? []");
   const treeTriangles = await cdp.eval<number>("window.flybyShot.treeTriangles ?? 0");
+  const folk = await cdp.eval<{ near: number; far: number; triangles: number } | null>("window.flybyShot.folk ?? null");
   const lod = await cdp.eval<number>("window.flybyShot.lod");
   const pavementTriangles = await cdp.eval<number>("window.flybyShot.pavementTriangles ?? 0");
   const lamps = await cdp.eval<number>("window.flybyShot.lamps ?? 0");
@@ -1996,7 +2042,7 @@ async function capture(cdp: Cdp, base: string, p: Pose, outDir: string, tag: str
   }
 
   return {
-    pose: p, file, frameMs, triangles, trees, shrubs, treeLods, treeTriangles, lod,
+    pose: p, file, frameMs, triangles, trees, shrubs, treeLods, treeTriangles, folk, lod,
     pavementTriangles, lamps, lampsMeasured, cars, parkedCars, streetTriangles,
     streetClipped, drapeMoves, signature, view,
   };
@@ -2090,7 +2136,8 @@ async function main(): Promise<void> {
         `shrubs ${s.shrubs}  ` +
         `street ${s.lamps} lamps (${s.lampsMeasured} surveyed) ${s.cars} moving ` +
         `${s.parkedCars} parked ${(s.streetTriangles / 1000).toFixed(0)}k tris` +
-        (s.streetClipped ? `  CLIPPED ${s.streetClipped}` : ""),
+        (s.streetClipped ? `  CLIPPED ${s.streetClipped}` : "") +
+        (s.folk ? `  folk ${s.folk.near}+${s.folk.far} ${(s.folk.triangles / 1000).toFixed(1)}k tris` : ""),
       );
       if (repeat) {
         const again = await capture(cdp, base, p, outDir, "-repeat");
