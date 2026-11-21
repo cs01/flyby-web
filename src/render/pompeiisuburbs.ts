@@ -27,7 +27,7 @@ export interface SuburbKit {
   poly(st: Store, pts: V3[], facing: V3, c: RGB, seed: number, s: Surf, p1: number, p2: number, uvs: UV[]): void;
   wall(ax: number, az: number, bx: number, bz: number, yBotA: number, yBotB: number, yTopA: number, yTopB: number,
     outX: number, outZ: number, c: RGB, seed: number, s: Surf, p1: number, p2: number, u0: number, facadeLen: number, groundRef: number, facadeH: number): void;
-  box(q: number[], y0: number, y1: number, c: RGB, seed: number, s: Surf, top?: Surf, topC?: RGB): void;
+  box(q: number[], y0: number, y1: number, c: RGB, seed: number, s: Surf, top?: Surf, topC?: RGB, bottom?: boolean): void;
   column(x: number, z: number, y0: number, h: number, r: number, c: RGB, seed: number, sides?: number, red?: boolean, order?: Order): void;
   ground(x: number, z: number): number;
   solids: Solid[];
@@ -142,9 +142,9 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
       [[0, 0, w, h], [w, 0, w, h], [w, h, w, h], [0, h, w, h]]);
   }
 
-  /** A box in frame coordinates. */
-  const fbox = (f: Frame, u0: number, v0: number, u1: number, v1: number, y0: number, y1: number, c: RGB, seed: number, s: Surf, top?: Surf, topC?: RGB): void =>
-    box(rect(f, u0, v0, u1, v1), y0, y1, c, seed, s, top ?? s, topC ?? c);
+  /** A box in frame coordinates. A tomb's stages stand on each other, so no underside unless asked for (an entablature over an open front). */
+  const fbox = (f: Frame, u0: number, v0: number, u1: number, v1: number, y0: number, y1: number, c: RGB, seed: number, s: Surf, top?: Surf, topC?: RGB, bottom = false): void =>
+    box(rect(f, u0, v0, u1, v1), y0, y1, c, seed, s, top ?? s, topC ?? c, bottom);
 
   // =====================================================================================
   // Roads: basalt with raised kerbs out of the gates, beaten gravel beyond.
@@ -337,7 +337,7 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
           column(x, z, y0, ch, 0.18, W, seed, 8, false, lean ? undefined : Order.Ionic);
         }
         // Entablature and a stuccoed pediment roof.
-        fbox(f, -hw - 0.05, -hd + 0.05, hw + 0.05, hd - 0.05, y0 + ch, y0 + ch + 0.45, W, seed, Surf.Stucco);
+        fbox(f, -hw - 0.05, -hd + 0.05, hw + 0.05, hd - 0.05, y0 + ch, y0 + ch + 0.45, W, seed, Surf.Stucco, undefined, undefined, true);
         const ry = y0 + ch + 0.45;
         const p = (u: number, v: number, h: number): V3 => { const [x, z] = f.P(u, v); return [x, h, z]; };
         const rise = hw * 0.35;

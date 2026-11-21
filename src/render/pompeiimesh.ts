@@ -285,6 +285,8 @@ export interface BuildOptions {
   probeNoPlotWalls?: boolean;
   /** Probe: rule-built peristyles not held inside their block, for the gate's vacuity check. */
   probePorticoOut?: boolean;
+  /** Probe: beams and slabs left open underneath, as before the undersides, for the gate's vacuity check. */
+  probeOpenBeams?: boolean;
   /** The art atlas's paintings and mosaics (kill switch `?off=pompeiiart`); on unless false. */
   art?: boolean;
   /** The tomb streets, suburbs, river and harbour outside the walls; on unless false. */
@@ -431,9 +433,20 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
 
   /** An axis-free box: footprint quad (CCW or CW), from y0 to y1. */
-  function box(q: number[], y0: number, y1: number, c: RGB, seed: number, s: Surf, top: Surf = s, topC: RGB = c): void {
+  /**
+   * `bottom` closes the underside: by default whenever the box stands clear
+   * of the ground (a beam, a lintel, a balcony floor), since from below an
+   * open one is a hollow shell.
+   */
+  function box(q: number[], y0: number, y1: number, c: RGB, seed: number, s: Surf, top: Surf = s, topC: RGB = c, bottom?: boolean): void {
     const n = q.length / 2;
     const [cx, cz] = ringCentroid(q);
+    if (!opts.probeOpenBeams && (bottom ?? y0 > ground(cx, cz) + 1.8)) {
+
+      const under: V3[] = [];
+      for (let i = 0; i < n; i++) under.push([q[i * 2], y0, q[i * 2 + 1]]);
+      poly(S, under, [0, -1, 0], c, seed, s, 0, 0, under.map((p) => [p[0], p[2], 0, 0]));
+    }
     for (let i = 0; i < n; i++) {
       const ax = q[i * 2], az = q[i * 2 + 1], bx = q[((i + 1) % n) * 2], bz = q[((i + 1) % n) * 2 + 1];
       const mx = (ax + bx) / 2 - cx, mz = (az + bz) / 2 - cz;
@@ -1546,8 +1559,15 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           const m = Math.max(1, Math.round((L - 4) / 3));
           for (let q = 0; q <= m; q++) {
             const tt = 2 + ((L - 4) * q) / m;
-            column(ax + ((bx - ax) * tt) / L + ix * 2.4, az + ((bz - az) * tt) / L + iz * 2.4, g, storeyH - 1.4, 0.2, [0.86, 0.82, 0.74], seed, 6, hash(seed * 1e6, 21) < 0.7, houseOrder(seed));
+            // Set a hand into the court floor (which steps up with the block's slab and bends between its corners), its capital level with the rest.
+            const px = ax + ((bx - ax) * tt) / L + ix * 2.4, pz = az + ((bz - az) * tt) / L + iz * 2.4, py = fl(px, pz) - 0.13;
+            column(px, pz, py, g + storeyH - 1.4 - py, 0.2, [0.86, 0.82, 0.74], seed, 6, hash(seed * 1e6, 21) < 0.7, houseOrder(seed));
           }
+          // The architrave the capitals carry, a beam along the column line up
+          // to the portico roof's underside over it.
+          const cy = g + storeyH - 1.4, ry = g + storeyH - 0.2 - (1.0 * 2.4) / 3.4 + 0.03;
+          const B = (t: number, v: number): number[] => [ax + ((bx - ax) * t) / L + ix * v, az + ((bz - az) * t) / L + iz * v];
+          box([...B(1.8, 2.22), ...B(L - 1.8, 2.22), ...B(L - 1.8, 2.58), ...B(1.8, 2.58)], cy, ry, [0.88, 0.85, 0.78], seed, Surf.Stucco, Surf.Stucco, [0.88, 0.85, 0.78], !opts.probeOpenBeams);
         }
       }
       const fp: V3[] = [0, 1, 2, 3].map((q): V3 => [c[q * 2], fl(c[q * 2], c[q * 2 + 1]) + 0.02, c[q * 2 + 1]]);
@@ -2544,6 +2564,14 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const t = 0.6 + ((L - 1.2) * i) / n;
       column(d[0] + tx * t + ox * W, d[1] + tz * t + oz * W, g, colH, 0.2, [0.86, 0.82, 0.74], seed, 6, hash(seed * 1e6, 21) < 0.7, houseOrder(seed));
     }
+    {
+      // The beam over the capitals up to the roof, and the stylobate they stand on.
+      const yr = Math.min(top - 0.3, g + colH + 1.3) + (0.25 - Math.min(top - 0.3, g + colH + 1.3) + g + colH) * (W / (W + 0.4)) + 0.03;
+      const B = (t: number, v: number): number[] => [d[0] + tx * t + ox * v, d[1] + tz * t + oz * v];
+      box([...B(0.3, W - 0.18), ...B(L - 0.3, W - 0.18), ...B(L - 0.3, W + 0.18), ...B(0.3, W + 0.18)], g + colH, yr, [0.86, 0.82, 0.74], seed, Surf.Stucco, Surf.Stucco, [0.86, 0.82, 0.74], !opts.probeOpenBeams);
+      const gl = Math.min(ground(...(B(0.3, W) as [number, number])), ground(...(B(L - 0.3, W) as [number, number])));
+      if (!opts.probeOpenBeams) box([...B(0.25, W - 0.3), ...B(L - 0.25, W - 0.3), ...B(L - 0.25, W + 0.3), ...B(0.25, W + 0.3)], gl - 0.2, g, [0.6, 0.56, 0.46], seed, Surf.Kerb, Surf.Kerb, [0.62, 0.58, 0.5], false);
+    }
     const y0 = Math.min(top - 0.3, g + colH + 1.3), y1 = g + colH + 0.25;
     const p0: V3 = [d[0], y0, d[1]], p1: V3 = [c[0], y0, c[1]];
     const p2: V3 = [c[0] + ox * (W + 0.4), y1, c[1] + oz * (W + 0.4)], p3: V3 = [d[0] + ox * (W + 0.4), y1, d[1] + oz * (W + 0.4)];
@@ -2935,11 +2963,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const band = (half: number, y0b: number, y1b: number, col: RGB, s: Surf = Surf.Stucco): void => {
       const q = [ax - roofOutX * half - tx * half, az - roofOutZ * half - tz * half, bx - roofOutX * half + tx * half, bz - roofOutZ * half + tz * half,
         bx + roofOutX * half + tx * half, bz + roofOutZ * half + tz * half, ax + roofOutX * half - tx * half, az + roofOutZ * half - tz * half];
-      box(q, y0b, y1b, col, seed, s);
+      box(q, y0b, y1b, col, seed, s, s, col, false);
       // box() has sides and a top only. Under a portico the entablature is
       // seen from below, where an open box showed the sky and the backs of
       // the frieze plates through the beam the capitals should carry.
-      poly(S, [[q[0], y0b, q[1]], [q[2], y0b, q[3]], [q[4], y0b, q[5]], [q[6], y0b, q[7]]], [0, -1, 0], col, seed, s, 0, 0,
+      if (!opts.probeOpenBeams) poly(S, [[q[0], y0b, q[1]], [q[2], y0b, q[3]], [q[4], y0b, q[5]], [q[6], y0b, q[7]]], [0, -1, 0], col, seed, s, 0, 0,
         [[0, 0, L, 2 * half], [L, 0, L, 2 * half], [L, 2 * half, L, 2 * half], [0, 2 * half, L, 2 * half]]);
     };
     band(D * 0.45, e0, e1, [0.9, 0.87, 0.8]);
@@ -3028,7 +3056,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       // floor back to the wall (backY NaN), not a lean-to roof: the upper
       // columns stood in front of a slope of tiles with nothing to stand on.
       const top0 = colonnade(x0, z0, x1, z1, g, 6.2, 0, 3.2, -nx, -nz, ins, lean ? g + 9.5 : NaN, seed, [0.9, 0.87, 0.8], inTemple, Order.Doric);
-      if (!lean) colonnade(x0, z0, x1, z1, top0 + 0.5, 4.4, 0, 3.2, -nx, -nz, ins, g + 13.4, seed, [0.9, 0.87, 0.8], inTemple, Order.Ionic);
+      if (!lean) colonnade(x0, z0, x1, z1, top0, 4.4, 0, 3.2, -nx, -nz, ins, g + 13.4, seed, [0.9, 0.87, 0.8], inTemple, Order.Ionic);
       // The back wall the portico roofs lean on.
       wall(ax, az, bx, bz, g - 0.4, g - 0.4, g + 13.4, g + 13.4, nx, nz, [0.88, 0.84, 0.74], seed, Surf.Stucco, 0, 0, 0, L, g, 13.4);
     }
@@ -3149,7 +3177,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const cc = { ...t, cx: t.cx - fx * (t.hu - cellaHu), cz: t.cz - fz * (t.hu - cellaHu), hu: cellaHu - 0.3, hv: t.hv - 0.8 };
     const cq = obbCorners(cc);
     const y0 = g + podium;
-    box(cq, y0, y0 + H, [0.88, 0.85, 0.78], seed, Surf.Stucco);
+    box(cq, y0, y0 + H, [0.88, 0.85, 0.78], seed, Surf.Stucco, Surf.Stucco, [0.88, 0.85, 0.78], false);
     // Columns across the pronaos: 6 across the front, 2 deep.
     const across = 6;
     for (let row = 0; row < 3; row++) {
@@ -3205,6 +3233,10 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const p = pt(s * (o.hu + 1.2), v, 0);
         column(p[0], p[2], g, 8, 0.5, [0.9, 0.88, 0.82], seed, 8, false, Order.Ionic);
       }
+      // The entablature the porch columns carry, back to the hall's end wall.
+      const ey = Math.max(top, g + 8.7);
+      const ep = [pt(s * o.hu, -o.hv + 1.4, 0), pt(s * (o.hu + 1.6), -o.hv + 1.4, 0), pt(s * (o.hu + 1.6), o.hv - 1.4, 0), pt(s * o.hu, o.hv - 1.4, 0)].flatMap((p) => [p[0], p[2]]);
+      box(ep, g + 8, ey, [0.9, 0.88, 0.82], seed, Surf.Stucco, Surf.Stucco, [0.9, 0.88, 0.82], !opts.probeOpenBeams);
     }
     solids.push({ ring: q, baseY: g - 0.5, topY: top + rise });
   }
@@ -3476,7 +3508,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
             const mx0 = ax + tx * s + ox * (HALF_T - 0.6), mz0 = az + tz * s + oz * (HALF_T - 0.6);
             const q = [mx0, mz0, mx0 + tx * 1.3, mz0 + tz * 1.3, mx0 + tx * 1.3 + ox * 0.6, mz0 + tz * 1.3 + oz * 0.6, mx0 + ox * 0.6, mz0 + oz * 0.6];
             const gm = ground(mx0, mz0);
-            box(q, gm + WALL_H - 1.2, gm + WALL_H + 0.6, wc, 0.5, Surf.Masonry);
+            box(q, gm + WALL_H - 1.2, gm + WALL_H + 0.6, wc, 0.5, Surf.Masonry, Surf.Masonry, wc, false);
           }
         }
       }
@@ -3556,7 +3588,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         solids.push({ ring: q, baseY: g - 2, topY: g + WALL_H + 1.5 });
       }
       const q = [gt.x - tx * 2.4 - ox * D, gt.z - tz * 2.4 - oz * D, gt.x + tx * 2.4 - ox * D, gt.z + tz * 2.4 - oz * D, gt.x + tx * 2.4 + ox * D, gt.z + tz * 2.4 + oz * D, gt.x - tx * 2.4 + ox * D, gt.z - tz * 2.4 + oz * D];
-      box(q, g + 5.2, g + WALL_H + 1.5, [0.74, 0.68, 0.56], 0.55, Surf.Masonry, Surf.Kerb, [0.6, 0.56, 0.48]);
+      box(q, g + 5.2, g + WALL_H + 1.5, [0.74, 0.68, 0.56], 0.55, Surf.Masonry, Surf.Kerb, [0.6, 0.56, 0.48], false);
       // The vault's soffit, seen from the road below.
       poly(S, [0, 1, 2, 3].map((k): V3 => [q[k * 2], g + 5.2, q[k * 2 + 1]]), [0, -1, 0], [0.5, 0.46, 0.4], 0.55, Surf.Masonry, 0, 0, uv4());
     }

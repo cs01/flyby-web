@@ -1708,6 +1708,44 @@ export const POSES: Pose[] = [
     what: "Casa del Citarista: the atrium at 21:30 by lamplight",
     query: "agl&fov=62&near=0.3",
   },
+  // Looking up from under the colonnades: every column carries a beam, every
+  // beam has an underside (test/pompeii.check.ts section 17).
+  {
+    name: "pompeii-up-forum",
+    city: "pompeii",
+    lat: 40.749346, lon: 14.484887, altM: 1.7, hdgDeg: 96, pitchDeg: 45,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Up from inside the forum portico: architrave, gallery floor, upper columns",
+    query: "agl&fov=70&near=0.3",
+  },
+  {
+    name: "pompeii-up-peristyle",
+    city: "pompeii",
+    lat: 40.749459, lon: 14.488125, altM: 1.6, hdgDeg: 18, pitchDeg: 35,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Up from a peristyle's walk: the beam over the capitals and the portico roof",
+    query: "agl&fov=70&near=0.3",
+  },
+  {
+    name: "pompeii-up-jupiter",
+    city: "pompeii",
+    lat: 40.749780, lon: 14.484508, altM: 1.7, hdgDeg: 357, pitchDeg: 30,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Up at the Temple of Jupiter's porch from the foot of its steps",
+    query: "agl&fov=70&near=0.3",
+  },
+  {
+    name: "pompeii-up-theatre",
+    city: "pompeii",
+    lat: 40.748865, lon: 14.488406, altM: 1.7, hdgDeg: 319, pitchDeg: 20,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "The Teatro Grande's stage front from the orchestra, looking up",
+    query: "agl&fov=70&near=0.3",
+  },
   {
     // A block whose open ground ran as a lawn to the kerb: now a walled plot behind its pavement.
     name: "pompeii-plot-wall",
