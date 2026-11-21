@@ -914,6 +914,16 @@ export const POSES: Pose[] = [
     what: "Pompeii from 300 m to the south, Vesuvius behind",
   },
   {
+    // Over the Porta Marina looking out to the bay: the shoreline is where the
+    // field and olive-grove pattern must stop (it once ran out to sea).
+    name: "pompeii-coast",
+    city: "pompeii",
+    lat: 40.7486, lon: 14.4810, altM: 450, hdgDeg: 250, pitchDeg: -18,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Pompeii's west side and the bay from 450 m",
+  },
+  {
     // Via dell'Abbondanza east of the Stabian crossroads, eye height,
     // looking east along the shops. Street ground 31.9 m here.
     name: "pompeii-abbondanza",

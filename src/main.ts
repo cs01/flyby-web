@@ -1077,7 +1077,7 @@ async function main() {
   // Pompeii has no .land pack (its modern landcover is the wrong century):
   // its trees come from the town's gardens and the farmland's olive groves
   // and orchards, through the same renderer.
-  const pompeiiVeg = pompeiiData && !landPack ? pompeiiVegetation(pompeiiData) : null;
+  const pompeiiVeg = pompeiiData && !landPack ? pompeiiVegetation(pompeiiData, undefined, undefined, (x, z) => terrain.heightAt(x, z) > waterLevel + 1) : null;
   if (landPack || pompeiiVeg) {
     const t0 = performance.now();
     const level = landPack?.levels[0];

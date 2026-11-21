@@ -792,7 +792,14 @@ function cropAt(x: number, y: number): { kind: number; tone: number; lu: number;
  * cover over the insulae so the gardens and peristyles get a few trees (the
  * renderer keeps them off the roofs by footprint).
  */
-export function pompeiiVegetation(data: PompeiiData, extentM = 6000, cellM = 20): { rgba: Uint8Array; n: number; extentM: number } {
+export function pompeiiVegetation(
+  data: PompeiiData,
+  extentM = 6000,
+  cellM = 20,
+  // The field pattern is drawn over everything outside the walls, the Bay of
+  // Naples included, so without this the olive groves run out to sea.
+  dry: (x: number, z: number) => boolean = () => true,
+): { rgba: Uint8Array; n: number; extentM: number } {
   const n = Math.ceil((extentM * 2) / cellM);
   const rgba = new Uint8Array(n * n * 4);
   const palestra = data.publics.find((p) => p.kind === "palestra")?.ring ?? null;
@@ -808,7 +815,8 @@ export function pompeiiVegetation(data: PompeiiData, extentM = 6000, cellM = 20)
       const x = -extentM + (c + 0.5) * cellM;
       const o = (r * n + c) * 4;
       let tree = 0;
-      if (nearWallBox(x, z, 0) && pointInRing(data.wall, x, z)) {
+      if (!dry(x, z)) tree = 0;
+      else if (nearWallBox(x, z, 0) && pointInRing(data.wall, x, z)) {
         if (palestra && pointInRing(palestra, x, z)) tree = 0.75;
         else if (data.insulae.some((i) => pointInRing(i.ring, x, z))) tree = 0.22;
       } else {
