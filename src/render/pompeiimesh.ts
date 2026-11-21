@@ -3248,6 +3248,38 @@ function distSeg(x: number, z: number, ax: number, az: number, bx: number, bz: n
   return Math.hypot(x - ax - t * dx, z - az - t * dz);
 }
 
+/**
+ * The highest town ground at a point: the carriageway ribbon, the kerbed
+ * pavement slab and the block's ground slab, each interpolated over its own
+ * triangulation as buildPompeii draws it. A floor laid indoors over the town
+ * (render/escaperoom.ts) has to clear all of them or they show through it.
+ */
+const slabCache = new WeakMap<Ring, number[]>();
+export function townFloorAt(data: PompeiiData, groundAt: (x: number, z: number) => number, x: number, z: number): number {
+  let y = groundAt(x, z) + 0.08;
+  const over = (r: Ring, lift: number): void => {
+    if (!pointInRing(r, x, z)) return;
+    let tri = slabCache.get(r);
+    if (!tri) { tri = triangulateRing(new Float32Array(r)); slabCache.set(r, tri); }
+    for (let k = 0; k < tri.length; k += 3) {
+      const a = tri[k], b = tri[k + 1], c = tri[k + 2];
+      const ax = r[a * 2], az = r[a * 2 + 1], bx = r[b * 2], bz = r[b * 2 + 1], cx = r[c * 2], cz = r[c * 2 + 1];
+      const d = (bz - cz) * (ax - cx) + (cx - bx) * (az - cz);
+      if (Math.abs(d) < 1e-9) continue;
+      const wa = ((bz - cz) * (x - cx) + (cx - bx) * (z - cz)) / d, wb = ((cz - az) * (x - cx) + (ax - cx) * (z - cz)) / d, wc = 1 - wa - wb;
+      if (wa < -1e-6 || wb < -1e-6 || wc < -1e-6) continue;
+      y = Math.max(y, wa * groundAt(ax, az) + wb * groundAt(bx, bz) + wc * groundAt(cx, cz) + lift);
+      return;
+    }
+    y = Math.max(y, groundAt(x, z) + lift);
+  };
+  for (const ins of data.insulae) {
+    over(ins.kerb, KERB_M);
+    over(ins.ring, KERB_M + 0.06);
+  }
+  return y;
+}
+
 export function distToRing(r: Ring, x: number, z: number): number {
   const n = r.length / 2;
   let best = Infinity;

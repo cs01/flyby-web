@@ -47,10 +47,10 @@ import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/erupt
 import { PompeiiLamps } from "./render/pompeiilamps";
 import { PompeiiWater } from "./render/pompeiiwater";
 import { EscapeUi } from "./app/escape";
-import { roomLight } from "./render/escaperoom";
 import { localHours, walkPace } from "./sim/eruption";
 import { Flee, FleeField, crowdShare } from "./sim/flee";
 import { insideWalls, VESUVIUS } from "./render/pompeii";
+import { townFloorAt } from "./render/pompeiimesh";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
 import {
@@ -1766,6 +1766,9 @@ async function main() {
     scene,
     solids: () => (pack?.buildings ?? []).map((b) => Array.from(b.ring)),
     bareGround: (x, z) => (bareHeight ?? terrain.heightAt)(x, z),
+    townUniforms: () => pompeii?.uniforms ?? null,
+    townFloor: (x, z) => townFloorAt(pompeiiData, bareHeight ?? terrain.heightAt, x, z),
+    lean: budget.pompeii.lean,
     placeExact: (x, z, fx, fz) => escapeExact(x, z, fx, fz),
     toast: (t) => hud.toast(t),
   }) : null;
@@ -2503,8 +2506,6 @@ async function main() {
     const solar = solarState(now, city.lat, city.lon);
     const light = computeLighting(solar, wx);
     eruptView?.light(light);
-    // Daylight through the escape room's door (render/escaperoom.ts).
-    roomLight.value.copy(light.ambient).multiplyScalar(1.5).addScalar(light.sunIntensity * 0.105 * 0.04);
 
     renderer.getDrawingBufferSize(drawSize);
     if (pompeiiLamps) {
