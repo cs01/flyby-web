@@ -616,20 +616,31 @@ void main() {
 }
 `;
 
+/**
+ * Two levels of detail past the plain prism: the full template (fine
+ * volutes and leaves) within `nearM`, the lean one out to `farM`, each
+ * capped; a phone gets the lean level only.
+ */
+export interface ColumnLod { nearM: number; nearCap: number; farM: number; farCap: number }
+export const COLUMN_LOD = {
+  desktop: { nearM: 45, nearCap: 120, farM: 130, farCap: 360 } as ColumnLod,
+  phone: { nearM: 0, nearCap: 0, farM: 60, farCap: 80 } as ColumnLod,
+};
+
 class DetailColumns {
   readonly group = new THREE.Group();
-  private readonly meshes: THREE.Mesh[] = [];
   private readonly geos: THREE.InstancedBufferGeometry[] = [];
   private readonly pos: THREE.InstancedBufferAttribute[] = [];
   private readonly red: THREE.InstancedBufferAttribute[] = [];
   private lastX = Infinity;
   private lastZ = Infinity;
-  /** Instances drawn last update, per order. */
-  readonly drawn = [0, 0, 0];
+  /** Instances drawn last update: full Doric, Ionic, Corinthian, then lean. */
+  readonly drawn = [0, 0, 0, 0, 0, 0];
 
-  constructor(private readonly cols: ColumnInstance[], uniforms: PompeiiUniforms, private readonly rangeM: number, private readonly cap: number, lean: boolean) {
+  constructor(private readonly cols: ColumnInstance[], uniforms: PompeiiUniforms, private readonly lod: ColumnLod) {
     const mat = new THREE.RawShaderMaterial({ vertexShader: COLUMN_VERT, fragmentShader: FRAG, uniforms, glslVersion: THREE.GLSL3 });
-    for (const order of [Order.Doric, Order.Ionic, Order.Corinthian]) {
+    for (const lean of [false, true]) for (const order of [Order.Doric, Order.Ionic, Order.Corinthian]) {
+      const cap = lean ? lod.farCap : Math.max(1, lod.nearCap);
       const st = new Store();
       columnTemplate(st, order, lean);
       const g = new THREE.InstancedBufferGeometry();
@@ -649,8 +660,8 @@ class DetailColumns {
       // Instances are placed round the camera every update; the template's
       // own bounds would cull them wrongly.
       m.frustumCulled = false;
-      m.name = `pompeii-columns-${order}`;
-      this.meshes.push(m); this.geos.push(g); this.pos.push(p); this.red.push(r);
+      m.name = `pompeii-columns-${lean ? "lean" : "full"}-${order}`;
+      this.geos.push(g); this.pos.push(p); this.red.push(r);
       this.group.add(m);
     }
   }
@@ -659,24 +670,30 @@ class DetailColumns {
   update(x: number, z: number): void {
     if (Math.hypot(x - this.lastX, z - this.lastZ) < 6) return;
     this.lastX = x; this.lastZ = z;
-    const R2 = this.rangeM * this.rangeM;
+    const { nearM, nearCap, farM, farCap } = this.lod;
     const near: { c: ColumnInstance; d: number }[] = [];
     for (const c of this.cols) {
       const d = (c.x - x) ** 2 + (c.z - z) ** 2;
-      if (d < R2) near.push({ c, d });
+      if (d < farM * farM) near.push({ c, d });
     }
     near.sort((a, b) => a.d - b.d);
-    const n = [0, 0, 0];
-    for (const { c } of near.slice(0, this.cap)) {
-      const k = n[c.order]++;
-      this.pos[c.order].array.set([c.x, c.y0, c.z, c.d], k * 4);
-      (this.red[c.order].array as Float32Array)[k] = c.red ? 1 : 0;
+    const n = [0, 0, 0, 0, 0, 0];
+    let full = 0, lean = 0;
+    for (const { c, d } of near) {
+      // Full detail for the nearest, the lean template behind them.
+      let slot: number;
+      if (d < nearM * nearM && full < nearCap) { slot = c.order; full++; }
+      else if (lean < farCap) { slot = 3 + c.order; lean++; }
+      else break;
+      const k = n[slot]++;
+      this.pos[slot].array.set([c.x, c.y0, c.z, c.d], k * 4);
+      (this.red[slot].array as Float32Array)[k] = c.red ? 1 : 0;
     }
-    for (let o = 0; o < 3; o++) {
-      this.geos[o].instanceCount = n[o];
-      this.pos[o].needsUpdate = true;
-      this.red[o].needsUpdate = true;
-      this.drawn[o] = n[o];
+    for (let s = 0; s < 6; s++) {
+      this.geos[s].instanceCount = n[s];
+      this.pos[s].needsUpdate = true;
+      this.red[s].needsUpdate = true;
+      this.drawn[s] = n[s];
     }
   }
 }
@@ -739,9 +756,8 @@ export class Pompeii {
     // town off its streets silently.
     this.model = buildPompeii({ data, groundAt: (x, z) => opts.heightAt(x + opts.offsetX, z + opts.offsetZ), lean: opts.lean, art: opts.art !== false });
     this.uniforms = Object.assign(makeStreetLampUniforms(opts.shadow), makeArtUniforms());
-    // Detailed orders within 150 m on desktop (a column 0.8 m across is
-    // under five pixels past that), 70 m and a fifth the count on a phone.
-    this.columns = new DetailColumns(this.model.orders, this.uniforms, opts.lean ? 70 : 150, opts.lean ? 120 : 600, opts.lean);
+    // A column 0.8 m across is a few pixels wide past 130 m: the prism does there.
+    this.columns = new DetailColumns(this.model.orders, this.uniforms, opts.lean ? COLUMN_LOD.phone : COLUMN_LOD.desktop);
     this.columns.group.position.set(opts.offsetX, 0, opts.offsetZ);
     this.group.add(this.columns.group);
     const town = new THREE.Mesh(geometry(this.model.mesh), pompeiiMaterial(this.uniforms));
@@ -770,7 +786,7 @@ export class Pompeii {
     this.columns.update(camera.x - this.offX, camera.z - this.offZ);
   }
 
-  /** Detailed column instances drawn, Doric, Ionic, Corinthian. */
+  /** Detailed column instances drawn: full Doric, Ionic, Corinthian, then lean. */
   get columnsDrawn(): readonly number[] {
     return this.columns.drawn;
   }

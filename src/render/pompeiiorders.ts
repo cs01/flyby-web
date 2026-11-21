@@ -190,7 +190,7 @@ export function columnTemplate(st: Sink, order: Order, lean: boolean): void {
     lathe(st, 0, 0, 0, cush, lean ? 8 : 12, W, 0.5, SURF_STUCCO);
     rotateRange(st, before, (p) => [p[1], cy + p[0], p[2]]);
     // The volutes: a spiral of 2 1/2 turns on each face of each end.
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) spiral(st, [sx * 0.5, cy, sz * 0.14], sz, 0.17, lean ? 14 : 26, W);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) spiral(st, [sx * 0.5, cy, sz * 0.14], sz, 0.17, lean ? 10 : 18, W);
     cube(st, -0.55, y + 0.32, -0.32, 0.55, y + 0.36, 0.32, W, 0.5, SURF_STUCCO);
   } else {
     // Corinthian: the bell (kalathos), two rows of eight acanthus leaves
@@ -207,7 +207,7 @@ export function columnTemplate(st: Sink, order: Order, lean: boolean): void {
       const a = Math.PI / 4 + (k * Math.PI) / 2;
       const cxz: V3 = [Math.cos(a) * 0.6, y + 0.82 * H, Math.sin(a) * 0.6];
       const before = st.n;
-      spiral(st, [0, 0, 0], 1, 0.1, lean ? 10 : 18, W);
+      spiral(st, [0, 0, 0], 1, 0.1, lean ? 8 : 14, W);
       // Face the spiral outward along the diagonal.
       rotateRange(st, before, (p) => [cxz[0] + p[0] * Math.sin(a) + p[2] * Math.cos(a), cxz[1] + p[1], cxz[2] - p[0] * Math.cos(a) + p[2] * Math.sin(a)]);
     }

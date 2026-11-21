@@ -14,7 +14,7 @@ import { AMPHI, ROOF_PITCH_DEG, Store, Surf, buildPompeii, distToRing, type Pomp
 import { pompeiiRoadPack, pompeiiHeightAt } from "../src/data/pompeiiroads";
 import { buildRoadGraph, componentLengths, connectedComponents } from "../src/data/roadgraph";
 import { budgetForTier, pompeiiArtBytes, pompeiiBytes, type DeviceDescriptor } from "../src/render/budget";
-import { AmphitheatreField, DIPINTI, POMPEII_SHADOW_SPLITS, VESUVIUS, dipintiTables, restoreVesuvius, vesuviusCone } from "../src/render/pompeii";
+import { AmphitheatreField, COLUMN_LOD, DIPINTI, type ColumnLod, POMPEII_SHADOW_SPLITS, VESUVIUS, dipintiTables, restoreVesuvius, vesuviusCone } from "../src/render/pompeii";
 import { LocalClock, zoneLabel } from "../src/app/timebar";
 import { LIFE_RADIUS_M, PompeiiLife } from "../src/data/pompeiilife";
 import { Heightfield } from "../src/data/dem";
@@ -422,6 +422,13 @@ let built: PompeiiModel;
   check("templates stand their order's height in diameters", within(topOf(Order.Doric), 7, 0.01) && within(topOf(Order.Ionic), 9, 0.01) && within(topOf(Order.Corinthian), 10, 0.01),
     `${topOf(Order.Doric).toFixed(2)} / ${topOf(Order.Ionic).toFixed(2)} / ${topOf(Order.Corinthian).toFixed(2)}`);
   check("Doric capital D/2, Corinthian D (in the order table)", ORDERS[Order.Doric].capital === 0.5 && ORDERS[Order.Corinthian].capital === 1, "");
+  // Cost: the detailed columns at their caps, the heaviest order in every
+  // slot. Bounds are literals: 800k triangles on a desktop, 120k on a phone.
+  const tris = (lean: boolean): number => Math.max(...[Order.Doric, Order.Ionic, Order.Corinthian].map((o) => { const st = new Store(); columnTemplate(st, o, lean); return st.ni / 3; }));
+  const worst = (l: ColumnLod): number => l.nearCap * tris(false) + l.farCap * tris(true);
+  check("detailed columns at their caps: under 800k tris desktop, 120k phone", worst(COLUMN_LOD.desktop) < 800000 && worst(COLUMN_LOD.phone) < 120000,
+    `${(worst(COLUMN_LOD.desktop) / 1000).toFixed(0)}k / ${(worst(COLUMN_LOD.phone) / 1000).toFixed(0)}k`);
+  check("probe: drawing every column in full detail is caught", built.orders.length * tris(false) > 800000, `${(built.orders.length * tris(false) / 1e6).toFixed(1)}M`);
 }
 
 // --- 13. bakeries and thermopolia ----------------------------------------------------
