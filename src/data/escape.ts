@@ -106,7 +106,7 @@ export const ENDINGS: Record<Ending, EndingText> = {
       "(estimates vary), and about 1,150 bodies have been recovered, with a third of the town still " +
       "unexcavated. Most left in the first hours of the fall, while the roads could still be walked. " +
       "Where they went is mostly unknown; family names from Pompeii turn up afterwards in " +
-      "inscriptions at Naples, Cumae, Puteoli and Ostia, which may be some of them (Tuck, 2019).",
+      "inscriptions at Naples, Cumae, Puteoli and Ostia, which may be some of them (research by the historian Steven Tuck).",
   },
   road: {
     title: "Caught on the road",
