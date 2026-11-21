@@ -9,7 +9,7 @@ import * as THREE from "three";
 import { Cart, POMPEII_FRAG, type PompeiiUniforms } from "./pompeii";
 import { SHADOW_CASTER_LAYER } from "./sunshadow";
 import { PompeiiLife, type LifeAgent } from "../data/pompeiilife";
-import { pointInRing, type PompeiiData } from "../data/pompeii";
+import { KERB_M, pointInRing, type PompeiiData } from "../data/pompeii";
 import {
   Arms, FLAG_BARE, FLAG_LONG, FLAG_TORCH, FOLK_BONES, FOLK_SCALE, FOLK_CLIPS, FOLK_FRAMES, Gait, bakeClips, buildFolk, buildFolkFar, clipRow,
   type FolkMesh, type FolkOpts,
@@ -393,7 +393,18 @@ export class Townsfolk {
   /** Where walker i stands and faces, world metres. */
   placeOf(i: number): { x: number; y: number; z: number; heading: number } {
     const p = this.sim.people[i], x = p.x + this.offX, z = p.z + this.offZ;
-    return { x, y: this.heightAt(x, z), z, heading: p.heading };
+    return { x, y: this.floorY(p.x, p.z), z, heading: p.heading };
+  }
+
+  /**
+   * The surface a walker's feet are on, at town coordinates. The forum's
+   * travertine lies a kerb and a hand over the terrain (pompeiimesh.ts lays
+   * it at ground + KERB_M + 0.1), which heightAt knows nothing of: on bare
+   * terrain height everyone in the forum stood knee-deep in the paving.
+   */
+  private floorY(px: number, pz: number): number {
+    const y = this.heightAt(px + this.offX, pz + this.offZ);
+    return this.forum && pointInRing(this.forum, px, pz) ? y + KERB_M + 0.1 : y;
   }
 
   /** Who a walker is, from their index and where they were put: togas on the forum, loads in the streets. */
@@ -455,7 +466,7 @@ export class Townsfolk {
     this.vis.length = 0;
     for (const { i, d } of this.order) {
       const p = this.sim.people[i];
-      const x = p.x + this.offX, z = p.z + this.offZ, y = this.heightAt(x, z);
+      const x = p.x + this.offX, z = p.z + this.offZ, y = this.floorY(p.x, p.z);
       // A generous sphere: one just out of view still throws its shadow into it.
       if (cam && !this.frustum.intersectsSphere(this.sphere.set(this.camAt.set(x, y + 0.9, z), 3))) continue;
       this.vis.push({ i, d, x, y, z });
