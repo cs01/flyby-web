@@ -1041,10 +1041,12 @@ export const POSES: Pose[] = [
     // to the sea 1.3 km off: at eye height the roadside trees hide it.
     name: "pompeii-marina-sea",
     city: "pompeii",
-    lat: 40.748424, lon: 14.482435, altM: 34, hdgDeg: 258, pitchDeg: -2,
+    lat: 40.748424, lon: 14.482435, altM: 34, hdgDeg: 258, pitchDeg: -1.2,
     t: D("0079-08-22T07:30:00Z"),
     wx: POMPEII_WX,
     what: "From Porta Marina to the 79 AD sea",
+    // A long lens: at 1.3 km the sea is a band two degrees deep under the horizon.
+    query: "fov=28",
   },
   {
     // Over the north bank at the Sarno mouth: quay, horrea, boats, the beach.

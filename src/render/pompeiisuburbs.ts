@@ -220,14 +220,14 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
       const s1 = Math.min(L, s + step);
       const a = pointAlong(r.pts, s), b = pointAlong(r.pts, s1);
       // Stop at the shore: the sea there is the terrain's water.
-      if (shoreAt(sub.shore, b.x, b.z).s < -8) break;
+      if (shoreAt(sub.shore, b.x, b.z).s < 15) break;
       const ra = riverAt(r, a.x, a.z), rb = riverAt(r, b.x, b.z);
       const wa = ra.halfW + 2, wb = rb.halfW + 2;
       const pts: V3[] = [
         [a.x + a.tz * wa, ra.level, a.z - a.tx * wa], [a.x - a.tz * wa, ra.level, a.z + a.tx * wa],
         [b.x - b.tz * wb, rb.level, b.z + b.tx * wb], [b.x + b.tz * wb, rb.level, b.z - b.tx * wb],
       ];
-      poly(F, pts, [0, 1, 0], [0.5, 0.62, 0.6], 0.5, Surf.Water, 1, 0, [NO, NO, NO, NO]);
+      poly(F, pts, [0, 1, 0], [0.32, 0.46, 0.5], 0.5, Surf.Water, 1, 0, [NO, NO, NO, NO]);
     }
     // The quay: a masonry face along the north bank with a paved top.
     const q = sub.quay;

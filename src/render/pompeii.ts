@@ -397,7 +397,14 @@ void main() {
     vec3 col = albedo * 0.25 * occludedSkyIrradiance(n) + sky * (0.2 + fres);
     // Open water (p1 set: the Sarno) under the open sky: the sky fills it as
     // it does the sea, where a fountain basin between walls stays dark.
-    if (p1 > 0.5) col += sky * 0.9 + albedo * 0.35 * occludedSkyIrradiance(n);
+    if (p1 > 0.5) {
+      // Ripples on the current, so the sky in it breaks up as the sea's does.
+      vec2 rp = vWorld.xz * vec2(0.35, 0.9);
+      vec3 rn = normalize(n + vec3(vnoise(rp) - 0.5, 0.0, vnoise(rp + 17.0) - 0.5) * 0.35);
+      float rf = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(rn, v)), 5.0);
+      col = albedo * 0.45 * occludedSkyIrradiance(n) + shIrradiance(reflect(-v, rn)) * (0.75 + rf);
+      col += sunE * pow(max(0.0, dot(rn, normalize(uSunDir + v))), 120.0) * 0.6;
+    }
     col += sunE * pow(max(0.0, dot(n, normalize(uSunDir + v))), 200.0) * 0.5;
     vec3 ro = atmoOrigin(uCamAltitude);
     vec3 rd = normalize(vWorld - uCameraPos);
@@ -1128,7 +1135,7 @@ function suburbColour(lc: Land, x: number, y: number, under: [number, number, nu
       const bed = Math.floor(a / bw);
       const h = hash2(bed * 7 + pu, pv * 13 - bed);
       const tone = 0.9 + 0.2 * hash2(pu + 1, pv);
-      let c: [number, number, number] = plot < 0.12 ? [138, 120, 86] : h < 0.6 ? mixC([78, 104, 50], [108, 124, 62], h / 0.6) : h < 0.85 ? [136, 118, 84] : [116, 114, 66];
+      let c: [number, number, number] = plot < 0.1 ? [128, 116, 82] : h < 0.75 ? mixC([86, 106, 54], [108, 120, 62], h / 0.75) : h < 0.9 ? [118, 110, 76] : [108, 112, 64];
       if (((a % bw) + bw) % bw < 0.7) c = [128, 112, 82];
       if (((gu % 38) + 38) % 38 < 1 || ((gv % 52) + 52) % 52 < 1) c = [104, 110, 66];
       return [c[0] * tone, c[1] * tone, c[2] * tone];

@@ -323,7 +323,15 @@ export function layoutSuburbs(inp: SuburbInput): PompeiiSuburbs {
 
   // --- the river ---
   const sm = smooth(SARNO_79, 25);
-  const river = { pts: sm.flatMap((p) => [r1(p[0]), r1(p[1])]), level: sm.map((p) => Math.round(p[2] * 100) / 100), halfW: sm.map((p) => r1(p[3])) };
+  // The water is held at the terrain's dry floor (LAND_MIN, less half a
+  // metre) until the last 60 m before the shore: lower, the banks the terrain
+  // must keep above 3.5 m would stand over it as a trench, and the terrain
+  // mesh between them hides the water. A rendering floor, not a gradient.
+  const river = {
+    pts: sm.flatMap((p) => [r1(p[0]), r1(p[1])]),
+    level: sm.map((p) => Math.round((shoreAt(SHORE_79, p[0], p[1]).s > 60 ? Math.max(p[2], LAND_MIN - 0.5) : p[2]) * 100) / 100),
+    halfW: sm.map((p) => r1(p[3])),
+  };
 
   // Bridges: wherever a road crosses the river.
   const bridges: PompeiiSuburbs["bridges"] = [];
