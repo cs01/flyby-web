@@ -1327,6 +1327,20 @@ async function main() {
   /** Chase view while driving: an odd count of CAM presses since the car was
    *  entered. The driver's seat is the default. */
   let carCamBase = 0;
+  // `?carorbit=yawDeg,distM,upM` with `?drive=1&chase=1`: the chase camera
+  // swung round the cart to a fixed angle, for the close-up shots of it.
+  // `?horsegait=walk,0.3` holds the horse at a phase of a gait in shot mode.
+  const carOrbit = (new URLSearchParams(location.search).get("carorbit") ?? "").split(",").map(Number);
+  const horseGait = (new URLSearchParams(location.search).get("horsegait") ?? "").split(",");
+  const orbitCar = (o: number[], c: NonNullable<typeof car>, cam: THREE.PerspectiveCamera): void => {
+    if (o.length < 3 || o.some((v) => !Number.isFinite(v))) return;
+    const h = (c.headingDeg * Math.PI) / 180, fx = Math.sin(h), fz = -Math.cos(h);
+    // Aim between the cart and the horse's shoulder, 1.8 m ahead of the axle.
+    const tx = c.position.x + fx * 1.8, tz = c.position.z + fz * 1.8, ty = c.position.y + 1.1;
+    const a = h + (o[0] * Math.PI) / 180;
+    cam.position.set(tx + Math.sin(a) * o[1], ty + o[2], tz - Math.cos(a) * o[1]);
+    cam.lookAt(tx, ty, tz);
+  };
   const carChase = (): boolean => carActive && ((input.cameraCycled - carCamBase) & 1) === 1;
   /**
    * Height above the ground under which the detail ring follows the camera.
@@ -1929,7 +1943,10 @@ async function main() {
     }
     if (cart) {
       cart.group.visible = carActive && !!car;
-      if (carActive && car) cart.update(car.position.x, car.position.y, car.position.z, car.headingDeg, car.speed, input.paused ? 0 : dt);
+      if (carActive && car) {
+        cart.update(car.position.x, car.position.y, car.position.z, car.headingDeg, car.speed, input.paused ? 0 : dt, camera.position);
+        if (horseGait.length === 2) cart.horse.pose(horseGait[0] === "trot" ? "trot" : "walk", Number(horseGait[1]) || 0, 1);
+      }
     }
     if (townsfolk) {
       townsfolk.update(shotMode || input.paused ? 0 : dt, camera.position.x, camera.position.z);
@@ -1980,6 +1997,7 @@ async function main() {
       dash.style.display = carChase() || era ? "none" : "block";
       if (carChase()) {
         car.chaseEye(camera.position, camera.quaternion);
+        orbitCar(carOrbit, car, camera);
       } else {
         // Straight off the car, like the drone: the camera IS the driver's
         // head, in the driver's seat over the carriageway.
@@ -2046,7 +2064,7 @@ async function main() {
 
     // Ease the lens. ~0.4 s to settle, and the projection matrix is rebuilt
     // only while it is actually moving.
-    const wantFov = carActive ? CAR_FOV : droneActive ? DRONE_FOV : PLANE_FOV;
+    const wantFov = carActive ? (shotFov > 5 && shotFov < 120 ? shotFov : CAR_FOV) : droneActive ? DRONE_FOV : PLANE_FOV;
     if (Math.abs(camera.fov - wantFov) > 0.01) {
       camera.fov += (wantFov - camera.fov) * (1 - Math.pow(0.0006, dt));
       if (Math.abs(camera.fov - wantFov) <= 0.01) camera.fov = wantFov;

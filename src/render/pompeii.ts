@@ -19,6 +19,7 @@ import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeStreetLampUniforms, type StreetLampUniforms } from "./streetlamps";
 import { AMPHI, buildPompeii, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
+import { HORSE_BONES, STRIDE_M, buildHorse, poseHorse, type Gait, type HorseMesh } from "./horse";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
 import { PompeiiLife } from "../data/pompeiilife";
 import { BuildingKind, RoofShape, type Building, type CityPack } from "../data/citypack";
@@ -360,10 +361,18 @@ void main() {
       albedo = mix(albedo, vec3(0.6, 0.33, 0.2), jar * 0.8);
     }
   } else if (style < 7.5) {
+    if (p1 > 0.5) {
+      // Wicker: withies woven over and under the stakes, one row every 4 cm.
+      float row = floor(h / 0.04), col = floor(u / 0.09);
+      float over = mod(row + col, 2.0);
+      float fu = fract(u / 0.09), fh = fract(h / 0.04);
+      albedo *= mix(0.62, 1.05, over) * (0.75 + 0.25 * sin(3.1416 * fh)) * (0.85 + 0.15 * sin(3.1416 * fu));
+    } else {
     // Wood: planks and the studs of a door.
     float pl = fract(u / 0.24);
     albedo *= 0.8 + 0.25 * h21(vec2(floor(u / 0.24), seed)) - 0.25 * smoothstep(0.9, 1.0, pl);
     albedo *= 0.9 + 0.15 * vnoise(vec2(u * 2.0, h * 12.0));
+    }
   } else if (style < 8.5) {
     // Water: dark, with the sky in it at a grazing angle.
     float fres = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(n, v)), 5.0);
@@ -424,9 +433,16 @@ void main() {
     // Opus signinum and beaten earth: warm, speckled with white tesserae.
     albedo *= 0.85 + 0.25 * fbm(vWorld.xz * 0.8);
     albedo = mix(albedo, albedo * 1.35, 0.6 * step(0.985, h21(floor(vWorld.xz * 22.0))));
-  } else {
-    // Hide: the horse.
-    albedo *= 0.9 + 0.15 * vnoise(vWorld.xz * 5.0 + vWorld.y * 3.0);
+  } else if (style < 14.5) {
+    // Hide: the horse's coat, or (p1 set) mane and tail hair in strands.
+    if (p1 > 0.5) {
+      albedo *= 0.7 + 0.5 * vnoise(vec2(vWall.x * 70.0, vWall.y * 1.5 + seed));
+      gloss = 0.3;
+    } else {
+      // A short summer coat: faint grain, and the sheen a groomed horse has.
+      albedo *= 0.93 + 0.1 * vnoise(vWorld.xz * 9.0 + vWorld.y * 7.0);
+      gloss = 0.55;
+    }
   }
 
   float ndl = max(0.0, dot(n, uSunDir));
@@ -867,9 +883,11 @@ export const CART_BOOST_SPEED = 6;
 /** Driver's eye on the cart's bench. */
 export const CART_EYE_HEIGHT_M = 2.05;
 
-function partGeo(g: THREE.BufferGeometry, rgb: [number, number, number], style: number): THREE.BufferGeometry {
+function partGeo(g: THREE.BufferGeometry, rgb: [number, number, number], style: number, p1 = 0): THREE.BufferGeometry {
+  // The primitives carry smooth normals (lathes, tori, tubes): kept, not
+  // recomputed per face, or a wheel or an amphora shades as facets.
   const ng = g.index ? g.toNonIndexed() : g;
-  ng.computeVertexNormals();
+  if (!ng.getAttribute("normal")) ng.computeVertexNormals();
   const n = ng.getAttribute("position").count;
   const nrm = ng.getAttribute("normal").array as Float32Array;
   const an = new Int8Array(n * 4), ac = new Uint8Array(n * 4), as = new Uint8Array(n * 4), aw = new Float32Array(n * 4);
@@ -877,7 +895,7 @@ function partGeo(g: THREE.BufferGeometry, rgb: [number, number, number], style: 
   for (let i = 0; i < n; i++) {
     an[i * 4] = Math.round(nrm[i * 3] * 127); an[i * 4 + 1] = Math.round(nrm[i * 3 + 1] * 127); an[i * 4 + 2] = Math.round(nrm[i * 3 + 2] * 127);
     ac[i * 4] = rgb[0] * 255; ac[i * 4 + 1] = rgb[1] * 255; ac[i * 4 + 2] = rgb[2] * 255; ac[i * 4 + 3] = 128;
-    as[i * 4] = style;
+    as[i * 4] = style; as[i * 4 + 1] = p1;
     aw[i * 4] = pos[i * 3] + pos[i * 3 + 2]; aw[i * 4 + 1] = pos[i * 3 + 1];
   }
   const out = new THREE.BufferGeometry();
@@ -889,100 +907,210 @@ function partGeo(g: THREE.BufferGeometry, rgb: [number, number, number], style: 
   return out;
 }
 
+// The town's vertex shader with a horse's skinning: two bones a vertex,
+// blended across each joint, posed by render/horse.ts on the CPU.
+const HORSE_VERT = /* glsl */ `
+precision highp float;
+in vec3 position;
+in vec4 aNormal;
+in vec4 aColour;
+in vec4 aSurf;
+in vec4 aWall;
+in vec4 aSkin;
+uniform mat4 modelMatrix;
+uniform mat4 viewMatrix;
+uniform mat4 projectionMatrix;
+uniform vec3 uCameraPos;
+uniform mat4 uBones[${HORSE_BONES}];
+out vec3 vNormal;
+out vec3 vWorld;
+out vec4 vColour;
+out vec4 vSurf;
+out vec4 vWall;
+out float vViewDist;
+void main() {
+  float wb = aSkin.z / 255.0;
+  mat4 B = uBones[int(aSkin.x)] * (1.0 - wb) + uBones[int(aSkin.y)] * wb;
+  vec4 w = modelMatrix * B * vec4(position, 1.0);
+  vNormal = mat3(modelMatrix) * mat3(B) * aNormal.xyz;
+  vWorld = w.xyz;
+  vColour = aColour;
+  vSurf = aSurf;
+  vWall = aWall;
+  vViewDist = distance(w.xyz, uCameraPos);
+  gl_Position = projectionMatrix * viewMatrix * w;
+}
+`;
+
+/** A horse mesh from render/horse.ts as a geometry the skinning shader reads. */
+function horseGeometry(h: HorseMesh): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(h.position, 3));
+  g.setAttribute("aNormal", new THREE.BufferAttribute(h.normal, 4, true));
+  g.setAttribute("aColour", new THREE.BufferAttribute(h.colour, 4, true));
+  g.setAttribute("aSurf", new THREE.BufferAttribute(h.surf, 4, false));
+  g.setAttribute("aWall", new THREE.BufferAttribute(h.wall, 4));
+  g.setAttribute("aSkin", new THREE.BufferAttribute(h.skin, 4, false));
+  g.setIndex(new THREE.BufferAttribute(h.index, 1));
+  g.computeBoundingSphere();
+  return g;
+}
+
 /**
- * A two-wheeled cart and its horse, +z forward (three.js -z is north, so the
- * group is turned by the heading). Box and shafts in wood, iron-tyred wheels,
- * the horse from boxes and tapered cylinders with four legs that swing on a
- * walk cycle while the body bobs.
+ * A skinned horse: its own uniforms object (the bones) sharing the town's
+ * lighting uniforms by reference. `lod` swaps to the lean mesh past 40 m.
+ */
+export class Horse {
+  readonly group = new THREE.Group();
+  readonly bones = new Float32Array(HORSE_BONES * 16);
+  private readonly full: THREE.Mesh;
+  private readonly lean: THREE.Mesh;
+  private readonly boneMats: THREE.Matrix4[] = [];
+  private readonly world = new THREE.Vector3();
+
+  constructor(uniforms: PompeiiUniforms, opts: { harness?: boolean; lean?: boolean } = {}) {
+    for (let i = 0; i < HORSE_BONES; i++) this.boneMats.push(new THREE.Matrix4());
+    const mat = new THREE.RawShaderMaterial({
+      vertexShader: HORSE_VERT, fragmentShader: FRAG, glslVersion: THREE.GLSL3, side: THREE.DoubleSide,
+      uniforms: { ...uniforms, uBones: { value: this.boneMats } },
+    });
+    this.full = new THREE.Mesh(horseGeometry(buildHorse(!!opts.lean, !!opts.harness)), mat);
+    this.lean = new THREE.Mesh(horseGeometry(buildHorse(true, !!opts.harness)), mat);
+    for (const m of [this.full, this.lean]) {
+      // Skinned in the shader: the rest-pose bounds would cull a stride's reach wrongly.
+      m.frustumCulled = false;
+      this.group.add(m);
+    }
+    this.lean.visible = false;
+    this.pose("stand", 0, 0);
+    this.group.name = "horse";
+  }
+
+  pose(gait: Gait, phase: number, strength: number): void {
+    poseHorse(gait, phase, this.bones, strength);
+    for (let i = 0; i < HORSE_BONES; i++) this.boneMats[i].fromArray(this.bones, i * 16);
+  }
+
+  /** Lean mesh beyond 40 m of the camera. */
+  lod(camera: THREE.Vector3): void {
+    this.group.getWorldPosition(this.world);
+    const far = this.world.distanceTo(camera) > 40;
+    this.full.visible = !far;
+    this.lean.visible = far;
+  }
+}
+
+/** Gait for a cart speed: a walk, a trot past 3.2 m/s (the boost), standing still under 0.15. */
+export function cartGait(speed: number): { gait: Gait; stride: number; strength: number } {
+  const v = Math.abs(speed);
+  if (v < 0.15) return { gait: "stand", stride: STRIDE_M.walk, strength: 0 };
+  if (v > 3.2) return { gait: "trot", stride: STRIDE_M.trot, strength: 1 };
+  return { gait: "walk", stride: STRIDE_M.walk, strength: Math.min(1, v / 0.8) };
+}
+
+/**
+ * A two-wheeled Roman cart (a carrus) and its horse, +z forward (three.js
+ * -z is north, so the group is turned by the heading): two big iron-tyred
+ * wheels of ten spokes on a fixed axle, a plank bed with wicker sides,
+ * shafts curving up to the loops on the horse's pad.
  */
 export class Cart {
   readonly group = new THREE.Group();
-  private readonly legs: THREE.Object3D[] = [];
+  readonly horse: Horse;
   private readonly wheels: THREE.Object3D[] = [];
-  private readonly horse = new THREE.Group();
   private phase = 0;
+  private readonly cam = new THREE.Vector3();
 
   constructor(uniforms: PompeiiUniforms) {
     const mat = pompeiiMaterial(uniforms, { doubleSided: true });
-    const wood: [number, number, number] = [0.45, 0.3, 0.17];
-    const dark: [number, number, number] = [0.25, 0.17, 0.1];
-    const coat: [number, number, number] = [0.42, 0.26, 0.15];
-    const mane: [number, number, number] = [0.12, 0.08, 0.06];
-    const add = (parent: THREE.Object3D, g: THREE.BufferGeometry, rgb: [number, number, number], style: number, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0): THREE.Mesh => {
-      const m = new THREE.Mesh(partGeo(g, rgb, style), mat);
+    const wood: [number, number, number] = [0.47, 0.33, 0.2];
+    const dark: [number, number, number] = [0.26, 0.18, 0.11];
+    const iron: [number, number, number] = [0.14, 0.13, 0.13];
+    const wicker: [number, number, number] = [0.6, 0.47, 0.28];
+    const add = (parent: THREE.Object3D, g: THREE.BufferGeometry, rgb: [number, number, number], style: number, x: number, y: number, z: number, rx = 0, ry = 0, rz = 0, p1 = 0): THREE.Mesh => {
+      const m = new THREE.Mesh(partGeo(g, rgb, style, p1), mat);
       m.position.set(x, y, z);
       m.rotation.set(rx, ry, rz);
-      m.castShadow = true;
       m.layers.enable(SHADOW_CASTER_LAYER);
       parent.add(m);
       return m;
     };
     const W = 7; // Surf.Wood
-    const HIDE = 14;
-    // Cart body: floor, sides, front board, bench.
-    add(this.group, new THREE.BoxGeometry(1.25, 0.08, 1.8), wood, W, 0, 0.8, -0.2);
-    add(this.group, new THREE.BoxGeometry(0.06, 0.34, 1.8), wood, W, 0.62, 1.0, -0.2);
-    add(this.group, new THREE.BoxGeometry(0.06, 0.34, 1.8), wood, W, -0.62, 1.0, -0.2);
-    add(this.group, new THREE.BoxGeometry(1.25, 0.34, 0.06), wood, W, 0, 1.0, -1.08);
-    add(this.group, new THREE.BoxGeometry(1.25, 0.4, 0.06), wood, W, 0, 1.02, 0.68);
-    add(this.group, new THREE.BoxGeometry(1.1, 0.08, 0.38), dark, W, 0, 1.2, 0.42);
-    // Amphorae in the back.
-    for (let k = 0; k < 4; k++) {
-      add(this.group, new THREE.CylinderGeometry(0.16, 0.08, 0.7, 8), [0.62, 0.34, 0.2], 13, -0.42 + k * 0.28, 1.12, -0.7, 0.5, 0, 0);
+    const R = 0.66; // wheel radius: about 1.3 m wheels, as the reliefs show
+    const axleZ = -0.25;
+    // The bed: planks on two side rails, over the axle.
+    add(this.group, new THREE.BoxGeometry(1.15, 0.07, 1.9), wood, W, 0, R + 0.2, axleZ + 0.1);
+    for (const s of [-1, 1]) add(this.group, new THREE.BoxGeometry(0.09, 0.12, 2.0), dark, W, s * 0.6, R + 0.13, axleZ + 0.1);
+    // Wicker sides and back, woven between posts, with a top rail.
+    for (const s of [-1, 1]) {
+      add(this.group, new THREE.BoxGeometry(0.04, 0.42, 1.86), wicker, W, s * 0.57, R + 0.45, axleZ + 0.1, 0, 0, 0, 1);
+      add(this.group, new THREE.CylinderGeometry(0.028, 0.028, 1.9, 6), dark, W, s * 0.57, R + 0.68, axleZ + 0.1, Math.PI / 2, 0, 0);
+      for (let k = 0; k < 5; k++) add(this.group, new THREE.CylinderGeometry(0.025, 0.025, 0.46, 5), dark, W, s * 0.57, R + 0.45, axleZ - 0.82 + k * 0.46);
     }
-    // Axle and wheels: spoked wheels as rings with a hub.
-    add(this.group, new THREE.CylinderGeometry(0.05, 0.05, 1.9, 6), dark, W, 0, 0.5, -0.2, 0, 0, Math.PI / 2);
+    add(this.group, new THREE.BoxGeometry(1.12, 0.42, 0.04), wicker, W, 0, R + 0.45, axleZ - 0.83, 0, 0, 0, 1);
+    // A board across the front for the driver's feet and a bench.
+    add(this.group, new THREE.BoxGeometry(1.12, 0.3, 0.05), wood, W, 0, R + 0.38, axleZ + 1.03);
+    add(this.group, new THREE.BoxGeometry(1.05, 0.07, 0.36), dark, W, 0, R + 0.62, axleZ + 0.72);
+    // The load: amphorae standing in straw.
+    for (let k = 0; k < 6; k++) {
+      const amph = new THREE.LatheGeometry([0, 0.03, 0.15, 0.17, 0.13, 0.06, 0.05, 0.07].map((r, i) => new THREE.Vector2(r, i * 0.1)), 10);
+      add(this.group, amph, [0.64, 0.36, 0.22], 13, -0.32 + (k % 3) * 0.32, R + 0.25, axleZ - 0.5 + Math.floor(k / 3) * 0.36, 0.15 * ((k % 2) - 0.5), 0, 0.1 * ((k % 3) - 1));
+    }
+    // Axle, and the wheels: iron tyre on a wooden felloe, ten spokes, a long nave.
+    add(this.group, new THREE.CylinderGeometry(0.06, 0.06, 1.62, 8), dark, W, 0, R, axleZ, 0, 0, Math.PI / 2);
     for (const s of [-1, 1]) {
       const wheel = new THREE.Group();
-      wheel.position.set(s * 0.76, 0.5, -0.2);
-      add(wheel, new THREE.TorusGeometry(0.47, 0.05, 6, 18), dark, W, 0, 0, 0, 0, Math.PI / 2, 0);
-      for (let k = 0; k < 6; k++) add(wheel, new THREE.BoxGeometry(0.04, 0.92, 0.05), wood, W, 0, 0, 0, (k / 6) * Math.PI, 0, 0);
-      add(wheel, new THREE.CylinderGeometry(0.1, 0.1, 0.16, 8), dark, W, 0, 0, 0, 0, 0, Math.PI / 2);
+      wheel.position.set(s * 0.74, R, axleZ);
+      add(wheel, new THREE.TorusGeometry(R - 0.015, 0.03, 6, 40), iron, W, 0, 0, 0, 0, Math.PI / 2, 0);
+      add(wheel, new THREE.TorusGeometry(R - 0.065, 0.045, 6, 32), wood, W, 0, 0, 0, 0, Math.PI / 2, 0);
+      for (let k = 0; k < 10; k++) {
+        const spoke = new THREE.CylinderGeometry(0.022, 0.032, R - 0.12, 6);
+        spoke.translate(0, (R - 0.12) / 2 + 0.06, 0);
+        add(wheel, spoke, wood, W, 0, 0, 0, (k / 10) * Math.PI * 2, 0, 0);
+      }
+      const nave = new THREE.LatheGeometry([0.05, 0.1, 0.12, 0.12, 0.1, 0.06].map((r, i) => new THREE.Vector2(r, -0.16 + i * 0.064)), 12);
+      add(wheel, nave, dark, W, 0, 0, 0, 0, 0, Math.PI / 2);
       this.group.add(wheel);
       this.wheels.push(wheel);
     }
-    // Shafts out to the horse.
-    for (const s of [-1, 1]) add(this.group, new THREE.BoxGeometry(0.07, 0.07, 3.4), wood, W, s * 0.48, 1.0, 2.2, 0.03, 0, 0);
-    // The horse, its shoulder about 2.6 m ahead of the axle.
-    this.horse.position.set(0, 0, 3.15);
-    this.horse.scale.setScalar(1.12);
-    this.group.add(this.horse);
-    add(this.horse, new THREE.CylinderGeometry(0.33, 0.36, 1.5, 10), coat, HIDE, 0, 1.3, 0, Math.PI / 2, 0, 0);
-    add(this.horse, new THREE.SphereGeometry(0.34, 10, 8), coat, HIDE, 0, 1.3, -0.72);
-    add(this.horse, new THREE.SphereGeometry(0.33, 10, 8), coat, HIDE, 0, 1.32, 0.72);
-    // Neck up and forward, head angled down.
-    add(this.horse, new THREE.CylinderGeometry(0.15, 0.24, 0.9, 8), coat, HIDE, 0, 1.75, 0.98, Math.PI / 4.2, 0, 0);
-    add(this.horse, new THREE.BoxGeometry(0.22, 0.24, 0.62), coat, HIDE, 0, 2.06, 1.38, 0.55, 0, 0);
-    add(this.horse, new THREE.BoxGeometry(0.05, 0.4, 0.75), mane, HIDE, 0, 1.92, 1.0, Math.PI / 4.2, 0, 0);
-    for (const s of [-1, 1]) add(this.horse, new THREE.ConeGeometry(0.05, 0.14, 4), coat, HIDE, s * 0.07, 2.26, 1.22);
-    add(this.horse, new THREE.CylinderGeometry(0.03, 0.08, 0.7, 6), mane, HIDE, 0, 1.15, -0.95, -0.4, 0, 0);
-    // Collar and harness.
-    add(this.horse, new THREE.TorusGeometry(0.3, 0.05, 6, 12), dark, W, 0, 1.55, 0.75, -0.6, 0, 0);
-    for (const [x, z] of [[-0.2, 0.55], [0.2, 0.55], [-0.2, -0.6], [0.2, -0.6]]) {
-      const leg = new THREE.Group();
-      leg.position.set(x, 1.15, z);
-      add(leg, new THREE.CylinderGeometry(0.075, 0.055, 1.1, 6), coat, HIDE, 0, -0.55, 0);
-      add(leg, new THREE.CylinderGeometry(0.07, 0.08, 0.1, 6), mane, HIDE, 0, -1.1, 0);
-      this.horse.add(leg);
-      this.legs.push(leg);
+    // The horse: its haunches about half a metre clear of the front board.
+    this.horse = new Horse(uniforms, { harness: true });
+    const hz = axleZ + 1.05 + 0.55 + 1.04;
+    this.horse.group.position.set(0, 0, hz);
+    this.group.add(this.horse.group);
+    // Shafts: from under the bed, rising past the horse's flanks to the
+    // loops on its pad, with a crossbar behind its quarters.
+    for (const s of [-1, 1]) {
+      const pts = [
+        new THREE.Vector3(s * 0.45, R + 0.14, axleZ - 0.6),
+        new THREE.Vector3(s * 0.45, R + 0.16, axleZ + 1.1),
+        new THREE.Vector3(s * 0.44, 1.0, hz - 0.6),
+        new THREE.Vector3(s * 0.4, 1.17, hz + 0.3),
+        new THREE.Vector3(s * 0.37, 1.19, hz + 0.62),
+      ];
+      add(this.group, new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 16, 0.035, 6), wood, W, 0, 0, 0);
+      // The tug: a leather loop from the pad down round the shaft.
+      add(this.group, new THREE.TorusGeometry(0.06, 0.013, 4, 10), [0.17, 0.1, 0.06], W, s * 0.39, 1.19, hz + 0.3, 0, Math.PI / 2, 0);
     }
+    add(this.group, new THREE.CylinderGeometry(0.03, 0.03, 0.9, 6), wood, W, 0, R + 0.16, axleZ + 1.12, 0, 0, Math.PI / 2);
     this.group.name = "cart";
   }
 
-  /** Place at the car sim's contact point and heading; `speed` drives the gait. */
-  update(x: number, y: number, z: number, headingDeg: number, speed: number, dt: number): void {
+  /** Place at the car sim's contact point and heading; `speed` picks and drives the gait. */
+  update(x: number, y: number, z: number, headingDeg: number, speed: number, dt: number, camera?: THREE.Vector3): void {
     this.group.position.set(x, y, z);
     // +z forward in the model; heading is clockwise from north, north is -z.
     this.group.rotation.set(0, Math.PI - (headingDeg * Math.PI) / 180, 0);
-    // Stride about 1.6 m at a walk.
-    this.phase += (Math.abs(speed) / 1.6) * Math.PI * 2 * dt;
-    const amp = Math.min(1, Math.abs(speed) / 1.5) * 0.45;
-    const ph = [0, Math.PI, Math.PI * 0.5, Math.PI * 1.5];
-    this.legs.forEach((l, i) => { l.rotation.x = Math.sin(this.phase + ph[i]) * amp; });
-    this.horse.position.y = Math.abs(Math.sin(this.phase)) * 0.06 * (amp > 0.01 ? 1 : 0);
-    for (const w of this.wheels) w.rotation.x += (speed / 0.47) * dt;
+    const g = cartGait(speed);
+    // One gait cycle per stride: the hooves keep pace with the ground.
+    this.phase = (this.phase + (Math.abs(speed) / g.stride) * dt) % 1;
+    this.horse.pose(g.gait, this.phase, g.strength);
+    for (const w of this.wheels) w.rotation.x += (speed / 0.66) * dt;
+    if (camera) this.horse.lod(camera);
+    else { this.cam.set(x, y, z); this.horse.lod(this.cam); }
   }
 }
+
 
 // =====================================================================================
 // The townsfolk.
@@ -1089,6 +1217,7 @@ export class Townsfolk {
   private readonly up = new THREE.Vector3(0, 1, 0);
   private readonly one = new THREE.Vector3(1, 1, 1);
   private readonly v = new THREE.Vector3();
+  private readonly camAt = new THREE.Vector3();
 
   constructor(data: PompeiiData, uniforms: PompeiiUniforms, private readonly heightAt: (x: number, z: number) => number,
     private readonly offX: number, private readonly offZ: number, lean: boolean) {
@@ -1130,7 +1259,9 @@ export class Townsfolk {
     this.inst.needsUpdate = true;
     this.sim.carts.forEach((c, i) => {
       const x = c.x + this.offX, z = c.z + this.offZ;
-      this.carts[i].update(x, this.heightAt(x, z), z, (c.heading * 180) / Math.PI, c.speed, dt);
+      const y = this.heightAt(x, z);
+      this.camAt.set(camX, y, camZ);
+      this.carts[i].update(x, y, z, (c.heading * 180) / Math.PI, c.speed, dt, this.camAt);
     });
   }
 }

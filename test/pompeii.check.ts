@@ -19,6 +19,7 @@ import { LocalClock, zoneLabel } from "../src/app/timebar";
 import { LIFE_RADIUS_M, PompeiiLife } from "../src/data/pompeiilife";
 import { Heightfield } from "../src/data/dem";
 import { CITIES } from "../src/cities";
+import { HORSE_BONES, buildHorse, hoofPoints, poseHorse } from "../src/render/horse";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -320,6 +321,41 @@ let built: PompeiiModel;
   const moved = life.people.filter((p, i) => Math.hypot(p.x - before[i][0], p.z - before[i][1]) > 3).length;
   check("people walk: most move 3 m+ in 10 s", moved >= 36, `${moved} of 48`);
   check("probe: a held clock (dt 0) moves nobody", still, "");
+}
+
+// --- 10. the horse: a lofted body, and gaits with the right footfalls -----------------
+{
+  const full = buildHorse(), lean = buildHorse(true);
+  check("horse mesh 2-5k tris desktop, under 1.2k lean", full.triangles >= 2000 && full.triangles <= 5000 && lean.triangles < 1200, `${full.triangles} / ${lean.triangles}`);
+  let top = 0;
+  for (let i = 1; i < full.position.length; i += 3) if (Math.abs(full.position[i + 1]) < 0.3) top = Math.max(top, full.position[i]);
+  check("withers 1.3..1.6 m (Roman horses ran 1.3-1.5 m)", top > 1.3 && top < 1.6, `${top.toFixed(2)} m`);
+  // Footfalls: sample a cycle, note when each hoof leaves the ground. A walk
+  // lifts the four at four different times; a trot lifts diagonal pairs.
+  const liftTimes = (g: "walk" | "trot"): number[] => {
+    const b = new Float32Array(HORSE_BONES * 16);
+    const up = [false, false, false, false], at: number[] = [];
+    for (let k = 0; k <= 200; k++) {
+      poseHorse(g, k / 200, b);
+      hoofPoints(b).forEach((p, i) => {
+        const lifted = p[1] > 0.1;
+        if (lifted && !up[i] && k > 0) at.push(Math.round((k / 200) * 20) / 20);
+        up[i] = lifted;
+      });
+    }
+    return [...new Set(at)];
+  };
+  const walk = liftTimes("walk"), trot = liftTimes("trot");
+  check("walk is four-beat: four separate lift-offs a stride", walk.length === 4, walk.join(" "));
+  check("probe: the trot lifts in two diagonal pairs", trot.length === 2, trot.join(" "));
+  const b = new Float32Array(HORSE_BONES * 16);
+  let worst = 0;
+  for (let k = 0; k < 40; k++) {
+    poseHorse("walk", k / 40, b);
+    const ys = hoofPoints(b).map((p) => p[1]).sort((p, q) => p - q);
+    worst = Math.max(worst, Math.abs(ys[1]));
+  }
+  check("at a walk two or more hooves stay planted within 6 cm of the ground", worst < 0.06, `${(worst * 100).toFixed(1)} cm`);
 }
 
 console.log(failures ? `\n${failures} pompeii check(s) FAILED` : "\nall pompeii checks ok");

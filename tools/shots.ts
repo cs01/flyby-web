@@ -964,6 +964,27 @@ export const POSES: Pose[] = [
     query: "drive=1&chase=1",
   },
   {
+    // The horse and cart at the Stabian crossroads, from down Via
+    // dell'Abbondanza at 6 m, mid-stride at a walk: the
+    // horse's build, the gait, the harness and the spoked wheels.
+    name: "pompeii-cart-side",
+    city: "pompeii",
+    lat: 40.74990, lon: 14.48808, altM: 33, hdgDeg: 330, pitchDeg: 0,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Horse and cart from the side, walking",
+    query: "drive=1&chase=1&carorbit=-90,9,0.2&horsegait=walk,0.3&off=pompeiilife&fov=34",
+  },
+  {
+    name: "pompeii-cart-front",
+    city: "pompeii",
+    lat: 40.74990, lon: 14.48808, altM: 33, hdgDeg: 330, pitchDeg: 0,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Horse and cart three-quarter front, trotting",
+    query: "drive=1&chase=1&carorbit=-35,8,0.6&horsegait=trot,0.15&off=pompeiilife&fov=40",
+  },
+  {
     // Across Via dell'Abbondanza at the Casa di Giulio Polibio from five metres: the plaster
     // close up, its painted panels, damp and the painted election notices.
     name: "pompeii-wall",
