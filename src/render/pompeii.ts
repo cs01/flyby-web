@@ -1242,7 +1242,15 @@ void main() {
   vec3 skyOpen = shIrradiance(n);
   float enclosed = 1.0 - clamp(dot(occSky, vec3(0.3, 0.6, 0.1)) / max(1e-5, dot(skyOpen, vec3(0.3, 0.6, 0.1))), 0.0, 1.0);
   float upB = style > 0.5 && style < 1.5 ? 0.07 : 0.24 + 0.4 * enclosed;
-  vec3 bounce = sunE * max(0.0, uSunDir.y) * vec3(1.0, 0.87, 0.7) * ((0.26 + 0.2 * enclosed) * (1.0 - n.y) + upB * max(0.0, n.y)) * (1.0 + covered);
+  // The light the sun puts on what throws the bounce: the ground takes
+  // sunDir.y of it, but a low sun still lights the walls square on, so at
+  // dusk the fill comes off the sunlit side of the street rather than
+  // going to nothing with the ground's share. Shaded streets also bounce
+  // up to 2x more than the open-ground figure when the sun is low, since
+  // the lit wall fills most of what the shaded one sees.
+  float sunY = max(0.0, uSunDir.y);
+  float bounceSrc = sunY + 1.25 * sqrt(max(0.0, 1.0 - sunY * sunY)) * (1.0 - sunY) * smoothstep(-0.03, 0.06, uSunDir.y);
+  vec3 bounce = sunE * bounceSrc * vec3(1.0, 0.87, 0.7) * ((0.26 + 0.2 * enclosed) * (1.0 - n.y) + upB * max(0.0, n.y)) * (1.0 + covered);
   float inside = (1.0 - covered * 0.45) * (1.0 - 0.9 * shut) * ao;
   sunVis *= sunShade;
   vec3 lit = albedo * ((sunE * ndl * sunVis) * (1.0 - covered * 0.85) + (ambient + bounce) * inside + moon * (1.0 - shut) * ao);
