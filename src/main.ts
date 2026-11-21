@@ -24,6 +24,8 @@ import { showDiagnostics, watchForFailures } from "./app/diag";
 import { solarState, sceneTime } from "./data/solar";
 import { Origin } from "./geo";
 import { CITIES, cityById, cityAt, DEFAULT_CITY, type City } from "./cities";
+import { townDef, townForCity } from "./data/towns";
+import { HerculaneumField } from "./data/herculaneumfield";
 import { ThrottleSlider } from "./app/throttle";
 import { ModeBar } from "./app/modebar";
 import { DroneModel } from "./render/dronemodel";
@@ -373,12 +375,19 @@ async function main() {
   ]);
   // Pompeii: the town's pack, and Vesuvius put back as it stood before the
   // eruption, before the terrain is meshed from the fields.
-  const pompeiiOn = city.id === "pompeii" && !new URLSearchParams(location.search).get("off")?.split(",").includes("pompeii");
-  const pompeiiData = pompeiiOn ? await loadPompeii(`${import.meta.env.BASE_URL}landmarks`) : null;
-  if (city.id === "pompeii") console.log(`[flyby] vesuvius: ${restoreVesuvius(fields)} DEM cells raised to the pre-79 cone`);
+  // Herculaneum is built by the same systems from its own pack (data/towns.ts);
+  // `?off=pompeii` turns either town off.
+  const ancient = townForCity(city.id);
+  const pompeiiOn = !!ancient && !new URLSearchParams(location.search).get("off")?.split(",").includes("pompeii");
+  const pompeiiData = pompeiiOn && ancient ? await loadPompeii(`${import.meta.env.BASE_URL}landmarks`, ancient.pack) : null;
+  if (ancient) console.log(`[flyby] vesuvius: ${restoreVesuvius(fields)} DEM cells raised to the pre-79 cone`);
   // The 79 AD shore and the Sarno as it then ran (data/pompeiisuburbs.ts).
-  if (pompeiiData?.suburbs) console.log(`[flyby] pompeii: ${restoreCoast79(fields, pompeiiData.suburbs, pompeiiData.lat0, pompeiiData.lon0)} DEM cells set to the 79 AD coast and river`);
-  const fieldHeight = (lat: number, lon: number): number => (fields[0].contains(lat, lon) ? fields[0] : fields[1]).sample(lat, lon);
+  // Herculaneum's shore is a terrain field instead (data/herculaneumfield.ts), at the head of the list.
+  if (pompeiiData?.suburbs && !pompeiiData.herc) console.log(`[flyby] pompeii: ${restoreCoast79(fields, pompeiiData.suburbs, pompeiiData.lat0, pompeiiData.lon0)} DEM cells set to the 79 AD coast and river`);
+  // Herculaneum's drape is painted on its 79 AD ground, not today's: the beach of 79 is 400 m inland of today's shore.
+  const hercField = pompeiiData?.herc ? new HerculaneumField(pompeiiData.herc, pompeiiData.suburbs?.river ?? null, pompeiiData.lat0, pompeiiData.lon0, fields) : null;
+  const fieldHeight = (lat: number, lon: number): number =>
+    (hercField?.contains(lat, lon) ? hercField : fields[0].contains(lat, lon) ? fields[0] : fields[1]).sample(lat, lon);
 
   loading.set(0.44, "loading imagery");
   let imgDone = 0;
@@ -389,7 +398,7 @@ async function main() {
     drapes.push(await stitchImagery(bboxAround(city.lat, city.lon, ring.extent * 1.05), ring.imageryZoom));
     loading.set(0.44 + 0.4 * (++imgDone / rings.length), "loading imagery");
   }
-  if (city.id === "pompeii") {
+  if (ancient) {
     const t0 = performance.now();
     antiquateDrape(drapes, fieldHeight, { ring: pompeiiData?.wall ?? [], origin: new Origin(city.lat, city.lon), suburbs: pompeiiData?.suburbs });
     console.log(`[flyby] pompeii: drapes repainted as 79 AD farmland in ${(performance.now() - t0).toFixed(0)} ms`);
@@ -627,6 +636,7 @@ async function main() {
         town: { x: off.x, z: off.z },
         heightAt: (x, z) => terrain.heightAt(x, z),
         reduced: budget.tier === "reduced",
+        fall: townDef(pompeiiData.town).eruption.fall,
       });
       eruptView.enabled = new URLSearchParams(location.search).has("eruption");
       scene.add(eruptView.group);
@@ -1735,7 +1745,8 @@ async function main() {
   let escapePlace: (x: number, z: number, fx: number, fz: number) => { x: number; z: number } | null = () => null;
   let escapeExact: (x: number, z: number, fx: number, fz: number) => void = () => {};
   let escapeBlocked: (x: number, z: number) => boolean = () => false;
-  const escape = eruptView && pompeiiData ? new EscapeUi({
+  // The escape story is Pompeii's (its gates, roads and the day it fell): Herculaneum has none yet.
+  const escape = eruptView && pompeiiData && !pompeiiData.herc ? new EscapeUi({
     ui, data: pompeiiData, view: eruptView, origin,
     nowMs: () => now.getTime(),
     advance: (sec) => { timebar.setOffset(timebar.offsetSeconds + sec); now = sceneNow(); },
@@ -2228,7 +2239,7 @@ async function main() {
       // From the first stones (13:30) everyone heads for a gate (sim/flee.ts),
       // fewer of them as the night goes on; before that they only hurry.
       const er = eruptView?.active ? eruptView.state : null;
-      if (er && er.h >= 13.5 && pompeiiData && !flee) flee = new Flee(new FleeField(pompeiiData));
+      if (er && er.h >= 13.5 && pompeiiData && pompeiiData.gates.length && !flee) flee = new Flee(new FleeField(pompeiiData));
       const f = er && er.h >= 13.5 ? flee : null;
       const share = er ? crowdShare(er.h) : 1, pace = er ? walkPace(er.pumiceM) : 1;
       townsfolk.sim.steer = f ? (p, c, d, x, z) => { f.update(p, c, d, x, z, share, pace); } : null;
