@@ -23,6 +23,7 @@ import { HORSE_BONES, buildHorse, hoofPoints, poseHorse } from "../src/render/ho
 import { ART_WORKS } from "../src/data/pompeiiart";
 import { ORDERS, Order, columnTemplate, shaftRadius } from "../src/render/pompeiiorders";
 import { statSync } from "node:fs";
+import { FIELD_CLASSES, Land, LandGrid, coastGround, lengthOf, nearestOn, shoreAt } from "../src/data/pompeiisuburbs";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -82,8 +83,8 @@ const data = parsePompeii(readFileSync(new URL("../public/landmarks/pompeii.json
   check("Temple of Jupiter north of the forum's centre", jz < fz - 20, `${(fz - jz).toFixed(0)} m north`);
   const forumArea = ringArea(f.ring);
   check("forum area 3,000..6,500 m2 (it is about 140 x 38 m)", forumArea > 3000 && forumArea < 6500, `${forumArea.toFixed(0)} m2`);
-  check("places for missions: 60+ named, all inside the wall or at a gate", data.places.length >= 60 &&
-    data.places.every((p) => p.kind === "gate" || pointInRing(data.wall, p.x, p.z)), `${data.places.length}`);
+  check("places for missions: 60+ named, inside the wall, at a gate, or out in the suburbs", data.places.length >= 60 &&
+    data.places.every((p) => p.kind === "gate" || (p.kind === "suburb" ? !pointInRing(data.wall, p.x, p.z) && Math.hypot(p.x, p.z) < 4000 : pointInRing(data.wall, p.x, p.z))), `${data.places.length}`);
   check("place names carry no regio.insula address", data.places.every((p) => p.name === plainName(p.name)), "");
   void fx; void jx;
 }
@@ -160,7 +161,8 @@ function rules(m: PompeiiModel): Rules {
 let built: PompeiiModel;
 {
   built = buildPompeii({ data, groundAt: flat });
-  const r = rules(built);
+  // The rules are the town's: the tombs and farms outside are held to their own below.
+  const r = rules(buildPompeii({ data, groundAt: flat, suburbs: false }));
   const s = r.stats;
   check("town passes every reconstruction rule", r.failed.length === 0, r.failed.join(", ") || "all");
   check(`roofs pitched ${ROOF_PITCH_DEG} deg (12-35 window), terracotta`, s.pitchedFrac >= 0.95 && s.tileFrac >= 0.06, `${(s.pitchedFrac * 100).toFixed(0)}% pitched, ${(s.tileFrac * 100).toFixed(1)}% of tris`);
@@ -285,7 +287,7 @@ let built: PompeiiModel;
     return false;
   }).length;
   // The Villa dei Misteri is meant to be outside, 300 m north-west of the wall.
-  const town = built.solids.map((s) => s.ring).filter((r) => !data.villa || !pointInRing(data.villa.ring, ...ringCentroid(r)));
+  const town = built.solids.slice(0, built.suburbs?.solidsFrom ?? built.solids.length).map((s) => s.ring).filter((r) => !data.villa || !pointInRing(data.villa.ring, ...ringCentroid(r)));
   check("no building stands more than 15 m outside the wall (the villa aside)", pokesOut(town) === 0, `${pokesOut(town)}`);
   check("probe: the old 100 m lot west of Porta Marina is caught", pokesOut([[-501, -30, -410, -30, -410, -16, -501, -16]]) === 1, "");
 
@@ -441,6 +443,102 @@ let built: PompeiiModel;
   check("probe: without the mapped sites there are no mills", millsAt(noSites) === 0 && noSites.sites.mills.length === 0, "");
   check("10+ thermopolia with dolia counters at mapped sites", built.sites.thermopolia >= 10 && noSites.sites.thermopolia === 0, `${built.sites.thermopolia}`);
   check("forum: equestrian and togate statues on the bases", built.sites.statues.filter((s) => s === "equestrian").length === 2 && built.sites.statues.filter((s) => s === "togate").length >= 4, built.sites.statues.join(", "));
+}
+
+// --- 14. outside the walls: tomb streets, suburbs, the river, the 79 AD shore ----------------
+// Bounds from the literature, not the layout: the Porta Ercolano and Nocera
+// necropoleis each hold dozens of excavated tombs; the 79 AD shore ran one
+// to two kilometres west of Porta Marina; the Sarno passed under the town to
+// the south, closer than its canal today (1.5 km and more off the south wall).
+{
+  const sub = data.suburbs;
+  check("pack has its suburbs", !!sub && !!built.suburbs, "");
+  if (sub && built.suburbs) {
+    const st = built.suburbs;
+    const want: [string, number][] = [["Porta di Ercolano", 40], ["Porta Nocera", 60], ["Porta Vesuvio", 8], ["Porta Nola", 8], ["Porta di Stabia", 8], ["Porta Sarno", 6], ["Porta Marina", 4]];
+    const short = (by: Record<string, number>): string[] => want.filter(([g, n]) => (by[g] ?? 0) < n).map(([g]) => g);
+    check("tombs built along every gate road (Ercolano 40+, Nocera 60+, the rest 4-8+)", short(st.tombsByGate).length === 0, want.map(([g]) => `${g.replace(/Porta (di )?/, "")} ${st.tombsByGate[g] ?? 0}`).join(", "));
+    check("probe: the town alone has no tomb roads", short(buildPompeii({ data, groundAt: flat, lean: true, suburbs: false }).suburbs?.tombsByGate ?? {}).length === want.length, "");
+    const osm = sub.tombs.filter((t) => !t.inferred).length;
+    check("100+ tombs placed from their OSM outlines, the rest marked inferred", osm >= 100 && sub.tombs.every((t) => t.inferred || t.name !== undefined), `${osm} of ${sub.tombs.length}`);
+    check("all five tomb types stand (altar, aedicula, schola, tower, enclosure)", ["altar", "aedicula", "schola", "tower", "enclosure"].every((k) => sub.tombs.some((t) => t.kind === k)), "");
+    const named = (re: RegExp, kind: string): boolean => sub.tombs.some((t) => re.test(t.name) && t.kind === kind);
+    check("Mamia's tomb a schola, Naevoleia Tyche's an altar", named(/Mamia/, "schola") && named(/Naevoleia/, "altar"), "");
+    // Every tomb fronts its road within 25 m and keeps off the carriageway.
+    const offRoad = sub.tombs.filter((t) => {
+      const n = nearestOn(sub.roads[t.road].pts, t.x, t.z);
+      return n.d > 35 || n.d < sub.roads[t.road].widthM / 2 + Math.min(t.w, t.d) / 2 - 0.5;
+    });
+    check("every tomb fronts its road (within 35 m, back rows included; off the carriageway)", offRoad.length === 0, `${offRoad.length} off`);
+    check("probe: a tomb moved 60 m off its road is caught", (() => { const t = sub.tombs[0]; return nearestOn(sub.roads[t.road].pts, t.x + 60 * t.fx * -1, t.z + 60 * t.fz * -1).d > 35; })(), "");
+
+    // Villas: Diomedes where OSM marks it, the Villa Imperiale under Porta Marina, the Mysteries not doubled.
+    const D2R = Math.PI / 180, mLat = 111132.92 - 559.82 * Math.cos(2 * data.lat0 * D2R), mLon = 111412.84 * Math.cos(data.lat0 * D2R);
+    const ll = (lat: number, lon: number): [number, number] => [(lon - data.lon0) * mLon, (data.lat0 - lat) * mLat];
+    const dio = sub.buildings.find((b) => b.name === "Villa di Diomede");
+    const [dx, dz] = ll(40.75239, 14.47865);
+    check("Villa di Diomede built within 40 m of its OSM marker", !!dio && Math.hypot(dio.x - dx, dio.z - dz) < 40 && st.villas.includes("Villa di Diomede"), dio ? `${Math.hypot(dio.x - dx, dio.z - dz).toFixed(0)} m` : "missing");
+    const pm = data.gates.find((g) => g.name === "Porta Marina")!;
+    const imp = sub.buildings.find((b) => b.name === "Villa Imperiale");
+    check("Villa Imperiale outside the wall within 100 m of Porta Marina", !!imp && !pointInRing(data.wall, imp.x, imp.z) && Math.hypot(imp.x - pm.x, imp.z - pm.z) < 100, "");
+    const [mx, mz] = ringCentroid(data.villa!.ring);
+    check("Villa dei Misteri integrated, not duplicated (no suburb building on it)", sub.buildings.every((b) => Math.hypot(b.x - mx, b.z - mz) > 40) && sub.roads.some((r) => /Misteri/.test(r.name)), "");
+    check("Insula Occidentalis: 5+ terraces over the west wall", sub.buildings.filter((b) => b.kind === "terrace").length >= 5, `${sub.buildings.filter((b) => b.kind === "terrace").length}`);
+    check("inns, stables and workshops at the gates", ["inn", "stable", "workshop"].every((k) => sub.buildings.filter((b) => b.kind === k).length >= 2), "");
+    check("8+ farm villas in the country, Villa Regina among them", st.farms >= 8 && st.villas.includes("Villa Regina (Boscoreale)"), `${st.farms}`);
+
+    // The shore: 0.8-2.2 km west of Porta Marina, and the terrain there under the sea.
+    const ds = shoreAt(sub.shore, pm.x, pm.z).s;
+    check("79 AD shoreline 0.8..2.2 km from Porta Marina", ds > 800 && ds < 2200, `${(ds / 1000).toFixed(2)} km`);
+    const today = sub.shore.map((v, i) => (i % 2 === 0 ? v - 1400 : v));
+    const dt = shoreAt(today, pm.x, pm.z).s;
+    check("probe: today's coast (2.7 km out) fails the band", !(dt > 800 && dt < 2200), `${(dt / 1000).toFixed(2)} km`);
+    const west = (s: number): [number, number] => { for (let x = pm.x; x > pm.x - 4000; x -= 5) if (shoreAt(sub.shore, x, pm.z).s < s) return [x, pm.z]; return [pm.x, pm.z]; };
+    const [sx, sz] = west(-200), [bx2, bz2] = west(20);
+    check("terrain: sea floor 200 m off the old shore, beach above water at it", coastGround(sub, sx, sz, 6) < -1 && coastGround(sub, bx2, bz2, 6) > 0 && coastGround(sub, pm.x, pm.z, 35) === 35,
+      `${coastGround(sub, sx, sz, 6).toFixed(1)} / ${coastGround(sub, bx2, bz2, 6).toFixed(1)} m`);
+
+    // The river: south of the walls, nearer than today's.
+    let wz1 = -Infinity, wx0 = Infinity, wx1 = -Infinity;
+    for (let i = 0; i < data.wall.length; i += 2) { wz1 = Math.max(wz1, data.wall[i + 1]); wx0 = Math.min(wx0, data.wall[i]); wx1 = Math.max(wx1, data.wall[i]); }
+    const southOf = (pts: number[]): { ok: boolean; near: number } => {
+      let ok = true, near = Infinity;
+      for (let i = 0; i < pts.length; i += 2) {
+        if (pts[i] < wx0 || pts[i] > wx1) continue;
+        if (pts[i + 1] < wz1 + 150) ok = false;
+        near = Math.min(near, distToRing(data.wall, pts[i], pts[i + 1]));
+      }
+      return { ok, near };
+    };
+    const rs = southOf(sub.river.pts);
+    check("Sarno south of the walls, 250..900 m off them", rs.ok && rs.near > 250 && rs.near < 900, `${rs.near.toFixed(0)} m`);
+    const moved = southOf(sub.river.pts.map((v, i) => (i % 2 ? v - 600 : v)));
+    check("probe: the river moved 600 m north fails", !(moved.ok && moved.near > 250 && moved.near < 900), "");
+    check("harbour: a 150 m+ quay, warehouses and boats at the mouth", lengthOf(sub.quay) > 150 && sub.buildings.filter((b) => b.kind === "warehouse").length >= 4 && st.boats >= 4, `${lengthOf(sub.quay).toFixed(0)} m quay, ${st.boats} boats`);
+    check("a bridge carries the Stabiae road over the Sarno", sub.bridges.length >= 1, "");
+
+    // The gradient: no fields within 150 m of the tombs; gardens, then vines, then fields going out.
+    const grid = new LandGrid(sub, data.wall);
+    const fieldsNearTombs = (g: LandGrid): number => {
+      let n = 0;
+      for (const t of sub.tombs) for (let r = 10; r <= 150; r += 20) for (let a = 0; a < 8; a++) {
+        if ((FIELD_CLASSES as Land[]).includes(g.at(t.x + Math.cos(a) * r, t.z + Math.sin(a) * r, 1))) n++;
+      }
+      return n;
+    };
+    const near = fieldsNearTombs(grid);
+    check("no fields within 150 m of a gate road's tombs", near === 0, `${near} samples`);
+    check("probe: without the gradient the fields run up to the tombs", fieldsNearTombs(new LandGrid(sub, data.wall, false)) > 100, "");
+    const meanDist: Record<number, number[]> = {};
+    for (let z = -3500; z <= 3500; z += 50) for (let x = -3500; x <= 3500; x += 50) {
+      const c = grid.at(x, z, 1);
+      (meanDist[c] ??= []).push(distToRing(data.wall, x, z));
+    }
+    const md = (c: Land): number => { const l = meanDist[c] ?? [Infinity]; return l.reduce((s, v) => s + v, 0) / l.length; };
+    check("gradient out from the walls: tombs < suburbs < gardens < vineyards < fields", md(Land.Tombs) < md(Land.Suburb) && md(Land.Suburb) < md(Land.Garden) && md(Land.Garden) < md(Land.Vineyard) && md(Land.Vineyard) < md(Land.Fields),
+      [Land.Tombs, Land.Suburb, Land.Garden, Land.Vineyard, Land.Fields].map((c) => md(c).toFixed(0)).join(" < "));
+    check("missions reach the suburbs: tombs, Villa di Diomede, the harbour", ["Villa di Diomede", "Porto alla foce del Sarno", "Necropoli di Porta Ercolano", "Necropoli di Porta Nocera"].every((n) => data.places.some((p) => p.name === n && p.kind === "suburb")), "");
+  }
 }
 
 console.log(failures ? `\n${failures} pompeii check(s) FAILED` : "\nall pompeii checks ok");
