@@ -1696,7 +1696,7 @@ export const POSES: Pose[] = [
     t: D("0079-08-22T09:30:00Z"),
     wx: POMPEII_WX,
     what: "Diana's bust facing Apollo",
-    query: "agl&near=0.05&fov=40&statuecam=diana,15,2.2,-0.1,1.45",
+    query: "agl&near=0.05&fov=40&statuecam=diana,15,2.0,0.3,0.35",
   },
   {
     name: "pompeii-statue-holconius",
