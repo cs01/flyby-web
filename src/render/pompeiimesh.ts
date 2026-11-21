@@ -2028,7 +2028,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const ye = top - OH * slope - 0.02, ve = OH + 0.01;
     for (let u = 0.42; u < L - 0.15; u += rafters ? 0.84 : 1.26) {
       if (!rafters) {
-        poly(S, [fp(F, u - 0.08, ve, ye), fp(F, u + 0.08, ve, ye), fp(F, u, ve, ye + 0.14)], [ox, 0, oz], ante, seed, Surf.Pavement, 0, 0, [NO_UV, NO_UV, NO_UV]);
+        poly(S, [fp(F, u - 0.08, ve, ye), fp(F, u + 0.08, ve, ye), fp(F, u, ve, ye + 0.11)], [ox, 0, oz], ante, seed, Surf.Pavement, 0, 0, [NO_UV, NO_UV, NO_UV]);
         continue;
       }
       // A rafter tail: its top under the soffit, cut square at the end.
@@ -2040,7 +2040,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       poly(S, [c(-rw, 0, 0), c(-rw, v1, 0), c(-rw, v1, rh), c(-rw, 0, rh)], [-F.ex, 0, -F.ez], rafter, seed, Surf.Wood, 0, 0, uv4());
       poly(S, [c(rw, 0, 0), c(rw, v1, 0), c(rw, v1, rh), c(rw, 0, rh)], [F.ex, 0, F.ez], rafter, seed, Surf.Wood, 0, 0, uv4());
       // An antefix standing on the eave over the imbrex row's end.
-      poly(S, [fp(F, u - 0.08, ve, ye), fp(F, u + 0.08, ve, ye), fp(F, u + 0.065, ve, ye + 0.08), fp(F, u, ve, ye + 0.15), fp(F, u - 0.065, ve, ye + 0.08)],
+      poly(S, [fp(F, u - 0.08, ve, ye), fp(F, u + 0.08, ve, ye), fp(F, u + 0.065, ve, ye + 0.06), fp(F, u, ve, ye + 0.12), fp(F, u - 0.065, ve, ye + 0.06)],
         [ox, 0, oz], ante, seed, Surf.Pavement, 0, 0, [NO_UV, NO_UV, NO_UV, NO_UV, NO_UV]);
     }
   }
@@ -2136,7 +2136,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       wall(x0, z0, x0 + ix, z0 + iz, g, g, g + o.h, g + o.h, ex, ez, inC, seed, Surf.Interior, 0, 0, 0, rd, g, o.h);
       wall(x1 + ix, z1 + iz, x1, z1, g, g, g + o.h, g + o.h, -ex, -ez, inC, seed, Surf.Interior, 0, 0, 0, rd, g, o.h);
       if (o.kind === "shop") {
-        wall(x0 + ix, z0 + iz, x1 + ix, z1 + iz, g, g, g + o.h, g + o.h, ox, oz, inC, seed, Surf.Interior, 1, 0, 0, w, g, o.h);
+        wall(x0 + ix, z0 + iz, x1 + ix, z1 + iz, g, g, g + o.h, g + o.h, ox, oz, inC, seed, Surf.Interior, 1, 0, 0, rd, g, o.h);
         poly(S, [[x0, g + o.h, z0], [x1, g + o.h, z1], [x1 + ix, g + o.h, z1 + iz], [x0 + ix, g + o.h, z0 + iz]], [0, -1, 0], [0.4, 0.3, 0.22], seed, Surf.Wood, 0, 0, uv4());
         if (!lean) counters.push({ F, u0: o.u0, w, g: gf, seed: r(0) });
         if (dressed) {
@@ -2210,15 +2210,17 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       fbox(F, u0 + 0.04, u0 + 0.04 + cov, -0.1, -0.065, gy, g + o.h - 0.02, [0.42, 0.29, 0.17], seed, Surf.Wood, { skip: FB.End0 | FB.Top });
     }
     if (r(4) < 0.55) {
-      // Shelves on the back wall with jars on them.
-      for (const [k, sy] of [[0, 1.5], [1, 2.1]] as const) {
+      // Shelves on the back wall with jars on them, at the heights the
+      // shop-interior shader paints its shelves (render/pompeii.ts), so the
+      // modelled ones stand on the painted ones.
+      for (const [k, sy] of [[0, 1.35], [1, 1.95]] as const) {
         if (sy + 0.35 > o.h) continue;
-        fbox(F, u0 + 0.25, u1 - 0.25, -rd, -rd + 0.32, gf + sy - 0.04, gf + sy, [0.4, 0.28, 0.17], seed, Surf.Wood, { skip: FB.Back | FB.End0 | FB.End1, flatU: true });
+        fbox(F, u0 + 0.25, u1 - 0.25, -rd, -rd + 0.32, g + sy - 0.04, g + sy, [0.4, 0.28, 0.17], seed, Surf.Wood, { skip: FB.Back | FB.End0 | FB.End1, flatU: true });
         for (let j = 0, ju = u0 + 0.45; ju < u1 - 0.4; j++, ju += 0.55) {
           const jr = r(30 + k * 16 + j);
           if (jr < 0.5) continue;
           const [jx, , jz] = fp(F, ju, -rd + 0.16, 0);
-          jar(jx, gf + sy, jz, 0.8 + 0.5 * jr, jr);
+          jar(jx, g + sy, jz, 0.8 + 0.5 * jr, jr);
         }
       }
       // Amphorae leaning in the back corner, away from the counter's doorway.
