@@ -37,6 +37,7 @@ import type { WaterSites } from "../data/pompeiiwater";
 import { hasBathPlan } from "../data/pompeiibaths";
 import { townDef } from "../data/towns";
 import { buildHerculaneum, type HercStats } from "./herculaneummesh";
+import { CeilingKind, FloorKind, arca, brazier, cartibulum, chest, lararium, lectus, loom, puteal, spout, tripodTable } from "./pompeiiinterior";
 
 /** What the fragment shader draws on a surface. */
 export const enum Surf {
@@ -67,6 +68,11 @@ export const enum Surf {
   Mosaic = 21,
   /** Opus craticium: a timber frame with rubble and plaster between the posts and braces. */
   Craticium = 22,
+  // 23 the townsfolk (render/pompeiifolk.ts).
+  /** A ceiling (render/pompeiiinterior.ts ceilingPaint): wall.xy metres along it, p1 a CeilingKind. */
+  Ceiling = 18,
+  /** A room's floor (render/pompeiiinterior.ts floorPaint): wall.xy metres from its corner, zw its size, p1 a FloorKind. */
+  Floor = 24,
 }
 
 export const ROOF_PITCH_DEG = 22;
@@ -202,6 +208,18 @@ export interface ColumnInstance {
   red: boolean;
 }
 
+/** A room built inside a house: where to stand (x, z, floor y) and the point to look at. */
+export interface InteriorView {
+  kind: "atrium" | "fauces" | "tablinum" | "cubiculum" | "peristyle";
+  house: string;
+  /** Rule-built (no survey) or a surveyed house's. */
+  surveyed: boolean;
+  x: number; z: number; y: number;
+  lookX: number; lookZ: number;
+  /** Pieces of furniture and fittings it holds. */
+  furniture: number;
+}
+
 /** A work of art as placed: which house took it and where it is. */
 export interface ArtPlaced {
   id: string; house: string; x: number; y: number; z: number;
@@ -214,6 +232,8 @@ export interface PompeiiModel {
   orders: ColumnInstance[];
   /** Named works placed in their houses (empty with art off). */
   art: ArtPlaced[];
+  /** Rooms built inside the houses (full build), with a place to stand and where to look: the poses and the gate read them. */
+  interiors: InteriorView[];
   /** What was modelled at the mapped sites. */
   sites: { mills: { x: number; z: number; site: string }[]; ovens: string[]; thermopolia: number; statues: string[]; shrines: number; stalls: number };
   /** The town: buildings, kerbs, landmarks, walls. Single-sided. */
@@ -235,6 +255,8 @@ export interface PompeiiModel {
     lots: number; domus: number; tabernae: number; compluvia: number; fountains: number;
     steppingStones: number; columns: number; towers: number; roofTriangles: number; flatRoofs: number;
     plasterTriangles: number; buildMs: number;
+    /** Metres of wall built round the unbuilt frontage (the plots). */
+    plotWallM: number;
     /** Named houses built on their OSM outline with courts. */
     surveyedHouses: number;
     /** Upper floors with their timber (Herculaneum's; 0 in Pompeii). */
@@ -259,12 +281,18 @@ export interface BuildOptions {
   greyBoxes?: boolean;
   /** Probe: the kerb and floor faces as they were before the z-fight fix, for the gate's vacuity check. */
   probeCoplanar?: boolean;
+  /** Probe: no plot walls along the unbuilt frontage, for the gate's vacuity check. */
+  probeNoPlotWalls?: boolean;
+  /** Probe: rule-built peristyles not held inside their block, for the gate's vacuity check. */
+  probePorticoOut?: boolean;
   /** The art atlas's paintings and mosaics (kill switch `?off=pompeiiart`); on unless false. */
   art?: boolean;
   /** The tomb streets, suburbs, river and harbour outside the walls; on unless false. */
   suburbs?: boolean;
 }
 
+/** A room built off a court: its middle, t along the court edge, i back out into the court, its size and floor. */
+interface RoomFrame { cx: number; cz: number; tx: number; tz: number; ix: number; iz: number; w: number; depth: number; g: number }
 /** A facade's frame: origin on its wall line, e along it, o out to the street. */
 interface Frame { ax: number; az: number; ex: number; ez: number; ox: number; oz: number }
 /** Faces of an fbox to leave out. */
@@ -323,13 +351,14 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
   const stats = {
     lots: 0, domus: 0, tabernae: 0, compluvia: 0, fountains: 0, steppingStones: 0, columns: 0,
-    towers: 0, roofTriangles: 0, flatRoofs: 0, plasterTriangles: 0, buildMs: 0, surveyedHouses: 0, timberFloors: 0,
+    towers: 0, roofTriangles: 0, flatRoofs: 0, plasterTriangles: 0, buildMs: 0, surveyedHouses: 0, timberFloors: 0, plotWallM: 0,
   };
   const upperHouses: PompeiiModel["upperHouses"] = [];
   const art = opts.art !== false && !grey;
   let statueHorse: { h: ReturnType<typeof buildHorse>; pos: Float32Array } | null = null;
   const orders: ColumnInstance[] = [];
   const artPlaced: ArtPlaced[] = [];
+  const interiors: InteriorView[] = [];
   const siteInfo: PompeiiModel["sites"] = { mills: [], ovens: [], thermopolia: 0, statues: [], shrines: 0, stalls: 0 };
   /** Shop counters, emitted at the end so the mapped thermopolia can claim theirs. */
   const counters: { F: Frame; u0: number; w: number; g: number; seed: number }[] = [];
@@ -368,6 +397,24 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
   const NO_UV: [number, number, number, number] = [0, 0, 0, 0];
   const uv4 = (): [number, number, number, number][] => [NO_UV, NO_UV, NO_UV, NO_UV];
+  /**
+   * A room's floor or ceiling over the quad pts, carrying metres from its
+   * first corner along its first side and across it, and its size, so the
+   * shader can lay a border and a pattern square to the walls.
+   */
+  function roomQuad(pts: V3[], facing: V3, c: RGB, seed: number, s: Surf, p1: number, p2 = 0): void {
+    const [a, b] = pts;
+    let ex = b[0] - a[0], ez = b[2] - a[2];
+    const L = Math.hypot(ex, ez) || 1;
+    ex /= L; ez /= L;
+    const cx = pts.reduce((t, p) => t + p[0], 0) / pts.length, cz = pts.reduce((t, p) => t + p[2], 0) / pts.length;
+    let wx = -ez, wz = ex;
+    if ((cx - a[0]) * wx + (cz - a[2]) * wz < 0) { wx = -wx; wz = -wz; }
+    const uv = pts.map((p) => [(p[0] - a[0]) * ex + (p[2] - a[2]) * ez, (p[0] - a[0]) * wx + (p[2] - a[2]) * wz]);
+    const u0 = Math.min(...uv.map((q) => q[0])), v0 = Math.min(...uv.map((q) => q[1]));
+    const W = Math.max(...uv.map((q) => q[0])) - u0, D = Math.max(...uv.map((q) => q[1])) - v0;
+    poly(S, pts, facing, c, seed, s, p1, p2, uv.map((q): [number, number, number, number] => [q[0] - u0, q[1] - v0, W, D]));
+  }
 
   /**
    * A vertical wall from a to b, ground to `top`, seen from the side `out`
@@ -677,7 +724,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     return ground(x, z) + KERB_M + 0.06;
   }
   const kerbFaces: { ax: number; az: number; bx: number; bz: number; ox: number; oz: number; ga: number; gb: number; L: number; lift: number; sideC: RGB; seed: number; side: Surf }[] = [];
-  function slab(r: Ring, lift: number, side: Surf, sideC: RGB, top: Surf, topC: RGB, seed: number, kerb?: Ring, block?: boolean): void {
+  function slab(r: Ring, lift: number, side: Surf, sideC: RGB, top: Surf, topC: RGB, seed: number, kerb?: Ring, block?: boolean, topP1 = 0): void {
     const n = r.length / 2;
     for (let i = 0; i < n; i++) {
       const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
@@ -708,7 +755,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const base = S.n;
     for (let i = 0; i < n; i++) {
       const x = r[i * 2], z = r[i * 2 + 1];
-      S.vert([x, ground(x, z) + lift, z], [0, 1, 0], grey ? GREY : topC, seed, grey ? Surf.Stucco : top, 0, 0, [x, z, 0, 0]);
+      S.vert([x, ground(x, z) + lift, z], [0, 1, 0], grey ? GREY : topC, seed, grey ? Surf.Stucco : top, topP1, 0, [x, z, 0, 0]);
     }
     for (let k = 0; k < tri.length; k += 3) S.tri(base + tri[k], base + tri[k + 2], base + tri[k + 1]);
   }
@@ -718,7 +765,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     slab(ins.kerb, KERB_M, Surf.Kerb, [0.62, 0.6, 0.55], Surf.Pavement, [0.43, 0.35, 0.26], hash(ii, 7), undefined, true);
     // The block's own ground, a step up from the pavement: the garden and the
     // peristyles wherever the lots leave it open.
-    slab(ins.ring, KERB_M + 0.06, Surf.Kerb, [0.55, 0.5, 0.44], Surf.Garden, [0.3, 0.38, 0.17], hash(ii, 8), ins.kerb);
+    slab(ins.ring, KERB_M + 0.06, Surf.Kerb, [0.55, 0.5, 0.44], Surf.Garden, [0.3, 0.38, 0.17], hash(ii, 8), ins.kerb, false, 255);
   }
 
   // --- stepping stones and fountains ---------------------------------------------------
@@ -1061,6 +1108,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     // Gaps cut in the court walls, by court and edge, for the fauces and the
     // rooms opening off a court; each is filled by a little interior box.
     const gaps = new Map<string, { t0: number; t1: number; h: number }[]>();
+    /** Footprints of the rooms built so far (and the fauces), so the next keeps clear of them. */
+    const rooms: Ring[] = [];
     const addGap = (ci: number, e: number, t0: number, t1: number, h: number): void => {
       const k = `${ci}:${e}`;
       gaps.set(k, [...(gaps.get(k) ?? []), { t0, t1, h }]);
@@ -1082,28 +1131,58 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     // which the atlas has no record of: they keep the plain painted scheme.
     const houseScheme = hs.name === "Casa dei Vettii" ? ART_INDEX["vettii-wall"] : hs.name === "Casa della Parete Nera" ? ART_INDEX["bronzi-fourth"]
       : hs.name === "Casa del Fauno" ? -1 : ATRIUM_SCHEMES[Math.floor(hash(seed * 1e6, 61) * ATRIUM_SCHEMES.length)];
+    // The houses whose pictures survive, and half the other surveyed ones,
+    // get the mosaic floors and coffered ceilings; the rest signinum and joists.
+    const famous = /Fauno|Vettii|Poeta Tragico|Parete Nera|Menandro|Misteri/.test(hs.name);
+    const rich = hs.kind === "villa" || famous || (hs.surveyed && hash(seed * 1e6, 71) < 0.5);
+    // The Faun's walls were First Style: painted stucco blocks (paintedWall's code 200 and up).
+    const wallCode = hs.name === "Casa del Fauno" ? 200 : 0;
     /**
      * A room opening off court ci through edge e, centred tc along it, w
      * wide and `depth` deep, its ceiling at H: floor, three walls painted
      * with `scheme`, a ceiling, an optional mosaic floor and picture on the
      * back wall.
      */
-    const roomOff = (ci: number, e: number, tc: number, w: number, depth: number, H: number, opt: { scheme?: number; floor?: number; back?: number }): void => {
+    const roomOff = (ci: number, e: number, tc: number, w: number, depth: number, H: number,
+      opt: { scheme?: number; code?: number; floor?: number; back?: number; floorKind?: FloorKind; ceil?: CeilingKind; door?: number; doorH?: number; screen?: boolean }): RoomFrame => {
       const E = cedge(ci, e);
       tc = Math.max(w / 2 + 0.3, Math.min(E.L - w / 2 - 0.3, tc));
-      addGap(ci, e, tc - w / 2, tc + w / 2, Math.min(H, top - g - 0.3));
+      // A narrow door into a wider room: the room's front wall either side of
+      // it, a wooden frame round it on the court side.
+      const door = opt.door !== undefined && opt.door < w - 0.4 ? opt.door : 0;
+      const dh = Math.min(opt.doorH ?? H, H, top - g - 0.3);
+      if (door) addGap(ci, e, tc - door / 2, tc + door / 2, dh);
+      else addGap(ci, e, tc - w / 2, tc + w / 2, Math.min(H, top - g - 0.3));
       const o0: [number, number] = [E.ax + E.tx * (tc - w / 2), E.az + E.tz * (tc - w / 2)], o1: [number, number] = [E.ax + E.tx * (tc + w / 2), E.az + E.tz * (tc + w / 2)];
       const b0: [number, number] = [o0[0] - E.ix * depth, o0[1] - E.iz * depth], b1: [number, number] = [o1[0] - E.ix * depth, o1[1] - E.iz * depth];
-      const sch = art ? opt.scheme ?? houseScheme : -1;
-      const paint = (p: [number, number], q: [number, number], fx: number, fz: number, len: number): void => {
-        if (sch >= 0) wall(p[0], p[1], q[0], q[1], g - 0.1, g - 0.1, g + H, g + H, fx, fz, ART_WORKS[sch].ground, seed, Surf.Art, sch, 3, 0, len, g, H);
-        else wall(p[0], p[1], q[0], q[1], g - 0.1, g - 0.1, g + H, g + H, fx, fz, [0.55, 0.12, 0.08], seed, Surf.Fresco, 0, 0, 0, len, g, H);
+      const sch = art && opt.code === undefined ? opt.scheme ?? houseScheme : -1;
+      const paint = (p: [number, number], q: [number, number], fx: number, fz: number, len: number, u0 = 0, y0 = g - 0.1): void => {
+        if (sch >= 0) wall(p[0], p[1], q[0], q[1], y0, y0, g + H, g + H, fx, fz, ART_WORKS[sch].ground, seed, Surf.Art, sch, 3, u0, len, g, H);
+        else wall(p[0], p[1], q[0], q[1], y0, y0, g + H, g + H, fx, fz, [0.55, 0.12, 0.08], seed, Surf.Fresco, opt.code ?? 0, 0, u0, len, g, H);
       };
+      rooms.push([...o0, ...o1, ...b1, ...b0]);
       paint(o0, b0, E.tx, E.tz, depth);
       paint(b1, o1, -E.tx, -E.tz, depth);
-      paint(b0, b1, E.ix, E.iz, w);
-      poly(S, [[o0[0], g + H, o0[1]], [o1[0], g + H, o1[1]], [b1[0], g + H, b1[1]], [b0[0], g + H, b0[1]]], [0, -1, 0], [0.4, 0.28, 0.18], seed, Surf.Wood, 0, 0, uv4());
-      poly(S, [o0, o1, b1, b0].map((p): V3 => [p[0], fl(p[0], p[1]) + 0.02, p[1]]), [0, 1, 0], [0.55, 0.42, 0.34], seed, Surf.Pavement, 0, 0, uv4());
+      // The tablinum's back: folding wooden doors onto the garden behind.
+      if (opt.screen) wall(b0[0], b0[1], b1[0], b1[1], g - 0.1, g - 0.1, g + Math.min(H, 3.6), g + Math.min(H, 3.6), E.ix, E.iz, [0.4, 0.26, 0.14], seed, Surf.Wood, 0, 0, 0, w, g, Math.min(H, 3.6));
+      if (opt.screen && H > 3.6) paint(b0, b1, E.ix, E.iz, w, 0, g + 3.6);
+      if (!opt.screen) paint(b0, b1, E.ix, E.iz, w);
+      if (door) {
+        const d0 = w / 2 - door / 2, d1 = w / 2 + door / 2;
+        const at = (t: number): [number, number] => [o0[0] + E.tx * t, o0[1] + E.tz * t];
+        paint(at(w), at(d1), -E.ix, -E.iz, w, w - d1);
+        paint(at(d0), at(0), -E.ix, -E.iz, w, w - d0);
+        paint(at(d1), at(d0), -E.ix, -E.iz, w, w - d1, g + dh);
+        if (!lean) {
+          const Fr: Frame = { ax: o0[0], az: o0[1], ex: E.tx, ez: E.tz, ox: E.ix, oz: E.iz };
+          const WOODC: RGB = [0.34, 0.22, 0.12];
+          fbox(Fr, d0 - 0.12, d0, -0.08, 0.05, g, g + dh, WOODC, seed, Surf.Wood, { skip: FB.Top, flatU: true });
+          fbox(Fr, d1, d1 + 0.12, -0.08, 0.05, g, g + dh, WOODC, seed, Surf.Wood, { skip: FB.Top, flatU: true });
+          fbox(Fr, d0 - 0.16, d1 + 0.16, -0.08, 0.06, g + dh, g + dh + 0.16, WOODC, seed, Surf.Wood, { bottom: true });
+        }
+      }
+      roomQuad([[o0[0], g + H, o0[1]], [o1[0], g + H, o1[1]], [b1[0], g + H, b1[1]], [b0[0], g + H, b0[1]]], [0, -1, 0], [0.4, 0.28, 0.18], seed, Surf.Ceiling, opt.ceil ?? CeilingKind.Painted);
+      roomQuad([o0, o1, b1, b0].map((p): V3 => [p[0], fl(p[0], p[1]) + 0.02, p[1]]), [0, 1, 0], [0.55, 0.42, 0.34], seed, Surf.Floor, opt.floorKind ?? FloorKind.SigninumNet);
       const mx = (o0[0] + o1[0] + b0[0] + b1[0]) / 4, mz = (o0[1] + o1[1] + b0[1] + b1[1]) / 4;
       if (art && opt.floor !== undefined) {
         const [fw, fd] = ART_WORKS[opt.floor].sizeM;
@@ -1118,6 +1197,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const P = (a: number, y: number): V3 => [cx - E.tx * a, y, cz - E.tz * a];
         artQuad([P(-pw / 2, y0 + ph), P(pw / 2, y0 + ph), P(pw / 2, y0), P(-pw / 2, y0)], [E.ix, 0, E.iz], opt.back, true);
       }
+      return { cx: mx, cz: mz, tx: E.tx, tz: E.tz, ix: E.ix, iz: E.iz, w, depth, g: fl(mx, mz) + 0.02 };
     };
     /** The court edge nearest a point, and how far along it. */
     const nearestEdge = (x: number, z: number, only?: number): { ci: number; e: number; t: number; d: number } => {
@@ -1161,10 +1241,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         // Painted walls down the passage (the black-and-red dado most fauces had).
         const L0: [number, number] = [dx - ux * 0.95, dz - uz * 0.95], R0: [number, number] = [dx + ux * 0.95, dz + uz * 0.95];
         const L1: [number, number] = [L0[0] + vx * d, L0[1] + vz * d], R1: [number, number] = [R0[0] + vx * d, R0[1] + vz * d];
-        wall(L0[0], L0[1], L1[0], L1[1], g - 0.1, g - 0.1, g + 3.4, g + 3.4, ux, uz, [0.55, 0.12, 0.08], seed, Surf.Fresco, 0, 0, 0, d, g, 3.4);
-        wall(R1[0], R1[1], R0[0], R0[1], g - 0.1, g - 0.1, g + 3.4, g + 3.4, -ux, -uz, [0.55, 0.12, 0.08], seed, Surf.Fresco, 0, 0, 0, d, g, 3.4);
-        poly(S, [[L0[0], g + 3.4, L0[1]], [R0[0], g + 3.4, R0[1]], [R1[0], g + 3.4, R1[1]], [L1[0], g + 3.4, L1[1]]], [0, -1, 0], [0.4, 0.28, 0.18], seed, Surf.Wood, 0, 0, uv4());
-        poly(S, [L0, R0, R1, L1].map((p): V3 => [p[0], fl(p[0], p[1]) + 0.02, p[1]]), [0, 1, 0], [0.62, 0.6, 0.56], seed, Surf.Pavement, 0, 0, uv4());
+        rooms.push([...L0, ...R0, ...R1, ...L1]);
+        wall(L0[0], L0[1], L1[0], L1[1], g - 0.1, g - 0.1, g + 3.4, g + 3.4, ux, uz, [0.55, 0.12, 0.08], seed, Surf.Fresco, wallCode, 0, 0, d, g, 3.4);
+        wall(R1[0], R1[1], R0[0], R0[1], g - 0.1, g - 0.1, g + 3.4, g + 3.4, -ux, -uz, [0.55, 0.12, 0.08], seed, Surf.Fresco, wallCode, 0, 0, d, g, 3.4);
+        roomQuad([[L1[0], g + 3.4, L1[1]], [L0[0], g + 3.4, L0[1]], [R0[0], g + 3.4, R0[1]], [R1[0], g + 3.4, R1[1]]], [0, -1, 0], [0.4, 0.28, 0.18], seed, Surf.Ceiling, rich ? CeilingKind.Coffers : CeilingKind.Joists);
+        roomQuad([L1, L0, R0, R1].map((p): V3 => [p[0], fl(p[0], p[1]) + 0.02, p[1]]), [0, 1, 0], [0.62, 0.6, 0.56], seed, Surf.Floor, rich ? FloorKind.BlackWhite : FloorKind.SigninumMeander);
         if (art && hs.name === "Casa del Poeta Tragico") {
           // Cave Canem, inside the door, the dog toward the street.
           const [cw, cd] = ART_WORKS[ART_INDEX["cave-canem"]].sizeM;
@@ -1204,7 +1285,14 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           // The Dancing Faun on his base at the impluvium's edge (the bronze is
           // 71 cm high: modelled at that size, on a half-metre plinth).
           const fb = fl(f.x, f.z);
-          cube(S, f.x - 0.3, fb - 0.1, f.z - 0.3, f.x + 0.3, fb + 0.5, f.z + 0.3, [0.85, 0.84, 0.8], seed, Surf.Marble);
+          // A low moulded base of travertine: a plinth, the die, a capping slab.
+          const trav: RGB = [0.8, 0.76, 0.64];
+          if (lean) cube(S, f.x - 0.3, fb - 0.1, f.z - 0.3, f.x + 0.3, fb + 0.5, f.z + 0.3, trav, seed, Surf.Marble);
+          else {
+            cube(S, f.x - 0.36, fb - 0.1, f.z - 0.36, f.x + 0.36, fb + 0.08, f.z + 0.36, trav, seed, Surf.Marble);
+            cube(S, f.x - 0.3, fb + 0.08, f.z - 0.3, f.x + 0.3, fb + 0.4, f.z + 0.3, trav, seed, Surf.Marble);
+            cube(S, f.x - 0.34, fb + 0.4, f.z - 0.34, f.x + 0.34, fb + 0.5, f.z + 0.34, trav, seed, Surf.Marble);
+          }
           figure(S, [f.x, fb + 0.5, f.z], Math.atan2(-vx, -vz), 0.42, "faun", [0.21, 0.16, 0.09], 17 /* bronze */);
           siteInfo.statues.push("dancing faun");
           artPlaced.push({ id: "dancing-faun", house: hs.name, x: f.x, y: g + 0.5, z: f.z });
@@ -1232,6 +1320,56 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const [cx, cz] = ringCentroid(courts[biggest]);
         artPlaced.push({ id: "bronzi-fourth", house: hs.name, x: cx, y: g + 2, z: cz });
       }
+    }
+
+    // --- the atrium's own rooms: the tablinum across the pool from the
+    // fauces, a cubiculum off each side near the front. The full build's:
+    // the phone sees the atrium from the street, not into its side rooms.
+    const furnish: { x: number; z: number; y: number; tx: number; tz: number; ix: number; iz: number; what: "lectus" | "loom" | "chest" | "table" }[] = [];
+    if (courts.length && !grey && !lean) {
+      const fitsRoom = (q: [number, number][]): boolean => {
+        const pts = [...q, [(q[0][0] + q[2][0]) / 2, (q[0][1] + q[2][1]) / 2] as [number, number]];
+        for (const [x, z] of pts) if (!pointInRing(ring, x, z) || distToRing(ring, x, z) < 0.25) return false;
+        // The front corners lie on their own court's edge; the back ones must stay clear of every court.
+        const back = [q[2], q[3], pts[4]];
+        if (back.some(([x, z]) => courts.some((c) => pointInRing(c, x, z) || distToRing(c, x, z) < 0.3))) return false;
+        return !rooms.some((r) => pts.some(([x, z]) => pointInRing(r, x, z)) || [0, 2, 4, 6].some((i) => pointInRing(q.flat(), r[i], r[i + 1])));
+      };
+      const plan = (ci: number, e: number, tc: number, w: number, dep: number): [number, number][] => {
+        const E = cedge(ci, e);
+        const a: [number, number] = [E.ax + E.tx * (tc - w / 2), E.az + E.tz * (tc - w / 2)], b: [number, number] = [E.ax + E.tx * (tc + w / 2), E.az + E.tz * (tc + w / 2)];
+        return [a, b, [b[0] - E.ix * dep, b[1] - E.iz * dep], [a[0] - E.ix * dep, a[1] - E.iz * dep]];
+      };
+      const H = Math.min(top - g - 0.4, 4.6);
+      courts.forEach((_, ci) => {
+        if ((areas[ci] >= 150 && ci === biggest) || areas[ci] < 24) return;
+        const es = [0, 1, 2, 3].map((e) => ({ e, E: cedge(ci, e) }));
+        const along = (x: { E: ReturnType<typeof cedge> }): number => x.E.ix * vx + x.E.iz * vz;
+        const back = es.reduce((m, x) => (along(x) < along(m) ? x : m));
+        if (along(back) < -0.7 && back.E.L > 3.5) {
+          const w = Math.min(5.2, back.E.L * 0.5), tc = back.E.L / 2;
+          let dep = Math.min(5.5, roomDepth(ci, back.e, tc) - 0.4);
+          while (dep >= 3 && !fitsRoom(plan(ci, back.e, tc, w, dep))) dep -= 0.5;
+          if (dep >= 3) {
+            const rf = roomOff(ci, back.e, tc, w, dep, H, { code: wallCode || 1 + Math.floor(hash(seed * 1e6, 81) * 200), floorKind: rich ? FloorKind.Sectile : FloorKind.SigninumMeander, ceil: rich ? CeilingKind.Coffers : CeilingKind.Painted, screen: true });
+            furnish.push({ x: rf.cx - rf.ix * (dep / 2 - 0.9), z: rf.cz - rf.iz * (dep / 2 - 0.9), y: rf.g, tx: rf.tx, tz: rf.tz, ix: rf.ix, iz: rf.iz, what: hash(seed * 1e6, 82) < 0.5 ? "table" : "chest" });
+          }
+        }
+        let n = 0;
+        for (const s of es) {
+          if (Math.abs(along(s)) > 0.5 || s.E.L < 5) continue;
+          // The front end of the side: the one nearer the street.
+          const frontAtA = (s.E.ax - s.E.bx) * vx + (s.E.az - s.E.bz) * vz < 0;
+          const tc = frontAtA ? 1.9 : s.E.L - 1.9;
+          let dep = Math.min(3.4, roomDepth(ci, s.e, tc) - 0.4);
+          while (dep >= 2.4 && !fitsRoom(plan(ci, s.e, tc, 2.9, dep))) dep -= 0.4;
+          if (dep < 2.4) continue;
+          const rf = roomOff(ci, s.e, tc, 2.9, dep, Math.min(H, 3.6), { code: 1 + Math.floor(hash(seed * 1e6, 83 + n) * 200), floorKind: rich ? FloorKind.BlackWhite : FloorKind.SigninumNet, ceil: CeilingKind.Painted, door: 1.1, doorH: 2.5 });
+          const loomHere = n === 0 && hash(seed * 1e6, 84) < 0.08;
+          furnish.push({ x: rf.cx - rf.ix * (dep / 2 - 0.5), z: rf.cz - rf.iz * (dep / 2 - 0.5), y: rf.g, tx: rf.tx, tz: rf.tz, ix: rf.ix, iz: rf.iz, what: loomHere ? "loom" : "lectus" });
+          n++;
+        }
+      });
     }
 
     // --- outer walls, the street front with its door and shops ---
@@ -1282,6 +1420,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     }
 
     // --- the courts: walls round each looking in, the floor, pool or garden ---
+    const atriumFloor = famous ? FloorKind.BlackField : rich ? FloorKind.BlackWhite : hash(seed * 1e6, 72) < 0.5 ? FloorKind.SigninumNet : FloorKind.SigninumMeander;
+    const atria: { k: number; inner: [number, number][]; icx: number; icz: number }[] = [];
     courts.forEach((c, k) => {
       const garden = areas[k] >= 150 && k === biggest;
       const [ccx, ccz] = ringCentroid(c);
@@ -1296,7 +1436,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           if (t1 - t0 < 0.02) return;
           const pa = [ax + E.tx * t0, az + E.tz * t0], pb = [ax + E.tx * t1, az + E.tz * t1];
           if (scheme >= 0) wall(pa[0], pa[1], pb[0], pb[1], y0, y0, top, top, ix, iz, ART_WORKS[scheme].ground, seed, Surf.Art, scheme, 1, t0, L, g, top - g);
-          else wall(pa[0], pa[1], pb[0], pb[1], y0, y0, top, top, ix, iz, garden ? [0.86, 0.8, 0.68] : [0.55, 0.12, 0.08], seed, garden ? Surf.Plaster : Surf.Fresco, garden ? 100 : 0, 255, t0, L, g, top - g);
+          else wall(pa[0], pa[1], pb[0], pb[1], y0, y0, top, top, ix, iz, garden ? [0.86, 0.8, 0.68] : [0.55, 0.12, 0.08], seed, garden ? Surf.Plaster : Surf.Fresco, garden ? 100 : wallCode, 255, t0, L, g, top - g);
         };
         for (const q of cuts) {
           piece(t, q.t0, g - 0.1);
@@ -1315,7 +1455,9 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       }
       const fp: V3[] = [0, 1, 2, 3].map((q): V3 => [c[q * 2], fl(c[q * 2], c[q * 2 + 1]) + 0.02, c[q * 2 + 1]]);
       lampSites.courts.push({ ring: c.slice(0, 8), g, garden });
-      poly(S, fp, [0, 1, 0], garden ? [0.3, 0.4, 0.18] : [0.55, 0.38, 0.3], seed, garden ? Surf.Garden : Surf.Pavement, 0, 0, fp.map((p) => [p[0], p[2], 0, 0]));
+      // The garden's walk under the colonnade is floored like the atrium (gardenPaint).
+      if (garden) roomQuad(fp, [0, 1, 0], [0.3, 0.4, 0.18], seed, Surf.Garden, lean ? 1 : 34, 1 + (rich ? FloorKind.BlackWhite : FloorKind.SigninumNet));
+      else roomQuad(fp, [0, 1, 0], [0.55, 0.38, 0.3], seed, Surf.Floor, atriumFloor);
       if (garden && !lean && !grey) {
         // The portico roof inside the colonnade: a lean-to from the court walls.
         const inner = [0, 1, 2, 3].map((q): [number, number] => {
@@ -1331,14 +1473,91 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           // Its underside, seen from the walk and from the garden.
           poly(S, [p, q, qi, pi], [-(ccx - (p[0] + q[0]) / 2), -2, -(ccz - (p[2] + q[2]) / 2)], [0.42, 0.3, 0.2], seed, Surf.Wood, 0, 0, uv4());
         }
-      } else if (!garden) {
+      } else if (!garden && (lean || grey)) {
         // Level with the court's highest corner: the court floor is a sloped quad and would cover a pool set at its middle.
         const pool = fp.map((p): V3 => [ccx + (p[0] - ccx) * 0.45, Math.max(...fp.map((q) => q[1])) + 0.05, ccz + (p[2] - ccz) * 0.45]);
         // The court is the opening: p1 its height over the water, p2 its radius, in decimetres.
         const op = impluvium(pool, ccx, ccz, fl(ccx, ccz), top, Math.sqrt(Math.abs(ringArea(c.slice(0, 8))) / Math.PI));
         poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], seed, Surf.Water, op[0], op[1], pool.map((p) => [p[0], p[2], ccx, ccz]));
+      } else if (!garden) {
+        // The atrium: the court is the room, roofed round an opening over the
+        // pool (the compluvium), its four slopes falling inward at the Roman
+        // pitch to tile ends and spouts that drain into the impluvium. The
+        // phone keeps the open court above.
+        const outer = [0, 1, 2, 3].map((q): [number, number] => [c[q * 2], c[q * 2 + 1]]);
+        const side = Math.min(...[0, 1, 2, 3].map((q) => cedge(k, q).L));
+        const inset = Math.max(0.8, Math.min(side * 0.3, side / 2 - 1.2));
+        const inner = outer.map((p, i): [number, number] => {
+          const nx1 = outer[(i + 1) % 4], pv = outer[(i + 3) % 4];
+          const l1 = Math.hypot(nx1[0] - p[0], nx1[1] - p[1]) || 1, l2 = Math.hypot(pv[0] - p[0], pv[1] - p[1]) || 1;
+          return [p[0] + ((nx1[0] - p[0]) / l1 + (pv[0] - p[0]) / l2) * inset, p[1] + ((nx1[1] - p[1]) / l1 + (pv[1] - p[1]) / l2) * inset];
+        });
+        const hi = top, lo = top - inset * TAN_PITCH;
+        for (let e = 0; e < 4; e++) {
+          const p = outer[e], q = outer[(e + 1) % 4], pi = inner[e], qi = inner[(e + 1) % 4];
+          const L = Math.hypot(q[0] - p[0], q[1] - p[1]);
+          const E = cedge(k, e);
+          const quad: V3[] = [[p[0], hi, p[1]], [q[0], hi, q[1]], [qi[0], lo, qi[1]], [pi[0], lo, pi[1]]];
+          const sl = inset / Math.cos(Math.atan(TAN_PITCH));
+          poly(S, quad, [E.ix, 1, E.iz], tileC, seed, Surf.Tile, 0, 0, [[0, sl, L, sl], [L, sl, L, sl], [L, 0, L, sl], [0, 0, L, sl]]);
+          roomQuad(quad, [-E.ix, -1, -E.iz], [0.36, 0.24, 0.14], seed, Surf.Ceiling, rich ? CeilingKind.Coffers : CeilingKind.Joists);
+          // The tile ends along the opening, and a lion-head spout at each side's middle.
+          const Li = Math.hypot(qi[0] - pi[0], qi[1] - pi[1]);
+          poly(S, [[pi[0], lo, pi[1]], [qi[0], lo, qi[1]], [qi[0], lo - 0.14, qi[1]], [pi[0], lo - 0.14, pi[1]]], [E.ix, 0, E.iz], tileC, seed, Surf.Tile, 0, 0,
+            [[0, 0.14, Li, 0.14], [Li, 0.14, Li, 0.14], [Li, 0, Li, 0.14], [0, 0, Li, 0.14]]);
+          spout(S, (pi[0] + qi[0]) / 2, lo - 0.08, (pi[1] + qi[1]) / 2, E.ix, E.iz, [tileC[0] * 1.05, tileC[1] * 1.1, tileC[2] * 1.1], seed);
+        }
+        const icx = inner.reduce((s, p) => s + p[0] / 4, 0), icz = inner.reduce((s, p) => s + p[1] / 4, 0);
+        const wy = Math.max(...fp.map((q) => q[1])) + 0.05;
+        const pool = inner.map((p): V3 => [icx + (p[0] - icx) * 0.92, wy, icz + (p[1] - icz) * 0.92]);
+        const op = impluvium(pool, icx, icz, fl(icx, icz), lo, Math.sqrt(Math.abs(ringArea(inner.flat())) / Math.PI));
+        poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], seed, Surf.Water, op[0], op[1], pool.map((p) => [p[0], p[2], icx, icz]));
+        atria.push({ k, inner, icx, icz });
       }
     });
+    // --- the atrium's furniture: the puteal over the cistern beside the
+    // pool, the marble table at its head, the household shrine and the
+    // strongbox against the walls; the rooms' couches and tables.
+    const yawAlong = (tx: number, tz: number): number => Math.atan2(-tz, tx);
+    for (const a of atria) {
+      const c = courts[a.k];
+      const opening = a.inner.flat();
+      const clear = (x: number, z: number, r: number): boolean => pointInRing(c, x, z) && distToRing(c, x, z) > r
+        && !pointInRing(opening, x, z) && distToRing(opening, x, z) > r * 0.6;
+      let hd = 0, hw = 0;
+      for (const p of a.inner) { hd = Math.max(hd, (p[0] - a.icx) * vx + (p[1] - a.icz) * vz); hw = Math.max(hw, (p[0] - a.icx) * ux + (p[1] - a.icz) * uz); }
+      const P = (du: number, dv: number): [number, number] => [a.icx + ux * du + vx * dv, a.icz + uz * du + vz * dv];
+      const [tx, tz] = P(0, hd + 0.75);
+      if (clear(tx, tz, 0.5)) cartibulum(S, tx, fl(tx, tz), tz, yawAlong(ux, uz), seed);
+      const [px, pz] = P(hw + 0.6, hd * 0.4);
+      if (clear(px, pz, 0.45)) puteal(S, px, fl(px, pz), pz, seed);
+      for (let e = 0; e < 4; e++) {
+        const E = cedge(a.k, e);
+        if (Math.abs(E.ix * vx + E.iz * vz) > 0.5 || E.L < 4) continue;
+        const sideIsLeft = E.ix * ux + E.iz * uz > 0;
+        // A lararium on one side wall near the back, the arca on the other.
+        const what = sideIsLeft ? (hash(seed * 1e6, 91) < 0.55 ? "lararium" : "") : (hash(seed * 1e6, 92) < 0.45 ? "arca" : "");
+        if (!what) continue;
+        const backAtA = (E.ax - E.bx) * vx + (E.az - E.bz) * vz > 0;
+        const t = backAtA ? E.L * 0.25 : E.L * 0.75;
+        const cuts = gaps.get(`${a.k}:${e}`) ?? [];
+        if (cuts.some((q) => t > q.t0 - 1 && t < q.t1 + 1)) continue;
+        const x = E.ax + E.tx * t + E.ix * 0.02, z = E.az + E.tz * t + E.iz * 0.02;
+        if (what === "lararium") lararium(S, x, fl(x, z), z, Math.atan2(E.ix, E.iz), seed);
+        else arca(S, x + E.ix * 0.5, fl(x, z), z + E.iz * 0.5, yawAlong(E.tx, E.tz), seed);
+      }
+      if (hash(seed * 1e6, 93) < 0.35) {
+        const [bx, bz] = P(-(hw + 0.7), -hd * 0.3);
+        if (clear(bx, bz, 0.4)) brazier(S, bx, fl(bx, bz), bz, seed);
+      }
+    }
+    for (const f of furnish) {
+      const y = f.y;
+      if (f.what === "lectus") lectus(S, f.x, y, f.z, yawAlong(f.tx, f.tz), seed);
+      else if (f.what === "loom") loom(S, f.x, y, f.z, yawAlong(f.tx, f.tz), seed);
+      else if (f.what === "chest") chest(S, f.x, y, f.z, yawAlong(f.tx, f.tz), seed);
+      else tripodTable(S, f.x, y, f.z, seed);
+    }
     // Herculaneum: the glass mosaic of Neptune and Amphitrite on the court
     // wall it is mapped on, and the nymphaeum's hunting scene round the corner.
     if (data.herc && hs.name === "Casa di Nettuno e Anfitrite" && courts.length && !grey) {
@@ -1792,18 +2011,61 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const openings: Opening[] = [];
       const doorW = 1.9;
       const mid = width / 2;
-      openings.push({ u0: mid - doorW / 2, u1: mid + doorW / 2, h: 3.4, kind: "door" });
+      // The full build opens the door on a fauces through to the atrium,
+      // the tablinum across it; the phone keeps the closed door.
+      const inside = !lean && !grey;
+      openings.push({ u0: mid - doorW / 2, u1: mid + doorW / 2, h: 3.4, kind: inside ? "open" : "door" });
       if (main && width >= 12) {
         openings.push({ u0: 0.7, u1: mid - doorW / 2 - 0.7, h: 3.1, kind: "shop" });
         openings.push({ u0: mid + doorW / 2 + 0.7, u1: width - 0.7, h: 3.1, kind: "shop" });
       }
-      band(q0, q1, q2b, q2a, g, yBot, Hf, "gable", col, tileC, seed, p1, p2, openings, true, false, { main, house: true, grand: true });
+      const door: [number, number] = [mid - doorW / 2, mid + doorW / 2];
+      const backD = d - fDepth - aDepth;
+      const tw = Math.min(4.6, width * 0.42);
+      const tab: [number, number] | null = inside && backD > 3.4 ? [mid - tw / 2, mid + tw / 2] : null;
+      const tabH = Math.min(storeyH - 0.5, 4.2);
+      const rich = hash(seed * 1e6, 73) < 0.25;
+      band(q0, q1, q2b, q2a, g, yBot, Hf, "gable", col, tileC, seed, p1, p2, openings, true, false,
+        { main, house: true, grand: true, gapBack: inside ? [door[0], door[1], 3.4] : undefined });
       // Atrium band, its roof sloping in to the compluvium.
-      band(q2a, q2b, q3b, q3a, g, yBot, storeyH + 0.6, "compluvium", col, tileC, seed, p1, p2, [], false);
+      band(q2a, q2b, q3b, q3a, g, yBot, storeyH + 0.6, "compluvium", col, tileC, seed, p1, p2, [], false, false,
+        inside ? { gapFront: [door[0], door[1], 3.4], gapBack: tab ? [tab[0], tab[1], tabH] : undefined, atrium: { door, tablinum: tab, rich } } : {});
       info.compluvium = true;
       stats.compluvia++;
       // Back band: tablinum and rooms, a portico onto the garden behind.
-      band(q3a, q3b, q4b, q4a, g, yBot, storeyH, "gable", col, tileC, seed, p1, p2, [], false, true);
+      band(q3a, q3b, q4b, q4a, g, yBot, storeyH, "gable", col, tileC, seed, p1, p2, [], false, true, tab ? { gapFront: [tab[0], tab[1], tabH] } : {});
+      if (inside) {
+        // The fauces: painted walls down the passage from the door to the
+        // atrium, a boarded ceiling, a threshold mosaic or signinum floor.
+        const fd = fDepth + 0.25;
+        const il = Math.hypot(q2a[0] - q0[0], q2a[1] - q0[1]) || 1;
+        const F0: Frame = { ax: q0[0], az: q0[1], ex: (q1[0] - q0[0]) / width, ez: (q1[1] - q0[1]) / width, ox: -(q2a[0] - q0[0]) / il, oz: -(q2a[1] - q0[1]) / il };
+        const P = (u: number, v: number): [number, number] => [F0.ax + F0.ex * u - F0.ox * v, F0.az + F0.ez * u - F0.oz * v];
+        const L0 = P(door[0], 0), L1 = P(door[0], fd), R0 = P(door[1], 0), R1 = P(door[1], fd);
+        const gf = floorOver(g, [L0, R0, R1, L1]);
+        const code = 1 + Math.floor(hash(seed * 1e6, 85) * 199);
+        wall(L0[0], L0[1], L1[0], L1[1], gf - 0.1, gf - 0.1, gf + 3.4, gf + 3.4, F0.ex, F0.ez, [0.55, 0.12, 0.08], seed, Surf.Fresco, code, 0, 0, fd, gf, 3.4);
+        wall(R1[0], R1[1], R0[0], R0[1], gf - 0.1, gf - 0.1, gf + 3.4, gf + 3.4, -F0.ex, -F0.ez, [0.55, 0.12, 0.08], seed, Surf.Fresco, code, 0, 0, fd, gf, 3.4);
+        roomQuad([[L1[0], gf + 3.4, L1[1]], [L0[0], gf + 3.4, L0[1]], [R0[0], gf + 3.4, R0[1]], [R1[0], gf + 3.4, R1[1]]], [0, -1, 0], [0.4, 0.28, 0.18], seed, Surf.Ceiling, CeilingKind.Joists);
+        roomQuad([L1, L0, R0, R1].map((p): V3 => [p[0], gf, p[1]]), [0, 1, 0], [0.6, 0.56, 0.5], seed, Surf.Floor, rich ? FloorKind.BlackWhite : FloorKind.SigninumMeander);
+        if (tab) {
+          // The tablinum: open to the atrium, painted, coffered in a rich
+          // house, its back closed by folding wooden doors onto the garden.
+          const t0 = fDepth + aDepth - 0.25, td = Math.min(4.2, backD - 0.6);
+          const A0 = P(tab[0], t0), A1 = P(tab[0], fDepth + aDepth + td), B0 = P(tab[1], t0), B1 = P(tab[1], fDepth + aDepth + td);
+          const tg = floorOver(g, [A0, B0, B1, A1]);
+          const tcode = 1 + Math.floor(hash(seed * 1e6, 90) * 199);
+          const L = td + 0.25;
+          wall(A0[0], A0[1], A1[0], A1[1], tg - 0.1, tg - 0.1, tg + tabH, tg + tabH, F0.ex, F0.ez, [0.55, 0.12, 0.08], seed, Surf.Fresco, tcode, 0, 0, L, tg, tabH);
+          wall(B1[0], B1[1], B0[0], B0[1], tg - 0.1, tg - 0.1, tg + tabH, tg + tabH, -F0.ex, -F0.ez, [0.55, 0.12, 0.08], seed, Surf.Fresco, tcode, 0, 0, L, tg, tabH);
+          wall(A1[0], A1[1], B1[0], B1[1], tg - 0.1, tg - 0.1, tg + tabH, tg + tabH, F0.ox, F0.oz, [0.4, 0.26, 0.14], seed, Surf.Wood, 0, 0, 0, tw, tg, tabH);
+          roomQuad([[A0[0], tg + tabH, A0[1]], [B0[0], tg + tabH, B0[1]], [B1[0], tg + tabH, B1[1]], [A1[0], tg + tabH, A1[1]]], [0, -1, 0], [0.4, 0.28, 0.18], seed, Surf.Ceiling, rich ? CeilingKind.Coffers : CeilingKind.Painted);
+          roomQuad([A0, B0, B1, A1].map((p): V3 => [p[0], tg, p[1]]), [0, 1, 0], [0.55, 0.42, 0.34], seed, Surf.Floor, rich ? FloorKind.Sectile : FloorKind.SigninumNet);
+          const [cx, cz] = P(width / 2, fDepth + aDepth + td - 0.9);
+          if (hash(seed * 1e6, 82) < 0.5) tripodTable(S, cx, tg, cz, seed);
+          else chest(S, cx, tg, cz, Math.atan2(-F0.ez, F0.ex), seed);
+        }
+      }
       solids.push({ ring: [fa[0], fa[1], fb[0], fb[1], bb[0], bb[1], ba[0], ba[1]], baseY: yBot, topY: g + Hf + 1.5 });
     } else {
       const openings: Opening[] = [];
@@ -1948,11 +2210,21 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     }
     // The plain front only where facade() did not draw one: chained as an else
     // to the balcony it also walled over every shop and door without a balcony.
-    if (!(street && openings.length && !grey)) wall(a[0], a[1], b[0], b[1], yBot, yBot, wallTop, wallTop, ox, oz, col, s, Surf.Plaster, p1, p2, 0, fl, g, wallTop - g);
+    // A wall p..q in up to three pieces round a doorway t0..t1 metres from p, h high.
+    const gapped = (p: [number, number], q: [number, number], gap: [number, number, number] | undefined, draw: (x0: number, z0: number, x1: number, z1: number, y0: number, u0: number) => void): void => {
+      if (!gap) { draw(p[0], p[1], q[0], q[1], yBot, 0); return; }
+      const L = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+      const at = (t: number): [number, number] => [p[0] + ((q[0] - p[0]) * t) / L, p[1] + ((q[1] - p[1]) * t) / L];
+      const [x0, z0] = at(gap[0]), [x1, z1] = at(gap[1]);
+      draw(p[0], p[1], x0, z0, yBot, 0);
+      draw(x0, z0, x1, z1, g + gap[2], gap[0]);
+      draw(x1, z1, q[0], q[1], yBot, gap[1]);
+    };
+    if (!(street && openings.length && !grey)) gapped(a, b, dress.gapFront, (x0, z0, x1, z1, y0, u0) => wall(x0, z0, x1, z1, y0, y0, wallTop, wallTop, ox, oz, col, s, Surf.Plaster, p1, p2, u0, fl, g, wallTop - g));
     // Back and sides, all plastered (seen across gardens and over lower roofs).
     const sideC: RGB = [col[0] * 0.5 + 0.43, col[1] * 0.5 + 0.4, col[2] * 0.5 + 0.34];
     const bl = Math.hypot(c[0] - d[0], c[1] - d[1]);
-    wall(c[0], c[1], d[0], d[1], yBot, yBot, wallTop, wallTop, -ox, -oz, sideC, s, Surf.Plaster, p1, 255, 0, bl, g, wallTop - g);
+    gapped(d, c, dress.gapBack, (x0, z0, x1, z1, y0, u0) => wall(x1, z1, x0, z0, y0, y0, wallTop, wallTop, -ox, -oz, sideC, s, Surf.Plaster, p1, 255, bl - u0 - Math.hypot(x1 - x0, z1 - z0), bl, g, wallTop - g));
     const sideOut = (p: [number, number], q: [number, number]): [number, number] => {
       const ex = q[0] - p[0], ez = q[1] - p[1], L = Math.hypot(ex, ez) || 1;
       let sx = ez / L, sz = -ex / L;
@@ -2015,6 +2287,16 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const il = Math.hypot(inx, inz) || 1;
         poly(S, [[p[0], hi, p[1]], [q[0], hi, q[1]], [qi[0], lo, qi[1]], [pi[0], lo, pi[1]]], [inx / il, 1, inz / il], tileC, s, Surf.Tile, 0, 0,
           [[0, il, L, il], [L, il, L, il], [L, 0, L, il], [0, 0, L, il]]);
+        if (dress.atrium) {
+          // The room under it: the slope's boarded underside, the tile ends
+          // and a spout over the opening; the walls stand at the band's edge.
+          roomQuad([[p[0], hi, p[1]], [q[0], hi, q[1]], [qi[0], lo, qi[1]], [pi[0], lo, pi[1]]], [-inx / il, -1, -inz / il], [0.36, 0.24, 0.14], s, Surf.Ceiling, dress.atrium.rich ? CeilingKind.Coffers : CeilingKind.Joists);
+          const Li = Math.hypot(qi[0] - pi[0], qi[1] - pi[1]);
+          poly(S, [[pi[0], lo, pi[1]], [qi[0], lo, qi[1]], [qi[0], lo - 0.14, qi[1]], [pi[0], lo - 0.14, pi[1]]], [inx / il, 0, inz / il], tileC, s, Surf.Tile, 0, 0,
+            [[0, 0.14, Li, 0.14], [Li, 0.14, Li, 0.14], [Li, 0, Li, 0.14], [0, 0, Li, 0.14]]);
+          if (dress.atrium.rich) spout(S, (pi[0] + qi[0]) / 2, lo - 0.08, (pi[1] + qi[1]) / 2, inx / il, inz / il, [tileC[0] * 1.05, tileC[1] * 1.1, tileC[2] * 1.1], s);
+          continue;
+        }
         // The light well: the atrium's walls seen through the opening.
         const wl = Math.hypot(qi[0] - pi[0], qi[1] - pi[1]);
         // The light well: the atrium's walls seen through the opening, in one
@@ -2024,11 +2306,70 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           wall(pi[0], pi[1], qi[0], qi[1], g, g, lo, lo, -inx / il, -inz / il, ART_WORKS[sch].ground, s, Surf.Art, sch, 1, 0, wl, g, lo - g);
         } else wall(pi[0], pi[1], qi[0], qi[1], g, g, lo, lo, -inx / il, -inz / il, [0.55, 0.12, 0.08], s, Surf.Fresco, 0, 0, 0, wl, g, lo - g);
       }
-      poly(S, inner.map((p): V3 => [p[0], g + 0.02, p[1]]), [0, 1, 0], [0.55, 0.38, 0.3], s, Surf.Pavement, 0, 0, inner.map((p) => [p[0], p[1], 0, 0]));
-      lampSites.courts.push({ ring: inner.flat(), g, garden: false });
-      const pool = inner.map((p): V3 => [mx + (p[0] - mx) * 0.6, g + 0.06, mz + (p[1] - mz) * 0.6]);
-      const op = impluvium(pool, mx, mz, g, lo, Math.sqrt(Math.abs(ringArea(inner.flat())) / Math.PI));
+      const fk = hash(s * 1e6, 72) < 0.25 ? FloorKind.BlackField : hash(s * 1e6, 72) < 0.6 ? FloorKind.SigninumNet : FloorKind.SigninumMeander;
+      if (!dress.atrium) {
+        roomQuad(inner.map((p): V3 => [p[0], g + 0.02, p[1]]), [0, 1, 0], [0.55, 0.38, 0.3], s, Surf.Floor, fk);
+        lampSites.courts.push({ ring: inner.flat(), g, garden: false });
+        const pool = inner.map((p): V3 => [mx + (p[0] - mx) * 0.6, g + 0.06, mz + (p[1] - mz) * 0.6]);
+        const op = impluvium(pool, mx, mz, g, lo, Math.sqrt(Math.abs(ringArea(inner.flat())) / Math.PI));
+        poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], s, Surf.Water, op[0], op[1], pool.map((p) => [p[0], p[2], mx, mz]));
+        return;
+      }
+      // The atrium as a room: painted walls a wall's thickness in from the
+      // band's edge, up to the roof's underside, with the fauces door and the
+      // tablinum's opening cut in them; the floor over the whole of it; the
+      // pool under the opening; the puteal and the table at its head.
+      const at = dress.atrium;
+      const T = 0.25;
+      const room = outer.map((p, i): [number, number] => {
+        const nx1 = outer[(i + 1) % 4], pv = outer[(i + 3) % 4];
+        const l1 = Math.hypot(nx1[0] - p[0], nx1[1] - p[1]) || 1, l2 = Math.hypot(pv[0] - p[0], pv[1] - p[1]) || 1;
+        return [p[0] + ((nx1[0] - p[0]) / l1 + (pv[0] - p[0]) / l2) * T, p[1] + ((nx1[1] - p[1]) / l1 + (pv[1] - p[1]) / l2) * T];
+      });
+      const gf = floorOver(g, room);
+      const yTop = hi - T * TAN_PITCH;
+      const code = 1 + Math.floor(hash(s * 1e6, 85) * 199);
+      const sch = art && hash(s * 1e6, 86) < 0.35 ? ATRIUM_SCHEMES[Math.floor(hash(s * 1e6, 61) * ATRIUM_SCHEMES.length)] : -1;
+      // Room corners: 0 front-left (a), 1 front-right (b), 2 back-right (c), 3 back-left (d).
+      const side = (i: number, j: number, gap: [number, number] | null, gh: number): void => {
+        const p = room[i], q = room[j];
+        const L = Math.hypot(q[0] - p[0], q[1] - p[1]);
+        const fx = mx - (p[0] + q[0]) / 2, fz = mz - (p[1] + q[1]) / 2, fn = Math.hypot(fx, fz) || 1;
+        const piece = (t0: number, t1: number, y0: number): void => {
+          if (t1 - t0 < 0.02) return;
+          const x0 = p[0] + ((q[0] - p[0]) * t0) / L, z0 = p[1] + ((q[1] - p[1]) * t0) / L, x1 = p[0] + ((q[0] - p[0]) * t1) / L, z1 = p[1] + ((q[1] - p[1]) * t1) / L;
+          if (sch >= 0) wall(x0, z0, x1, z1, y0, y0, yTop, yTop, fx / fn, fz / fn, ART_WORKS[sch].ground, s, Surf.Art, sch, 1, t0, L, gf, yTop - gf);
+          else wall(x0, z0, x1, z1, y0, y0, yTop, yTop, fx / fn, fz / fn, [0.55, 0.12, 0.08], s, Surf.Fresco, code, 0, t0, L, gf, yTop - gf);
+        };
+        if (!gap) { piece(0, L, gf - 0.1); return; }
+        const g0 = Math.max(0, gap[0] - T), g1 = Math.min(L, gap[1] - T);
+        piece(0, g0, gf - 0.1); piece(g0, g1, gf + gh); piece(g1, L, gf - 0.1);
+      };
+      side(0, 1, at.door, 3.4);
+      side(1, 2, null, 0);
+      // The back runs d to c here, as dress.atrium.tablinum is measured.
+      side(3, 2, at.tablinum, Math.min(yTop - gf - 0.3, 4.2));
+      side(3, 0, null, 0);
+      roomQuad(room.map((p): V3 => [p[0], gf, p[1]]), [0, 1, 0], [0.55, 0.38, 0.3], s, Surf.Floor, at.rich ? FloorKind.BlackWhite : fk);
+      lampSites.courts.push({ ring: inner.flat(), g: gf, garden: false });
+      const pool = inner.map((p): V3 => [mx + (p[0] - mx) * 0.85, gf + 0.04, mz + (p[1] - mz) * 0.85]);
+      const op = impluvium(pool, mx, mz, gf, lo, Math.sqrt(Math.abs(ringArea(inner.flat())) / Math.PI));
       poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], s, Surf.Water, op[0], op[1], pool.map((p) => [p[0], p[2], mx, mz]));
+      // The furniture: toward the back of the room (ox, oz is out to the street).
+      let hd = 0, hw = 0;
+      const ux = fx, uz = fz;
+      for (const p of pool) { hd = Math.max(hd, -((p[0] - mx) * ox + (p[2] - mz) * oz)); hw = Math.max(hw, (p[0] - mx) * ux + (p[2] - mz) * uz); }
+      const inRoom = (x: number, z: number, r: number): boolean => pointInRing(room.flat(), x, z) && distToRing(room.flat(), x, z) > r;
+      const tx = mx - ox * (hd + 0.75), tz = mz - oz * (hd + 0.75);
+      if (hash(s * 1e6, 87) < 0.35 && inRoom(tx, tz, 0.45)) cartibulum(S, tx, gf, tz, Math.atan2(-uz, ux), s);
+      const px = mx + ux * (hw + 0.55), pz = mz + uz * (hw + 0.55);
+      if (hash(s * 1e6, 88) < 0.45 && inRoom(px, pz, 0.4)) puteal(S, px, gf, pz, s);
+      if (hash(s * 1e6, 89) < 0.4) {
+        // The lararium against the left wall, two thirds of the way back.
+        const p = room[0], q = room[3];
+        const lx = p[0] + (q[0] - p[0]) * 0.66 + ux * 0.02, lz = p[1] + (q[1] - p[1]) * 0.66 + uz * 0.02;
+        lararium(S, lx, gf, lz, Math.atan2(ux, uz), s);
+      }
     }
   }
 
@@ -2082,6 +2423,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const insideOk = data.insulae.some((ins) => pointInRing(ins.ring, mx, mz));
     if (!insideOk) return;
     const W = 2.6, colH = 3.4;
+    // The walk and its roof stay inside the block, off its edge and off a
+    // surveyed house: a lot whose back is near another street (a corner, a
+    // shallow block) put its colonnade out on that street's pavement.
+    const keep = (x: number, z: number): boolean => { const ins = insAt(x, z); return !!ins && distToRing(ins.ring, x, z) > 1.2 && !houseAt(x, z); };
+    if (!opts.probePorticoOut) for (const p of [d, c]) if (!keep(p[0] + ox * (W + 0.4), p[1] + oz * (W + 0.4)) || !keep(p[0] + ox * 6, p[1] + oz * 6)) return;
     const tx = (c[0] - d[0]) / L, tz = (c[1] - d[1]) / L;
     const n = Math.max(2, Math.round(L / 2.8));
     for (let i = 0; i <= n; i++) {
@@ -2109,6 +2455,12 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     balcony?: boolean;
     /** How far in from a point on the front, along (ix, iz), the building goes: how deep a room behind an opening can be. */
     room?: (x: number, z: number, ix: number, iz: number) => number;
+    /** A doorway through a band's plain front wall: metres from a along a..b, and its height (the atrium's fauces, the tablinum). */
+    gapFront?: [number, number, number];
+    /** The same through its back wall, metres from d along d..c. */
+    gapBack?: [number, number, number];
+    /** An atrium band built as a room (the full build): its door from the fauces and the tablinum's opening, metres from a and d. */
+    atrium?: { door: [number, number]; tablinum: [number, number] | null; rich: boolean };
   }
 
   /**
@@ -3089,6 +3441,92 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     }
   }
 
+  // --- the unbuilt frontage: plot walls ---
+  // Ground a block's lots leave open at its street edge was a walled garden,
+  // a vegetable plot or a vineyard (the Foro Boario inside the walls is
+  // one): a plastered wall along the street, a wooden gate in a long one,
+  // and where the kerb runs on the building line and the street has a
+  // pavement elsewhere, the wall stands back by that pavement's width with
+  // the strip in front paved. The ground behind is the block slab's own
+  // (the shader's plots, Garden p1 255). The full build's; the phone keeps
+  // the plots' ground alone.
+  if (!lean && !grey && !opts.probeNoPlotWalls) {
+    const CELL = 10;
+    const sgrid = new Map<number, number[]>();
+    const sb = solids.map((s) => {
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (let i = 0; i < s.ring.length; i += 2) { x0 = Math.min(x0, s.ring[i]); x1 = Math.max(x1, s.ring[i]); z0 = Math.min(z0, s.ring[i + 1]); z1 = Math.max(z1, s.ring[i + 1]); }
+      return [x0, x1, z0, z1];
+    });
+    sb.forEach((b, k) => {
+      if (b[1] - b[0] > 400 || b[3] - b[2] > 400) return;
+      for (let i = Math.floor(b[0] / CELL); i <= Math.floor(b[1] / CELL); i++) for (let j = Math.floor(b[2] / CELL); j <= Math.floor(b[3] / CELL); j++) {
+        const key = i * 100003 + j;
+        (sgrid.get(key) ?? sgrid.set(key, []).get(key)!).push(k);
+      }
+    });
+    const built = (x: number, z: number): boolean =>
+      (sgrid.get(Math.floor(x / CELL) * 100003 + Math.floor(z / CELL)) ?? []).some((k) => x >= sb[k][0] && x <= sb[k][1] && z >= sb[k][2] && z <= sb[k][3] && pointInRing(solids[k].ring, x, z))
+      || publicRings.some((pr) => pointInRing(pr, x, z));
+    const wallC: RGB = [0.84, 0.78, 0.66];
+    const newSolids: Solid[] = [];
+    for (let ii = 0; ii < data.insulae.length; ii++) {
+      const ins = data.insulae[ii];
+      if (ins.garden) continue;
+      const r = ins.ring, n = r.length / 2;
+      for (let i = 0; i < n; i++) {
+        const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
+        const L = Math.hypot(bx - ax, bz - az);
+        if (L < 3) continue;
+        const ex = (bx - ax) / L, ez = (bz - az) / L;
+        let nx = -ez, nz = ex;
+        if (!pointInRing(r, (ax + bx) / 2 + nx * 0.5, (az + bz) / 2 + nz * 0.5)) { nx = -nx; nz = -nz; }
+        // Unbuilt metre by metre, one metre in from the line.
+        const free: boolean[] = [];
+        for (let t = 0.5; t < L; t += 1) {
+          const x = ax + ex * t + nx, z = az + ez * t + nz;
+          free.push(pointInRing(r, x, z) && !built(x, z) && !built(x + nx * 2, z + nz * 2));
+        }
+        for (let k = 0; k < free.length;) {
+          if (!free[k]) { k++; continue; }
+          let k1 = k;
+          while (k1 < free.length && free[k1]) k1++;
+          const t0 = Math.max(0, k - 0.1), t1 = Math.min(L, k1 + 0.1);
+          k = k1;
+          if (t1 - t0 < 3) continue;
+          const mxp = ax + ex * (t0 + t1) / 2, mzp = az + ez * (t0 + t1) / 2;
+          let sw = 0, sd = Infinity;
+          for (const s of data.streets) { const dd = distToPolyline(s.pts, mxp, mzp); if (dd < sd) { sd = dd; sw = s.sidewalkM; } }
+          const onKerb = distToRing(ins.kerb, mxp, mzp) < 0.15;
+          const back = onKerb && sw >= 0.8 ? Math.min(sw, 2.4) : 0;
+          const T = 0.3, Hw = 2.1;
+          const P = (t: number, v: number): [number, number] => [ax + ex * t + nx * v, az + ez * t + nz * v];
+          const [x0, z0] = P(t0, back), [x1, z1] = P(t1, back), [x2, z2] = P(t1, back + T), [x3, z3] = P(t0, back + T);
+          const y0 = slabTop(ins, x0, z0) - 0.12, y1 = slabTop(ins, x1, z1) - 0.12;
+          const len = t1 - t0, sd2 = hash(ii, i * 131 + k, 17);
+          wall(x0, z0, x1, z1, y0, y1, y0 + Hw + 0.12, y1 + Hw + 0.12, -nx, -nz, wallC, sd2, Surf.Plaster, Math.round(0.6 * 40), 0, 0, len, y0 + 0.12, Hw);
+          wall(x2, z2, x3, z3, y1, y0, y1 + Hw + 0.12, y0 + Hw + 0.12, nx, nz, wallC, sd2, Surf.Plaster, 0, 255, 0, len, y0 + 0.12, Hw);
+          poly(S, [[x0, y0 + Hw + 0.12, z0], [x1, y1 + Hw + 0.12, z1], [x2, y1 + Hw + 0.12, z2], [x3, y0 + Hw + 0.12, z3]], [0, 1, 0], [0.7, 0.62, 0.52], sd2, Surf.Kerb, 0, 0, uv4());
+          if (len > 8) {
+            // A plank gate in the middle, a hand proud of the plaster.
+            const tm = (t0 + t1) / 2;
+            const [g0x, g0z] = P(tm - 0.8, back - 0.02), [g1x, g1z] = P(tm + 0.8, back - 0.02);
+            const yg = slabTop(ins, g0x, g0z) - 0.02;
+            wall(g0x, g0z, g1x, g1z, yg, yg, yg + 1.9, yg + 1.9, -nx, -nz, [0.4, 0.27, 0.15], sd2, Surf.Wood, 0, 0, 0, 1.6, yg, 1.9);
+          }
+          if (back > 0) {
+            // The pavement in front of it, a hand over the block's ground.
+            const pts: V3[] = [P(t0, 0), P(t1, 0), P(t1, back), P(t0, back)].map((p): V3 => [p[0], slabTop(ins, p[0], p[1]) + 0.03, p[1]]);
+            poly(S, pts, [0, 1, 0], [0.43, 0.35, 0.26], sd2, Surf.Pavement, 0, 0, pts.map((p) => [p[0], p[2], 0, 0]));
+          }
+          stats.plotWallM += len;
+          newSolids.push({ ring: [x0, z0, x1, z1, x2, z2, x3, z3], baseY: Math.min(y0, y1), topY: Math.max(y0, y1) + Hw + 0.12 });
+        }
+      }
+    }
+    solids.push(...newSolids);
+  }
+
   // --- shop counters, and the thermopolia's ---
   // Each mapped thermopolium claims the nearest counter within 12 m. Every
   // counter is an L of masonry standing on the shop floor behind the sill:
@@ -3275,6 +3713,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   return {
     orders,
     art: artPlaced,
+    interiors,
     sites: siteInfo,
     mesh: pack(S),
     floor: pack(F),

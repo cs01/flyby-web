@@ -22,6 +22,7 @@ import { ERUPTION_SURFACE_GLSL, ERUPTION_VERT_GLSL, ROOF_COLLAPSE_FRAG_GLSL, ROO
 import { TOWN_LAMPS_GLSL, townLampUniforms, type TownLampUniforms } from "./oillight";
 import { AMPHI, Store, buildPompeii, type ColumnInstance, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
 import { Order, columnTemplate } from "./pompeiiorders";
+import { INTERIOR_GLSL } from "./pompeiiinterior";
 import { ART_WORKS, type ArtAtlas } from "../data/pompeiiart";
 import { HORSE_BONES, STRIDE_M, buildHorse, poseHorse, type Gait, type HorseMesh } from "./horse";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
@@ -288,7 +289,7 @@ vec3 mosaicFigure(vec2 p, bool robed, bool armUp) {
   float d = robed ? min(body, robe) : body;
   return vec3(step(robe, 0.0), step(mantle, 0.0), d);
 }
-
+${INTERIOR_GLSL}
 void main() {
   if (uRoomCutB.w > 0.5) {
     vec2 rd = vWorld.xz - uRoomCutA.xy;
@@ -694,10 +695,23 @@ void main() {
     }
     gloss = 0.1;
   } else if (style < 5.5) {
+    if (p1 > 0.5) {
+      // A peristyle (INTERIOR_GLSL gardenPaint): vWall.xy metres from the
+      // court's corner, zw its size, p1 the colonnade's depth in decimetres,
+      // the walk under it floored in p2 - 1 (a FloorKind).
+      float isWalk;
+      albedo = gardenPaint(vWall.xy, vWall.zw, p1 * 0.1, seed, vViewDist, isWalk);
+      if (isWalk > 0.5) {
+        float fg;
+        albedo = floorPaint(vWall.xy, vWall.zw, max(0.0, p2 - 1.0), seed, vViewDist, fg);
+        gloss = fg;
+      }
+    } else {
     // Garden: clipped green and bare earth.
     float g = fbm(vWorld.xz * 0.35);
     albedo = mix(vec3(0.38, 0.3, 0.2), albedo, smoothstep(0.35, 0.6, g));
     albedo *= 0.85 + 0.3 * vnoise(vWorld.xz * 2.5);
+    }
   } else if (style < 6.5) {
     // Inside a shop or a doorway, lit from the opening: the light falls off
     // with depth. A reveal's u runs inward on one side and outward on the
@@ -839,17 +853,22 @@ void main() {
     float fres = 0.02 + 0.98 * pow(1.0 - max(0.0, dot(wn, v)), 5.0);
     vec3 r = reflect(-v, wn);
     vec3 sky = shIrradiance(r) * 0.35;
-    if (p2 > 0.5 && r.y > 0.0) {
-      vec2 hit = vWorld.xz + r.xz * (p1 * 0.1) / r.y;
-      float open = 1.0 - smoothstep(p2 * 0.085, p2 * 0.1, length(hit - vWall.zw));
-      vec3 eaves = vec3(0.3, 0.17, 0.1) * occludedSkyIrradiance(vec3(0.0, -1.0, 0.0)) * 0.6;
-      sky = mix(eaves, sky, open);
-    }
     vec3 sunE = uSunColor * uSunIntensity * uSunSurface * sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
     float sv = sunVisibility(vWorld, vec3(0.0, 1.0, 0.0), uSunDir, vViewDist);
-    // The pool's floor through a hand's depth of water: tiles or signinum, lit.
-    vec3 floorLit = vec3(0.42, 0.34, 0.28) * (occludedSkyIrradiance(vec3(0.0, 1.0, 0.0)) + sunE * max(0.0, uSunDir.y) * sv + townLamps(vWorld, vec3(0.0, 1.0, 0.0)));
-    vec3 col = mix(floorLit * vec3(0.22, 0.3, 0.31), sky, fres);
+    if (p2 > 0.5 && r.y > 0.0) {
+      // The sky through the compluvium; a ray leaving past its edge sees the
+      // painted atrium walls and the roof's underside, lit by the court:
+      // warm, about as bright as the walls look from where the eye is.
+      vec2 hit = vWorld.xz + r.xz * (p1 * 0.1) / r.y;
+      float open = 1.0 - smoothstep(p2 * 0.085, p2 * 0.1, length(hit - vWall.zw));
+      vec3 walls = vec3(0.42, 0.24, 0.15) * (shIrradiance(vec3(-r.x, 0.0, -r.z)) * 0.5 + sunE * max(0.0, uSunDir.y) * 0.12 + townLamps(vWorld, vec3(0.0, 1.0, 0.0)));
+      sky = mix(walls * 0.32, sky * 1.6, open);
+    }
+    // The pool's floor through a hand's depth of water: marble or signinum, lit.
+    vec3 floorLit = vec3(0.6, 0.56, 0.5) * (occludedSkyIrradiance(vec3(0.0, 1.0, 0.0)) + sunE * max(0.0, uSunDir.y) * sv + townLamps(vWorld, vec3(0.0, 1.0, 0.0)));
+    // Caustics: the ripples focus the sun into a moving net on the floor.
+    float caus = pow(1.0 - abs(vnoise(q * 4.1 + 5.0) - vnoise(q * 4.1 + vec2(3.3, 1.1))), 10.0) * sv * (1.0 - smoothstep(8.0, 25.0, vViewDist));
+    vec3 col = mix(floorLit * vec3(0.4, 0.5, 0.5) * (1.0 + 0.35 * caus), sky, fres);
     col += sunE * pow(max(0.0, dot(wn, normalize(uSunDir + v))), 300.0) * 2.0 * sv;
     col += townLampSpec(vWorld, wn, v) * 0.5;
     if (p1 > 0.5 && p2 < 0.5) {
@@ -961,15 +980,12 @@ void main() {
     ao *= 1.0 - 0.3 * joint;
     gloss = 0.2 * (1.0 - joint);
   } else if (style < 12.5) {
-    // Fresco: black dado, red panels framed in yellow, a white frieze.
-    vec3 c = albedo;
-    float pw = 2.6;
-    float px = fract(u / pw);
-    if (h < 0.9) c = vec3(0.07, 0.06, 0.06);
-    else if (h > H - 0.6) c = vec3(0.85, 0.82, 0.74);
-    else if (px < 0.04 || px > 0.96 || abs(h - 0.95) < 0.05) c = vec3(0.75, 0.6, 0.25);
-    else if (h21(vec2(floor(u / pw), seed * 3.0)) > 0.6) c = vec3(0.06, 0.06, 0.06);
-    albedo = c;
+    // Fresco: a Third or Fourth Style room (INTERIOR_GLSL paintedWall); p1
+    // the scheme, 0 to take it from the house's seed.
+    float pao;
+    albedo = paintedWall(u, h, len, H, seed, p1, vViewDist, pao);
+    ao *= pao;
+    gloss = 0.12;
   } else if (style < 13.5) {
     // Opus signinum and beaten earth: warm, packed with crushed tile, lava
     // chips and limestone pebbles, white tesserae here and there.
@@ -1043,9 +1059,14 @@ void main() {
     // court walls, not as dark as a shop's back room.
     if (mode > 1.5) covered = 0.4;
   } else if (style < 17.5) {
-    // Bronze (17, render/pompeiilamps.ts): the lamp fittings, mottled like cast metal.
+    // Bronze (17, render/pompeiilamps.ts, the statues): mottled like cast
+    // metal, green verdigris gathered where the rain and handling did not
+    // reach (faces turned down and away), a polished sheen on the rest.
     albedo *= 0.9 + 0.15 * vnoise(vWorld.xz * 5.0 + vWorld.y * 3.0);
-    gloss = 0.6;
+    float nearB = 1.0 - smoothstep(4.0, 20.0, vViewDist);
+    float hollow = smoothstep(0.1, -0.5, n.y) * 0.6 + smoothstep(0.55, 0.75, vnoise(vWorld.xz * 31.0 + vWorld.y * 47.0)) * 0.5;
+    albedo = mix(albedo, vec3(0.16, 0.27, 0.2), clamp(hollow, 0.0, 1.0) * 0.55 * nearB);
+    gloss = 0.75 - 0.4 * clamp(hollow, 0.0, 1.0) * nearB;
   } else if (style > 19.5 && style < 20.5) {
     // A bath's rooms (render/pompeiiwater.ts): p1 the finish, p2 how much
     // of the sky the room keeps out (0..255). u, h the wall's own metres.
@@ -1219,6 +1240,19 @@ void main() {
     vec3 infill = mix(plaster, rubble, flaked);
     vec3 wood = vec3(0.2, 0.13, 0.08) * (0.8 + 0.3 * vnoise(vec2(u * 3.0, h * 30.0)));
     albedo = mix(infill, wood, timber);
+  } else if (style > 17.5 && style < 18.5) {
+    // A ceiling (INTERIOR_GLSL ceilingPaint): vWall.xy metres along its two
+    // axes, p1 the design. Under a roof: lit from the room below it.
+    float cao;
+    albedo = ceilingPaint(vWall.xy, p1, seed, vViewDist, cao);
+    ao *= cao;
+    covered = 0.5;
+  } else if (style > 23.5 && style < 24.5) {
+    // A room's floor (INTERIOR_GLSL floorPaint): vWall.xy metres from its
+    // corner, vWall.zw its size, p1 the design.
+    float fg;
+    albedo = floorPaint(vWall.xy, vWall.zw, p1, seed, vViewDist, fg);
+    gloss = fg;
   }
 
 #ifdef ROOF_COLLAPSE
@@ -1283,6 +1317,10 @@ void main() {
   lit += sunE * pow(max(0.0, dot(n, hh)), mix(8.0, 60.0, gloss)) * gloss * 0.25 * ndl * sunVis;
   lit += albedo * (eruptionLamps(vWorld, n) + townLamps(vWorld, n));
   if (style > 16.5 && style < 21.5) lit += townLampSpec(vWorld, n, v);
+  if (style > 16.5 && style < 17.5) {
+    // A metal's highlight and reflection take its own colour.
+    lit += albedo * (sunE * pow(max(0.0, dot(n, hh)), 40.0) * 2.5 * ndl * sunVis + occludedSkyIrradiance(reflect(-v, n)) * 0.6) * gloss;
+  }
 
   vec3 ro = atmoOrigin(uCamAltitude);
   vec3 rd = normalize(vWorld - uCameraPos);
