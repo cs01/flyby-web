@@ -19,6 +19,7 @@ import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeStreetLampUniforms, type StreetLampUniforms } from "./streetlamps";
 import { ERUPTION_SURFACE_GLSL, ERUPTION_VERT_GLSL, eruptionSurfaceUniforms, type EruptionSurfaceUniforms } from "./eruption";
+import { TOWN_LAMPS_GLSL, townLampUniforms, type TownLampUniforms } from "./oillight";
 import { AMPHI, buildPompeii, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
 import { PompeiiLife } from "../data/pompeiilife";
@@ -152,6 +153,7 @@ ${SUN_SHADOW_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
 ${ERUPTION_SURFACE_GLSL}
+${TOWN_LAMPS_GLSL}
 
 uniform vec3  uCameraPos;
 uniform float uSunSurface;
@@ -432,8 +434,9 @@ void main() {
     albedo *= 0.85 + 0.25 * fbm(vWorld.xz * 0.8);
     albedo = mix(albedo, albedo * 1.35, 0.6 * step(0.985, h21(floor(vWorld.xz * 22.0))));
   } else {
-    // Hide: the horse.
+    // Hide: the horse. Bronze (15, render/pompeiilamps.ts) shares the mottling.
     albedo *= 0.9 + 0.15 * vnoise(vWorld.xz * 5.0 + vWorld.y * 3.0);
+    if (style > 14.5) gloss = 0.6;
   }
 
   n = ashFlatten(n, normalize(vNormal));
@@ -442,7 +445,9 @@ void main() {
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
   vec3 sunE = uSunColor * uSunIntensity * uSunSurface * sunT;
   float sunVis = sunVisibility(vWorld, n, uSunDir, vViewDist);
-  vec3 ambient = occludedSkyIrradiance(n);
+  // Under the lamps the night sky is starlight and airglow only: no town of
+  // thousands of electric lights round it, so the street between pools goes dark.
+  vec3 ambient = occludedSkyIrradiance(n) * (1.0 - 0.55 * uLampNight * uNight);
   vec3 moon = uMoonLight * uSunSurface * max(0.0, dot(n, uMoonDir));
   // Sunlit paving and plaster throw a lot of light into a narrow street:
   // onto the walls from the paving, and back down onto shaded ground from
@@ -452,12 +457,14 @@ void main() {
   vec3 bounce = sunE * max(0.0, uSunDir.y) * (0.15 * (1.0 - n.y) + 0.07 * max(0.0, n.y));
   float inside = 1.0 - covered * 0.7;
   vec3 lit = albedo * ((sunE * ndl * sunVis) * (1.0 - covered * 0.85) + (ambient + bounce) * inside + moon);
-  // Lamps and hearths inside at night.
-  lit += albedo * uNightGlow * uNight * 0.3;
-  if (covered > 0.5) lit += albedo * vec3(1.0, 0.6, 0.3) * 0.6 * uNight;
+  // Lamps and hearths inside at night. Stand-ins for the oil lamps, which
+  // replace them while render/pompeiilamps.ts runs (uLampNight 1).
+  lit += albedo * uNightGlow * uNight * 0.3 * (1.0 - uLampNight);
+  if (covered > 0.5) lit += albedo * vec3(1.0, 0.6, 0.3) * 0.6 * uNight * (1.0 - uLampNight);
   vec3 hh = normalize(uSunDir + v);
   lit += sunE * pow(max(0.0, dot(n, hh)), mix(8.0, 60.0, gloss)) * gloss * 0.25 * ndl * sunVis;
-  lit += albedo * eruptionLamps(vWorld, n);
+  lit += albedo * (eruptionLamps(vWorld, n) + townLamps(vWorld, n));
+  if (style > 14.5) lit += townLampSpec(vWorld, n, v);
 
   vec3 ro = atmoOrigin(uCamAltitude);
   vec3 rd = normalize(vWorld - uCameraPos);
@@ -467,7 +474,10 @@ void main() {
 }
 `;
 
-export type PompeiiUniforms = StreetLampUniforms & EruptionSurfaceUniforms;
+/** The town's fragment shader, for the lamp fittings drawn with their own instanced vertex stage. */
+export const POMPEII_FRAG = FRAG;
+
+export type PompeiiUniforms = StreetLampUniforms & EruptionSurfaceUniforms & TownLampUniforms;
 
 function geometry(m: PompeiiMeshData): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
@@ -524,7 +534,7 @@ export class Pompeii {
     // it is applied rather than assumed so a moved City entry cannot shift the
     // town off its streets silently.
     this.model = buildPompeii({ data, groundAt: (x, z) => opts.heightAt(x + opts.offsetX, z + opts.offsetZ), lean: opts.lean });
-    this.uniforms = { ...makeStreetLampUniforms(opts.shadow), ...eruptionSurfaceUniforms };
+    this.uniforms = { ...makeStreetLampUniforms(opts.shadow), ...eruptionSurfaceUniforms, ...townLampUniforms };
     const town = new THREE.Mesh(geometry(this.model.mesh), pompeiiMaterial(this.uniforms));
     town.name = "pompeii-town";
     town.layers.enable(SHADOW_CASTER_LAYER);

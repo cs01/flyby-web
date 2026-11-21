@@ -41,6 +41,7 @@ import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, Townsfolk, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
+import { PompeiiLamps } from "./render/pompeiilamps";
 import { EscapeUi } from "./app/escape";
 import { roomLight } from "./render/escaperoom";
 import { localHours, walkPace } from "./sim/eruption";
@@ -544,6 +545,8 @@ async function main() {
   let pompeii: Pompeii | null = null;
   let townsfolk: Townsfolk | null = null;
   let cart: Cart | null = null;
+  let pompeiiLamps: PompeiiLamps | null = null;
+  let pompeiiOff = { x: 0, z: 0 };
   let eruptView: EruptionView | null = null;
   let flee: Flee | null = null;
   // Set by the escape (app/escape.ts): the room it starts in, and the ground under no pumice.
@@ -581,6 +584,15 @@ async function main() {
       scene.add(townsfolk.group);
     }
     scene.add(cart.group);
+    // The town by lamplight at night (render/pompeiilamps.ts); `?off=pompeiilamps`.
+    pompeiiOff = off;
+    if (!perfOff.has("pompeiilamps")) {
+      pompeiiLamps = new PompeiiLamps({
+        data: pompeiiData, sites: pompeii.model.sites, uniforms: pompeii.uniforms, groundAt: terrain.heightAt,
+        offX: off.x, offZ: off.z, lean: budget.pompeii.lean,
+      });
+      scene.add(pompeiiLamps.group);
+    }
     // The eruption: `?eruption=1` starts with it following the clock,
     // `?off=eruption` leaves the town as it was the day before.
     if (!perfOff.has("eruption")) {
@@ -2425,6 +2437,14 @@ async function main() {
     roomLight.value.copy(light.ambient).multiplyScalar(1.5).addScalar(light.sunIntensity * 0.105 * 0.04);
 
     renderer.getDrawingBufferSize(drawSize);
+    if (pompeiiLamps) {
+      prof.cpuBegin("pompeiilamps");
+      const people = townsfolk && townsfolk.group.visible
+        ? townsfolk.sim.people.map((p) => ({ x: p.x + pompeiiOff.x, z: p.z + pompeiiOff.z, heading: p.heading }))
+        : undefined;
+      pompeiiLamps.update({ hour: localHours(now.getTime()), night: light.night, t: elapsed, camera, viewH: drawSize.y, people, groundAt: terrain.heightAt });
+      prof.cpuEnd("pompeiilamps");
+    }
     prof.cpuBegin("airtraffic");
     airTraffic.update(camera, drawSize.y, dt, light.night, layers.traffic && !era, droneActive ? drone.position : carActive ? undefined : ac.position);
     prof.cpuEnd("airtraffic");
@@ -3352,7 +3372,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean, pompeii,
+      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean, pompeii, pompeiiLamps, origin,
       get droneActive() { return droneActive; },
       get carActive() { return carActive; },
       get wx() { return wx; },
