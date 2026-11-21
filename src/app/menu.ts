@@ -291,6 +291,29 @@ export function showMenu(onPick: (city: City) => void, onHere: (lat: number, lon
     gridFor.set(key, sec.querySelector(".grid") as HTMLElement);
   }
 
+  // The eruption as a story (app/escape.ts): two ways into the same day.
+  {
+    const sec = document.createElement("section");
+    sec.className = "menu-section";
+    sec.innerHTML = `<h2>Escape Pompeii, 79 AD</h2><div class="grid"></div>`;
+    sections.append(sec);
+    const grid = sec.querySelector(".grid") as HTMLElement;
+    for (const [id, name, where] of [["bakery", "The bakery", "Bakery of Modestus, VII.1.36"], ["lupanar", "The Lupanar", "Vicolo del Lupanare, VII.12.18"]]) {
+      const el = document.createElement("a");
+      el.className = "card";
+      const params = new URLSearchParams(location.search);
+      params.delete("at");
+      params.delete("spot");
+      params.set("city", "pompeii");
+      params.set("escape", id);
+      el.href = `?${params.toString()}`;
+      el.innerHTML = `
+        <div class="card-top"><span class="city">${name}</span></div>
+        <div class="card-bot"><span class="country">${where}</span></div>`;
+      grid.append(el);
+    }
+  }
+
   // Airports, last: a drone beside the runway in use with the real traffic
   // taxiing and taking off in front of it. Anchors for the same reason the
   // city cards are, and not part of `cards`, which the weather painter

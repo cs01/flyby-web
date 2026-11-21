@@ -17,7 +17,7 @@ import type { Machine } from "./modebar";
 const CONTROLS = [
   ".topbar", ".modebar", ".mission-btn", ".mission-card", ".touch-btn", ".throttle",
   ".minimap", ".osd", ".ride-hint", ".spot-btn", ".spot-radar", ".street-sign",
-  ".touch-home.move", ".intro-skip", ".landmark-flash",
+  ".touch-home.move", ".intro-skip", ".landmark-flash", ".escape-card",
 ];
 
 export class PhoneShell {
@@ -105,7 +105,7 @@ export class PhoneShell {
     // Short things first; the places list is forty rows and goes last.
     const back = q(".back");
     if (back) body.append(back);
-    for (const sel of [".hud-layers", ".hud-tr", ".hud-places"]) {
+    for (const sel of [".hud-eruption", ".hud-layers", ".hud-tr", ".hud-places"]) {
       const el = q(sel);
       if (!el) continue;
       // The phone sheet shows them open: a collapsed heading inside a sheet

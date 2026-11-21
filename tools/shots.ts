@@ -993,6 +993,48 @@ export const POSES: Pose[] = [
     wx: POMPEII_WX,
     what: "Roofs, atria and peristyles from 100 m",
   },
+  // The eruption (sim/eruption.ts, render/eruption.ts), on its own clock:
+  // local mean time is UTC + 0:58, so 13:02Z is 14:00 in the town.
+  {
+    // The forum toward the mountain an hour after the column rose.
+    name: "eruption-plume-forum",
+    city: "pompeii",
+    lat: 40.74888, lon: 14.48514, altM: 36.2, hdgDeg: 336, pitchDeg: 16,
+    t: D("0079-08-22T13:02:00Z"),
+    wx: POMPEII_WX,
+    what: "The column and umbrella from the Forum at 14:00",
+    query: "eruption=1&fov=70",
+  },
+  {
+    // Via dell'Abbondanza in the fall at 16:30: 40 cm down, lamp in hand.
+    name: "eruption-street-1630",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 34.0, hdgDeg: 58, pitchDeg: -4,
+    t: D("0079-08-22T15:32:00Z"),
+    wx: POMPEII_WX,
+    what: "A street in the pumice fall at 16:30, lamp-lit",
+    query: "eruption=1",
+  },
+  {
+    // Down a street at 18:00 as the roofs begin to fail round it.
+    name: "eruption-roofs-1800",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 34.4, hdgDeg: 58, pitchDeg: 2,
+    t: D("0079-08-22T17:01:02Z"), // a lightning flash, read off the eruption hour
+    wx: POMPEII_WX,
+    what: "Roofs giving way at 18:00",
+    query: "eruption=1",
+  },
+  {
+    // From the north wall by the Porta Vesuvio at dawn, the first surge 500 m off.
+    name: "eruption-surge-dawn",
+    city: "pompeii",
+    lat: 40.75323, lon: 14.48409, altM: 60, hdgDeg: 330, pitchDeg: 2,
+    t: D("0079-08-23T06:01:33Z"), // a flash in the surge, read off the eruption hour
+    wx: POMPEII_WX,
+    what: "The surge coming down on the town at dawn",
+    query: "eruption=1&fov=70",
+  },
   {
     // The same water from 300 m: the FFT sea seen as a texture rather than as
     // geometry, and the range where its tiling, its rim and its foam coverage

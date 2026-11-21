@@ -18,6 +18,7 @@ import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./
 import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeStreetLampUniforms, type StreetLampUniforms } from "./streetlamps";
+import { ERUPTION_SURFACE_GLSL, ERUPTION_VERT_GLSL, eruptionSurfaceUniforms, type EruptionSurfaceUniforms } from "./eruption";
 import { AMPHI, buildPompeii, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
 import { PompeiiLife } from "../data/pompeiilife";
@@ -111,6 +112,7 @@ uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec3 uCameraPos;
+${ERUPTION_VERT_GLSL}
 out vec3 vNormal;
 out vec3 vWorld;
 out vec4 vColour;
@@ -119,6 +121,10 @@ out vec4 vWall;
 out float vViewDist;
 void main() {
   vec4 w = modelMatrix * vec4(position, 1.0);
+#ifdef ASH_RISE
+  // The ground and streets rise on the pumice (render/eruption.ts).
+  w.y += uAsh.x;
+#endif
   vNormal = mat3(modelMatrix) * aNormal.xyz;
   vWorld = w.xyz;
   vColour = aColour;
@@ -145,6 +151,7 @@ ${ATMOSPHERE_GLSL}
 ${SUN_SHADOW_GLSL}
 ${SH_GLSL}
 ${AO_GLSL}
+${ERUPTION_SURFACE_GLSL}
 
 uniform vec3  uCameraPos;
 uniform float uSunSurface;
@@ -429,6 +436,8 @@ void main() {
     albedo *= 0.9 + 0.15 * vnoise(vWorld.xz * 5.0 + vWorld.y * 3.0);
   }
 
+  n = ashFlatten(n, normalize(vNormal));
+  albedo = ashCover(albedo, n, vWorld, covered);
   float ndl = max(0.0, dot(n, uSunDir));
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
   vec3 sunE = uSunColor * uSunIntensity * uSunSurface * sunT;
@@ -448,6 +457,7 @@ void main() {
   if (covered > 0.5) lit += albedo * vec3(1.0, 0.6, 0.3) * 0.6 * uNight;
   vec3 hh = normalize(uSunDir + v);
   lit += sunE * pow(max(0.0, dot(n, hh)), mix(8.0, 60.0, gloss)) * gloss * 0.25 * ndl * sunVis;
+  lit += albedo * eruptionLamps(vWorld, n);
 
   vec3 ro = atmoOrigin(uCamAltitude);
   vec3 rd = normalize(vWorld - uCameraPos);
@@ -457,7 +467,7 @@ void main() {
 }
 `;
 
-export type PompeiiUniforms = StreetLampUniforms;
+export type PompeiiUniforms = StreetLampUniforms & EruptionSurfaceUniforms;
 
 function geometry(m: PompeiiMeshData): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
@@ -477,6 +487,8 @@ export function pompeiiMaterial(uniforms: PompeiiUniforms, opts: { bias?: number
     vertexShader: VERT,
     fragmentShader: FRAG,
     uniforms,
+    // The biased meshes are the ground and the streets: the ones the pumice buries.
+    defines: bias !== 0 ? { ASH_RISE: 1 } : {},
     glslVersion: THREE.GLSL3,
     side: opts.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
     // The ground inside the walls lies on the terrain: a bias wins it the
@@ -512,7 +524,7 @@ export class Pompeii {
     // it is applied rather than assumed so a moved City entry cannot shift the
     // town off its streets silently.
     this.model = buildPompeii({ data, groundAt: (x, z) => opts.heightAt(x + opts.offsetX, z + opts.offsetZ), lean: opts.lean });
-    this.uniforms = makeStreetLampUniforms(opts.shadow);
+    this.uniforms = { ...makeStreetLampUniforms(opts.shadow), ...eruptionSurfaceUniforms };
     const town = new THREE.Mesh(geometry(this.model.mesh), pompeiiMaterial(this.uniforms));
     town.name = "pompeii-town";
     town.layers.enable(SHADOW_CASTER_LAYER);

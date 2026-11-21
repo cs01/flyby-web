@@ -40,6 +40,10 @@ import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, Townsfolk, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
+import { EruptionView, eruptionSurfaceUniforms } from "./render/eruption";
+import { EscapeUi } from "./app/escape";
+import { localHours } from "./sim/eruption";
+import { insideWalls, VESUVIUS } from "./render/pompeii";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
 import {
@@ -538,6 +542,7 @@ async function main() {
   let pompeii: Pompeii | null = null;
   let townsfolk: Townsfolk | null = null;
   let cart: Cart | null = null;
+  let eruptView: EruptionView | null = null;
   if (pompeiiData) {
     const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
     pompeii = new Pompeii({
@@ -548,6 +553,16 @@ async function main() {
     sunShadow.setCityCasters(pompeii.buildings);
     sunShadow.setSplits(POMPEII_SHADOW_SPLITS[0], POMPEII_SHADOW_SPLITS[1]);
     terrain.heightAt = pompeiiHeightAt(pompeiiData, terrain.heightAt, off.x, off.z);
+    // The pumice lies inside the walls as deep as the eruption has laid it;
+    // the town's floor and streets rise by the same lift (render/eruption.ts).
+    if (!perfOff.has("eruption")) {
+      const bare = terrain.heightAt, d = pompeiiData;
+      terrain.heightAt = (x, z) => {
+        const lift = eruptionSurfaceUniforms.uAsh.value.x;
+        const g = bare(x, z);
+        return lift > 0 && insideWalls(d, x - off.x, z - off.z) ? g + lift : g;
+      };
+    }
     cart = new Cart(pompeii.uniforms);
     cart.group.visible = false;
     if (!perfOff.has("pompeiilife")) {
@@ -555,6 +570,19 @@ async function main() {
       scene.add(townsfolk.group);
     }
     scene.add(cart.group);
+    // The eruption: `?eruption=1` starts with it following the clock,
+    // `?off=eruption` leaves the town as it was the day before.
+    if (!perfOff.has("eruption")) {
+      const v = origin.toWorld(VESUVIUS.lat, VESUVIUS.lon);
+      eruptView = new EruptionView({
+        vent: new THREE.Vector3(v.x, terrain.heightAt(v.x, v.z), v.z),
+        town: { x: off.x, z: off.z },
+        heightAt: (x, z) => terrain.heightAt(x, z),
+        reduced: budget.tier === "reduced",
+      });
+      eruptView.enabled = new URLSearchParams(location.search).has("eruption");
+      scene.add(eruptView.group);
+    }
     const s = pompeii.stats, m = pompeii.model.stats;
     console.log(
       `[flyby] pompeii: ${m.lots} lots (${m.domus} domus, ${m.tabernae} tabernae), ${pompeiiData.insulae.length} insulae, ` +
@@ -1491,6 +1519,7 @@ async function main() {
   });
   // A mission asked for from the air starts once the walker is on the ground.
   let missionPending = false;
+  let escapeStarted = false;
   const _missionDir = new THREE.Vector3();
   /**
    * Put the aircraft half a mile off a place, pointed at it.
@@ -1636,6 +1665,20 @@ async function main() {
       input.timelapse = on;
     },
   });
+  // The 79 AD switch and the escape mission (app/escape.ts). The walker is
+  // placed through a closure: the spawn search is defined further down.
+  let escapePlace: (x: number, z: number, fx: number, fz: number) => { x: number; z: number } | null = () => null;
+  const escape = eruptView && pompeiiData ? new EscapeUi({
+    ui, data: pompeiiData, view: eruptView, origin,
+    nowMs: () => now.getTime(),
+    advance: (sec) => { timebar.setOffset(timebar.offsetSeconds + sec); now = sceneNow(); },
+    placeOnFoot: (x, z, fx, fz) => escapePlace(x, z, fx, fz),
+    groundAt: (x, z) => terrain.heightAt(x, z),
+    toast: (t) => hud.toast(t),
+  }) : null;
+  const escapeWanted = new URLSearchParams(location.search).get("escape");
+  // For tools/phoneshots.ts: show an ending card without playing the night through.
+  if (escape) Object.assign(window as unknown as Record<string, unknown>, { flybyEscape: escape });
   // Every panel exists now; the phone moves the secondary ones into its sheets.
   phone?.adopt();
   input.onTimelapse = (on) => {
@@ -1733,6 +1776,16 @@ async function main() {
       sortByRange();
     }
   }
+  escapePlace = (x, z, fx, fz) => {
+    const at = findSpawn(x, z, false);
+    if (!at) return null;
+    const hdg = (Math.atan2(fx - at.x, -(fz - at.z)) * 180) / Math.PI;
+    carActive = false;
+    droneActive = true;
+    drone.blocked = (bx, bz) => terrain.heightAt(bx, bz) < waterLevel + 0.4;
+    drone.enterWalk(at.x, at.z, terrain.heightAt(at.x, at.z), (hdg + 360) % 360);
+    return at;
+  };
   // The sweep plays when the city starts on foot, never in shot mode unless
   // asked, and `?intro=0` turns it off for anyone who has seen it.
   const introWanted = spawn !== null && startQ.get("intro") !== "0" && (!shotMode || startQ.get("intro") === "1");
@@ -2015,6 +2068,7 @@ async function main() {
     }
     if (timelapse) timebar.setOffset(timebar.offsetSeconds + dt * TIMELAPSE_RATE);
     now = sceneNow();
+    eruptView?.setTime(localHours(now.getTime()));
 
     // --- Weather for that clock -------------------------------------------
     wxAccum += dt;
@@ -2031,6 +2085,9 @@ async function main() {
         wxDirty = false;
       }
     }
+
+    // Under the plume the plume is the sky: its own visibility, no other cloud.
+    if (eruptView) wx = eruptView.weather(wx);
 
     // The floor is the higher of the ground and whatever is built on it. The
     // aircraft adds its own clearance above whatever this returns, so a
@@ -2078,7 +2135,19 @@ async function main() {
       if (carActive && car) cart.update(car.position.x, car.position.y, car.position.z, car.headingDeg, car.speed, input.paused ? 0 : dt);
     }
     if (townsfolk) {
-      townsfolk.update(shotMode || input.paused ? 0 : dt, camera.position.x, camera.position.z);
+      // Once the column is up everyone is hurrying, and after dark one in three carries a torch.
+      const hurry = eruptView?.active ? 2.2 : 1;
+      townsfolk.update(shotMode || input.paused ? 0 : dt * hurry, camera.position.x, camera.position.z);
+      if (eruptView) {
+        townsfolk.group.visible = eruptView.inSurge < 0.6;
+        const cx = camera.position.x, cz = camera.position.z;
+        eruptView.torches = townsfolk.sim.people
+          .filter((_, i) => i % 3 === 0)
+          .map((p) => ({ x: p.x, y: terrain.heightAt(p.x, p.z), z: p.z, d: Math.hypot(p.x - cx, p.z - cz) }))
+          .filter((p) => p.d < 70)
+          .sort((a, b) => a.d - b.d)
+          .slice(0, 6);
+      }
     }
 
     hud.setLayers(layers.weather);
@@ -2313,6 +2382,7 @@ async function main() {
 
     const solar = solarState(now, city.lat, city.lon);
     const light = computeLighting(solar, wx);
+    eruptView?.light(light);
 
     renderer.getDrawingBufferSize(drawSize);
     prof.cpuBegin("airtraffic");
@@ -2346,6 +2416,7 @@ async function main() {
 
     const camAlt = camera.position.y;
     sky.update(solar, wx, camAlt, elapsed);
+    eruptView?.sky(sky.uniforms as unknown as Record<string, THREE.IUniform>);
     sky.syncCamera(camera);
 
     for (const u of terrain.uniforms) {
@@ -2782,7 +2853,16 @@ async function main() {
       }
       const look = camera.getWorldDirection(_missionDir);
       missions.update(dt, leg, camera.position.x, camera.position.z, Math.atan2(look.x, -look.z));
+      if (escape) {
+        if (escapeWanted && !intro && !escape.running && (escapeWanted === "bakery" || escapeWanted === "lupanar") && !escapeStarted) {
+          escapeStarted = true;
+          escape.begin(escapeWanted);
+        }
+        if (escape.running && missions.active) missions.cancel();
+        escape.update(shotMode || input.paused ? 0 : dt, camera, Math.atan2(look.x, -look.z), leg === "plane" || leg === "drone");
+      }
     }
+    eruptView?.update(camera, elapsed, shotMode);
     if (!droneActive && !carActive) {
       osd.update({
         pitchDeg: ac.pitchDeg,
@@ -2812,6 +2892,8 @@ async function main() {
     prof.cpuEnd("ocean");
 
     // Pass 1: the world, in linear HDR, into the offscreen target.
+    // Quakes shake the view for this frame's draws only; put back below.
+    eruptView?.shake(camera, elapsed, shotMode);
     renderer.setRenderTarget(target);
     prof.cpuBegin("scene");
     prof.begin("scene");
@@ -2841,6 +2923,7 @@ async function main() {
     prof.end();
     prof.cpuEnd("composite");
     for (const c of perfHidden) c.visible = true;
+    eruptView?.unshake(camera);
     // `?perfsync`: drain the GPU every frame, so a frame costs CPU plus GPU
     // with no overlap. Kept as an experiment, not the default: drained, the
     // M4 GPU idles while the CPU works and settles into a slow clock state for

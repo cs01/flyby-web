@@ -129,7 +129,7 @@ export function lightFactor(h: number): number {
   if (h < 15.5) return elerp(0.55, 0.04, (h - 13.5) / 2);
   if (h < 17) return elerp(0.04, 0.02, (h - 15.5) / 1.5);
   if (h < 30) return 0.02;
-  if (h < S4.atH) return lerp(0.02, 0.04, (h - 30) / (S4.atH - 30));
+  if (h < S4.atH) return lerp(0.02, 0.08, (h - 30) / (S4.atH - 30));
   // The surge cloud itself, then the slow clearing after S6.
   if (h < SURGES_END_H) return 0.01;
   return lerp(0.01, 0.05, clamp01((h - SURGES_END_H) / 2));
