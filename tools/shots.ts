@@ -77,6 +77,7 @@ const D = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
 const POMPEII_WX = "low:0:900:2100,mid:0:3800:5000,high:0.12:8500:9400,precip:0,wind:3:240";
 
 export const POSES: Pose[] = [
+  { name: "pompeii-debug", city: "pompeii", lat: 40.751416, lon: 14.484450, altM: 3.2, hdgDeg: 0, pitchDeg: -89, t: D("0079-08-22T09:30:00Z"), wx: POMPEII_WX, what: "debug", query: "agl&fov=90" },
   {
     name: "sf-vanness",
     city: "sf",
@@ -1013,6 +1014,81 @@ export const POSES: Pose[] = [
     t: D("0079-08-22T07:30:00Z"),
     wx: POMPEII_WX,
     what: "Roofs, atria and peristyles from 100 m",
+  },
+  // The restored art and the orders (render/pompeiiorders.ts, data/pompeiiart.ts).
+  // Indoor poses give their altitude over the ground (`agl`): eye height.
+  {
+    name: "pompeii-vettii",
+    city: "pompeii",
+    lat: 40.752130, lon: 14.484655, altM: 2.0, hdgDeg: 224, pitchDeg: 4,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Casa dei Vettii: the peristyle, the Ixion room off it",
+    query: "agl&fov=62",
+  },
+  {
+    name: "pompeii-vettii-oecus",
+    city: "pompeii",
+    lat: 40.752119, lon: 14.484641, altM: 2.0, hdgDeg: 340, pitchDeg: 3,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Casa dei Vettii: into the black oecus with the cupids' frieze",
+    query: "agl&fov=62",
+  },
+  {
+    name: "pompeii-faun-atrium",
+    city: "pompeii",
+    lat: 40.751065, lon: 14.484585, altM: 2.4, hdgDeg: 64, pitchDeg: -6,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Casa del Fauno: the atrium and the Dancing Faun",
+    query: "agl&fov=62",
+  },
+  {
+    name: "pompeii-faun-exedra",
+    city: "pompeii",
+    lat: 40.751363, lon: 14.484484, altM: 3.0, hdgDeg: 334, pitchDeg: -22,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Casa del Fauno: the Alexander Mosaic in its exedra",
+    query: "agl&fov=62",
+  },
+  {
+    name: "pompeii-tragic-poet",
+    city: "pompeii",
+    lat: 40.750695, lon: 14.483684, altM: 1.75, hdgDeg: 65, pitchDeg: -24,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Casa del Poeta Tragico: Cave Canem through the door",
+    query: "agl&fov=62",
+  },
+  {
+    // Outside the walls to the north-west, in room 5.
+    name: "pompeii-misteri",
+    city: "pompeii",
+    lat: 40.753525, lon: 14.477370, altM: 1.6, hdgDeg: 287, pitchDeg: 2,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Villa dei Misteri: the Dionysiac frieze in room 5",
+    query: "agl&fov=70",
+  },
+  {
+    name: "pompeii-forum-colonnade",
+    city: "pompeii",
+    lat: 40.749346, lon: 14.484887, altM: 1.7, hdgDeg: 96, pitchDeg: 14,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Forum portico: Doric below, Ionic above, the entablature",
+    query: "agl&fov=62",
+  },
+  {
+    name: "pompeii-bakery",
+    city: "pompeii",
+    lat: 40.750700, lon: 14.486990, altM: 8, hdgDeg: 220, pitchDeg: -42,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Bakery of Modestus: the lava mills and the oven",
+    query: "agl&fov=62",
   },
   {
     // The same water from 300 m: the FFT sea seen as a texture rather than as

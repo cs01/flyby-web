@@ -18,7 +18,9 @@ import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./
 import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeStreetLampUniforms, type StreetLampUniforms } from "./streetlamps";
-import { AMPHI, buildPompeii, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
+import { AMPHI, Store, buildPompeii, type ColumnInstance, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
+import { Order, columnTemplate } from "./pompeiiorders";
+import { ART_WORKS, type ArtAtlas } from "../data/pompeiiart";
 import { HORSE_BONES, STRIDE_M, buildHorse, poseHorse, type Gait, type HorseMesh } from "./horse";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
 import { PompeiiLife } from "../data/pompeiilife";
@@ -153,6 +155,10 @@ uniform vec3  uMoonDir;
 uniform vec3  uMoonLight;
 uniform float uNight;
 uniform vec3  uNightGlow;
+uniform sampler2D uArt;
+uniform vec4 uArtRect[${ART_WORKS.length}];
+uniform vec4 uArtInfo[${ART_WORKS.length}];
+uniform float uArtReady;
 
 float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 vec2 h22(vec2 p) { return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
@@ -411,6 +417,15 @@ void main() {
       albedo *= 0.75 + 0.4 * h21(vo.yz);
       albedo *= 0.7 + 0.3 * smoothstep(0.02, 0.08, vo.x);
     }
+  } else if (style < 11.5 && p1 > 0.5) {
+    // A thermopolium's counter front: offcuts of coloured marble set as
+    // crazy paving (giallo antico, pavonazzetto, cipollino, rosso, white).
+    vec3 vo = voronoi(vec2(u, h) / 0.16);
+    float k = h21(vo.yz);
+    vec3 c = k < 0.25 ? vec3(0.78, 0.62, 0.32) : k < 0.45 ? vec3(0.82, 0.76, 0.74) : k < 0.62 ? vec3(0.42, 0.5, 0.4) : k < 0.78 ? vec3(0.55, 0.2, 0.16) : vec3(0.86, 0.84, 0.8);
+    c *= 0.9 + 0.15 * vnoise(vec2(u, h) * 18.0 + k * 9.0);
+    albedo = mix(vec3(0.7, 0.66, 0.6), c, smoothstep(0.02, 0.05, vo.x));
+    gloss = 0.3;
   } else if (style < 11.5) {
     // Marble and travertine: pale slabs with faint veins.
     vec2 b = abs(n.y) > 0.6 ? vWorld.xz / 1.2 : vec2(wp.x / 1.2, wp.y / 0.6);
@@ -443,6 +458,45 @@ void main() {
       albedo *= 0.93 + 0.1 * vnoise(vWorld.xz * 9.0 + vWorld.y * 7.0);
       gloss = 0.55;
     }
+  } else if (style < 15.5) {
+    // A column shaft of an order: stuccoed, fluted. The flutes are shading,
+    // not geometry: each is a shallow half-round channel, the normal turned
+    // across it, darker in its hollow; Ionic and Corinthian flutes have flat
+    // fillets between them (p2 bit 0). Red on the lower third where the
+    // column is a house's (p2 bit 1), the way the peristyles were painted.
+    float fl = max(1.0, p1);
+    bool fillets = mod(p2, 2.0) > 0.5;
+    float x = fract(vWall.x * fl);
+    float w0 = fillets ? 0.14 : 0.0;
+    float q = clamp((x - w0 * 0.5) / (1.0 - w0), 0.0, 1.0) * 2.0 - 1.0;
+    float inFlute = fillets ? step(w0 * 0.5, x) * step(x, 1.0 - w0 * 0.5) : 1.0;
+    float slope = q / sqrt(max(0.08, 1.0 - q * q));
+    vec3 tng3 = normalize(cross(vec3(0.0, 1.0, 0.0), n) + vec3(1e-4, 0.0, 0.0));
+    // Fade the flutes out with distance: past ~60 m they only alias.
+    float near = 1.0 - smoothstep(30.0, 60.0, vViewDist);
+    n = normalize(n - tng3 * slope * 0.55 * inFlute * near);
+    albedo *= 1.0 - 0.18 * inFlute * (1.0 - q * q) * near;
+    if (p2 > 1.5 && h < H * 0.36) albedo = vec3(0.56, 0.14, 0.09) * (0.92 + 0.08 * (1.0 - q * q));
+    gloss = 0.12;
+  } else {
+    // A tile of the art atlas (data/pompeiiart.ts): p1 the tile; p2 bit 0
+    // repeats it along the wall at its own proportions over the wall's full
+    // height, bit 1 says indoors.
+    int tile = int(p1 + 0.5);
+    float mode = p2;
+    vec4 rect = uArtRect[tile];
+    vec4 info = uArtInfo[tile];
+    vec2 raw = mod(mode, 2.0) > 0.5 ? vec2(u / max(0.1, H * info.x), 1.0 - clamp(h / max(0.1, H), 0.0, 1.0)) : vWall.xy;
+    // Derivatives from the unwrapped coordinate, so the wrap at each repeat
+    // does not pick the smallest mip and draw a seam line.
+    vec2 st = vec2(fract(raw.x), raw.y);
+    vec2 tuv = rect.xy + st * rect.zw;
+    vec3 tex = textureGrad(uArt, tuv, dFdx(raw) * rect.zw, dFdy(raw) * rect.zw).rgb;
+    tex = pow(tex, vec3(2.2));
+    albedo = mix(info.yzw, tex, uArtReady);
+    // Indoors, but lit from the doorway and the court: dimmer than the
+    // court walls, not as dark as a shop's back room.
+    if (mode > 1.5) covered = 0.4;
   }
 
   float ndl = max(0.0, dot(n, uSunDir));
@@ -473,7 +527,159 @@ void main() {
 }
 `;
 
-export type PompeiiUniforms = StreetLampUniforms;
+/** The art atlas: the texture, each tile's rectangle (u0, v0, w, h) and (aspect, ground rgb). */
+export interface ArtUniforms {
+  uArt: { value: THREE.Texture };
+  uArtRect: { value: THREE.Vector4[] };
+  uArtInfo: { value: THREE.Vector4[] };
+  uArtReady: { value: number };
+}
+export type PompeiiUniforms = StreetLampUniforms & ArtUniforms;
+
+function makeArtUniforms(): ArtUniforms {
+  const blank = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1);
+  blank.needsUpdate = true;
+  return {
+    uArt: { value: blank },
+    uArtRect: { value: ART_WORKS.map(() => new THREE.Vector4(0, 0, 1, 1)) },
+    // Until the atlas arrives each tile shows its ground colour (uArtReady 0).
+    uArtInfo: { value: ART_WORKS.map((w) => new THREE.Vector4(w.sizeM[0] / w.sizeM[1], ...w.ground)) },
+    uArtReady: { value: 0 },
+  };
+}
+
+/**
+ * Load the restored atlas (tools/bake-pompeii-art.ts) into the uniforms: the
+ * 1024 px copy on a phone. A failed load leaves the ground colours.
+ */
+export async function loadPompeiiArt(base: string, u: ArtUniforms, small: boolean): Promise<boolean> {
+  try {
+    const desc = (await (await fetch(`${base}/pompeii-art/atlas.json`)).json()) as ArtAtlas;
+    const img = new Image();
+    img.src = `${base}/pompeii-art/${small ? "atlas-small.jpg" : "atlas.jpg"}`;
+    await img.decode();
+    const tex = new THREE.Texture(img);
+    tex.flipY = false;
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = 4;
+    tex.needsUpdate = true;
+    const S = desc.size;
+    ART_WORKS.forEach((w, i) => {
+      const t = desc.tiles.find((x) => x.id === w.id);
+      if (!t) return;
+      const [x, y, tw, th] = t.rect;
+      // Half a texel in from each edge so bilinear filtering stays on the tile.
+      u.uArtRect.value[i].set((x + 0.5) / S, (y + 0.5) / S, (tw - 1) / S, (th - 1) / S);
+      u.uArtInfo.value[i].set(tw / th, ...t.ground);
+    });
+    u.uArt.value = tex;
+    u.uArtReady.value = 1;
+    return true;
+  } catch (err) {
+    console.warn("[flyby] pompeii art atlas failed to load:", err);
+    return false;
+  }
+}
+
+// The detailed columns: one instanced template per order, drawn only near
+// the camera over the plain prisms the town mesh keeps for the far view.
+const COLUMN_VERT = /* glsl */ `
+precision highp float;
+in vec3 position;
+in vec4 aNormal;
+in vec4 aColour;
+in vec4 aSurf;
+in vec4 aWall;
+in vec4 iPos;
+in float iRed;
+uniform mat4 modelMatrix;
+uniform mat4 viewMatrix;
+uniform mat4 projectionMatrix;
+uniform vec3 uCameraPos;
+out vec3 vNormal;
+out vec3 vWorld;
+out vec4 vColour;
+out vec4 vSurf;
+out vec4 vWall;
+out float vViewDist;
+void main() {
+  vec4 w = modelMatrix * vec4(iPos.xyz + position * iPos.w, 1.0);
+  vNormal = mat3(modelMatrix) * aNormal.xyz;
+  vWorld = w.xyz;
+  vColour = aColour;
+  vSurf = aSurf + vec4(0.0, 0.0, iRed * 2.0, 0.0);
+  vWall = vec4(aWall.x, aWall.y * iPos.w, aWall.z, aWall.w * iPos.w);
+  vViewDist = distance(w.xyz, uCameraPos);
+  gl_Position = projectionMatrix * viewMatrix * w;
+}
+`;
+
+class DetailColumns {
+  readonly group = new THREE.Group();
+  private readonly meshes: THREE.Mesh[] = [];
+  private readonly geos: THREE.InstancedBufferGeometry[] = [];
+  private readonly pos: THREE.InstancedBufferAttribute[] = [];
+  private readonly red: THREE.InstancedBufferAttribute[] = [];
+  private lastX = Infinity;
+  private lastZ = Infinity;
+  /** Instances drawn last update, per order. */
+  readonly drawn = [0, 0, 0];
+
+  constructor(private readonly cols: ColumnInstance[], uniforms: PompeiiUniforms, private readonly rangeM: number, private readonly cap: number, lean: boolean) {
+    const mat = new THREE.RawShaderMaterial({ vertexShader: COLUMN_VERT, fragmentShader: FRAG, uniforms, glslVersion: THREE.GLSL3 });
+    for (const order of [Order.Doric, Order.Ionic, Order.Corinthian]) {
+      const st = new Store();
+      columnTemplate(st, order, lean);
+      const g = new THREE.InstancedBufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(st.pos.slice(0, st.n * 3), 3));
+      g.setAttribute("aNormal", new THREE.BufferAttribute(st.nrm.slice(0, st.n * 4), 4, true));
+      g.setAttribute("aColour", new THREE.BufferAttribute(st.col.slice(0, st.n * 4), 4, true));
+      g.setAttribute("aSurf", new THREE.BufferAttribute(st.surf.slice(0, st.n * 4), 4, false));
+      g.setAttribute("aWall", new THREE.BufferAttribute(st.wall.slice(0, st.n * 4), 4));
+      g.setIndex(new THREE.BufferAttribute(st.idx.slice(0, st.ni), 1));
+      const p = new THREE.InstancedBufferAttribute(new Float32Array(cap * 4), 4);
+      const r = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+      p.setUsage(THREE.DynamicDrawUsage); r.setUsage(THREE.DynamicDrawUsage);
+      g.setAttribute("iPos", p);
+      g.setAttribute("iRed", r);
+      g.instanceCount = 0;
+      const m = new THREE.Mesh(g, mat);
+      // Instances are placed round the camera every update; the template's
+      // own bounds would cull them wrongly.
+      m.frustumCulled = false;
+      m.name = `pompeii-columns-${order}`;
+      this.meshes.push(m); this.geos.push(g); this.pos.push(p); this.red.push(r);
+      this.group.add(m);
+    }
+  }
+
+  /** Re-pick the near columns when the camera has moved 6 m; camera in the town's own frame. */
+  update(x: number, z: number): void {
+    if (Math.hypot(x - this.lastX, z - this.lastZ) < 6) return;
+    this.lastX = x; this.lastZ = z;
+    const R2 = this.rangeM * this.rangeM;
+    const near: { c: ColumnInstance; d: number }[] = [];
+    for (const c of this.cols) {
+      const d = (c.x - x) ** 2 + (c.z - z) ** 2;
+      if (d < R2) near.push({ c, d });
+    }
+    near.sort((a, b) => a.d - b.d);
+    const n = [0, 0, 0];
+    for (const { c } of near.slice(0, this.cap)) {
+      const k = n[c.order]++;
+      this.pos[c.order].array.set([c.x, c.y0, c.z, c.d], k * 4);
+      (this.red[c.order].array as Float32Array)[k] = c.red ? 1 : 0;
+    }
+    for (let o = 0; o < 3; o++) {
+      this.geos[o].instanceCount = n[o];
+      this.pos[o].needsUpdate = true;
+      this.red[o].needsUpdate = true;
+      this.drawn[o] = n[o];
+    }
+  }
+}
 
 function geometry(m: PompeiiMeshData): THREE.BufferGeometry {
   const g = new THREE.BufferGeometry();
@@ -519,16 +725,25 @@ export class Pompeii {
   readonly uniforms: PompeiiUniforms;
   readonly model: PompeiiModel;
   readonly stats: PompeiiStats;
+  private readonly columns: DetailColumns;
+  private readonly offX: number;
+  private readonly offZ: number;
 
-  constructor(opts: { data: PompeiiData; heightAt: (x: number, z: number) => number; shadow: SunShadowUniforms; lean: boolean; offsetX: number; offsetZ: number }) {
+  constructor(opts: { data: PompeiiData; heightAt: (x: number, z: number) => number; shadow: SunShadowUniforms; lean: boolean; offsetX: number; offsetZ: number; art?: boolean }) {
     const t0 = performance.now();
     this.group.name = "pompeii";
     const { data } = opts;
+    this.offX = opts.offsetX; this.offZ = opts.offsetZ;
     // The pack's own origin is the City's, so the offset is zero in practice;
     // it is applied rather than assumed so a moved City entry cannot shift the
     // town off its streets silently.
-    this.model = buildPompeii({ data, groundAt: (x, z) => opts.heightAt(x + opts.offsetX, z + opts.offsetZ), lean: opts.lean });
-    this.uniforms = makeStreetLampUniforms(opts.shadow);
+    this.model = buildPompeii({ data, groundAt: (x, z) => opts.heightAt(x + opts.offsetX, z + opts.offsetZ), lean: opts.lean, art: opts.art !== false });
+    this.uniforms = Object.assign(makeStreetLampUniforms(opts.shadow), makeArtUniforms());
+    // Detailed orders within 150 m on desktop (a column 0.8 m across is
+    // under five pixels past that), 70 m and a fifth the count on a phone.
+    this.columns = new DetailColumns(this.model.orders, this.uniforms, opts.lean ? 70 : 150, opts.lean ? 120 : 600, opts.lean);
+    this.columns.group.position.set(opts.offsetX, 0, opts.offsetZ);
+    this.group.add(this.columns.group);
     const town = new THREE.Mesh(geometry(this.model.mesh), pompeiiMaterial(this.uniforms));
     town.name = "pompeii-town";
     town.layers.enable(SHADOW_CASTER_LAYER);
@@ -548,6 +763,16 @@ export class Pompeii {
       gpuBytes: bytes(this.model.mesh) + bytes(this.model.floor) + bytes(this.model.streets),
       buildMs: performance.now() - t0,
     };
+  }
+
+  /** Per frame: the near columns. Cheap unless the camera has moved 6 m. */
+  update(camera: THREE.Vector3): void {
+    this.columns.update(camera.x - this.offX, camera.z - this.offZ);
+  }
+
+  /** Detailed column instances drawn, Doric, Ionic, Corinthian. */
+  get columnsDrawn(): readonly number[] {
+    return this.columns.drawn;
   }
 }
 

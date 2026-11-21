@@ -37,7 +37,7 @@ import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./si
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
-import { Pompeii, Cart, Townsfolk, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
+import { Pompeii, Cart, Townsfolk, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
@@ -463,6 +463,7 @@ async function main() {
   // runs of the same URL is nailed down here in one place.
   const shotMode = new URLSearchParams(location.search).has("shot");
   const shotCam = pinnedCam();
+  const shotAgl = new URLSearchParams(location.search).has("agl");
   const driveFromShot = new URLSearchParams(location.search).has("drive");
   const headlightsOff = new URLSearchParams(location.search).has("noheadlights");
   const lampLightOff = new URLSearchParams(location.search).has("nolamplight");
@@ -537,9 +538,15 @@ async function main() {
     const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
     pompeii = new Pompeii({
       data: pompeiiData, heightAt: terrain.heightAt, shadow: sunShadow.uniforms,
-      lean: budget.pompeii.lean, offsetX: off.x, offsetZ: off.z,
+      lean: budget.pompeii.lean, offsetX: off.x, offsetZ: off.z, art: !perfOff.has("pompeiiart"),
     });
     scene.add(pompeii.group);
+    // The restored paintings and mosaics; `?off=pompeiiart` leaves them out of the town and skips the download.
+    // A shot waits for it, so a frame is never taken of the ground colours alone.
+    if (!perfOff.has("pompeiiart")) {
+      const art = loadPompeiiArt(`${import.meta.env.BASE_URL}landmarks`, pompeii.uniforms, budget.pompeii.lean);
+      if (shotMode) await art;
+    }
     sunShadow.setCityCasters(pompeii.buildings);
     sunShadow.setSplits(POMPEII_SHADOW_SPLITS[0], POMPEII_SHADOW_SPLITS[1]);
     terrain.heightAt = pompeiiHeightAt(pompeiiData, terrain.heightAt, off.x, off.z);
@@ -1948,6 +1955,7 @@ async function main() {
         if (horseGait.length === 2) cart.horse.pose(horseGait[0] === "trot" ? "trot" : "walk", Number(horseGait[1]) || 0, 1);
       }
     }
+    pompeii?.update(camera.position);
     if (townsfolk) {
       townsfolk.update(shotMode || input.paused ? 0 : dt, camera.position.x, camera.position.z);
     }
@@ -2031,7 +2039,9 @@ async function main() {
     // Aircraft.reset carries a note about.
     if (shotCam && !carActive) {
       const w = origin.toWorld(shotCam.lat, shotCam.lon);
-      camera.position.set(w.x, shotCam.altM, w.z);
+      // `?agl` reads the pose altitude as metres over the ground there: the
+      // indoor shots need an eye height, not a guess at the terrain.
+      camera.position.set(w.x, shotCam.altM + (shotAgl ? terrain.heightAt(w.x, w.z) : 0), w.z);
       camera.quaternion.setFromEuler(
         new THREE.Euler(
           (shotCam.pitchDeg * Math.PI) / 180,

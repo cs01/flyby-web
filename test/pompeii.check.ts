@@ -246,7 +246,7 @@ let built: PompeiiModel;
   check("40+ named houses built on their outlines with courts", built.stats.surveyedHouses >= 40, `${built.stats.surveyedHouses}`);
   const courts = data.domus.filter((d) => (d.courts ?? []).length).length;
   check("courts found in the room walls of 30+ houses", courts >= 30, `${courts}`);
-  const noDomus = buildPompeii({ data: { ...data, domus: [] }, groundAt: flat });
+  const noDomus = buildPompeii({ data: { ...data, domus: [], villa: undefined }, groundAt: flat });
   check("probe: without the outlines no house stands on Fauno's footprint", !hasFootprint(noDomus, fauno.ring) && noDomus.stats.surveyedHouses === 0, "");
 
   // The arena dug into the ground.
@@ -280,7 +280,9 @@ let built: PompeiiModel;
     for (let i = 0; i < r.length; i += 2) if (!pointInRing(data.wall, r[i], r[i + 1]) && distToRing(data.wall, r[i], r[i + 1]) > 15) return true;
     return false;
   }).length;
-  check("no building stands more than 15 m outside the wall", pokesOut(built.solids.map((s) => s.ring)) === 0, `${pokesOut(built.solids.map((s) => s.ring))}`);
+  // The Villa dei Misteri is meant to be outside, 300 m north-west of the wall.
+  const town = built.solids.map((s) => s.ring).filter((r) => !data.villa || !pointInRing(data.villa.ring, ...ringCentroid(r)));
+  check("no building stands more than 15 m outside the wall (the villa aside)", pokesOut(town) === 0, `${pokesOut(town)}`);
   check("probe: the old 100 m lot west of Porta Marina is caught", pokesOut([[-501, -30, -410, -30, -410, -16, -501, -16]]) === 1, "");
 
   // Fountains: about forty, the mapped ones among them.
