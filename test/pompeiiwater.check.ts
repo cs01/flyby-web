@@ -238,12 +238,43 @@ const probeBuild = (p: NonNullable<Parameters<typeof buildWater>[0]["probe"]>): 
   const kinds = new Set<number>();
   for (const g of [full.water, full.film]) for (let i = 0; i < g.pool.length; i += 4) kinds.add(g.pool[i]);
   check("water module kinds are the five the shader draws (0..4)", [...kinds].every((k) => Number.isInteger(k) && k >= 0 && k <= 4) && kinds.has(2), [...kinds].join(","));
-  // A colour left in from debugging (a surface painted flat red to find it) is a shot nobody can use.
-  const src = ["../src/render/pompeiiwater.ts", "../src/render/pompeii.ts"].map((p) => readFileSync(new URL(p, import.meta.url), "utf8")).join("\n");
-  const debug = /fragColor\s*=\s*vec4\(\s*1\.0\s*,\s*0\.0\s*,\s*0\.0/;
-  rule("no flat debug colour written by the water or town shaders", (probe) => {
-    const s = probe ? src + "\n  fragColor = vec4(1.0, 0.0, 0.0, 1.0);" : src;
-    return [!debug.test(s), ""];
+
+  // Every water vertex's attributes finite and in the range the shader reads
+  // them in for its kind (WaterGeo in render/pompeiiwater.ts).
+  const attrsOk = (g: { pos: number[]; open: number[]; pool: number[]; tint: number[] }): string[] => {
+    const bad: string[] = [];
+    const n = g.pos.length / 3;
+    for (let i = 0; i < n && bad.length < 3; i++) {
+      const o = g.open.slice(i * 4, i * 4 + 4), p = g.pool.slice(i * 4, i * 4 + 4), t = g.tint.slice(i * 4, i * 4 + 4);
+      const all = [...g.pos.slice(i * 3, i * 3 + 3), ...o, ...p, ...t];
+      if (!all.every(Number.isFinite)) { bad.push(`${i}: not finite`); continue; }
+      if (!t.every((v) => v >= 0 && v <= 1)) bad.push(`${i}: tint/shut ${t.map((v) => v.toFixed(2))}`);
+      if (p[1] < 0 || p[1] > 3) bad.push(`${i}: depth ${p[1]}`);
+      if (p[0] === 2) {
+        // A film: (along >= 0, across -1..1, 0, -2), flow a unit vector.
+        if (o[0] < 0 || Math.abs(o[1]) > 1 || o[3] !== -2 || Math.abs(Math.hypot(p[2], p[3]) - 1) > 1e-3) bad.push(`${i}: film ${o} ${p}`);
+      } else if (!(o[3] === 0 || o[3] === -1 || (o[3] > 0 && o[3] < 2 && o[2] > 0))) bad.push(`${i}: opening ${o}`);
+    }
+    return bad;
+  };
+  rule("every water vertex's attributes finite and in range for its kind", (probe) => {
+    const film = probe ? { ...full.film, open: full.film.open.map((v, i) => (i === 1 ? NaN : v)) } : full.film;
+    const bad = [...attrsOk(full.water), ...attrsOk(film)];
+    return [bad.length === 0, bad.join("; ") || `${full.water.pos.length / 3 + full.film.pos.length / 3} vertices`];
+  });
+
+  // What a water fragment writes is a lit colour: every fragColor in the
+  // module's shaders goes through the lighting (fogged, sunAt) or a colour
+  // built from it (c). An attribute written straight out as colour, as a
+  // debugging pass does, fails this. It would have caught the overflow
+  // drawn as vec4(alpha, abs(vOpen.y), vOpen.x / 14.0, 1.0).
+  const wsrc = readFileSync(new URL("../src/render/pompeiiwater.ts", import.meta.url), "utf8");
+  const writes = (s: string): string[] => [...s.matchAll(/fragColor\s*=\s*([^;]+);/g)].map((m) => m[1].replace(/\s+/g, " "));
+  const lit = (w: string): boolean => /^vec4\((fogged\(|sunAt\(|c, )/.test(w);
+  rule("every water shader writes a lit colour, never a raw attribute", (probe) => {
+    const s = probe ? wsrc + "\n  if (k > 1.5 && k < 2.5) fragColor = vec4(alpha, abs(vOpen.y), vOpen.x / 14.0, 1.0);" : wsrc;
+    const w = writes(s), raw = w.filter((x) => !lit(x));
+    return [w.length >= 5 && raw.length === 0, raw.join(" | ") || `${w.length} writes`];
   });
 }
 
