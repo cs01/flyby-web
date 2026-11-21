@@ -73,6 +73,8 @@ export interface Pose {
 }
 
 const D = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
+/** Pompeii's summer morning: clear, a few high streaks, a light sea breeze. */
+const POMPEII_WX = "low:0:900:2100,mid:0:3800:5000,high:0.12:8500:9400,precip:0,wind:3:240";
 
 export const POSES: Pose[] = [
   {
@@ -898,6 +900,67 @@ export const POSES: Pose[] = [
     wx: "low:0.95:450:900,mid:0.5:3000:4200,high:0:8500:9400,precip:0",
     query: "fov=40",
     what: "The water tower's tank and lettering from below",
+  },
+  // Pompeii on the eve of the eruption (render/pompeii.ts): the town rebuilt
+  // on the excavated plan, at the ranges it is seen from. The clock is its
+  // own, 24 August 79 (Julian) at about 08:30 local mean time.
+  {
+    name: "pompeii-flyover",
+    city: "pompeii",
+    // 300 m over the south wall, looking north up the town to Vesuvius.
+    lat: 40.7445, lon: 14.4872, altM: 330, hdgDeg: 345, pitchDeg: -24,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Pompeii from 300 m to the south, Vesuvius behind",
+  },
+  {
+    // Via dell'Abbondanza east of the Stabian crossroads, eye height,
+    // looking east along the shops. Street ground 31.9 m here.
+    name: "pompeii-abbondanza",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 33.6, hdgDeg: 58, pitchDeg: 1,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Via dell'Abbondanza at eye height, morning",
+  },
+  {
+    // The forum's south end on the long axis: the Temple of Jupiter at the
+    // far end, Vesuvius framed behind it.
+    name: "pompeii-forum",
+    city: "pompeii",
+    lat: 40.74888, lon: 14.48514, altM: 36.2, hdgDeg: 336, pitchDeg: 3,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Forum toward the Temple of Jupiter and Vesuvius",
+  },
+  {
+    // On the upper tiers of the amphitheatre's long side, looking across
+    // the arena.
+    name: "pompeii-amphitheatre",
+    city: "pompeii",
+    lat: 40.75110, lon: 14.49477, altM: 36.5, hdgDeg: 60, pitchDeg: -20,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Inside the amphitheatre from the upper cavea",
+  },
+  {
+    // In the cart on Via di Stabia, chase view, horse ahead.
+    name: "pompeii-cart",
+    city: "pompeii",
+    lat: 40.74848, lon: 14.48981, altM: 22, hdgDeg: 317, pitchDeg: 0,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Driving the horse and cart up Via di Stabia",
+    query: "drive=1&chase=1",
+  },
+  {
+    // The same town from the air at an angle, for the roofscape.
+    name: "pompeii-roofs",
+    city: "pompeii",
+    lat: 40.7478, lon: 14.4868, altM: 120, hdgDeg: 20, pitchDeg: -30,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Roofs, atria and peristyles from 100 m",
   },
   {
     // The same water from 300 m: the FFT sea seen as a texture rather than as

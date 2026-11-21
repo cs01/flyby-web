@@ -231,6 +231,7 @@ export interface Budget {
   parkedInstanceBudget: number;
   ocean: OceanPlan;
   alcatraz: AlcatrazPlan;
+  pompeii: PompeiiPlan;
   memory: MemoryEstimate;
 }
 
@@ -362,6 +363,21 @@ const PAVEMENT_BYTES_PER_TRIANGLE = 36 + 1.5 * 4;
  * foam) of two mipmapped RGBA16F attachments. The grid is a vec3 per vertex
  * and two triangles of indices per vertex, 16-bit when they fit.
  */
+/** Pompeii (render/pompeii.ts): lean drops the stepping stones, counters, merlons and most columns. */
+export interface PompeiiPlan {
+  lean: boolean;
+}
+
+// Measured off buildPompeii over the committed pack, with a little headroom;
+// test/pompeii.check.ts holds the real build under these and within a
+// quarter of them, so they can neither be exceeded nor drift into fiction.
+export const POMPEII_FULL_BYTES = Math.round(31 * 1048576);
+export const POMPEII_LEAN_BYTES = Math.round(17.5 * 1048576);
+
+export function pompeiiBytes(p: PompeiiPlan): number {
+  return p.lean ? POMPEII_LEAN_BYTES : POMPEII_FULL_BYTES;
+}
+
 /** Alcatraz (render/alcatraz.ts): its own drape and the lidar ground's grid step. */
 export interface AlcatrazPlan {
   /** Drape width in texels: 2048 picks alcatraz-drape.jpg, anything under 1024 the small one. */
@@ -577,6 +593,7 @@ const FULL_PLAN: Plan = {
     farRings: 45,
   },
   alcatraz: { drapePx: 2048, gridStep: 1 },
+  pompeii: { lean: false },
 };
 
 const REDUCED_PLAN: Plan = {
@@ -636,6 +653,7 @@ const REDUCED_PLAN: Plan = {
   // anyway) and the lidar every third cell: 2.3 MB against 25 MB on the
   // full plan, while the cliffs keep their shape at 3 m.
   alcatraz: { drapePx: 512, gridStep: 3 },
+  pompeii: { lean: true },
 };
 
 const PLANS: Record<QualityTier, Plan> = { full: FULL_PLAN, reduced: REDUCED_PLAN };
@@ -717,6 +735,9 @@ function estimateMemory(plan: Plan, d: DeviceDescriptor): MemoryEstimate {
       what: `alcatraz drape ${plan.alcatraz.drapePx} px, ground every ${plan.alcatraz.gridStep} m`,
       bytes: alcatrazBytes(plan.alcatraz),
     },
+    // No line for Pompeii's town: it is the place's buildings, drawn instead
+    // of a .city pack (it has none), so it is paid for out of the building
+    // line above. test/pompeii.check.ts holds pompeiiBytes() under that line.
   ];
 
   let totalBytes = 0;

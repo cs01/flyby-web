@@ -41,17 +41,25 @@ export function parFor(distM: number): number {
   return Math.round(distM / 4.5 + 120);
 }
 
-/** A destination between MIN and MAX away, or null when nothing qualifies. */
+/**
+ * How far a mission may send you. A city's default; a walled town a kilometre
+ * across (Pompeii) has nothing 1.2 km away, and walks its missions shorter.
+ */
+export interface MissionRange { minM: number; maxM: number }
+export const DEFAULT_RANGE: MissionRange = { minM: MIN_MISSION_M, maxM: MAX_MISSION_M };
+
+/** A destination within the range, or null when nothing qualifies. */
 export function pickMission(
   dests: readonly Dest[],
   x: number,
   z: number,
   rand: () => number,
   standable: (x: number, z: number) => boolean = () => true,
+  range: MissionRange = DEFAULT_RANGE,
 ): MissionSpec | null {
   const ok = dests.filter((d) => {
     const r = Math.hypot(d.x - x, d.z - z);
-    return r >= MIN_MISSION_M && r <= MAX_MISSION_M && standable(d.x, d.z);
+    return r >= range.minM && r <= range.maxM && standable(d.x, d.z);
   });
   if (!ok.length) return null;
   const dest = ok[Math.min(ok.length - 1, Math.floor(rand() * ok.length))];

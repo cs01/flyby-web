@@ -37,6 +37,8 @@ import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./si
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
+import { Pompeii, Cart, antiquateDrape, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
+import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
 import {
@@ -169,8 +171,8 @@ function goToCity(city: City): void {
  * the real observation, and while `?wx` is set the forecast timeline no longer
  * drives cloud: a pinned sky that drifted with the clock would not be a repro.
  */
-function wxOverride(observed: Weather): Weather | null {
-  const spec = new URLSearchParams(location.search).get("wx");
+function wxOverride(observed: Weather, fallback?: string): Weather | null {
+  const spec = new URLSearchParams(location.search).get("wx") ?? fallback;
   if (!spec) return null;
 
   // Everything the shading reads is pinned, not just the decks.
@@ -314,7 +316,9 @@ async function main() {
   // The scene clock. `base` is the instant the session started from; the
   // scrubber and the timelapse both move an OFFSET from it rather than
   // rewriting it, so "back to now" is one assignment and cannot drift.
-  const base = sceneTime();
+  // A historical place starts at its own instant, not now; `?t=` still wins.
+  const era = city.era ?? null;
+  const base = era && !new URLSearchParams(location.search).has("t") ? new Date(era.at) : sceneTime();
   const frozen = new URLSearchParams(location.search).has("t");
   const startPerf = performance.now();
   let clockOffset = 0;
@@ -355,6 +359,12 @@ async function main() {
     loadHeightfield(bboxAround(city.lat, city.lon, 22000), 12, bump),
     loadHeightfield(bboxAround(city.lat, city.lon, 80000), 9, bump),
   ]);
+  // Pompeii: the town's pack, and Vesuvius put back as it stood before the
+  // eruption, before the terrain is meshed from the fields.
+  const pompeiiOn = city.id === "pompeii" && !new URLSearchParams(location.search).get("off")?.split(",").includes("pompeii");
+  const pompeiiData = pompeiiOn ? await loadPompeii(`${import.meta.env.BASE_URL}landmarks`) : null;
+  if (city.id === "pompeii") console.log(`[flyby] vesuvius: ${restoreVesuvius(fields)} DEM cells raised to the pre-79 cone`);
+  const fieldHeight = (lat: number, lon: number): number => (fields[0].contains(lat, lon) ? fields[0] : fields[1]).sample(lat, lon);
 
   loading.set(0.44, "loading imagery");
   let imgDone = 0;
@@ -364,6 +374,11 @@ async function main() {
     const ring = rings[r];
     drapes.push(await stitchImagery(bboxAround(city.lat, city.lon, ring.extent * 1.05), ring.imageryZoom));
     loading.set(0.44 + 0.4 * (++imgDone / rings.length), "loading imagery");
+  }
+  if (city.id === "pompeii") {
+    const t0 = performance.now();
+    antiquateDrape(drapes, fieldHeight, { ring: pompeiiData?.wall ?? [], origin: new Origin(city.lat, city.lon) });
+    console.log(`[flyby] pompeii: drapes repainted as 79 AD farmland in ${(performance.now() - t0).toFixed(0)} ms`);
   }
 
   loading.set(0.88, "building world");
@@ -512,6 +527,30 @@ async function main() {
   terrain.group.name = "terrain";
   scene.add(terrain.group);
 
+  // Pompeii's town, built on the terrain as meshed. The walker and the cart
+  // then stand on its pavements: heightAt is wrapped AFTER the build, so the
+  // build itself reads the bare ground it lays the kerbs on.
+  let pompeii: Pompeii | null = null;
+  let cart: Cart | null = null;
+  if (pompeiiData) {
+    const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
+    pompeii = new Pompeii({
+      data: pompeiiData, heightAt: terrain.heightAt, shadow: sunShadow.uniforms,
+      lean: budget.pompeii.lean, offsetX: off.x, offsetZ: off.z,
+    });
+    scene.add(pompeii.group);
+    sunShadow.setCityCasters(pompeii.buildings);
+    terrain.heightAt = pompeiiHeightAt(pompeiiData, terrain.heightAt, off.x, off.z);
+    cart = new Cart(pompeii.uniforms);
+    cart.group.visible = false;
+    scene.add(cart.group);
+    const s = pompeii.stats, m = pompeii.model.stats;
+    console.log(
+      `[flyby] pompeii: ${m.lots} lots (${m.domus} domus, ${m.tabernae} tabernae), ${pompeiiData.insulae.length} insulae, ` +
+      `${s.triangles + s.floorTriangles} tris, ${(s.gpuBytes / 1048576).toFixed(1)} MB, ${s.buildMs.toFixed(0)} ms`,
+    );
+  }
+
   // Buildings. A city with no baked pack still flies, it just has no skyline,
   // so this must never be able to fail the load.
   loading.set(0.92, "loading buildings");
@@ -527,7 +566,7 @@ async function main() {
   // Overpass for a square somebody has already baked. Same origin, one small
   // JSON, already in the cache from the start screen.
   const bakedPromise = bakedCityCoverage();
-  const pack = await loadCityPack(city.id);
+  const pack = pompeii ? pompeiiCityPack(pompeii.model, terrain.heightAt, city.lat, city.lon) : await loadCityPack(city.id);
   // The landmark bridges, hand-built in render/bridgemesh.ts. The OSM parts
   // they replace (the Golden Gate's tower legs are ten building:parts) go
   // before anything sees the pack: the renderer, the collider and the tree
@@ -557,7 +596,7 @@ async function main() {
   // The lidar island's world box: the pack's boxes and the generic trees
   // inside it are replaced by render/alcatraz.ts and data/alcatrazveg.ts.
   const islandBox = alcatrazAsset ? alcatrazIslandBox(alcatrazAsset.patch, origin) : null;
-  if (pack && !buildingsOff) {
+  if (pack && !buildingsOff && !pompeii) {
     // The island's OSM boxes go from the renderer only: render/alcatraz.ts
     // draws its own models on the same footprints, and the collider and the
     // tree mask keep the originals.
@@ -595,7 +634,7 @@ async function main() {
 
   // Vector roads. Same contract as the skyline: a city with no .roads pack
   // still flies, its streets are just whatever the satellite drape shows.
-  const roadPack = await roadPromise;
+  const roadPack = pompeiiData ? pompeiiRoadPack(pompeiiData) : await roadPromise;
   let roads: Roads | null = null;
   let bridges: Bridges | null = null;
   // Where every bridge deck is, solved ONCE. Both the ribbon below and the car
@@ -627,7 +666,7 @@ async function main() {
   // Built before the ribbons, which cap their junctions from it; see
   // data/junctioncaps.ts.
   const roadGraph: RoadGraph | null = roadPack ? buildRoadGraph(roadPack.roads) : null;
-  if (roadPack) {
+  if (roadPack && !era) {
     roads = new Roads(
       roadPack, terrain.heightAt, sunShadow.uniforms, budget, bridgeDecks!.deck,
       roadGraph ? junctionCaps(roadGraph) : [],
@@ -661,7 +700,7 @@ async function main() {
   // no .roads pack simply has no car, the same way it has no skyline.
   // Kept alongside the car because the street sign walks it, and the car owns
   // its graph privately.
-  const car = roadGraph ? new Car(roadGraph) : null;
+  const car = roadGraph ? new Car(roadGraph, era ? { topSpeed: CART_TOP_SPEED, boostSpeed: CART_BOOST_SPEED, eyeHeightM: CART_EYE_HEIGHT_M, chaseBackM: 7.5, chaseUpM: 3.4 } : undefined) : null;
   if (car && bridgeDecks) car.setBridgeDecks(bridgeDecks.deck);
   if (car) {
     const cs = car.stats;
@@ -706,6 +745,7 @@ async function main() {
   const streetUniformSets: StreetLampUniforms[] = [];
   // The bridges light like street furniture and take the same per-frame feed.
   if (bridges) streetUniformSets.push(bridges.uniforms);
+  if (pompeii) streetUniformSets.push(pompeii.uniforms);
 
   /**
    * Point every surface material at this frame's occlusion buffer.
@@ -717,6 +757,7 @@ async function main() {
   let alcatraz: Alcatraz | null = null;
   const setAo = (strength: number): void => {
     if (alcatraz) ao.apply(alcatraz.uniforms, strength);
+    if (pompeii) ao.apply(pompeii.uniforms, strength);
     for (const u of terrain.uniforms) ao.apply(u, strength);
     for (const u of buildingUniformSets) ao.apply(u, strength);
     for (const u of roadUniformSets) ao.apply(u, strength);
@@ -942,7 +983,7 @@ async function main() {
   // the footprint mask above to know where the building line is, and that mask
   // needs the .city pack. A city with roads and no buildings still gets kerbs,
   // just at the class widths with a verge behind them.
-  if (roadPack) {
+  if (roadPack && !era) {
     pavement = new Pavement(
       roadPack,
       terrain.heightAt,
@@ -976,7 +1017,7 @@ async function main() {
   // frame changes, so the difference between the two captures is exactly the
   // lamps, the traffic and the parked cars.
   const streetOff = new URLSearchParams(location.search).has("nostreet");
-  if (roadPack && !streetOff) {
+  if (roadPack && !streetOff && !era) {
     // Where a surveyor has actually been. Only the lamps are used, and only to
     // move a procedurally placed column onto a real one within LAMP_SNAP_M; see
     // data/streetfurniture.ts for why it cannot do more than that.
@@ -1027,17 +1068,21 @@ async function main() {
   // the carriageway, and the .city rings keep them off the roofs. A city with
   // no road or building pack still gets trees, just with the landcover's built
   // class as the only guard.
-  if (landPack) {
+  // Pompeii has no .land pack (its modern landcover is the wrong century):
+  // its trees come from the town's gardens and the farmland's olive groves
+  // and orchards, through the same renderer.
+  const pompeiiVeg = pompeiiData && !landPack ? pompeiiVegetation(pompeiiData) : null;
+  if (landPack || pompeiiVeg) {
     const t0 = performance.now();
-    const level = landPack.levels[0];
+    const level = landPack?.levels[0];
     const treeField = {
-      mask: { rgba: buildLandMaskRGBA(level), n: level.n, extentM: level.extentM },
+      mask: level ? { rgba: buildLandMaskRGBA(level), n: level.n, extentM: level.extentM } : pompeiiVeg!,
       heightAt: terrain.heightAt,
       roads: treeRoads,
       footprints: treeFootprints,
     };
     const treeSource: FoliageSource = {
-      extentM: level.extentM,
+      extentM: treeField.mask.extentM,
       place: (x0, z0, x1, z1) => placeTrees(treeField, x0, z0, x1, z1),
     };
     foliage = new Foliage(
@@ -1162,13 +1207,17 @@ async function main() {
   const timeline = await forecastPromise;
   const timezone = timeline?.timezone ?? "UTC";
   const wallClock = new LocalClock(timezone);
-  const pinned = wxOverride(observed);
+  // A historical place has no live weather worth showing: a clear summer
+  // morning with a light sea breeze, unless `?wx=` says otherwise.
+  const pinned = wxOverride(observed, era ? "low:0:900:2100,mid:0:3800:5000,high:0.12:8500:9400,precip:0,wind:3:240" : undefined);
+  // The pinned sky is 15 C, a spring day; a Campanian August morning is warmer.
+  if (era && pinned && !new URLSearchParams(location.search).has("wx")) Object.assign(pinned, { tempC: 25, dewC: 15, humidity: 0.54 });
   let wx: Weather = pinned ?? observed;
 
   const hud = new Hud(ui);
   hud.setWeather(wx, 0);
   const throttleSlider = new ThrottleSlider(ui);
-  const modeBar = new ModeBar(ui);
+  const modeBar = new ModeBar(ui, era ? { car: "cart" } : undefined);
 
   /**
    * What the panel says about where the city came from.
@@ -1411,9 +1460,15 @@ async function main() {
         if (s.name.includes("&")) continue;
         if (!seen.has(s.name)) { seen.add(s.name); out.push({ name: s.name, x: s.x, z: s.z }); }
       }
+      // Pompeii: every named house, gate and public building in the pack.
+      for (const p of pompeiiData?.places ?? []) {
+        if (!seen.has(p.name)) { seen.add(p.name); out.push({ name: p.name, x: p.x, z: p.z }); }
+      }
       return out;
     },
     toast: (t) => hud.toast(t),
+    // A walled town a kilometre and a half across: missions inside the walls.
+    range: pompeiiData ? { minM: 250, maxM: 1400 } : undefined,
   });
   // A mission asked for from the air starts once the walker is on the ground.
   let missionPending = false;
@@ -1775,7 +1830,7 @@ async function main() {
           droneActive = false;
           drone.walk = false;
           input.setPointerLock(true);
-          hud.toast("Car: W/S drive \u00b7 A/D steer and pick the turning \u00b7 mouse looks \u00b7 G to get out");
+          hud.toast(era ? "Cart: W/S drive the horse \u00b7 A/D pick the turning \u00b7 mouse looks \u00b7 G to get down" : "Car: W/S drive \u00b7 A/D steer and pick the turning \u00b7 mouse looks \u00b7 G to get out");
         } else {
           hud.toast("No road within reach \u00b7 fly closer to a street");
         }
@@ -1866,6 +1921,10 @@ async function main() {
       const ci = input.carAxes();
       if (!input.paused) car.update(ci, dt, terrain.heightAt, traffic?.sim ?? null);
     }
+    if (cart) {
+      cart.group.visible = carActive && !!car;
+      if (carActive && car) cart.update(car.position.x, car.position.y, car.position.z, car.headingDeg, car.speed, input.paused ? 0 : dt);
+    }
 
     hud.setLayers(layers.weather);
     osd.root.style.display = layers.instruments ? "" : "none";
@@ -1908,7 +1967,8 @@ async function main() {
     chase.mode = CAMERA_MODES[input.cameraCycled % CAMERA_MODES.length];
     if (carActive && car) {
       camera.up.set(0, 1, 0);
-      dash.style.display = carChase() ? "none" : "block";
+      // No bonnet silhouette on a cart: the horse is in view from the bench.
+      dash.style.display = carChase() || era ? "none" : "block";
       if (carChase()) {
         car.chaseEye(camera.position, camera.quaternion);
       } else {
@@ -2056,18 +2116,18 @@ async function main() {
 
     renderer.getDrawingBufferSize(drawSize);
     prof.cpuBegin("airtraffic");
-    airTraffic.update(camera, drawSize.y, dt, light.night, layers.traffic, droneActive ? drone.position : carActive ? undefined : ac.position);
+    airTraffic.update(camera, drawSize.y, dt, light.night, layers.traffic && !era, droneActive ? drone.position : carActive ? undefined : ac.position);
     prof.cpuEnd("airtraffic");
     {
       const me = carActive && car ? car.position : droneActive ? drone.position : ac.position;
       const hdg = carActive && car ? car.headingDeg : droneActive ? drone.yawDeg : ac.headingDeg;
       prof.cpuBegin("spotgame");
-      spotGame.update(camera, dt, { x: me.x, y: me.y, z: me.z, headingDeg: hdg }, layers.traffic);
+      spotGame.update(camera, dt, { x: me.x, y: me.y, z: me.z, headingDeg: hdg }, layers.traffic && !era);
       prof.cpuEnd("spotgame");
-      minimap.setTraffic(layers.traffic ? spotGame.near : []);
+      minimap.setTraffic(layers.traffic && !era ? spotGame.near : []);
     }
     prof.cpuBegin("transit");
-    transit.update(camera, drawSize.y, dt, light.night, layers.trains, layers.boats, airTraffic.tags.rects);
+    transit.update(camera, drawSize.y, dt, light.night, layers.trains && !era, layers.boats && !era, airTraffic.tags.rects);
     prof.cpuEnd("transit");
     // After transit.update, so the rider and the car mesh come from the same
     // model step; the camera is re-placed here and nothing above used it for
@@ -2902,7 +2962,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean,
+      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean, pompeii,
       get droneActive() { return droneActive; },
       get carActive() { return carActive; },
       get wx() { return wx; },

@@ -203,6 +203,22 @@ export interface CarStats {
   buildMs: number;
 }
 
+/**
+ * What is being driven. The same rail and the same controls carry a saloon in
+ * a modern city and a horse and cart in Pompeii; only the speeds and the seat
+ * height differ.
+ */
+export interface Vehicle {
+  topSpeed: number;
+  boostSpeed: number;
+  eyeHeightM: number;
+  /** Chase camera, metres behind and above the contact point. */
+  chaseBackM?: number;
+  chaseUpM?: number;
+}
+
+export const CAR_VEHICLE: Vehicle = { topSpeed: CAR_TOP_SPEED, boostSpeed: CAR_BOOST_SPEED, eyeHeightM: CAR_EYE_HEIGHT_M };
+
 /** Where on the network the car is. */
 interface Where {
   half: HalfEdge;
@@ -245,7 +261,7 @@ export class Car {
   /** Speed ceiling imposed by the last junction turn, decayed back to top. */
   private cornerLimit = Infinity;
 
-  constructor(graph: RoadGraph) {
+  constructor(graph: RoadGraph, readonly vehicle: Vehicle = CAR_VEHICLE) {
     const t0 = Date.now();
     this.graph = graph;
     // The one spatial index, generalised rather than duplicated: the same class
@@ -318,7 +334,7 @@ export class Car {
     // Left of travel is (fz, -fx) in this x-east, z-south frame.
     return out.set(
       this.position.x + fz * CAR_SEAT_LEFT_M - fx * CAR_SEAT_BACK_M,
-      this.position.y + CAR_EYE_HEIGHT_M,
+      this.position.y + this.vehicle.eyeHeightM,
       this.position.z - fx * CAR_SEAT_LEFT_M - fz * CAR_SEAT_BACK_M,
     );
   }
@@ -330,7 +346,8 @@ export class Car {
   chaseEye(out: THREE.Vector3, quat: THREE.Quaternion): void {
     const h = (this.headingDeg + this.lookYaw) * DEG;
     const fx = Math.sin(h), fz = -Math.cos(h);
-    out.set(this.position.x - fx * 6.5, this.position.y + 2.3, this.position.z - fz * 6.5);
+    const back = this.vehicle.chaseBackM ?? 6.5, up = this.vehicle.chaseUpM ?? 2.3;
+    out.set(this.position.x - fx * back, this.position.y + up, this.position.z - fz * back);
     quat.setFromEuler(new THREE.Euler((this.lookPitch - 8) * DEG, -(this.headingDeg + this.lookYaw) * DEG, 0, "YXZ"));
   }
 
@@ -390,7 +407,7 @@ export class Car {
     // Cessna rolls to a stop down the street instead of stopping dead. Only the
     // component along the road survives, which is the honest projection: a car
     // cannot use the part of an aeroplane's velocity that pointed at a wall.
-    this.speed = clamp(velocity.x * dir.x + velocity.z * dir.z, 0, CAR_TOP_SPEED);
+    this.speed = clamp(velocity.x * dir.x + velocity.z * dir.z, 0, this.vehicle.topSpeed);
     this.headingDeg = headingOf(dir.x, dir.z);
     this.place(heightAt);
     return true;
@@ -444,7 +461,7 @@ export class Car {
     // --- Speed ------------------------------------------------------------
     const boost = clamp(input.boost, 0, 1);
     const top = Math.min(
-      THREE.MathUtils.lerp(CAR_TOP_SPEED, CAR_BOOST_SPEED, boost),
+      THREE.MathUtils.lerp(this.vehicle.topSpeed, this.vehicle.boostSpeed, boost),
       this.cornerLimit,
     );
     const want = this.throttleAxis >= 0
@@ -458,7 +475,7 @@ export class Car {
     // second, so a turn does not leave a speed cap hanging over the next
     // straight.
     if (this.cornerLimit < Infinity) this.cornerLimit += ACCEL * dt;
-    if (this.cornerLimit > CAR_BOOST_SPEED) this.cornerLimit = Infinity;
+    if (this.cornerLimit > this.vehicle.boostSpeed) this.cornerLimit = Infinity;
 
     // --- Traffic ------------------------------------------------------------
     // SOFT COLLISIONS. Nothing here is a crash: the car brakes for what is in

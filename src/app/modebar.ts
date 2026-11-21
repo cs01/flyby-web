@@ -15,12 +15,13 @@ export class ModeBar {
   private buttons = new Map<Machine, HTMLButtonElement>();
   private pending: Machine | null = null;
 
-  constructor(ui: HTMLElement) {
+  /** `rename` relabels a machine: Pompeii's car is a cart. */
+  constructor(ui: HTMLElement, rename?: Partial<Record<Machine, string>>) {
     this.root = document.createElement("div");
     this.root.className = "modebar";
     for (const [m, label] of LABELS) {
       const b = document.createElement("button");
-      b.textContent = label;
+      b.textContent = rename?.[m] ?? label;
       b.addEventListener("click", () => (this.pending = m));
       this.buttons.set(m, b);
       this.root.append(b);

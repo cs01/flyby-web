@@ -49,6 +49,20 @@ export interface City {
   /** Start altitude AGL, metres. Higher for cities that read as a skyline. */
   startAlt: number;
   landmarks: Landmark[];
+  /**
+   * A place shown as it was, not as it is. Everything live and modern is off
+   * (traffic, transit, aircraft, lamps, the streamed OSM), the clock starts at
+   * `at` instead of now, and the car is whatever the era drove.
+   */
+  era?: {
+    /**
+     * The scene's starting instant, ISO with a four-digit year. Proleptic
+     * Gregorian, as a JS Date is: 0079-08-22 is 24 August 79 in the Julian
+     * calendar the Romans used.
+     */
+    at: string;
+    vehicle: "cart";
+  };
 }
 
 export const CITIES: City[] = [
@@ -280,6 +294,24 @@ export const CITIES: City[] = [
       { name: "Notre-Dame", lat: 48.8530, lon: 2.3499, height: 96 },
       { name: "Sacre-Coeur", lat: 48.8867, lon: 2.3431, height: 213 },
       { name: "La Defense", lat: 48.8918, lon: 2.2361, height: 231 },
+    ],
+  },
+  {
+    // The town on the eve of the eruption, rebuilt on the excavated plan
+    // (render/pompeii.ts). Vesuvius is 9 km north-north-west; the approach
+    // comes in from the sea side with the volcano behind the forum.
+    id: "pompeii", name: "Pompeii, 79 AD", country: "Italy", continent: "Europe",
+    lat: 40.7490, lon: 14.4880, radius: 1500, approach: 60, startAlt: 350,
+    era: { at: "0079-08-22T07:30:00Z", vehicle: "cart" },
+    landmarks: [
+      { name: "Forum", lat: 40.74933, lon: 14.48485, height: 14 },
+      { name: "Temple of Jupiter", lat: 40.74997, lon: 14.48450, height: 20 },
+      { name: "Amphitheatre", lat: 40.75128, lon: 14.49519, height: 15 },
+      { name: "Large Theatre", lat: 40.74886, lon: 14.48841, height: 14 },
+      { name: "Porta Marina", lat: 40.74851, lon: 14.48308, height: 10 },
+      { name: "House of the Faun", lat: 40.75128, lon: 14.48463, height: 8 },
+      { name: "Stabian Baths", lat: 40.74996, lon: 14.48751, height: 10 },
+      { name: "Vesuvius", lat: 40.8245, lon: 14.4290, height: 1900 },
     ],
   },
   {

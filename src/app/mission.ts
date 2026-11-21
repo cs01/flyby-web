@@ -3,7 +3,7 @@
 // and the result when you get there. The rules live in sim/mission.ts.
 
 import * as THREE from "three";
-import { Mission, pickMission, stars, type Dest, type Leg } from "../sim/mission";
+import { Mission, pickMission, stars, DEFAULT_RANGE, type Dest, type Leg, type MissionRange } from "../sim/mission";
 import { formatDistance } from "./units";
 
 const LEG_LABEL: Record<Leg, string> = { walk: "walk", car: "drive", ride: "ride", plane: "fly", drone: "drone" };
@@ -21,6 +21,8 @@ export interface MissionHost {
   standable: (x: number, z: number) => boolean;
   /** Called lazily at each start, because transit stops load after the flight begins. */
   destinations: () => Dest[];
+  /** How far a mission may send you; the city default when absent. */
+  range?: MissionRange;
   toast: (s: string) => void;
 }
 
@@ -69,9 +71,10 @@ export class MissionUi {
 
   /** Start a new mission from where the player stands; false when nothing is in range. */
   start(x: number, z: number): boolean {
-    const spec = pickMission(this.host.destinations(), x, z, Math.random, this.host.standable);
+    const range = this.host.range ?? DEFAULT_RANGE;
+    const spec = pickMission(this.host.destinations(), x, z, Math.random, this.host.standable, range);
     if (!spec) {
-      this.host.toast("No destination 1-6 km away from here");
+      this.host.toast(`No destination ${formatDistance(range.minM)} to ${formatDistance(range.maxM)} away from here`);
       return false;
     }
     this.mission = new Mission(spec);
