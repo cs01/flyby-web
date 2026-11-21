@@ -26,6 +26,8 @@ export interface LabelTarget {
   z: number;
   /** Drawn dimmer once it has been visited. */
   done: boolean;
+  /** Placed first and not counted against the limit: the mission's goal. */
+  pin?: boolean;
 }
 
 /** Past this the label is more clutter than information. */
@@ -44,7 +46,9 @@ const MAX_ON_SCREEN = 9;
 
 /** Rough label size in screen pixels, for the overlap test. */
 const CHAR_PX = 6.6;
-const PAD_PX = 40;
+/** Padding, the gap and the distance ("0.2 mi") beside the name. At 40 a
+ *  label clamped to the screen edge still hung its distance off it. */
+const PAD_PX = 64;
 const ROW_PX = 24;
 
 /** How wide the aeroplane is on screen, for the same test. Generous. */
@@ -58,6 +62,13 @@ export class Labels {
   private onPick: ((name: string) => void) | null = null;
 
   visible = true;
+  /** At most this many unpinned labels. The phone on foot sets 3: at street
+   *  level every name is close and they stack across the whole view. */
+  limit = MAX_ON_SCREEN;
+  /** The screen band labels may use, CSS px from the top. The phone keeps
+   *  them off its top bar and its bottom controls. */
+  bandTop = 0;
+  bandBottom = Infinity;
 
   /**
    * `onPick` makes the labels the same control the list on the left already is.
@@ -123,7 +134,7 @@ export class Labels {
     // one you are closer to -- which is very nearly always the one you meant.
     const order = targets
       .map((t, i) => ({ t, i, d: Math.hypot(t.x - camera.position.x, t.z - camera.position.z) }))
-      .sort((a, b) => a.d - b.d);
+      .sort((a, b) => (b.t.pin ? 1 : 0) - (a.t.pin ? 1 : 0) || a.d - b.d);
 
     const placed: { x: number; y: number; w: number }[] = [];
 
@@ -169,7 +180,19 @@ export class Labels {
       // usually the end of the name.
       const halfPct = ((t.name.length * CHAR_PX + PAD_PX) / 2 / innerWidth) * 100;
       const x = Math.max(halfPct, Math.min(100 - halfPct, (this.ndc.x * 0.5 + 0.5) * 100));
-      const y = (-this.ndc.y * 0.5 + 0.5) * 100;
+      let y = (-this.ndc.y * 0.5 + 0.5) * 100;
+      // The tag hangs ~32 px above its anchor. Outside the band it would sit
+      // on the bar or the controls; the pinned goal is pulled inside instead
+      // of dropped, because it is the one name being navigated by.
+      const anchorPx = (y / 100) * innerHeight;
+      const lo = this.bandTop + 32, hi = this.bandBottom;
+      if (anchorPx < lo || anchorPx > hi) {
+        if (!t.pin || hi <= lo) {
+          if (el.style.display !== "none") el.style.display = "none";
+          continue;
+        }
+        y = (Math.min(hi, Math.max(lo, anchorPx)) / innerHeight) * 100;
+      }
 
       // Overlap, in pixels rather than percent, because a label's width is in
       // pixels and the viewport is not square. The size is ESTIMATED from the
@@ -185,17 +208,18 @@ export class Labels {
           Math.abs(p.x - px) < (p.w + w) / 2,
       );
       const blocked = avoid.some((r) => Math.abs(r.y - py) < (r.h + ROW_PX) / 2 && Math.abs(r.x - px) < (r.w + w) / 2);
-      if (clash || blocked || shown >= MAX_ON_SCREEN) {
+      if (!t.pin && (clash || blocked || shown >= this.limit)) {
         if (el.style.display !== "none") el.style.display = "none";
         continue;
       }
       placed.push({ x: px, y: py, w });
-      shown++;
+      if (!t.pin) shown++;
 
       el.style.display = "";
       el.style.left = `${x.toFixed(2)}%`;
       el.style.top = `${y.toFixed(2)}%`;
       el.classList.toggle("done", t.done);
+      el.classList.toggle("pin", !!t.pin);
 
       const name = el.firstElementChild as HTMLElement;
       const range = el.lastElementChild as HTMLElement;

@@ -1587,3 +1587,410 @@ html, body {
 .mission-card .m-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 4px; color: var(--dim); }
 .mission-card .m-clock.over { color: #ff8a65; }
 .mission-card .m-legs { margin-top: 2px; font-size: 11px; color: var(--dim); }
+
+/* --- Opening sweep (sim/intro.ts) ----------------------------------------
+   Nothing but the skip chip while the camera comes down; the controls fade
+   in once the walker is on the ground. */
+#ui.intro > :not(.intro-skip) { opacity: 0 !important; pointer-events: none !important; }
+#ui.intro-out > * { transition: opacity 0.9s ease; }
+.intro-skip {
+  position: absolute;
+  right: calc(16px + env(safe-area-inset-right));
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--rule);
+  border-radius: 22px;
+  background: var(--panel);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  z-index: 20;
+}
+
+/* The mode switch's icons on the desktop: inline, before the word. */
+.modebar button { display: inline-flex; align-items: center; gap: 6px; }
+.modebar svg { width: 15px; height: 15px; flex: none; }
+
+/* The mission card's close button and its one line. */
+.mission-card .m-to .m-dist, .mission-card .m-to .m-clock { flex: none; color: var(--dim); font-size: 12px; }
+.mission-card .m-to b { flex: 1 1 auto; min-width: 0; }
+.mission-card .m-clock.over { color: #ff8a65; }
+.mission-card .m-x {
+  flex: none; margin: -6px -8px -6px 0; width: 32px; height: 32px; border: 0; background: none;
+  color: var(--dim); font: inherit; font-size: 18px; cursor: pointer; pointer-events: auto;
+}
+.label.pin { border-color: rgba(255, 209, 102, 0.8); }
+.label.pin b { color: #ffd166; }
+
+/* The walker's move-stick ring is a phone thing only; see app/phoneui.ts. */
+#ui .touch-home.move { display: none; }
+
+/* ======================================================================
+   Phone layout (app/phoneui.ts).
+
+   One bar on top, one sheet for everything secondary, and at the bottom only
+   what the current machine needs. Three bands, measured so nothing shares
+   space: the bar (top, 44 px), the dock (bottom: the mode switch, 56 px), and
+   the row above the dock (mission chip or card in the middle, the move ring
+   left, the machine's buttons right). `data-mode` on #ui says which machine,
+   so what is drawn when is this table and not code.
+   ====================================================================== */
+#ui.phone {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  /* The dock's top edge and the row above it. */
+  --dock: calc(8px + var(--sab) + 56px);
+  --row: calc(var(--dock) + 8px);
+}
+
+/* Gone on a phone: the place card (the bar has the name and the clock), the
+   frame counter, the clean-view switch and the desktop controls card. */
+#ui.phone > .hud-tl,
+#ui.phone > .hud-perf,
+#ui.phone > .hud-toggle,
+#ui.phone > .hud-controls { display: none !important; }
+
+/* --- The bar ----------------------------------------------------------- */
+#ui.phone > .topbar {
+  position: absolute;
+  top: calc(8px + var(--sat));
+  left: calc(8px + var(--sal));
+  right: calc(8px + var(--sar));
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 0 14px;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  background: rgba(8, 13, 20, 0.62);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  z-index: 10;
+}
+.topbar-city {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+.topbar-time, .topbar-menu {
+  flex: none;
+  height: 44px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+.topbar-time {
+  padding: 0 10px;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+.topbar-menu { width: 48px; display: grid; place-items: center; }
+.topbar-menu svg { width: 22px; height: 22px; }
+
+/* --- Sheets ------------------------------------------------------------ */
+#ui.phone > .sheet-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.38);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+  z-index: 29;
+}
+#ui.phone > .sheet-scrim.open { opacity: 1; pointer-events: auto; }
+#ui.phone > .sheet {
+  position: absolute;
+  left: var(--sal);
+  right: var(--sar);
+  bottom: 0;
+  max-height: min(78vh, calc(100% - 64px - var(--sat)));
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px var(--sab);
+  border: 1px solid var(--rule);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: rgba(10, 15, 23, 0.96);
+  transform: translateY(105%);
+  visibility: hidden;
+  transition: transform 0.22s ease, visibility 0s linear 0.22s;
+  z-index: 30;
+}
+#ui.phone > .sheet.open { transform: none; visibility: visible; transition: transform 0.22s ease; }
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.sheet-close {
+  width: 44px; height: 44px; margin-right: -12px; border: 0; background: none;
+  color: var(--ink); font: inherit; font-size: 24px; cursor: pointer;
+}
+.sheet-body { overflow-y: auto; padding-bottom: 12px; -webkit-overflow-scrolling: touch; }
+
+/* The desktop's panels, laid flat inside the sheet. */
+#ui.phone .sheet .hud {
+  position: static;
+  max-width: none;
+  max-height: none;
+  margin: 0 0 6px;
+  padding: 10px 0;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  border-radius: 0;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  text-align: left;
+  overflow: visible;
+  pointer-events: auto;
+  font-size: 13px;
+}
+#ui.phone .sheet .hud h2 { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin: 0 0 6px; }
+#ui.phone .sheet .hud h2::after { content: none; }
+#ui.phone .sheet .hud-tr { display: grid; grid-template-columns: 1fr auto; column-gap: 12px; align-items: baseline; }
+#ui.phone .sheet .hud-tr h2 { grid-column: 1 / -1; text-transform: none; letter-spacing: 0.02em; font-size: 13px; color: var(--ink); }
+#ui.phone .sheet .hud-tr .wx-temp { font-size: 22px; grid-row: span 2; }
+#ui.phone .sheet .hud-tr .tag { justify-self: start; }
+#ui.phone .sheet .place-filter { min-height: 40px; font-size: 14px; }
+#ui.phone .sheet .place-row { min-height: 40px; align-items: center; font-size: 13px; padding: 0; }
+#ui.phone .sheet .places-list { max-height: none; }
+#ui.phone .sheet .hud-layers { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; }
+#ui.phone .sheet .hud-layers h2 { grid-column: 1 / -1; }
+#ui.phone .sheet .lyr { min-height: 40px; font-size: 13px; gap: 12px; }
+#ui.phone .sheet .lyr input { width: 20px; height: 20px; }
+#ui.phone .sheet .back {
+  position: static;
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  margin: 4px 0 10px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+#ui.phone .sheet .attrib {
+  position: static;
+  transform: none;
+  white-space: normal;
+  font-size: 9px;
+  line-height: 1.4;
+  color: rgba(242, 246, 250, 0.42);
+}
+#ui.phone .sheet .attrib-full { display: inline; }
+#ui.phone .sheet .attrib-short { display: none; }
+#ui.phone .sheet .timebar {
+  position: static;
+  width: auto;
+  transform: none;
+  margin: 0 0 12px;
+  border: 0;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  padding: 0;
+  font-size: 13px;
+}
+#ui.phone .sheet .tb-band { height: 48px; }
+
+/* --- The dock: the mode switch ----------------------------------------- */
+#ui.phone > .modebar {
+  left: calc(8px + var(--sal));
+  right: calc(8px + var(--sar));
+  top: auto;
+  bottom: calc(8px + var(--sab));
+  height: 56px;
+  transform: none;
+  flex-direction: row;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 14px;
+  background: rgba(8, 13, 20, 0.62);
+}
+#ui.phone > .modebar button {
+  flex: 1 1 0;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 0;
+  border-radius: 11px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+#ui.phone > .modebar svg { width: 22px; height: 22px; }
+
+/* --- The row above the dock -------------------------------------------- */
+#ui.phone > .mission-btn {
+  top: auto;
+  bottom: var(--row);
+  left: 50%;
+  transform: translateX(-50%);
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 20px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+}
+#ui.phone > .mission-card {
+  bottom: var(--row);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  min-width: 0;
+  /* Clear of the move ring on the left and the buttons on the right. */
+  max-width: calc(100% - 2 * (max(var(--sal), var(--sar)) + 92px));
+  height: 40px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  border-radius: 20px;
+  border-color: rgba(255, 209, 102, 0.5);
+}
+#ui.phone > .mission-card .m-to { width: 100%; gap: 7px; min-width: 0; }
+#ui.phone > .mission-card .m-legs { display: none; }
+#ui.phone > .mission-card .m-clock { display: none; }
+
+#ui.phone .touch-btns {
+  top: auto;
+  bottom: var(--row);
+  right: calc(8px + var(--sar));
+  transform: none;
+  flex-direction: column-reverse;
+  gap: 8px;
+}
+#ui.phone .touch-btn { width: 48px; height: 48px; font-size: 10px; color: var(--ink); }
+#ui.phone .touch-home.move {
+  display: block;
+  left: calc(12px + var(--sal));
+  right: auto;
+  bottom: var(--row);
+  width: 72px;
+  height: 72px;
+  opacity: 0.5;
+}
+#ui.phone[data-mode="plane"] .touch-home.move,
+#ui.phone[data-mode="ride"] .touch-home.move { display: none; }
+/* A press hint, not a gauge: the cross is the zero the stick measures from. */
+#ui.phone .touch-home.move .touch-home-knob { width: 34px; height: 34px; margin: -17px 0 0 -17px; }
+
+/* Board / get off: above the chip, centred, only when something is in reach. */
+#ui.phone > .ride-hint {
+  bottom: calc(var(--row) + 48px);
+  min-height: 40px;
+  padding: 0 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(102, 212, 255, 0.5);
+  background: rgba(8, 13, 20, 0.72);
+}
+
+/* Up top, under the bar: what the car is on, or the route being ridden, and
+   the toasts. The bottom belongs to the thumbs. */
+#ui.phone > .street-sign { top: calc(60px + var(--sat)); bottom: auto; }
+#ui.phone > .landmark-flash {
+  top: calc(60px + var(--sat));
+  max-width: calc(100% - 32px);
+  padding: 8px 14px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  white-space: normal;
+  text-align: center;
+}
+
+/* --- The air: plane and drone ------------------------------------------ */
+#ui.phone > .throttle {
+  top: auto;
+  bottom: calc(var(--row) + 3 * 56px);
+  right: calc(8px + var(--sar));
+  transform: none;
+}
+#ui.phone > .throttle input { height: 110px; }
+/* Over the train and aircraft tags (z 6), which are world overlays that can
+   drift under the readout. */
+#ui.phone > .throttle { z-index: 7; }
+#ui.phone > .minimap {
+  left: calc(8px + var(--sal));
+  right: auto;
+  bottom: var(--row);
+  width: 104px;
+  height: 104px;
+}
+#ui.phone > .spot-radar {
+  left: calc(8px + var(--sal));
+  right: auto;
+  bottom: calc(var(--row) + 112px);
+  width: 96px;
+  height: 96px;
+}
+#ui.phone > .spot-btn {
+  top: calc(60px + var(--sat));
+  bottom: auto;
+  right: calc(8px + var(--sar));
+  min-height: 36px;
+}
+#ui.phone > .osd {
+  top: calc(60px + var(--sat));
+  bottom: auto;
+  left: calc(8px + var(--sal));
+  right: calc(8px + var(--sar));
+}
+#ui.phone[data-mode="plane"] > .osd { right: calc(84px + var(--sar)); }
+#ui.phone .osd-strip { display: none; }
+
+/* What each machine does not need. */
+#ui.phone:not([data-mode="plane"]) > .throttle,
+#ui.phone:not([data-mode="plane"]) > .spot-btn,
+#ui.phone:not([data-mode="plane"]) > .spot-radar,
+#ui.phone:not([data-mode="plane"]):not([data-mode="drone"]) > .minimap,
+#ui.phone:not([data-mode="plane"]):not([data-mode="drone"]) > .osd,
+#ui.phone.no-map > .minimap { display: none !important; }
+/* On the ground the aircraft tags and the spotting arrow are names on the sky
+   over the street; the trains' and boats' tags stay, they are how you board. */
+#ui.phone:not([data-mode="plane"]):not([data-mode="drone"]) > .ttags:not(.xtags),
+#ui.phone:not([data-mode="plane"]):not([data-mode="drone"]) > .spot-tgt { display: none !important; }
+
+/* --- Landscape: one row less of height --------------------------------- */
+@media (max-height: 560px) and (pointer: coarse) {
+  #ui.phone > .modebar {
+    left: 50%;
+    right: auto;
+    width: min(380px, 52vw);
+    transform: translateX(-50%);
+    height: 48px;
+  }
+  #ui.phone { --dock: calc(8px + var(--sab) + 48px); }
+  #ui.phone > .modebar button { flex-direction: row; gap: 6px; font-size: 10px; }
+  #ui.phone > .modebar svg { width: 18px; height: 18px; }
+  /* The buttons and the ring sit beside the dock rather than above it. */
+  #ui.phone .touch-btns { bottom: calc(8px + var(--sab)); flex-direction: row-reverse; }
+  #ui.phone .touch-home.move { bottom: calc(12px + var(--sab)); width: 76px; height: 76px; }
+  #ui.phone > .minimap { bottom: calc(8px + var(--sab)); width: 92px; height: 92px; }
+  #ui.phone > .spot-radar { bottom: calc(108px + var(--sab)); width: 84px; height: 84px; }
+  #ui.phone > .throttle { bottom: calc(64px + var(--sab)); }
+  #ui.phone > .throttle input { height: 84px; }
+  #ui.phone > .osd { right: calc(84px + var(--sar)); }
+  #ui.phone > .ride-hint { bottom: calc(var(--row) + 46px); }
+  #ui.phone > .sheet { left: 50%; right: auto; width: min(520px, 100%); transform: translate(-50%, 105%); }
+  #ui.phone > .sheet.open { transform: translate(-50%, 0); }
+}
