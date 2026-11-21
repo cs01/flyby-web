@@ -392,7 +392,7 @@ export class EscapeUi {
       }
       acts.push(["Stay in the town", () => { this.declined = this.gate?.name ?? null; this.mode = "running"; }]);
     } else if (!hasLamp && this.pickup) {
-      goal = "Take the oil lamp by the door";
+      goal = "Take the oil lamp from the ledge";
       target = this.pickup;
       targetName = "Oil lamp";
     } else if (h < 13) {
