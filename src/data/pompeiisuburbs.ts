@@ -72,6 +72,8 @@ export interface PompeiiSuburbs {
   boats: SuburbBoat[];
   /** Where a bridge carries a road over the river. */
   bridges: { x: number; z: number; rot: number; len: number; deckY: number }[];
+  /** A beach under a sea cliff (Herculaneum's), not Pompeii's beach and dunes. */
+  cliff?: boolean;
 }
 
 // --- documented and estimated positions -------------------------------------------------
@@ -716,8 +718,13 @@ export class LandGrid {
     const sh = this.shore(x, z);
     if (sh.w > 0.5) {
       if (sh.s < 0) return Land.Sea;
-      if (sh.s < 40) return Land.Beach;
-      if (sh.s < 170) return Land.Dunes;
+      if (this.sub.cliff) {
+        // The beach runs to the cliff foot; above it is the terrace and the town.
+        if (sh.s < 26) return Land.Beach;
+      } else {
+        if (sh.s < 40) return Land.Beach;
+        if (sh.s < 170) return Land.Dunes;
+      }
     }
     const n = this.n, C = LandGrid.CELL, H = LandGrid.HALF;
     const i = Math.floor((x + H) / C), j = Math.floor((z + H) / C);
