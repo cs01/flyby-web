@@ -17,9 +17,11 @@
 import * as THREE from "three";
 import type { Weather } from "../data/weather";
 import type { SceneLighting } from "./lighting";
-import { ROOF_FAIL_END_M, ROOF_FAIL_START_M, ROOF_FALL_M, eruptionAt, hourAtDepth, type EruptionState } from "../sim/eruption";
+import { COLUMN_H, ROOF_FAIL_END_M, ROOF_FAIL_START_M, ROOF_FALL_M, eruptionAt, hourAtDepth, type EruptionState } from "../sim/eruption";
+import { LEAN, columnRadiusM, plumeShape } from "../sim/plume";
 import { pointInRing } from "../data/pompeii";
 import type { RoofInfo } from "./pompeiimesh";
+import { EruptionVolume } from "./eruptionvolume";
 
 // --- what the town's own shader reads --------------------------------------
 
@@ -461,8 +463,11 @@ void main() {
 }
 `;
 
-// Falling pumice: streaks wrapped in a box round the camera, anchored in the
-// world so walking through them reads as walking through them.
+// The fall round the camera, wrapped in a box anchored in the world so walking
+// through it reads as walking through it. Two populations through one
+// shader: uKind 0 the lapilli, pale stones 1 to 3 cm falling at 10 to 18 m/s;
+// uKind 1 the fine ash, motes of a millimetre or two drifting down at a
+// metre or two a second and swirling on the wind.
 const PUMICE_VERT = /* glsl */ `
 precision highp float;
 in vec3 position;
@@ -472,27 +477,52 @@ uniform mat4 projectionMatrix;
 uniform vec3 uCamPos;
 uniform float uTime;
 uniform vec3 uBox;
-uniform vec3 uDrift;   // m/s, x and z; y the fall speed
+uniform vec3 uDrift;   // m/s, x and z; y the stones' fall speed
+uniform float uKind;
 out vec2 vUv;
 out vec3 vWorld;
 out float vShade;
+out float vStretch;
+out float vFade;
+out float vSpin;
+out float vSeed;
+out vec3 vRight;
+out vec3 vBack;
 void main() {
-  float speed = uDrift.y * (0.75 + 0.5 * aSeed.w);
+  bool fine = uKind > 0.5;
+  float speed = fine ? 1.0 + 1.4 * aSeed.w : uDrift.y * (0.7 + 0.6 * aSeed.w);
   vec3 vel = vec3(uDrift.x, -speed, uDrift.z);
   vec3 p0 = aSeed.xyz * uBox + vel * uTime;
+  // The fine ash rides the gusts: each mote on its own slow loop.
+  if (fine) p0 += vec3(sin(uTime * 0.9 + aSeed.x * 40.0), 0.4 * sin(uTime * 1.3 + aSeed.z * 30.0), cos(uTime * 0.7 + aSeed.y * 50.0)) * 0.7;
   vec3 rel = mod(p0 - uCamPos + uBox * 0.5, uBox) - uBox * 0.5;
   vec3 c = uCamPos + rel;
   vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
-  // Never under about two pixels wide, or a stone further than a few metres
-  // is a sub-pixel line that flickers rather than a stone falling.
-  float size = max(0.01 + 0.03 * aSeed.w, distance(c, uCamPos) * 0.0022);
-  // Stretched along the fall by a thirtieth of a second of travel.
-  vec3 along = normalize(vel) * (size + speed / 30.0);
+  vec3 back = vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+  float d = distance(c, uCamPos);
+  float r = fine ? 0.0008 + 0.0012 * fract(aSeed.y * 53.1) : 0.005 + 0.01 * fract(aSeed.y * 53.1);
+  // On screen never under about a pixel and a half (a smaller speck
+  // flickers) and never over about a degree: the few closest stones once
+  // filled a fifth of the screen as slabs.
+  float size = clamp(r, d * 0.0016, d * 0.018);
+  // The eye holds a falling stone for about 1/60 s, in which it drops some
+  // 20 cm: a thin tapered streak, which is what a pumice fall looks like.
+  // Capped against the stone's width so the nearest ones stay stones.
+  float tail = fine ? 0.0 : min(0.5 * speed / 60.0, size * 9.0);
+  vec3 along = normalize(vel) * (size + tail);
   // Minus: the fall points down, and right x down would turn the quad away from the camera.
   vec3 w = c + right * position.x * size - along * position.y;
   vUv = position.xy;
   vWorld = c;
-  vShade = 0.6 + 0.6 * fract(aSeed.x * 91.7);
+  vShade = 0.75 + 0.4 * fract(aSeed.x * 91.7);
+  vStretch = (size + tail) / size;
+  // Gone before the near plane rather than through it.
+  vFade = smoothstep(0.15, 0.65, d);
+  vSeed = fract(aSeed.z * 71.3);
+  // Tumbling a few turns a second as it falls.
+  vSpin = uTime * (3.0 + 9.0 * vSeed) + vSeed * 6.28;
+  vRight = right;
+  vBack = back;
   gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
 }
 `;
@@ -502,15 +532,48 @@ precision highp float;
 in vec2 vUv;
 in vec3 vWorld;
 in float vShade;
+in float vStretch;
+in float vFade;
+in float vSpin;
+in float vSeed;
+in vec3 vRight;
+in vec3 vBack;
 out vec4 fragColor;
 ${COMMON_UNIFORMS}
 uniform vec3 uPumice;
+uniform float uKind;
+${NOISE}
 ${ERUPTION_SURFACE_GLSL}
 void main() {
-  float a = smoothstep(1.0, 0.3, abs(vUv.x)) * smoothstep(1.0, 0.6, abs(vUv.y));
-  vec3 col = uPumice * vShade * (uNearAmb * 3.0 + eruptionLamps(vWorld, normalize(uCamPos - vWorld)));
   float T = exp(-distance(uCamPos, vWorld) / uVis);
-  fragColor = vec4(mix(uHaze, col, T), a * 0.9);
+  if (uKind > 0.5) {
+    float a = smoothstep(1.0, 0.1, length(vUv)) * 0.4 * vFade;
+    if (a < 0.01) discard;
+    vec3 col = vec3(0.55, 0.52, 0.47) * (uNearAmb * 3.0 + uSunE * uShade * 0.3 + eruptionLamps(vWorld, vec3(0.0, 1.0, 0.0)));
+    fragColor = vec4(mix(uHaze, col, T), a);
+    return;
+  }
+  // The stone's own disc, with the smear collapsed out of it.
+  vec2 q = vec2(vUv.x, sign(vUv.y) * max(0.0, abs(vUv.y) * vStretch - (vStretch - 1.0)));
+  // An irregular outline: pumice is a broken froth, not a bead.
+  float ang = atan(q.y, q.x) + vSpin;
+  float rim = 0.84 + 0.09 * sin(3.0 * ang + vSeed * 17.0) + 0.06 * sin(5.0 * ang + vSeed * 31.0);
+  // The smear narrows to a point at both ends and thins out along its
+  // length: with square ends it read as a falling rectangle.
+  float along = abs(vUv.y) * step(1.01, vStretch);
+  float rr = length(vec2(q.x / (1.0 - 0.7 * along), q.y)) / rim;
+  float a = smoothstep(1.0, 0.78, rr) * vFade * max(0.4, min(1.0, 1.5 / vStretch)) * (1.0 - 0.6 * along);
+  if (a < 0.01) discard;
+  // Shaded as a lump in the scene's own light: pale where the light falls on
+  // it, dim in its own shade, mottled with vesicles that turn as it tumbles.
+  vec2 qq = q / rim;
+  vec3 n = normalize(vRight * qq.x + vec3(0.0, 1.0, 0.0) * qq.y + vBack * sqrt(max(0.0, 1.0 - dot(qq, qq))));
+  float cs = cos(vSpin), sn = sin(vSpin);
+  vec2 rq = vec2(cs * qq.x - sn * qq.y, sn * qq.x + cs * qq.y);
+  float mott = 0.75 + 0.4 * vnoise(rq * 2.6 + vSeed * 13.0);
+  vec3 light = uNearAmb * (2.0 + 1.4 * n.y) + uSunE * uShade * max(0.0, dot(n, uSunDir)) + eruptionLamps(vWorld, n);
+  vec3 col = uPumice * vShade * mott * light;
+  fragColor = vec4(mix(uHaze, col, T), a);
 }
 `;
 
@@ -634,6 +697,12 @@ export interface EruptionViewOpts {
   reduced: boolean;
   /** The town's share of Pompeii's pumice fall (data/towns.ts); 1 when left out. */
   fall?: number;
+  /**
+   * Draw the column, umbrella and surge as the raymarched volume
+   * (render/eruptionvolume.ts, marched in the cloud pass) instead of billows.
+   * Off on the phone tier, which keeps the billows.
+   */
+  volume?: boolean;
 }
 
 interface Collapse { x: number; y: number; z: number; startH: number; seed: number }
@@ -646,6 +715,8 @@ const HEAR_M = 80;
 const SHELTER_M = 14;
 
 const _grey = new THREE.Color();
+const BOLT_MAIN = 16;
+const BOLT_FORK = 6;
 
 export class EruptionView {
   readonly group = new THREE.Group();
@@ -672,6 +743,10 @@ export class EruptionView {
   private readonly pGeo: THREE.InstancedBufferGeometry;
   private readonly pumiceN: number;
   private readonly pumiceU: Record<string, THREE.IUniform>;
+  private readonly ash: THREE.Mesh;
+  private readonly aGeo: THREE.InstancedBufferGeometry;
+  private readonly ashN: number;
+  private readonly ashU: Record<string, THREE.IUniform>;
   private readonly glow: THREE.Mesh;
   private readonly gGeo: THREE.InstancedBufferGeometry;
   private readonly gAttr: THREE.InstancedBufferAttribute;
@@ -690,6 +765,8 @@ export class EruptionView {
    *  integers is correlated enough to wind the column into a spiral. */
   private readonly colRand = new Float32Array(512).map(rng(1979));
   private rawSun = 0;
+  /** The exposure lift under the plume, 1 in open daylight. */
+  private adapt = 1;
   private readonly rawAmb = new THREE.Color();
   private readonly sunDir = new THREE.Vector3(0, 1, 0);
   private readonly sunColor = new THREE.Color(1, 1, 1);
@@ -709,10 +786,13 @@ export class EruptionView {
   inSurge = 0;
   /** 1 inside the fall's footprint (Pompeii), 0 well outside it; see locate. */
   fallHere = 1;
+  /** The raymarched column, umbrella and surge; null on the billow path. */
+  readonly volume: EruptionVolume | null;
 
   constructor(private readonly opts: EruptionViewOpts) {
     this.group.name = "eruption";
     this.group.visible = false;
+    this.volume = opts.volume ? new EruptionVolume(opts.vent, opts.heightAt) : null;
     this.common = {
       uSunDir: { value: new THREE.Vector3(0, 1, 0) },
       uSunE: { value: new THREE.Color() },
@@ -757,7 +837,7 @@ export class EruptionView {
     this.canopy.name = "eruption-umbrella";
     this.canopy.renderOrder = 19;
 
-    this.pumiceN = red ? 600 : 1800;
+    this.pumiceN = red ? 1500 : 5000;
     this.pGeo = quadGeometry(0);
     const seeds = new Float32Array(this.pumiceN * 4);
     const r = rng(79);
@@ -767,9 +847,12 @@ export class EruptionView {
       ...this.common,
       ...eruptionSurfaceUniforms,
       uTime: { value: 0 },
-      uBox: { value: new THREE.Vector3(22, 16, 22) },
-      uDrift: { value: new THREE.Vector3(1.2, 7, 2.0) },
+      // Smaller than the old 22 m box at the same count: about 0.6 stones
+      // a cubic metre, the number a 15 cm/h fall of 1-3 cm lapilli at 14 m/s gives.
+      uBox: { value: new THREE.Vector3(22, 14, 22) },
+      uDrift: { value: new THREE.Vector3(1.2, 14, 2.0) },
       uPumice: { value: new THREE.Color(0.8, 0.76, 0.68) },
+      uKind: { value: 0 },
     };
     this.pumice = new THREE.Mesh(this.pGeo, new THREE.RawShaderMaterial({
       vertexShader: PUMICE_VERT, fragmentShader: PUMICE_FRAG, uniforms: this.pumiceU,
@@ -778,6 +861,23 @@ export class EruptionView {
     this.pumice.frustumCulled = false;
     this.pumice.name = "eruption-pumice";
     this.pumice.renderOrder = 21;
+
+    // The fine ash: a second draw of the same shader, its own seeds and a
+    // smaller box (a mote further than a few metres is below a pixel).
+    this.ashN = red ? 900 : 2500;
+    this.aGeo = quadGeometry(0);
+    const aSeeds = new Float32Array(this.ashN * 4);
+    const ra = rng(1979);
+    for (let i = 0; i < aSeeds.length; i++) aSeeds[i] = ra();
+    this.aGeo.setAttribute("aSeed", new THREE.InstancedBufferAttribute(aSeeds, 4));
+    this.ashU = { ...this.pumiceU, uKind: { value: 1 }, uBox: { value: new THREE.Vector3(8, 6, 8) } };
+    this.ash = new THREE.Mesh(this.aGeo, new THREE.RawShaderMaterial({
+      vertexShader: PUMICE_VERT, fragmentShader: PUMICE_FRAG, uniforms: this.ashU,
+      glslVersion: THREE.GLSL3, transparent: true, depthWrite: false,
+    }));
+    this.ash.frustumCulled = false;
+    this.ash.name = "eruption-ash";
+    this.ash.renderOrder = 21;
 
     this.gGeo = quadGeometry(0);
     this.gAttr = new THREE.InstancedBufferAttribute(new Float32Array(12 * 4), 4);
@@ -794,7 +894,7 @@ export class EruptionView {
     this.glow.name = "eruption-flames";
     this.glow.renderOrder = 22;
 
-    this.boltPos = new Float32Array(16 * 2 * 3);
+    this.boltPos = new Float32Array((BOLT_MAIN + 2 * BOLT_FORK) * 2 * 3);
     const bg = new THREE.BufferGeometry();
     bg.setAttribute("position", new THREE.BufferAttribute(this.boltPos, 3));
     this.bolt = new THREE.LineSegments(bg, new THREE.LineBasicMaterial({ color: new THREE.Color(4, 4.2, 5), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
@@ -831,7 +931,7 @@ export class EruptionView {
     this.bundleMesh.frustumCulled = false;
     this.bundleMesh.name = "eruption-bundles";
 
-    this.group.add(this.dome, this.canopy, this.billows, this.pumice, this.glow, this.bolt, this.bundleMesh);
+    this.group.add(this.dome, this.canopy, this.billows, this.pumice, this.ash, this.glow, this.bolt, this.bundleMesh);
   }
 
   /** The state at local hour h, or the untouched eve when switched off. */
@@ -845,6 +945,11 @@ export class EruptionView {
 
   get active(): boolean {
     return this.enabled && this.state.phase !== "before";
+  }
+
+  /** Whether the cloud pass should march the volume this frame. */
+  get volumeActive(): boolean {
+    return this.volume !== null && this.active;
   }
 
   /** The weather under the plume: no ordinary cloud (the plume is the sky), the fall's visibility. */
@@ -906,6 +1011,7 @@ export class EruptionView {
     if (this.fallHere > 0.01) light.turbidity = Math.max(light.turbidity, this.fallHere * 3.9 / (4.44e-6 * this.visibility()));
     if (this.fallHere > 0.5) light.mieG = 0.35;
     const adapt = Math.min(5, Math.pow(f, -0.45));
+    this.adapt = adapt;
     light.exposure = Math.max(light.exposure, 0.54 * adapt);
     // A flash lights the whole town for an instant.
     light.ambient.addScalar(this.flash * 0.02);
@@ -937,7 +1043,7 @@ export class EruptionView {
     this.updateLamps(t, camera);
     su.uAshView.value.set(0, 1, on ? 1 : 0, on ? Math.min(1, s.columnKm / 15) : 0);
     if (!on) {
-      this.billows.visible = this.canopy.visible = this.pumice.visible = this.bolt.visible = this.dome.visible = this.bundleMesh.visible = false;
+      this.billows.visible = this.canopy.visible = this.pumice.visible = this.ash.visible = this.bolt.visible = this.dome.visible = this.bundleMesh.visible = false;
       this.glow.visible = this.pickup !== null;
       return;
     }
@@ -970,21 +1076,52 @@ export class EruptionView {
     const fv = c.uFlash.value as THREE.Vector4;
     const vent = this.opts.vent;
     const hk = hash(slot + 0.5), hk2 = hash(slot + 0.25);
+    let boltSpan = sg ? 120 : 700;
     if (sg) {
       const town = this.opts.town;
       const a = Math.atan2(town.x - vent.x, -(town.z - vent.z)) + (hk - 0.5) * 1.2;
       const x = vent.x + Math.sin(a) * (sg.frontM - 250), z = vent.z - Math.cos(a) * (sg.frontM - 250);
       fv.set(x, this.opts.heightAt(x, z) + 250 + hk2 * 300, z, strike * 4);
+    } else if (this.volume) {
+      // Inside the column, on the side facing the camera, where a flash is seen
+      // through the least ash: out near the edge, where the channel shows
+      const sh = plumeShape(s.columnKm, s.steadyKm, vent.y / 1000, Math.max(0, (s.h - COLUMN_H) * 3600));
+      const z = (0.12 + 0.5 * hk2) * sh.topM;
+      const b = columnRadiusM(z, sh);
+      const a = Math.atan2(cam.x - vent.x, cam.z - vent.z) + (hk - 0.5) * 1.4;
+      const lean = (LEAN * z * z) / Math.max(sh.topM, 1);
+      fv.set(vent.x + Math.sin(a) * b * (0.85 + 0.25 * hash(slot + 0.75)) + Math.sin(WIND_TOWARD) * lean, vent.y + z,
+        vent.z + Math.cos(a) * b * (0.85 + 0.25 * hash(slot + 0.75)) - Math.cos(WIND_TOWARD) * lean, strike * 5);
+      boltSpan = Math.max(80, b * 0.3);
     } else {
       fv.set(vent.x + (hk - 0.5) * 2500, vent.y + 2500 + hk2 * s.columnKm * 600, vent.z + (hash(slot + 0.75) - 0.5) * 2500, strike * 5);
     }
-    this.drawBolt(strike, fv, slot, sg ? 120 : 700);
+    this.drawBolt(strike, fv, slot, boltSpan);
 
     this.updateCanopy();
     this.updateBundles();
     this.updateBillows(cam, t, frozen);
     this.updatePumice(t);
+    if (this.volume) {
+      const town = this.opts.town;
+      this.volume.update({
+        state: s,
+        animT: t,
+        sun: this.volSun.copy(this.sunColor).multiplyScalar(this.rawSun * 0.105),
+        amb: this.rawAmb,
+        nearAmb: c.uNearAmb.value as THREE.Color,
+        shade: c.uShade.value as number,
+        adapt: this.adapt,
+        flash: fv,
+        townBearing: Math.atan2(town.x - vent.x, -(town.z - vent.z)),
+        outside: 1 - this.fallHere,
+        sunY: this.sunDir.y,
+        visibilityM: this.visibility(),
+      });
+    }
   }
+
+  private readonly volSun = new THREE.Color();
 
   private updateCanopy(): void {
     const s = this.state, v = this.opts.vent;
@@ -994,7 +1131,7 @@ export class EruptionView {
     this.canopyU.uCanopy.value.set(v.x, v.z, s.umbrellaKm * 1000, 5000);
     this.canopyU.uShape.value.set(up, Math.max(3000, reachM), half, WIND_TOWARD);
     this.canopyU.uCanopyAlpha.value = Math.min(0.97, s.columnKm / 12);
-    this.canopy.visible = s.columnKm > 8;
+    this.canopy.visible = s.columnKm > 8 && !this.volume;
     this.common.uUmbY.value = this.canopy.visible ? s.umbrellaKm * 1000 : -1e9;
     // The sky closes over as the umbrella arrives overhead (about 13:10).
     this.domeU.uDomeAlpha.value = Math.min(0.97, Math.max(0, (s.h - 13.05) / 0.35)) * (0.25 + 0.75 * this.fallHere);
@@ -1043,7 +1180,7 @@ export class EruptionView {
     // it entrains air, bent downwind near the top. Billows keep their place
     // on the trunk and swell and roll slowly; the motion is the convection,
     // not a conveyor.
-    const nCol = red ? 70 : 150;
+    const nCol = this.volume ? 0 : red ? 70 : 150;
     const R4 = this.colRand;
     const roll = frozen ? 0 : t * 0.0012;
     for (let i = 0; i < nCol && H > 0; i++) {
@@ -1063,7 +1200,7 @@ export class EruptionView {
     }
     // The branches of Pliny's pine: the cloud spreading out on every side
     // from the top of the trunk before the wind carries it off.
-    if (H > 8000) {
+    if (H > 8000 && !this.volume) {
       const nBr = red ? 18 : 36;
       const spread = Math.min(14000, 3000 + s.umbrellaReachKm * 220);
       for (let i = 0; i < nBr; i++) {
@@ -1120,6 +1257,7 @@ export class EruptionView {
     const camR = Math.hypot(cam.x - v.x, cam.z - v.z);
     // Inside the cloud once the front has passed the camera.
     this.inSurge = Math.max(0, Math.min(1, (sg.frontM - camR) / 120 + 0.5));
+    if (this.volume) return;
     const red = this.opts.reduced;
     const nA = red ? 14 : 26, rows = red ? 3 : 4;
     for (let row = 0; row < rows; row++) {
@@ -1205,6 +1343,10 @@ export class EruptionView {
     const k = Math.min(1, s.fallRateCmH / 15) * (1 - this.inSurge) * this.fallHere;
     this.pGeo.instanceCount = Math.round(this.pumiceN * k);
     this.pumice.visible = this.pGeo.instanceCount > 0;
+    // The fine ash thickens as the light goes: the grey phase is finer and the
+    // dark is mostly what it hangs in the air.
+    this.aGeo.instanceCount = Math.round(this.ashN * k * (0.35 + 0.65 * (1 - s.light)));
+    this.ash.visible = this.aGeo.instanceCount > 0;
     this.pumiceU.uTime.value = t;
     const grey = 1 - s.whiteness;
     (this.pumiceU.uPumice.value as THREE.Color).setRGB(0.8 - 0.42 * grey, 0.76 - 0.41 * grey, 0.68 - 0.34 * grey);
@@ -1215,10 +1357,24 @@ export class EruptionView {
     if (!this.bolt.visible) return;
     const p = this.boltPos;
     let x = at.x, y = at.y + span * 2.5, z = at.z;
-    for (let i = 0; i < 16; i++) {
+    const forks: number[][] = [];
+    for (let i = 0; i < BOLT_MAIN; i++) {
       const nx = x + (hash(slot * 13 + i) - 0.5) * span, ny = y - span * (0.37 + 0.28 * hash(slot * 7 + i)), nz = z + (hash(slot * 3 + i) - 0.5) * span;
       p.set([x, y, z, nx, ny, nz], i * 6);
+      if (i === 3 || i === 8) forks.push([nx, ny, nz]);
       x = nx; y = ny; z = nz;
+    }
+    // Two forks off the channel, wandering more and dying out.
+    let k = BOLT_MAIN;
+    for (let f = 0; f < forks.length; f++) {
+      let [fx, fy, fz] = forks[f];
+      const side = f ? 1 : -1;
+      for (let i = 0; i < BOLT_FORK; i++, k++) {
+        const s = span * (0.8 - i * 0.08);
+        const nx = fx + side * s * (0.35 + 0.5 * hash(slot * 5 + f * 17 + i)), ny = fy - s * (0.2 + 0.4 * hash(slot * 11 + f * 7 + i)), nz = fz + (hash(slot * 19 + f * 3 + i) - 0.5) * s;
+        p.set([fx, fy, fz, nx, ny, nz], k * 6);
+        fx = nx; fy = ny; fz = nz;
+      }
     }
     (this.bolt.geometry.getAttribute("position") as THREE.BufferAttribute).needsUpdate = true;
   }

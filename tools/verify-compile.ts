@@ -11,7 +11,8 @@
 // One pose per path, not per feature: the city shaders (sf-street), the
 // lidar island (alcatraz-flyover), Pompeii by day with its art and columns
 // (pompeii-forum-colonnade), Pompeii's lamps at night, its water (the baths' rooms,
-// pools, jets and steam), the eruption, and the
+// pools, jets and steam), the eruption (the volume in eruption-street-1630, the billows the phone
+// draws in eruption-column-bay-billows), and the
 // phone tier's lean variants (pompeii-fountain-phone for the water's; pompeii-forum on the reduced tier is covered by
 // the shot's own query).
 
@@ -28,6 +29,7 @@ const POSES = [
   "pompeii-baths-caldarium",
   "pompeii-fountain-phone",
   "eruption-street-1630",
+  "eruption-column-bay-billows",
 ];
 
 const out = mkdtempSync(join(tmpdir(), "flyby-compile-"));

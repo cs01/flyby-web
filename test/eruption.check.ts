@@ -14,6 +14,11 @@ import {
   ROOF_FAIL_START_M, ROOF_FALL_M, ROOF_LETHAL_M, hourAtDepth, roofCollapse, roofTag, roofTagDepthM, shelterDeathH,
   type EscapeRun,
 } from "../src/sim/eruption";
+import {
+  SPREAD, columnRadiusM, heightKmForFlux, massFluxKgS, plumeShape, riseSpeedMS, umbrellaHalfWidthM, umbrellaRadiusM, upwindStallM,
+} from "../src/sim/plume";
+import { steadyColumnKm } from "../src/sim/eruption";
+import { PLUME_GLSL } from "../src/render/eruptionvolume";
 import { COAST_ROUTE, ENDINGS, GATE_ROUTES, STARTS, VENT, routeFor } from "../src/data/escape";
 import { Origin } from "../src/geo";
 import { parsePompeii } from "../src/data/pompeii";
@@ -47,6 +52,65 @@ check("no column before 13:00", columnKm(12.9) === 0, `${columnKm(12.9)}`);
 check("column ~15 km by 13:30 (Pliny's pine tree)", within(columnKm(13.5), 12, 20), `${columnKm(13.5).toFixed(1)} km`);
 check("white phase column 20-30 km at 18:00", within(columnKm(18), 20, 30), `${columnKm(18).toFixed(1)} km`);
 check("grey phase column 28-35 km at 22:00", within(columnKm(22), 28, 35), `${columnKm(22).toFixed(1)} km`);
+
+// --- the plume (sim/plume.ts) -------------------------------------------------
+// Bounds from outside the code: the 79 AD column 26-33 km (Carey and
+// Sigurdsson 1987); Wilson and Walker (1987), 1e8 kg/s holds a column 20-27 km
+// high and H goes as Q^(1/4); MTT entrainment, radius growth 0.1-0.15 per metre
+// and a top 1.2-1.45 times the neutral level; a gravity-current umbrella
+// spreads as t^(2/3); exit speeds of a Plinian jet over 100 m/s.
+{
+  const VENT_KM = 1.2;
+  const grey = plumeShape(columnKm(22), steadyColumnKm(22), VENT_KM, (22 - 13) * 3600);
+  const topKm = grey.topM / 1000 + VENT_KM;
+  const tooLow = plumeShape(20, 20, VENT_KM, 3600);
+  check("grey-phase plume top 26-33 km", within(topKm, 26, 33), `${topKm.toFixed(1)} km`);
+  probe("a 20 km column is caught", !within(tooLow.topM / 1000 + VENT_KM, 26, 33), "");
+
+  const flux = massFluxKgS(26);
+  check("white-phase mass flux 5e7-5e8 kg/s", within(flux, 5e7, 5e8), flux.toExponential(2));
+  const h8 = heightKmForFlux(1e8);
+  check("1e8 kg/s holds a column 20-27 km (Wilson and Walker)", within(h8, 20, 27), `${h8.toFixed(1)} km`);
+  const ratio = heightKmForFlux(16e8) / heightKmForFlux(1e8);
+  check("16x the flux doubles the height (H ~ Q^1/4)", Math.abs(ratio - 2) < 0.02, ratio.toFixed(3));
+  probe("H ~ Q^1/3 is caught", Math.abs(Math.cbrt(16) - 2) >= 0.02, Math.cbrt(16).toFixed(3));
+  check("flux inverts height", Math.abs(heightKmForFlux(massFluxKgS(29)) - 29) < 1e-9, "");
+
+  const slope = (columnRadiusM(15000, grey) - columnRadiusM(5000, grey)) / 10000;
+  check("column radius grows 0.1-0.15 m per m of height (entrainment)", within(slope, 0.1, 0.15), slope.toFixed(3));
+  const rz = columnRadiusM(grey.nblM, grey) / grey.nblM;
+  check("radius / height at the neutral level 0.1-0.2", within(rz, 0.1, 0.2), rz.toFixed(3));
+  probe("a cylinder is caught", !within(0, 0.1, 0.15), "");
+  const os = grey.topM / grey.nblM;
+  check("overshoot top 1.2-1.45 x the neutral level (MTT)", within(os, 1.2, 1.45), os.toFixed(2));
+
+  const r1 = umbrellaRadiusM(1800, grey.qKgS), r4 = umbrellaRadiusM(7200, grey.qKgS);
+  const g = r4 / r1;
+  check("umbrella radius grows as t^(2/3): R(4t)/R(t) 2.4-2.65", within(g, 2.4, 2.65), g.toFixed(3));
+  probe("a front at constant speed (R ~ t) is caught", !within(4, 2.4, 2.65), "");
+  const up = upwindStallM(grey.qKgS) / 1000;
+  check("umbrella stands 3-40 km upwind against a 25 m/s wind", within(up, 3, 40), `${up.toFixed(1)} km`);
+  const hw30 = umbrellaHalfWidthM(30000, grey) / 1000;
+  check("umbrella 20-120 km wide 30 km downwind (Plinian umbrellas in wind, satellite)", within(2 * hw30, 20, 120), `${(2 * hw30).toFixed(0)} km`);
+
+  const w2 = riseSpeedMS(2000, grey), wTop = riseSpeedMS(grey.topM, grey);
+  check("rise speed over 100 m/s 2 km above the vent", w2 > 100, `${w2.toFixed(0)} m/s`);
+  check("rise speed nothing at the top of the overshoot", wTop === 0, `${wTop}`);
+  let dec = true;
+  for (let z = grey.jetM; z < grey.topM; z += 250) if (riseSpeedMS(z + 250, grey) > riseSpeedMS(z, grey) + 1e-9) dec = false;
+  check("rise speed falls all the way up from the gas-thrust top", dec, "");
+  const flat = (z: number) => (z < grey.topM ? 120 : 120);
+  probe("a constant rise speed is caught", flat(grey.topM) !== 0, "");
+
+  // The rising head: in its first quarter hour the column is fed at the
+  // 15 km column's flux, so it is as wide as that column, not a thread.
+  const head = plumeShape(columnKm(13.08), steadyColumnKm(13.08), VENT_KM, 300);
+  check("13:05 head is fed at the opening flux (wider than its own height's)", head.rising && head.ventRM > plumeShape(columnKm(13.08), columnKm(13.08), VENT_KM, 300).ventRM, `${head.ventRM.toFixed(0)} m`);
+
+  // The GLSL is generated from these constants.
+  check("volume GLSL carries the entrainment constant", PLUME_GLSL.includes(`P_SPREAD = ${SPREAD.toFixed(6)}`), "");
+  probe("a different constant is not found", !PLUME_GLSL.includes(`P_SPREAD = ${(SPREAD + 0.01).toFixed(6)}`), "");
+}
 
 // --- the fall ---------------------------------------------------------------
 const rates = [14.5, 16, 18, 19.5].map(fallRateCmH);

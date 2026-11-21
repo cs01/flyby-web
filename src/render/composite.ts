@@ -41,6 +41,7 @@ import { TONEMAP_GLSL } from "./tonemap.glsl";
 import { CLOUD_GLSL } from "./clouds.glsl";
 import { makeShapeNoise, makeDetailNoise } from "./noise3d";
 import { makeWeatherMap } from "./cloudmap";
+import { PLUME_GLSL, type PlumeUniforms } from "./eruptionvolume";
 import { shIrradiance, type SH9 } from "./sh";
 import type { Weather } from "../data/weather";
 import type { SceneLighting } from "./lighting";
@@ -172,6 +173,8 @@ float sunScatter(float od, float cosSun) {
   }
   return s;
 }
+
+${PLUME_GLSL}
 
 void main() {
   // The half-res pixel this quarter-rate fragment stands for this frame.
@@ -375,6 +378,20 @@ void main() {
     }
   }
 
+#ifdef PLUME
+  // The eruption's volume (render/eruptionvolume.ts). The decks are cleared
+  // while it is on, so nothing has to be ordered between the two.
+  plumeMarch(rd, sceneDist, hp, scattered, through, dSum, wSum);
+  // Open sky seen through the air under the umbrella, from outside the fall
+  // (inside it the eruption's own sky dome stands there instead).
+  if (sceneDist > 1.0e8 && uPlumeD.y > 0.0) {
+    // What it scatters instead is the ash's dim brown, not sky blue.
+    float m = mix(1.0, mix(0.2, 1.0, plumeAirLit(rd, 60000.0)), uPlumeD.y);
+    scattered += through * (1.0 - m) * uPlumeGround * 0.6 * vec3(1.0, 0.85, 0.7);
+    through *= m;
+  }
+#endif
+
   // --- AERIAL PERSPECTIVE ---------------------------------------------------
   // The cloud's light crosses the same air as everything else on its way to
   // the eye. Without this a deck 60 km out keeps the contrast of one 2 km
@@ -385,7 +402,16 @@ void main() {
   if (alpha > 0.002) {
     vec3 airT;
     vec3 air = atmosphere(atmoOrigin(uCameraPos.y), rd, dMean, airT);
+#ifdef PLUME
+    // The air in the umbrella's shadow scatters no sun (plumeAirLit).
+    air *= mix(0.08, 1.0, plumeAirLit(rd, dMean));
+    // Inside the fall the volume carries its own haze (the fall's visibility,
+    // render/eruptionvolume.ts), which is what the town's haze is too; the
+    // aerosol this integral would add for that visibility left nothing at all.
+    scattered = mix(scattered, scattered * airT + air * alpha, uPlumeD.y);
+#else
     scattered = scattered * airT + air * alpha;
+#endif
   }
 
   // --- High cirrus ----------------------------------------------------------
@@ -835,6 +861,13 @@ export class Composite {
   lowClouds = false;
   /** No cloud shadows on the ground (render/quality.ts's lean phone preset). */
   noCloudShadow = false;
+  /** The eruption's volume, full and cut down; null until setPlume. */
+  private plumeScenes: [THREE.Scene, THREE.Scene] | null = null;
+  /** March the eruption's volume this frame (main.ts, while the eruption is on). */
+  plumeOn = false;
+  /** The cut-down volume: fewer steps, for a device the quality ladder has stepped down. */
+  plumeLow = false;
+  private readonly marchDefines: string;
   private readonly reconScene: THREE.Scene;
   private readonly shadowScene: THREE.Scene;
   private readonly presentScene: THREE.Scene;
@@ -923,6 +956,7 @@ export class Composite {
     const defines = reduced
       ? low
       : "#define CLOUD_STEPS 64\n#define LIGHT_STEPS 5\n#define ATMO_STEPS 10\n#define ATMO_SUN_STEPS 3\n#define SHADOW_STEPS 10\n";
+    this.marchDefines = defines;
     this.marchScene = pass(MARCH_FRAG, this.uniforms, defines);
     this.marchSceneLow = reduced ? null : pass(MARCH_FRAG, this.uniforms, low);
 
@@ -1039,6 +1073,20 @@ export class Composite {
     u.uCloudShadowMap.value = this.shadowMap.texture;
   }
 
+  /**
+   * Build the march variants that carry the eruption's volume. Only Pompeii
+   * on a capable device calls this, so no other city compiles the plume.
+   * Both are compiled now, so stepping down does not cost a frame.
+   */
+  setPlume(renderer: THREE.WebGLRenderer, u: PlumeUniforms): void {
+    const all = { ...this.uniforms, ...u };
+    this.plumeScenes = [
+      pass(MARCH_FRAG, all, `#define PLUME\n#define PLUME_STEPS 96\n#define PLUME_LIGHT 3\n${this.marchDefines}`),
+      pass(MARCH_FRAG, all, `#define PLUME\n#define PLUME_STEPS 48\n#define PLUME_LIGHT 2\n${this.marchDefines}`),
+    ];
+    for (const s of this.plumeScenes) renderer.compile(s, this.camera);
+  }
+
   /** Clouds, then present to the screen. */
   render(renderer: THREE.WebGLRenderer, sceneColour: THREE.Texture, depth: THREE.Texture | null): void {
     const [px, py] = PHASES[this.frame % 4];
@@ -1050,11 +1098,12 @@ export class Composite {
       renderer.compile(this.marchSceneLow, this.camera);
       this.lowCompiled = true;
     }
-    const march = this.lowClouds && this.marchSceneLow ? this.marchSceneLow : this.marchScene;
+    let march = this.lowClouds && this.marchSceneLow ? this.marchSceneLow : this.marchScene;
+    if (this.plumeOn && this.plumeScenes) march = this.plumeScenes[this.plumeLow || this.lowClouds ? 1 : 0];
     renderer.setRenderTarget(this.march);
     if (clouds) renderer.render(march, this.camera);
     for (let i = 0; i < this.benchRepeats; i++) {
-      renderer.render(this.marchScene, this.camera);
+      renderer.render(march, this.camera);
       if (this.shadowOn) {
         renderer.setRenderTarget(this.shadowMap);
         renderer.render(this.shadowScene, this.camera);

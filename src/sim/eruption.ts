@@ -126,6 +126,18 @@ export function columnKm(h: number): number {
 }
 
 /**
+ * Height the column's mass flux would hold it at, km. The same as columnKm
+ * once the column stands; in its first quarter hour columnKm is the rising
+ * head of a column already fed at the opening phase's rate, so the flux (and
+ * with it the column's width, sim/plume.ts) is that of the 15 km it is
+ * climbing to, not of the height the head has reached.
+ */
+export function steadyColumnKm(h: number): number {
+  if (h < COLUMN_H) return 0;
+  return h < 13.25 ? 15 : columnKm(h);
+}
+
+/**
  * Share of daylight reaching the streets, 0..1, on top of the sun's own
  * height: the umbrella cloud's shadow, then the fall itself. Never rises
  * through the afternoon; the faint grey at dawn is Pliny's "light, but dim".
@@ -257,6 +269,8 @@ export interface EruptionState {
   h: number;
   phase: EruptionPhase;
   columnKm: number;
+  /** The height the flux feeding the column would hold it at (steadyColumnKm). */
+  steadyKm: number;
   /** The umbrella spreads at about four fifths of the column's height. */
   umbrellaKm: number;
   /** How far downwind the umbrella has spread from the vent, km. */
@@ -282,6 +296,7 @@ export function eruptionAt(h: number): EruptionState {
     h,
     phase,
     columnKm: col,
+    steadyKm: steadyColumnKm(h),
     umbrellaKm: col * 0.8,
     // About 90 km/h downwind at that height, capped at the 100+ km of the deposit's axis.
     umbrellaReachKm: h < COLUMN_H ? 0 : Math.min(120, 90 * (h - COLUMN_H)),

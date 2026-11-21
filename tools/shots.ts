@@ -1379,6 +1379,95 @@ export const POSES: Pose[] = [
     what: "The surge coming down on the town at dawn",
     query: "eruption=1&fov=70",
   },
+  // The volume column (render/eruptionvolume.ts) at its ages and lights.
+  {
+    name: "eruption-column-bay-1305",
+    city: "pompeii",
+    lat: 40.7470, lon: 14.3460, altM: 250, hdgDeg: 62, pitchDeg: 8,
+    t: D("0079-08-22T12:15:04Z"),
+    wx: POMPEII_WX,
+    what: "The young column from the bay at 13:05",
+    query: "eruption=1&fov=75",
+  },
+  {
+    // Sunset behind the camera: the top in the last sun, the vent glowing.
+    name: "eruption-column-bay-sunset",
+    city: "pompeii",
+    lat: 40.7470, lon: 14.3460, altM: 250, hdgDeg: 62, pitchDeg: 14,
+    t: D("0079-08-22T17:35:04Z"),
+    wx: POMPEII_WX,
+    what: "The column from the bay at sunset, 18:25",
+    query: "eruption=1&fov=75",
+  },
+  {
+    name: "eruption-forum-up-1310",
+    city: "pompeii",
+    lat: 40.74888, lon: 14.48514, altM: 36.2, hdgDeg: 330, pitchDeg: 38,
+    t: D("0079-08-22T12:20:04Z"),
+    wx: POMPEII_WX,
+    what: "Looking up at the column from the Forum at 13:10",
+    query: "eruption=1&fov=80",
+  },
+  {
+    // 3 km up and 15 km west-south-west of the vent: the whole height.
+    name: "eruption-air-15km",
+    city: "pompeii",
+    lat: 40.7700, lon: 14.2620, altM: 3000, hdgDeg: 67, pitchDeg: 22,
+    t: D("0079-08-22T14:10:04Z"),
+    wx: POMPEII_WX,
+    what: "The whole column from 3 km up, 15 km off, at 15:00",
+    query: "eruption=1&fov=80",
+  },
+  {
+    // Above the Porta Vesuvio as S4 comes down the slope, 750 m out.
+    name: "eruption-surge-wall-air",
+    city: "pompeii",
+    lat: 40.7525, lon: 14.4855, altM: 200, hdgDeg: 330, pitchDeg: -12,
+    t: D("0079-08-23T06:09:34Z"), // a flash in the surge, read off the eruption hour
+    wx: POMPEII_WX,
+    what: "The surge front approaching the north wall, from 200 m up",
+    query: "eruption=1&fov=70",
+  },
+  {
+    // The phone tier's path on a desktop: billows and the canopy mesh.
+    name: "eruption-column-bay-billows",
+    city: "pompeii",
+    lat: 40.7470, lon: 14.3460, altM: 250, hdgDeg: 62, pitchDeg: 14,
+    t: D("0079-08-22T14:10:04Z"),
+    wx: POMPEII_WX,
+    what: "The column and umbrella from the bay at 15:00, drawn as billows",
+    query: "eruption=1&fov=75&plume=billows",
+  },
+  // The fall at street level, close: light at 13:40, heavy at 15:00, dark
+  // with the lamp at 17:00, on the desktop and on the phone tier.
+  ...([["1340", "0079-08-22T12:50:04Z"], ["1500", "0079-08-22T14:10:04Z"], ["1700", "0079-08-22T16:10:04Z"]] as const).flatMap(([hm, iso]) =>
+    [["", ""], ["-phone", "&tier=reduced"]].map(([sfx, q]): Pose => ({
+      name: `eruption-fall-${hm}${sfx}`,
+      city: "pompeii",
+      lat: 40.75092, lon: 14.49024, altM: 34.0, hdgDeg: 58, pitchDeg: 6,
+      t: D(iso), wx: POMPEII_WX,
+      what: `The fall in the street at ${hm.slice(0, 2)}:${hm.slice(2)}${sfx ? " on the phone tier" : ""}`,
+      query: `eruption=1&fov=60${q}`,
+    }))),
+  // Four frames a tenth of a second apart: does it fall like stones.
+  ...[0, 1, 2, 3].map((i): Pose => ({
+    name: `eruption-fall-motion-${i}`,
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 34.0, hdgDeg: 58, pitchDeg: 6,
+    t: D("0079-08-22T14:10:04Z"), wx: POMPEII_WX,
+    what: `The fall in the street at 15:00, animation clock ${(i / 10).toFixed(1)} s`,
+    query: `eruption=1&fov=60&anim=${(i / 10).toFixed(1)}`,
+  })),
+  // The motion check: the 15:00 bay pose at six points of the animation clock.
+  ...[0, 5, 10, 15, 20, 25].map((s): Pose => ({
+    name: `eruption-motion-${String(s).padStart(2, "0")}`,
+    city: "pompeii",
+    lat: 40.7470, lon: 14.3460, altM: 250, hdgDeg: 62, pitchDeg: 14,
+    t: D("0079-08-22T14:10:04Z"),
+    wx: POMPEII_WX,
+    what: `The column from the bay at 15:00, animation clock ${s} s`,
+    query: `eruption=1&fov=75&anim=${s}`,
+  })),
   // The restored art and the orders (render/pompeiiorders.ts, data/pompeiiart.ts).
   // Indoor poses give their altitude over the ground (`agl`): eye height.
   {
