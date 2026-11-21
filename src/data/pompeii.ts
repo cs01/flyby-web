@@ -6,6 +6,8 @@
 // Pure (no DOM, no THREE): the gate builds the town from this under Bun.
 
 import type { PompeiiSuburbs } from "./pompeiisuburbs";
+import type { TownId } from "./towns";
+import type { HerculaneumExtras } from "./herculaneum";
 
 /** x,z pairs, world metres (+x east, +z south) about the pack origin. */
 export type Ring = number[];
@@ -73,6 +75,8 @@ export interface PompeiiAmphitheatre {
 }
 
 export interface PompeiiData {
+  /** Which town the pack is (data/towns.ts); absent in Pompeii's own pack. */
+  town?: TownId;
   lat0: number;
   lon0: number;
   wall: Ring;
@@ -80,7 +84,8 @@ export interface PompeiiData {
   streets: PompeiiStreet[];
   insulae: PompeiiInsula[];
   publics: PompeiiPublic[];
-  amphitheatre: PompeiiAmphitheatre;
+  /** Pompeii's; a town without one (Herculaneum) leaves it out. */
+  amphitheatre?: PompeiiAmphitheatre;
   places: PompeiiPlace[];
   /**
    * Real house outlines from OSM, built on their own footprints. `courts`
@@ -102,6 +107,8 @@ export interface PompeiiData {
   villa?: { name: string; ring: Ring; courts?: Ring[]; wallM?: number };
   /** Outside the walls: tomb streets, suburbs, the Sarno and its harbour, the 79 AD shore (data/pompeiisuburbs.ts). */
   suburbs?: PompeiiSuburbs;
+  /** Herculaneum's beach, boat sheds, terrace and villa (data/herculaneum.ts). */
+  herc?: HerculaneumExtras;
   stats: Record<string, number>;
 }
 

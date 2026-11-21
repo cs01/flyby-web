@@ -328,6 +328,26 @@ export const CITIES: City[] = [
     ],
   },
   {
+    // Herculaneum on the same morning, built by Pompeii's systems from its own
+    // pack (data/towns.ts): the seaside town 7 km west of Vesuvius, its
+    // terrace and boat sheds over the beach of 79. The lat/lon is the pack's origin.
+    id: "herculaneum", name: "Herculaneum, 79 AD", country: "Italy", continent: "Europe",
+    lat: 40.8059, lon: 14.3479, radius: 1500, approach: 220, startAlt: 300,
+    era: { at: "0079-08-22T07:30:00Z", vehicle: "cart" },
+    // Up Cardo V at the decumanus maximus, looking down the street to the sea.
+    start: { lat: 40.80592, lon: 14.34803, faceLat: 40.80537, faceLon: 14.34694 },
+    landmarks: [
+      { name: "House of Neptune and Amphitrite", lat: 40.80621, lon: 14.34782, height: 9 },
+      { name: "Trellis House", lat: 40.80611, lon: 14.34697, height: 10 },
+      { name: "House of the Deer", lat: 40.80559, lon: 14.34706, height: 8 },
+      { name: "Boat sheds", lat: 40.80554, lon: 14.34622, height: 13 },
+      { name: "Palaestra", lat: 40.80569, lon: 14.34816, height: 10 },
+      { name: "Villa of the Papyri", lat: 40.80721, lon: 14.34505, height: 10 },
+      { name: "Theatre", lat: 40.80823, lon: 14.34776, height: 14 },
+      { name: "Vesuvius", lat: 40.8245, lon: 14.4290, height: 1900 },
+    ],
+  },
+  {
     id: "reykjavik", name: "Reykjavik", country: "Iceland", continent: "Europe",
     lat: 64.1466, lon: -21.9426, radius: 7000, approach: 100, startAlt: 700,
     landmarks: [

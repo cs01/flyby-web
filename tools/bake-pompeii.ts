@@ -25,12 +25,20 @@ import {
   type PompeiiData, type PompeiiInsula, type PompeiiPlace, type PompeiiPublic, type PompeiiStreet, type PublicKind, type Ring,
 } from "../src/data/pompeii";
 import { layoutSuburbs, tombsByGate, type OsmTomb } from "../src/data/pompeiisuburbs";
+import { HERC_LAT0, HERC_LON0, layoutHerculaneum, type HercFrame, type HercLayout } from "../src/data/herculaneum";
 
-const RAW = new URL("./.cache/pompeii/raw.json", import.meta.url).pathname;
-const OUT = new URL("../public/landmarks/pompeii.json", import.meta.url).pathname;
+// The same bake makes Herculaneum's pack (`bun tools/bake-pompeii.ts herculaneum`):
+// its insulae are recovered from the streets the same way. What differs is
+// where the streets and the town's ring come from (data/herculaneum.ts lays
+// them out on the grid OSM's cardines fix) and what is outside the town.
+const TOWN = process.argv.slice(2).find((a, i, all) => !a.startsWith("--") && all[i - 1] !== "--debug") ?? "pompeii";
+if (TOWN !== "pompeii" && TOWN !== "herculaneum") throw new Error(`unknown town ${TOWN}`);
+const HERC = TOWN === "herculaneum";
+const RAW = new URL(`./.cache/${TOWN}/raw.json`, import.meta.url).pathname;
+const OUT = new URL(`../public/landmarks/${TOWN}.json`, import.meta.url).pathname;
 /** The pack origin, which is also the City entry's lat/lon. */
-const LAT0 = 40.7490;
-const LON0 = 14.4880;
+const LAT0 = HERC ? HERC_LAT0 : 40.7490;
+const LON0 = HERC ? HERC_LON0 : 14.4880;
 /** Raster cell, metres. Half a metre keeps a 2.4 m vicolo five cells wide. */
 const CELL = 0.5;
 
@@ -76,12 +84,52 @@ function outerRing(e: El): Ring | null {
   return out.length >= 6 ? out : null;
 }
 
+// --- Herculaneum's layout -------------------------------------------------------
+function hercLayout(): HercLayout {
+  const named = (re: RegExp): El[] => raw.elements.filter((e) => re.test(e.tags?.name ?? ""));
+  const pointOf = (re: RegExp): [number, number] | null => {
+    const e = named(re)[0];
+    if (!e) return null;
+    if (e.type === "node") return nodes.get(e.id) ?? null;
+    const r = outerRing(e);
+    return r ? (ringCentroid(r) as [number, number]) : null;
+  };
+  const osmStreets: Record<string, number[]> = {};
+  for (const w of ways.values()) {
+    const n = w.tags?.name ?? "";
+    if (w.tags?.highway && /^(Cardo|Decumano) /.test(n)) osmStreets[`${n} ${w.id}`] = wayPts(w);
+  }
+  if (Object.keys(osmStreets).length < 6) throw new Error(`only ${Object.keys(osmStreets).length} cardo/decumanus ways in the raw OSM`);
+  // The frame's axis is Decumano Inferiore's; its origin, the face of the
+  // boat sheds, is placed from the Sacred Area's temple and OSM's marker on
+  // the ancient beach (Antica spiaggia), which stand either side of it.
+  const di = Object.entries(osmStreets).find(([k]) => k.startsWith("Decumano Inferiore"))![1];
+  let tx = di[di.length - 2] - di[0], tz = di[di.length - 1] - di[1];
+  if (tz < 0) { tx = -tx; tz = -tz; }
+  const tl = Math.hypot(tx, tz);
+  const temple = pointOf(/^Tempio di Venere/), beach = pointOf(/^Antica spiaggia/);
+  if (!temple || !beach) throw new Error("no Sacred Area temple or beach marker in the raw OSM");
+  const frame: HercFrame = { ox: 0, oz: 0, tx: tx / tl, tz: tz / tl };
+  // Origin on the line between the two, a third of the way from the beach marker.
+  frame.ox = r1(beach[0] + (temple[0] - beach[0]) * 0.33);
+  frame.oz = r1(beach[1] + (temple[1] - beach[1]) * 0.33);
+  const villaEl = named(/^Villa dei Papiri$/).find((e) => e.type === "way");
+  return layoutHerculaneum({
+    frame, osmStreets, temple, balbus: pointOf(/^Ara di Marco Nonio Balbo/), neptune: pointOf(/^Mosaico di Nettuno e Anfitrite/),
+    theatre: pointOf(/^Teatro romano di Ercolano/), villa: villaEl ? outerRing(villaEl) : null,
+  });
+}
+const herc = HERC ? hercLayout() : null;
+const scaviEl = HERC ? raw.elements.find((e) => e.type === "way" && e.tags?.name === "Scavi archeologici di Ercolano") : undefined;
+const scavi = scaviEl ? outerRing(scaviEl) : null;
+if (HERC && !scavi) throw new Error("no excavation outline in the raw OSM");
+
 // --- the wall -----------------------------------------------------------------
-const wallWay = [...ways.values()].find((w) => w.tags?.barrier === "city_wall" || w.tags?.historic === "citywalls");
-if (!wallWay) throw new Error("no city wall in the raw OSM");
-let wall = outerRing(wallWay)!;
+const wallWay = HERC ? undefined : [...ways.values()].find((w) => w.tags?.barrier === "city_wall" || w.tags?.historic === "citywalls");
+if (!wallWay && !herc) throw new Error("no city wall in the raw OSM");
+let wall = herc ? [...herc.ring] : outerRing(wallWay!)!;
 if (ringArea(wall) < 0) reverseRing(wall);
-{
+if (!HERC) {
   // South of Porta Marina the OSM way runs out round the terrace of the
   // Villa Imperiale, which was built against the OUTSIDE of the wall, and
   // back: a 100 m spur that made a block stick out west of the gate. The
@@ -116,8 +164,10 @@ function straightness(p: number[]): number {
   const chord = Math.hypot(p[p.length - 2] - p[0], p[p.length - 1] - p[1]);
   return chord / Math.max(1e-6, polylineLength(p));
 }
-const streets: PompeiiStreet[] = [];
-for (const w of ways.values()) {
+const streets: PompeiiStreet[] = herc ? herc.streets.map((s) => ({ ...s, pts: [...s.pts] })) : [];
+// Herculaneum's footways in OSM are the visitor routes through the pit: its
+// streets come from the layout instead.
+for (const w of HERC ? [] : ways.values()) {
   const t = w.tags;
   if (!t?.highway || DROP_HW.has(t.highway) || t.area === "yes") continue;
   const p = wayPts(w);
@@ -147,7 +197,11 @@ for (const w of ways.values()) {
 }
 
 // --- publics --------------------------------------------------------------------
-const PUBLIC_RULES: [RegExp, PublicKind][] = [
+const PUBLIC_RULES: [RegExp, PublicKind][] = HERC ? [
+  [/^Palaestra$/, "palestra"],
+  [/^Terme (del Foro|Suburbane)/, "baths"],
+  [/^Collegio degli Augustali/, "hall"],
+] : [
   [/^Foro di Pompei/, "forum"],
   [/^Tempi/, "temple"],
   [/^Basilica/, "basilica"],
@@ -173,9 +227,10 @@ for (const e of raw.elements) {
   if (ringArea(ring) < 0) reverseRing(ring);
   publics.push({ name: plainName(name), kind: rule[1], ring: ring.map(r1) });
 }
-if (!amphiRing) throw new Error("no amphitheatre outline");
-const amphitheatre = fitEllipse(amphiRing);
-{
+if (herc?.theatre) publics.push({ name: "Teatro", kind: "theatre", ring: herc.theatre });
+if (!amphiRing && !HERC) throw new Error("no amphitheatre outline");
+const amphitheatre = amphiRing && !HERC ? fitEllipse(amphiRing) : undefined;
+if (amphitheatre) {
   // The visitor paths across the arena are not streets.
   const a = amphitheatre;
   const inAmphi = (x: number, z: number): boolean => {
@@ -284,7 +339,9 @@ const inside = new Uint8Array(N);
 fillRing(inside, wall, 1);
 // The wall itself and its inner pomerium strip are not building land.
 const wallBand = new Uint8Array(N);
-stampLine(wallBand, [...wall, wall[0], wall[1]], 7, 1);
+// Herculaneum's ring is a sea wall and an estimate inland, not a fortified
+// circuit with a pomerium: the houses come right to it.
+stampLine(wallBand, [...wall, wall[0], wall[1]], HERC ? 2 : 7, 1);
 
 const street = new Uint8Array(N);
 const carriage = new Uint8Array(N);
@@ -377,7 +434,8 @@ stampStreets(streets);
 
 const special = new Uint8Array(N);
 for (const p of publics) fillRing(special, p.ring, 1);
-{
+for (const r of herc?.special ?? []) fillRing(special, r, 1);
+if (amphitheatre) {
   // The amphitheatre as its ellipse, a few metres out for the external stairs.
   const a = amphitheatre;
   for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
@@ -489,7 +547,9 @@ let { lab, sizes } = label();
 // two or more insulae whose vicoli nobody has dug up.
 const BIG_CELLS = 9000 / (CELL * CELL);
 let inferredStreets = 0;
-for (let pass = 0; pass < 3; pass++) {
+// Herculaneum's layout already carries every street of its grid, inferred ones
+// included; the blocks left big there are the palaestra's and the villas'.
+for (let pass = 0; pass < (HERC ? 0 : 3); pass++) {
   const cuts: PompeiiStreet[] = [];
   for (let id = 0; id < sizes.length; id++) {
     if (sizes[id] < BIG_CELLS || wallDensity(lab, id) > 0.12) continue;
@@ -626,7 +686,9 @@ for (let id = 0; id < sizes.length; id++) {
   if (ringArea(kerb) < 0) reverseRing(kerb);
   let g = 0, n = 0;
   for (let k = 0; k < N; k++) if (lab[k] === id) { n++; if (garden[k]) g++; }
-  const inferred = wallDensity(lab, id) < 0.05;
+  // OSM maps almost none of Herculaneum's room walls; there an insula is
+  // surveyed when it lies in the open excavation.
+  const inferred = scavi ? !pointInRing(scavi, ...(ringCentroid(ring) as [number, number])) : wallDensity(lab, id) < 0.05;
   const isGarden = g / n > 0.5;
   if (isGarden) gardens++;
   if (inferred) inferredInsulae++;
@@ -778,6 +840,34 @@ const places: PompeiiPlace[] = [];
 const domus: PompeiiData["domus"] = [];
 const seenPlace = new Set<string>();
 for (const e of raw.elements) {
+  if (HERC) {
+    // Herculaneum's outlines in OSM are the excavated buildings, named or
+    // not (shops and the houses over them); the modern town's are not
+    // archaeological. Unnamed ones go in as houses without a place name.
+    const t = e.tags;
+    if (!t || (e.type !== "way" && e.type !== "relation") || !t.building || (t.historic !== "archaeological_site" && t.building !== "ruins")) continue;
+    if (/^(Terme|Collegio|Palaestra|Tempio|Villa)/.test(t.name ?? "")) continue;
+    const ring = outerRing(e);
+    if (!ring) continue;
+    const [cx, cz] = ringCentroid(ring);
+    if (!inWall(cx, cz)) continue;
+    const pn = plainName(t.name ?? "");
+    if (ringArea(ring) < 0) reverseRing(ring);
+    const hc = houseCourts(ring);
+    if (pn === "Casa di Nettuno e Anfitrite" && herc) {
+      // The little court the mosaic wall closes: open to the sky, the mosaic
+      // on its north-east side (OSM's point), the summer triclinium in front.
+      const f = herc.extras.frame, { x: mx, z: mz } = herc.extras.neptune;
+      const sx = -f.tz, sz = f.tx;
+      const court = (w: number, d: number): Ring => [[-w / 2, 0], [w / 2, 0], [w / 2, d], [-w / 2, d]].flatMap(([u, v]) => [r1(mx + f.tx * u + sx * v), r1(mz + f.tz * u + sz * v)]);
+      const fit = [[5, 4.5], [4.4, 4], [3.6, 3.4]].map(([w, d]) => court(w, d)).find((c) => [0, 2, 4, 6].every((k) => pointInRing(ring, c[k], c[k + 1])));
+      if (!fit) throw new Error("no room for the Neptune court in its house's outline");
+      hc.courts = [fit];
+    }
+    domus.push({ name: pn, ring: ring.map(r1), ...hc });
+    if (pn && !seenPlace.has(pn)) { seenPlace.add(pn); places.push({ name: pn, x: r1(cx), z: r1(cz), kind: "domus" }); }
+    continue;
+  }
   const name = e.tags?.name;
   if (!name) continue;
   if (e.tags?.historic === "city_gate" && e.type === "node") {
@@ -800,7 +890,7 @@ for (const p of publics) {
   const [cx, cz] = ringCentroid(p.ring);
   if (!seenPlace.has(p.name)) { seenPlace.add(p.name); places.push({ name: p.name, x: r1(cx), z: r1(cz), kind: "public" }); }
 }
-places.push({ name: "Amphitheatre", x: amphitheatre.cx, z: amphitheatre.cz, kind: "public" });
+if (amphitheatre) places.push({ name: "Amphitheatre", x: amphitheatre.cx, z: amphitheatre.cz, kind: "public" });
 const gates = places.filter((p) => p.kind === "gate").map((p) => ({ name: p.name, x: p.x, z: p.z }));
 
 // --- towers and fountains ---------------------------------------------------------------
@@ -824,6 +914,8 @@ for (const e of raw.elements) {
   if (t.historic !== "fountain" && t.amenity !== "fountain" && t.amenity !== "drinking_water" && t["disused:amenity"] !== "drinking_water") continue;
   const p = nodes.get(e.id);
   if (!p || !inWall(p[0], p[1]) || fountains.some((f) => Math.hypot(f.x - p[0], f.z - p[1]) < 10)) continue;
+  // Over the unexcavated part of Herculaneum a tap is modern Ercolano's.
+  if (scavi && !pointInRing(scavi, p[0], p[1])) continue;
   fountains.push({ x: r1(p[0]), z: r1(p[1]) });
 }
 console.log(`${towers.length} towers (${towers.map((t) => t.name).join(", ")}), ${fountains.length} mapped fountains`);
@@ -845,10 +937,17 @@ for (const e of raw.elements) {
       if (ringArea(r) < 0) reverseRing(r);
       villa = { name: t.name, ring: r.map(r1), ...houseCourts(r) };
     }
+    // The tunnels mapped no rooms: its court is the great peristyle the layout placed.
+    if (r && herc && t.name === "Villa dei Papiri" && e.type === "way") {
+      if (ringArea(r) < 0) reverseRing(r);
+      villa = { name: t.name, ring: r.map(r1), courts: [herc.extras.papyri.peristyle], wallM: 0 };
+    }
   }
   if (!p) continue;
   const site = /affreschi della sala dei misteri/i.test(t.name);
   if (!inWall(p[0], p[1]) && !site) continue;
+  // Modern Ercolano stands over the unexcavated town: only the excavation's own points.
+  if (HERC && !t.historic && !/^(Botteghe|Mosaico|Pavimenti)/.test(t.name)) continue;
   let kind: "bakery" | "thermopolium" | "artwork" | null = null;
   if (/panific|pistrin|forno|bakery/i.test(t.name) || t["disused:shop"] === "bakery") kind = "bakery";
   else if (/thermopol|termopol/i.test(t.name) || /thermopolium/.test(t.archaeological_site ?? "")) kind = "thermopolium";
@@ -888,10 +987,19 @@ for (const e of raw.elements) {
   const name = /sconosciuta|senza nome|unknown/i.test(t.name ?? "") ? "" : plainName(t.name ?? "");
   osmTombs.push({ name, tag: t.tomb ?? "", ring, x: p[0], z: p[1] });
 }
-if (osmTombs.length < 100) throw new Error(`only ${osmTombs.length} tombs in the raw OSM`);
-if (!sepolcri) throw new Error("no Via delle Tombe in the raw OSM");
-const suburbs = layoutSuburbs({ lat0: LAT0, lon0: LON0, wall, gates, osmTombs, sepolcri, markers, misteri: villa?.ring ?? null });
-{
+if (osmTombs.length < 100 && !HERC) throw new Error(`only ${osmTombs.length} tombs in the raw OSM`);
+if (!sepolcri && !HERC) throw new Error("no Via delle Tombe in the raw OSM");
+const suburbs = herc ? herc.suburbs : layoutSuburbs({ lat0: LAT0, lon0: LON0, wall, gates, osmTombs, sepolcri, markers, misteri: villa?.ring ?? null });
+if (herc) {
+  const add = (name: string, x: number, z: number, kind: PompeiiPlace["kind"] = "suburb"): void => {
+    if (!seenPlace.has(name)) { seenPlace.add(name); places.push({ name, x: r1(x), z: r1(z), kind }); }
+  };
+  const f = herc.extras.fornici;
+  add("Fornici (boat sheds)", (f[0].x + f[f.length - 1].x) / 2, (f[0].z + f[f.length - 1].z) / 2);
+  add("Area Sacra", herc.extras.temples[0].x, herc.extras.temples[0].z);
+  add("Ara di Marco Nonio Balbo", herc.extras.balbus.x, herc.extras.balbus.z);
+  if (villa) add("Villa dei Papiri", ...(ringCentroid(villa.ring) as [number, number]));
+} else {
   // Destinations outside the walls for the mission list.
   const add = (name: string, x: number, z: number): void => {
     if (!seenPlace.has(name)) { seenPlace.add(name); places.push({ name, x: r1(x), z: r1(z), kind: "suburb" }); }
@@ -927,12 +1035,15 @@ const stats = {
   gates: gates.length,
   places: places.length,
 };
+// `town` and `herc` are undefined for Pompeii, so its pack is byte for byte what it was.
 const data: PompeiiData = {
-  lat0: LAT0, lon0: LON0, wall: wall.map(r1), gates, towers, fountains, streets, insulae, publics, amphitheatre, places, domus, sites, villa, suburbs, stats,
+  town: HERC ? "herculaneum" : undefined,
+  lat0: LAT0, lon0: LON0, wall: wall.map(r1), gates, towers, fountains, streets, insulae, publics, amphitheatre, places, domus, sites, villa, suburbs,
+  herc: herc?.extras, stats,
 };
 writeFileSync(OUT, JSON.stringify(data));
 console.log(JSON.stringify(stats, null, 1));
-console.log(`amphitheatre ${(amphitheatre.a * 2).toFixed(1)} x ${(amphitheatre.b * 2).toFixed(1)} m`);
+if (amphitheatre) console.log(`amphitheatre ${(amphitheatre.a * 2).toFixed(1)} x ${(amphitheatre.b * 2).toFixed(1)} m`);
 console.log(`publics: ${publics.map((p) => `${p.name} [${p.kind}]`).join(", ")}`);
 console.log(`wrote ${OUT}: ${(JSON.stringify(data).length / 1024).toFixed(0)} kB`);
 

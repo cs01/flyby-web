@@ -1023,6 +1023,26 @@ export const POSES: Pose[] = [
     what: "Eaves and shop roofs along Via dell'Abbondanza from the pavement",
   },
   {
+    // From the Abbondanza pose, turned to the south side's shop fronts and
+    // the upper storey: window reveals, notices, shop interiors.
+    name: "pompeii-facade-windows",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 33.6, hdgDeg: 125, pitchDeg: 10,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Shop fronts and upper windows across Via dell'Abbondanza",
+  },
+  {
+    // From the cart-side pose, turned to the west side of Via di Stabia:
+    // house doors, windows and the kerb at a few metres.
+    name: "pompeii-stabia-doors",
+    city: "pompeii",
+    lat: 40.74990, lon: 14.48808, altM: 33, hdgDeg: 285, pitchDeg: 4,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "House doors and windows on Via di Stabia",
+  },
+  {
     // Down Via di Mercurio from its south end at dusk, a metre off the
     // paving, Vesuvius at the far end: the viewpoint of the owner's
     // reference photograph of the basalt paving, kerbs and stepping stones.
@@ -1093,6 +1113,77 @@ export const POSES: Pose[] = [
     wx: POMPEII_WX,
     query: "tier=reduced",
     what: "pompeii-sepolcri on the reduced tier",
+  },
+  // Herculaneum on the same morning (data/herculaneum.ts, render/herculaneummesh.ts),
+  // built by Pompeii's systems from its own pack. Altitudes are over the 79 AD
+  // ground the town's terrain field answers: the beach 4.3 m, the terrace 12.8 m.
+  {
+    // 400 m out over the bay of 79, looking north-east up the town to Vesuvius.
+    name: "herc-flyover",
+    city: "herculaneum",
+    lat: 40.80410, lon: 14.34349, altM: 160, hdgDeg: 56, pitchDeg: -18,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Herculaneum from the sea: the beach, the terrace and the two-storey town",
+  },
+  {
+    // Cardo V at the decumanus maximus, eye height, looking down the street to the sea.
+    name: "herc-cardo5",
+    city: "herculaneum",
+    lat: 40.80592, lon: 14.34803, altM: 20.4, hdgDeg: 236, pitchDeg: -2,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    query: "fov=60",
+    what: "Cardo V at eye height, upper floors and balconies, the sea at the end",
+  },
+  {
+    // In the little court of the House of Neptune and Amphitrite, before its mosaic wall.
+    name: "herc-neptune",
+    city: "herculaneum",
+    lat: 40.80611, lon: 14.347854, altM: 21.1, hdgDeg: 56, pitchDeg: 4,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    query: "fov=70&off=pompeiilife",
+    what: "The Neptune and Amphitrite mosaic and the nymphaeum wall",
+  },
+  {
+    // On the beach in front of the boat sheds, looking in at the arches.
+    name: "herc-fornici",
+    city: "herculaneum",
+    lat: 40.805382, lon: 14.346076, altM: 5.9, hdgDeg: 56, pitchDeg: 10,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    query: "fov=70",
+    what: "The boat sheds in the sea wall, the terrace and temples over them",
+  },
+  {
+    // 45 m out from the sheds and 15 m up: the beach of 79, the sheds, the terrace and the town over it.
+    name: "herc-beach",
+    city: "herculaneum",
+    lat: 40.805235, lon: 14.345849, altM: 15, hdgDeg: 56, pitchDeg: -10,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    query: "fov=70",
+    what: "The beach, the boat sheds in the sea wall, the Sacred Area over them",
+  },
+  {
+    // Across Cardo IV from the Trellis House: its timber-framed upper floor jettied over the street.
+    name: "herc-trellis",
+    city: "herculaneum",
+    lat: 40.805911, lon: 14.347008, altM: 17.5, hdgDeg: 22, pitchDeg: 14,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    query: "fov=72",
+    what: "The Trellis House's opus craticium upper storey on Cardo IV",
+  },
+  {
+    name: "herc-cardo5-phone",
+    city: "herculaneum",
+    lat: 40.80592, lon: 14.34803, altM: 20.4, hdgDeg: 236, pitchDeg: -2,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    query: "fov=60&tier=reduced",
+    what: "herc-cardo5 on the reduced tier",
   },
   // The town by lamplight (render/pompeiilamps.ts) at 21:30 local on a clear
   // night: 20:40:04Z, the town clock being UTC + 0:49:56.
