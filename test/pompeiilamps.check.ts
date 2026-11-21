@@ -55,8 +55,8 @@ console.log(`lamps ${lamps.length}: ${JSON.stringify(census.byRole)}`);
   check("the lampbearer stands within 45 m of the House of Julius Polybius's door", !!lb && Math.hypot(lb.x - LAMPBEARER_AT[0], lb.z - LAMPBEARER_AT[1]) < 45, lb ? `${Math.hypot(lb.x - LAMPBEARER_AT[0], lb.z - LAMPBEARER_AT[1]).toFixed(1)} m` : "none");
   // The lamp hangs AT its own opening's lintel, and that opening is a plausible
 // door or shop front: the fauces of the named houses (art pass) are as low as
-// ~2.5 m, shop fronts ~3.1 m.
-check("hanging lamps hang at their own lintel, 2.3..3.5 m over their floor", lamps.filter((l) => l.kind === LampKind.Hanging).every((l) => {
+// ~2.5 m, shop fronts ~3.1 m, the grand doorways of the big houses 4 m.
+check("hanging lamps hang at their own lintel, 2.3..4.5 m over their floor", lamps.filter((l) => l.kind === LampKind.Hanging).every((l) => {
     // The NEAREST opening, not the first in reach: a doorway beside a shop
     // front is within reach of both, and the shop's lintel is not its own.
     let o: (typeof sites.openings)[number] | undefined;
@@ -65,7 +65,7 @@ check("hanging lamps hang at their own lintel, 2.3..3.5 m over their floor", lam
       const d = Math.hypot(s.x - l.x, s.z - l.z);
       if (d < 0.5 + s.w && d < best) { best = d; o = s; }
     }
-    return !!o && Math.abs(l.y - o.g - o.h) < 0.01 && o.h >= 2.3 && o.h <= 3.5;
+    return !!o && Math.abs(l.y - o.g - o.h) < 0.01 && o.h >= 2.3 && o.h <= 4.5;
   }), "");
 }
 
