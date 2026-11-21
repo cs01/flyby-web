@@ -1936,6 +1936,8 @@ html, body {
   width: 104px;
   height: 104px;
 }
+/* The drone has the move ring where the plane's map goes; the map stacks above. */
+#ui.phone[data-mode="drone"] > .minimap { bottom: calc(var(--row) + 80px); }
 #ui.phone > .spot-radar {
   left: calc(8px + var(--sal));
   right: auto;
@@ -1991,6 +1993,9 @@ html, body {
   #ui.phone > .throttle input { height: 84px; }
   #ui.phone > .osd { right: calc(84px + var(--sar)); }
   #ui.phone > .ride-hint { bottom: calc(var(--row) + 46px); }
+  /* Four drone buttons do not fit beside the dock; they stand up the edge. */
+  #ui.phone[data-mode="drone"] .touch-btns { flex-direction: column-reverse; }
+  #ui.phone[data-mode="drone"] > .minimap { bottom: calc(96px + var(--sab)); }
   #ui.phone > .sheet { left: 50%; right: auto; width: min(520px, 100%); transform: translate(-50%, 105%); }
   #ui.phone > .sheet.open { transform: translate(-50%, 0); }
 }

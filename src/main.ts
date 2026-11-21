@@ -2100,8 +2100,9 @@ async function main() {
     const goal = missions.destination;
     const me = mePos();
     const labelTargets = nearby
-      // On foot, the place you are standing in ("Forum 0.0 mi") is not news.
-      .filter((p) => p.name !== goal?.name && !(onFoot && Math.hypot(p.x - me.x, p.z - me.z) < 40))
+      // On foot, the place you are standing in ("Forum 0.0 mi") is not news,
+      // and nor is anything near enough to read as 0.0.
+      .filter((p) => p.name !== goal?.name && !(onFoot && Math.hypot(p.x - me.x, p.z - me.z) < 80))
       .map((p) => ({
         name: p.name,
         x: p.x,
