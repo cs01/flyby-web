@@ -10,7 +10,7 @@
 
 import { readFileSync } from "node:fs";
 import { parsePompeii, plainName, pointInRing, polylineLength, ringArea, ringCentroid } from "../src/data/pompeii";
-import { AMPHI, ROOF_PITCH_DEG, Surf, buildPompeii, type PompeiiModel } from "../src/render/pompeiimesh";
+import { AMPHI, ROOF_PITCH_DEG, Surf, buildPompeii, distToRing, type PompeiiModel } from "../src/render/pompeiimesh";
 import { pompeiiRoadPack, pompeiiHeightAt } from "../src/data/pompeiiroads";
 import { buildRoadGraph, componentLengths, connectedComponents } from "../src/data/roadgraph";
 import { budgetForTier, pompeiiBytes, type DeviceDescriptor } from "../src/render/budget";
@@ -273,6 +273,14 @@ let built: PompeiiModel;
   const spurFree = (w: number[]): boolean => { for (let i = 0; i < w.length; i += 2) if (w[i] < -310 && w[i + 1] > 80) return false; return true; };
   check("wall clipped to the circuit at Porta Marina", spurFree(data.wall) && !pointInRing(data.wall, -380, 110), "");
   check("probe: a spur vertex is caught", !spurFree([...data.wall, -405, 123]), "");
+  // Nothing built pokes out past the wall: the gate towers and gate piers
+  // stand on it, so 15 m of slack, against the 80 m lot that once did.
+  const pokesOut = (rings: number[][]): number => rings.filter((r) => {
+    for (let i = 0; i < r.length; i += 2) if (!pointInRing(data.wall, r[i], r[i + 1]) && distToRing(data.wall, r[i], r[i + 1]) > 15) return true;
+    return false;
+  }).length;
+  check("no building stands more than 15 m outside the wall", pokesOut(built.solids.map((s) => s.ring)) === 0, `${pokesOut(built.solids.map((s) => s.ring))}`);
+  check("probe: the old 100 m lot west of Porta Marina is caught", pokesOut([[-501, -30, -410, -30, -410, -16, -501, -16]]) === 1, "");
 
   // Fountains: about forty, the mapped ones among them.
   check("35..45 public fountains, 10+ from the survey", built.stats.fountains >= 35 && built.stats.fountains <= 45 && (data.fountains ?? []).length >= 10, `${built.stats.fountains} (${(data.fountains ?? []).length} mapped)`);

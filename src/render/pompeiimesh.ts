@@ -944,6 +944,10 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         // A lot poking into a public building is somebody else's ground.
         const mx = (fa[0] + fb[0] + ba[0] + bb[0]) / 4, mz = (fa[1] + fb[1] + ba[1] + bb[1]) / 4;
         if (publicRings.some((pr) => pointInRing(pr, mx, mz))) continue;
+        // Two nearly parallel cut lines meet far off: at the block by Porta
+        // Marina a lot's back corners landed 80 m out past the town wall,
+        // the long bar that stuck out west of the gate.
+        if ([fa, fb, bb, ba].some(([x, z]) => !pointInRing(ring, x, z) && distToRing(ring, x, z) > 2)) continue;
         // A lot on a surveyed house's ground gives way to it: dropped when
         // the house reaches the street front, else cut back to stop short of it.
         const free = lotFreeDepth(fa, fb, bb, ba);
