@@ -361,7 +361,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const cx0 = lerp(ax, bx, t0), cz0 = lerp(az, bz, t0), cx1 = lerp(ax, bx, t1), cz1 = lerp(az, bz, t1);
         const q: [number, number][] = [[cx0 - o0[0] * half, cz0 - o0[1] * half], [cx1 - o1[0] * half, cz1 - o1[1] * half], [cx1 + o1[0] * half, cz1 + o1[1] * half], [cx0 + o0[0] * half, cz0 + o0[1] * half]];
         const base = R.n;
-        for (const [x, z] of q) R.vert([x, ground(x, z) + 0.08, z], [0, 1, 0], [0.24, 0.23, 0.22], 0.5, Surf.Basalt, 0, 0, [x, z, 0, 0]);
+        // wall.zw: signed metres across from the centreline and the half width, for the ruts.
+        q.forEach(([x, z], k) => R.vert([x, ground(x, z) + 0.08, z], [0, 1, 0], [0.24, 0.23, 0.22], 0.5, Surf.Basalt, 0, 0, [x, z, k < 2 ? -half : half, half]));
         // q runs right side forward, left side back: counter-clockwise in
         // (x, z), which faces down in this y-up, z-south frame, so reversed.
         R.tri(base, base + 2, base + 1); R.tri(base, base + 3, base + 2);
@@ -393,7 +394,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
 
   for (let ii = 0; ii < data.insulae.length; ii++) {
     const ins = data.insulae[ii];
-    slab(ins.kerb, KERB_M, Surf.Kerb, [0.62, 0.6, 0.55], Surf.Pavement, [0.5, 0.44, 0.38], hash(ii, 7));
+    slab(ins.kerb, KERB_M, Surf.Kerb, [0.62, 0.6, 0.55], Surf.Pavement, [0.43, 0.35, 0.26], hash(ii, 7));
     // The block's own ground, a step up from the pavement: the garden and the
     // peristyles wherever the lots leave it open.
     slab(ins.ring, KERB_M + 0.06, Surf.Kerb, [0.55, 0.5, 0.44], Surf.Garden, [0.3, 0.38, 0.17], hash(ii, 8));
@@ -446,10 +447,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const off = -s.carriageM / 2 + gap * (c + 0.5);
         const cx = px - tz * off, cz = pz + tx * off;
         // Long axis along the street, so the wheels pass between them.
-        const hl = 0.55, hw = 0.32;
+        // Big rounded ovals of lava, as the surviving stones are.
+        const hl = 0.62, hw = 0.4;
         const q: number[] = [];
-        for (let k = 0; k < 6; k++) {
-          const a = (k / 6) * Math.PI * 2;
+        for (let k = 0; k < 12; k++) {
+          const a = (k / 12) * Math.PI * 2;
           const lx = Math.cos(a) * hl, lw = Math.sin(a) * hw;
           q.push(cx + tx * lx - tz * lw, cz + tz * lx + tx * lw);
         }

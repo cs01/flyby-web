@@ -964,6 +964,17 @@ export const POSES: Pose[] = [
     what: "A house front at arm's length: plaster, panels, notices",
   },
   {
+    // Down Via di Mercurio from its south end at dusk, a metre off the
+    // paving, Vesuvius at the far end: the viewpoint of the owner's
+    // reference photograph of the basalt paving, kerbs and stepping stones.
+    name: "pompeii-dusk-street",
+    city: "pompeii",
+    lat: 40.750780, lon: 14.484159, altM: 40.3, hdgDeg: 334, pitchDeg: -3,
+    t: D("0079-08-22T17:40:00Z"),
+    wx: POMPEII_WX,
+    what: "Via di Mercurio at dusk toward Vesuvius, paving close up",
+  },
+  {
     // The same town from the air at an angle, for the roofscape.
     name: "pompeii-roofs",
     city: "pompeii",
