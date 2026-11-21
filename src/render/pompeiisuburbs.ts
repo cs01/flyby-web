@@ -128,6 +128,14 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
     poly(S, [p(u0, v0, yLow - 0.08), p(u1, v0, yLow - 0.08), p(u1, v1, yHigh - 0.08), p(u0, v1, yHigh - 0.08)], [f.bx * 0.2, -1, f.bz * 0.2], WOOD, seed, Surf.Wood, 0, 0, [NO, NO, NO, NO]);
   }
 
+  /** A single-pitch roof from its eave line at v = vEave (yEave) up to a wall at v = vWall (yWall), u0..u1, with its timber underside. */
+  function shed(f: Frame, u0: number, u1: number, vEave: number, vWall: number, yEave: number, yWall: number, seed: number): void {
+    const p = (u: number, v: number, h: number): V3 => { const [x, z] = f.P(u, v); return [x, h, z]; };
+    const L = u1 - u0, s = Math.hypot(vWall - vEave, yWall - yEave), dv = Math.sign(vEave - vWall);
+    poly(S, [p(u0, vEave, yEave), p(u1, vEave, yEave), p(u1, vWall, yWall), p(u0, vWall, yWall)], [f.bx * dv, 1.5, f.bz * dv], TILE, seed, Surf.Tile, 0, 0, [[0, 0, L, s], [L, 0, L, s], [L, s, L, s], [0, s, L, s]]);
+    poly(S, [p(u0, vEave, yEave - 0.08), p(u1, vEave, yEave - 0.08), p(u1, vWall, yWall - 0.08), p(u0, vWall, yWall - 0.08)], [0, -1, 0], WOOD, seed, Surf.Wood, 0, 0, [NO, NO, NO, NO]);
+  }
+
   /** A dark opening (door, niche, window) on the front face of a frame at v, proud by a hair. */
   function opening(f: Frame, u: number, v: number, w: number, y0: number, h: number, seed: number, wood = false): void {
     const [ax, az] = f.P(u - w / 2, v - 0.03), [bx, bz] = f.P(u + w / 2, v - 0.03);
@@ -376,7 +384,10 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
         // A column or altar for the honoured dead behind the bench.
         const [mx, mz] = f.P(0, -hd + 0.3 + R + 1.0);
         column(mx, mz, g, 2.6, 0.3, W, seed, 10);
-        top = g + 2.6;
+        // Its capital block and the marble urn it was raised to carry.
+        box([mx - 0.38, mz - 0.38, mx + 0.38, mz - 0.38, mx + 0.38, mz + 0.38, mx - 0.38, mz + 0.38], g + 2.6, g + 2.85, W, seed, Surf.Stucco, Surf.Stucco, W, true);
+        if (!lean) lathe(S, mx, g + 2.85, mz, [[0.16, 0], [0.24, 0.12], [0.26, 0.4], [0.18, 0.62], [0.2, 0.7], [0.01, 0.74]], 10, [0.9, 0.89, 0.86], seed, Surf.Marble);
+        top = g + 3.6;
         break;
       }
       case "tower": {
@@ -390,7 +401,7 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
         opening(f, 0, -hd * k2, hw * 0.6, g + h1 + 0.6, h2 * 0.7, seed);
         const [cx, cz] = f.P(0, 0);
         const r = Math.min(hw, hd) * 0.55, y2 = g + h1 + 0.25 + h2;
-        lathe(S, cx, y2, cz, [[r + 0.1, 0], [r + 0.1, 0.2], [r, 0.25], [r, 1.6], [r + 0.1, 1.7], [0.02, 2.9]].reverse() as [number, number][], 12, W, seed, Surf.Stucco);
+        lathe(S, cx, y2, cz, [[r + 0.1, 0], [r + 0.1, 0.2], [r, 0.25], [r, 1.6], [r + 0.1, 1.7], [0.02, 2.9]], 12, W, seed, Surf.Stucco);
         top = y2 + 2.9;
         break;
       }
@@ -406,8 +417,10 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
           const a = (i / n) * Math.PI * 2;
           column(cx + Math.cos(a) * r, cz + Math.sin(a) * r, y0, ch, 0.16, W, seed, 8);
         }
-        lathe(S, cx, y0, cz, [[0.01, 0], [r * 0.5, 0], [r * 0.5, 2.0], [0.01, 2.0]].reverse() as [number, number][], 10, W, seed, Surf.Stucco);
-        lathe(S, cx, y0 + ch, cz, [[r + 0.3, 0], [r + 0.3, 0.3], [0.02, 1.6]].reverse() as [number, number][], 12, TILE, seed, Surf.Tile);
+        lathe(S, cx, y0, cz, [[r * 0.5, 0], [r * 0.5, 2.0], [0.01, 2.0]], lean ? 6 : 10, W, seed, Surf.Stucco);
+        // A ring beam on the capitals, closed underneath, and the tiled cone on it.
+        lathe(S, cx, y0 + ch, cz, [[0.01, 0], [r + 0.3, 0], [r + 0.3, 0.3], [0.01, 0.3]].slice(0, lean ? 3 : 4) as [number, number][], lean ? 6 : 12, W, seed, Surf.Stucco);
+        lathe(S, cx, y0 + ch + 0.3, cz, [[r + 0.4, 0], [0.02, 1.3]], lean ? 6 : 12, TILE, seed, Surf.Tile);
         top = y0 + ch + 1.6;
         break;
       }
@@ -436,7 +449,7 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
           for (let i = 0; i < n; i++) {
             const [x, z] = f.P(-hw + 1 + ((t.w - 2) * (i + 0.5)) / n, 0.3 * hd);
             // A columella: a stylised head on a stone post, the old Oscan marker.
-            lathe(S, x, g, z, [[0.18, 0], [0.18, 0.55], [0.12, 0.6], [0.16, 0.75], [0.13, 0.88], [0.01, 0.92]].reverse() as [number, number][], 7, TUFF, seed, Surf.Masonry);
+            lathe(S, x, g, z, [[0.18, 0], [0.18, 0.55], [0.12, 0.6], [0.16, 0.75], [0.13, 0.88], [0.01, 0.92]], 7, TUFF, seed, Surf.Masonry);
           }
         }
         top = g + h + 1.4;
@@ -480,12 +493,16 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
         // A row of shops under a portico, rooms over them.
         const top = range(-hw, -hd + 3.2, hw, hd, 6.8, col, seed);
         for (let u = -hw + 2.5; u < hw - 2; u += 4.4) opening(f, u, -hd + 3.2, 2.6, gFront, 2.8, seed);
+        // The columns carry a timber beam, and the lean-to rests on it.
+        const yLow = gFront + 3.6, yHigh = Math.min(top - 1.2, gFront + 4.5);
+        const beam = yLow - 0.08 - 0.3;
+        fbox(f, -hw, -hd + 0.2, hw, -hd + 0.6, beam, yLow - 0.08, WOOD, seed, Surf.Wood, Surf.Wood, WOOD, true);
         const n = Math.max(2, Math.round(b.w / 3.4));
         for (let i = 0; i <= n; i++) {
           const [x, z] = f.P(-hw + (b.w * i) / n, -hd + 0.4);
-          column(x, z, ground(x, z), 3.6, 0.22, [0.86, 0.84, 0.78], seed, 8, true);
+          column(x, z, ground(x, z), beam - ground(x, z), 0.22, [0.86, 0.84, 0.78], seed, 8, true);
         }
-        leanTo(f, -hw, -hd, hw, -hd + 3.2, gFront + 3.6, Math.min(top - 1.2, gFront + 4.5), seed);
+        leanTo(f, -hw, -hd, hw, -hd + 3.2, yLow, yHigh, seed);
         break;
       }
       case "inn": {
@@ -530,7 +547,7 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
         opening(f, 0, -hd, 3, gFront, 3, seed, true);
         const [x, z] = f.P(-hw * 0.4, hd - 3);
         const g = ground(x, z);
-        if (seed < 0.5) lathe(S, x, g, z, [[1.8, 0], [1.9, 1.4], [1.4, 2.6], [0.4, 3.2], [0.01, 3.25]].reverse() as [number, number][], 12, [0.6, 0.42, 0.3], seed, Surf.Masonry);
+        if (seed < 0.5) lathe(S, x, g, z, [[1.8, 0], [1.9, 1.4], [1.4, 2.6], [0.4, 3.2], [0.01, 3.25]], 12, [0.6, 0.42, 0.3], seed, Surf.Masonry);
         else for (let i = 0; i < 3; i++) {
           const [vx, vz] = f.P(-hw * 0.6 + i * 2.4, hd - 3);
           lathe(S, vx, ground(vx, vz), vz, [[0.9, 0], [0.95, 0.9], [0.8, 0.95], [0.75, 0.2]], 10, TUFF, seed, Surf.Masonry);
@@ -567,10 +584,12 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
         // The Villa Imperiale: rooms against the wall, a long portico on the sea.
         const back = 8;
         range(-hw, hd - back, hw, hd, 6.4, [0.86, 0.8, 0.68], seed);
+        // On the terrace's floor, up to the roof's underside where it passes over them.
         const n = Math.round(b.w / 3.3);
+        const colTop = gFront + 4.6 + (1.8 * 0.5) / (b.d - back) - 0.08;
         for (let i = 0; i <= n; i++) {
           const [x, z] = f.P(-hw + (b.w * i) / n, -hd + 0.5);
-          column(x, z, ground(x, z) + 0.4, 4.2, 0.25, [0.88, 0.86, 0.8], seed, 8, true, lean ? undefined : Order.Doric);
+          column(x, z, gFront + 0.4, colTop - gFront - 0.4, 0.25, [0.88, 0.86, 0.8], seed, 8, true, lean ? undefined : Order.Doric);
         }
         // The portico's floor terrace and its roof.
         const q = rect(f, -hw, -hd, hw, hd - back);
@@ -611,10 +630,17 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
     opening(f, 0, v0, 2.2, ground(...f.P(0, v0)), 3.4, seed, true);
     // The peristyle's columns, red lower thirds.
     const gC = ground(...f.P(0, cv));
-    const n = 3;
-    for (let i = 0; i <= n; i++) for (const v of [cv - cd / 2 + 1.2, cv + cd / 2 - 1.2]) {
-      const [x, z] = f.P(-cw / 2 + 1.2 + ((cw - 2.4) * i) / n, v);
-      column(x, z, gC, 3.8, 0.22, [0.88, 0.86, 0.8], seed, 8, true, lean ? undefined : Order.Doric);
+    // The court's paved walk, which the columns stand on, and over each row a
+    // beam and a lean-to back to the range behind it.
+    box(rect(f, -cw / 2, cv - cd / 2, cw / 2, cv + cd / 2), minGround(rect(f, -cw / 2, cv - cd / 2, cw / 2, cv + cd / 2)) - 0.3, gC, [0.72, 0.66, 0.56], seed, Surf.Pavement);
+    const n = 3, colH = 3.8, beamH = 0.35;
+    for (const [v, wallV] of [[cv - cd / 2 + 1.2, cv - cd / 2], [cv + cd / 2 - 1.2, cv + cd / 2]]) {
+      for (let i = 0; i <= n; i++) {
+        const [x, z] = f.P(-cw / 2 + 1.2 + ((cw - 2.4) * i) / n, v);
+        column(x, z, gC, colH, 0.22, [0.88, 0.86, 0.8], seed, 8, true, lean ? undefined : Order.Doric);
+      }
+      fbox(f, -cw / 2, v - 0.2, cw / 2, v + 0.2, gC + colH, gC + colH + beamH, [0.88, 0.86, 0.8], seed, Surf.Stucco, Surf.Stucco, undefined, true);
+      shed(f, -cw / 2, cw / 2, v + (v > wallV ? 0.2 : -0.2), wallV, gC + colH + beamH, gC + colH + beamH + 0.6, seed);
     }
     box(rect(f, -cw / 2 + 2.4, cv - cd / 2 + 2.4, cw / 2 - 2.4, cv + cd / 2 - 2.4), gC - 0.3, gC + 0.15, [0.36, 0.44, 0.24], seed, Surf.Garden);
     if (b.d <= house + 6) return;
@@ -634,18 +660,30 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
     // The portico: a lean-to round the inside of the court, columns along its edge.
     leanTo(f, -hw, gv1 - 4, hw, gv1, gc + 3.4, gc + 4.6, seed);
     for (const side of [-1, 1]) leanTo(frameOf(...f.P(side * (hw - 2), (gv0 + gv1) / 2), b.rot + Math.PI / 2, -f.ux * side, -f.uz * side), -(gv1 - gv0) / 2, -2, (gv1 - gv0) / 2, 2, gc + 3.4, gc + 4.6, seed);
+    // The court levelled and paved at gc, the garden bed raised on it.
+    box(q, g - 0.3, gc, [0.72, 0.66, 0.56], seed, Surf.Pavement);
+    // Columns under the lean-tos' inner edges: along the back, and down both sides.
     const m = lean ? 4 : 7;
-    for (let i = 0; i <= m; i++) {
-      const [x, z] = f.P(-hw + 4 + ((b.w - 8) * i) / m, gv1 - 4);
-      column(x, z, gc, 3.4, 0.2, [0.88, 0.86, 0.8], seed, 8, true);
-    }
+    const portCol = (u: number, v: number): void => {
+      const [x, z] = f.P(u, v);
+      column(x, z, gc, 3.4 - 0.08, 0.2, [0.88, 0.86, 0.8], seed, 8, true);
+    };
+    for (let i = 0; i <= m; i++) portCol(-hw + 4 + ((b.w - 8) * i) / m, gv1 - 3.9);
+    const ms = Math.max(1, Math.round((gv1 - 4 - gv0) / 3.6));
+    for (const side of [-1, 1]) for (let i = 0; i < ms; i++) portCol(side * (hw - 3.9), gv0 + 0.3 + ((gv1 - 4.3 - gv0) * i) / ms);
     box(rect(f, -hw + 4, gv0 + 1, hw - 4, gv1 - 4), g - 0.3, gc + 0.1, [0.36, 0.44, 0.24], seed, Surf.Garden);
     // The pool, and a pergola over it on six piers.
     const pq = rect(f, -4, (gv0 + gv1) / 2 - 3, 4, (gv0 + gv1) / 2 + 1);
     box(pq, gc - 0.4, gc + 0.3, WHITE, seed, Surf.Stucco, Surf.Water, [0.2, 0.3, 0.32]);
-    if (!lean) for (const u of [-4.5, 0, 4.5]) for (const v of [-4, 2]) {
-      const [x, z] = f.P(u, (gv0 + gv1) / 2 + v);
-      column(x, z, gc, 2.8, 0.18, WHITE, seed, 6);
+    if (!lean) {
+      const pm = (gv0 + gv1) / 2;
+      for (const u of [-4.5, 0, 4.5]) for (const v of [-4, 2]) {
+        const [x, z] = f.P(u, pm + v);
+        column(x, z, gc, 2.8, 0.18, WHITE, seed, 6);
+      }
+      // The pergola's beams on the piers and the cross rafters over them.
+      for (const v of [-4, 2]) fbox(f, -4.8, pm + v - 0.1, 4.8, pm + v + 0.1, gc + 2.8, gc + 3.0, WOOD, seed, Surf.Wood, Surf.Wood, WOOD, true);
+      for (let u = -4.4; u <= 4.41; u += 1.1) fbox(f, u - 0.05, pm - 4.5, u + 0.05, pm + 2.5, gc + 3.0, gc + 3.1, WOOD, seed, Surf.Wood, Surf.Wood, WOOD, true);
     }
   }
 

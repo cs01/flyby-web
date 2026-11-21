@@ -23,6 +23,7 @@ import { budgetForTier, pompeiiBytes, type DeviceDescriptor } from "../src/rende
 import { CITIES } from "../src/cities";
 import { shoreAt } from "../src/data/pompeiisuburbs";
 import { Origin } from "../src/geo";
+import { unsupportedColumns } from "./columnsupport";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -161,6 +162,11 @@ function vertsIn(m: PompeiiModel, ring: number[], above: number, surf?: Surf): n
   check("Sacred Area: two temples and Balbus's altar and statue on the terrace", built.herc!.temples === 2 && built.herc!.statues >= 1 && pointInRing(h.terrace, h.balbus.x, h.balbus.z), "");
   const theatre = data.publics.find((p) => p.kind === "theatre");
   check("the theatre, north of the excavation", !!theatre && frameInv(h.frame, ...(ringCentroid(theatre.ring) as [number, number]))[1] > 230, "");
+  // Every column carries something and stands on something (test/columnsupport.ts): the
+  // temples' porch columns stopped 40 cm under their ceiling, the belvedere's dome was open underneath.
+  const cs = unsupportedColumns(built, ground), csProbe = unsupportedColumns(buildPompeii({ data, groundAt: ground, probeOpenBeams: true }), ground);
+  check("every column and post in Herculaneum carries a beam and stands on a floor", cs.top === 0 && cs.base === 0 && cs.n > 500, `${cs.n} posts: ${cs.top} carry nothing, ${cs.base} stand on nothing`);
+  check("probe: with the beams left open they are caught", csProbe.top > 50, `${csProbe.top} carry nothing`);
 }
 
 // --- 6. Pompeii is unchanged by any of it ------------------------------------------------

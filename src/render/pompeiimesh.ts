@@ -230,12 +230,14 @@ export interface ArtPlaced {
 export interface PompeiiModel {
   /** Every column with its order, for the detailed near copies. */
   orders: ColumnInstance[];
+  /** Every column and post built, with or without an order: the support gate reads them. */
+  posts: { x: number; z: number; y0: number; h: number }[];
   /** Named works placed in their houses (empty with art off). */
   art: ArtPlaced[];
   /** Rooms built inside the houses (full build), with a place to stand and where to look: the poses and the gate read them. */
   interiors: InteriorView[];
   /** Pedestals built empty for a statue (the garden statuary): top centre and the way the figure faces. */
-  statueBases: { x: number; y: number; z: number; yaw: number; what: "garden" }[];
+  statueBases: { x: number; y: number; z: number; yaw: number; what: "garden" | "cult" }[];
   /** What was modelled at the mapped sites. */
   sites: { mills: { x: number; z: number; site: string }[]; ovens: string[]; thermopolia: number; statues: string[]; shrines: number; stalls: number };
   /** The town: buildings, kerbs, landmarks, walls. Single-sided. */
@@ -360,6 +362,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const upperHouses: PompeiiModel["upperHouses"] = [];
   const art = opts.art !== false && !grey;
   const orders: ColumnInstance[] = [];
+  const posts: PompeiiModel["posts"] = [];
   const artPlaced: ArtPlaced[] = [];
   const interiors: InteriorView[] = [];
   const statueBases: PompeiiModel["statueBases"] = [];
@@ -475,6 +478,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       rTop = r * TOP_DIAMETER;
     }
     stats.columns++;
+    posts.push({ x, z, y0, h });
     for (let k = 0; k < sides; k++) {
       const a0 = (k / sides) * Math.PI * 2, a1 = ((k + 1) / sides) * Math.PI * 2;
       const am = (a0 + a1) / 2;
@@ -2317,16 +2321,21 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const e0: [number, number] = [a[0] + fx * 0.5, a[1] + fz * 0.5], e1: [number, number] = [b[0] - fx * 0.5, b[1] - fz * 0.5];
       const q = [e0[0], e0[1], e1[0], e1[1], e1[0] + ox * P, e1[1] + oz * P, e0[0] + ox * P, e0[1] + oz * P];
       box(q, y0 - 0.2, y0, [0.4, 0.27, 0.15], s, Surf.Wood);
-      // Parapet, plastered like the wall behind it.
+      // Parapet, plastered like the wall behind it, 12 cm thick with a capped
+      // top: the posts stand on it.
+      const Pi = P - 0.12;
       wall(e0[0] + ox * P, e0[1] + oz * P, e1[0] + ox * P, e1[1] + oz * P, y0, y0, y0 + 1.0, y0 + 1.0, ox, oz, col, s, Surf.Plaster, 0, 255, 0, fl, y0, 1.0);
-      wall(e1[0] + ox * P, e1[1] + oz * P, e0[0] + ox * P, e0[1] + oz * P, y0, y0, y0 + 1.0, y0 + 1.0, -ox, -oz, col, s, Surf.Plaster, 0, 255, 0, fl, y0, 1.0);
-      // Posts and the pent roof.
+      wall(e1[0] + ox * Pi, e1[1] + oz * Pi, e0[0] + ox * Pi, e0[1] + oz * Pi, y0, y0, y0 + 1.0, y0 + 1.0, -ox, -oz, col, s, Surf.Plaster, 0, 255, 0, fl, y0, 1.0);
+      poly(S, [[e0[0] + ox * Pi, y0 + 1.0, e0[1] + oz * Pi], [e1[0] + ox * Pi, y0 + 1.0, e1[1] + oz * Pi], [e1[0] + ox * P, y0 + 1.0, e1[1] + oz * P], [e0[0] + ox * P, y0 + 1.0, e0[1] + oz * P]],
+        [0, 1, 0], col, s, Surf.Stucco, 0, 0, uv4());
+      // Posts up to the pent roof's underside where they meet it (it falls outward).
+      const ry0 = y0 + 3.0, ry1 = y0 + 2.55;
+      const pv = P - 0.06, postTop = ry0 + ((ry1 - ry0) * pv) / (P + 0.3);
       const L = fl - 1;
       for (let k = 0; k <= Math.max(1, Math.round(L / 2.5)); k++) {
-        const t = (L * k) / Math.max(1, Math.round(L / 2.5));
-        column(e0[0] + fx * t + ox * (P - 0.08), e0[1] + fz * t + oz * (P - 0.08), y0 + 1.0, 1.9, 0.07, [0.36, 0.24, 0.13], s, 4);
+        const t = 0.1 + ((L - 0.2) * k) / Math.max(1, Math.round(L / 2.5));
+        column(e0[0] + fx * t + ox * pv, e0[1] + fz * t + oz * pv, y0 + 1.0, postTop - y0 - 1.0, 0.06, [0.36, 0.24, 0.13], s, 4);
       }
-      const ry0 = y0 + 3.0, ry1 = y0 + 2.55;
       poly(S, [[e0[0], ry0, e0[1]], [e1[0], ry0, e1[1]], [e1[0] + ox * (P + 0.3), ry1, e1[1] + oz * (P + 0.3)], [e0[0] + ox * (P + 0.3), ry1, e0[1] + oz * (P + 0.3)]],
         [ox, 1, oz], [0.62, 0.31, 0.2], s, Surf.Tile, 0, 0, [[0, P, L, P], [L, P, L, P], [L, 0, L, P], [0, 0, L, P]]);
       poly(S, [[e0[0], ry0, e0[1]], [e1[0], ry0, e1[1]], [e1[0] + ox * (P + 0.3), ry1, e1[1] + oz * (P + 0.3)], [e0[0] + ox * (P + 0.3), ry1, e0[1] + oz * (P + 0.3)]],
@@ -3809,6 +3818,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   stats.buildMs = performance.now() - t0;
   return {
     orders,
+    posts,
     art: artPlaced,
     interiors,
     statueBases,
