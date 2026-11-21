@@ -267,7 +267,7 @@ float plumeDensity(vec3 p, bool cheap, out float hf, out float env, out float de
   if (umb < 0.98) shape = flowShape(nC, dC, phC);
   if (umb > 0.02) shape = mix(shape, flowShape(nU, dU, phU), umb);
   // Less on the umbrella, whose s is in half-thicknesses of kilometres.
-  float se = s - mix(1.2, 0.75, umb) * (shape - 0.5);
+  float se = s - mix(1.2, 1.0, umb) * (shape - 0.5);
   if (umb > 0.3 && gPlumeV < 0.0) {
     // Lobes hanging from the umbrella's base where the load drains out of
     // it (mammatus), a kilometre or two across, drifting with the cloud.
@@ -577,7 +577,7 @@ vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout float through, i
         if (uPlumeFlash.w > 0.0) {
           vec3 fd = p - uPlumeFlash.xyz;
           // The surge's own lightning is most of what shows it in the dark.
-          lum += vec3(0.75, 0.8, 1.0) * uPlumeFlash.w * alb * (0.2 + 0.6 * occ) * exp(-dot(fd, fd) / 2.0e6);
+          lum += vec3(0.75, 0.8, 1.0) * uPlumeFlash.w * (alb / 0.3) * (0.3 + 1.2 * occ) * exp(-dot(fd, fd) / 2.0e6);
         }
       }
       lastLum = lum;
@@ -733,7 +733,7 @@ export class EruptionVolume {
     // Light from below: the landscape round the umbrella's shadow (albedo about
     // 0.12, half of what the underside sees is in that shadow) and the sky it
     // reflects. What lights the underside, a few stops under its sunlit top.
-    u.uPlumeGround.value.copy(fr.sun).multiplyScalar(0.06 * Math.max(0, fr.sunY)).add(_c.copy(fr.amb).multiplyScalar(0.15));
+    u.uPlumeGround.value.copy(fr.sun).multiplyScalar(0.15 * Math.max(0, fr.sunY)).add(_c.copy(fr.amb).multiplyScalar(0.4)).multiply(_c.setRGB(1.0, 0.9, 0.78));
     u.uPlumeFlash.value.copy(fr.flash);
     // The vent's glow: constant in radiance, so it only tells once the day goes.
     const glow = sh.topM > 0 ? 1 : 0;
