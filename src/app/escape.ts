@@ -19,6 +19,7 @@ import type { PompeiiData } from "../data/pompeii";
 import type { EruptionView } from "../render/eruption";
 import type { RoofInfo } from "../render/pompeiimesh";
 import { EscapeRoom, planRoom } from "../render/escaperoom";
+import type { PompeiiUniforms } from "../render/pompeii";
 import type { Origin } from "../geo";
 
 /** Start: a quarter of an hour before the column. */
@@ -47,6 +48,12 @@ export interface EscapeHost {
   solids: () => number[][];
   /** Ground height with no pumice on it. */
   bareGround: (x: number, z: number) => number;
+  /** The town's shader uniforms, so the start room is drawn like the houses round it; null before the town is built. */
+  townUniforms: () => PompeiiUniforms | null;
+  /** Highest town ground (street, pavement, block slab) at a point: the room's floor clears it. */
+  townFloor: (x: number, z: number) => number;
+  /** The phone build: fewer facets on the room's props. */
+  lean: boolean;
   /** Stand on foot exactly at (x, z), facing (fx, fz), with no spawn search. */
   placeExact: (x: number, z: number, fx: number, fz: number) => void;
 }
@@ -185,7 +192,7 @@ export class EscapeUi {
       for (let i = 0; i < r.length; i += 2) { cx += r[i]; cz += r[i + 1]; }
       const plan = planRoom(r, streets, this.host.bareGround(cx / (r.length / 2), cz / (r.length / 2)));
       if (!plan) continue;
-      const room = new EscapeRoom(plan, id);
+      const room = new EscapeRoom(plan, id, { uniforms: this.host.townUniforms(), floorAt: this.host.townFloor, lean: this.host.lean });
       this.setRoom(room);
       return room;
     }
