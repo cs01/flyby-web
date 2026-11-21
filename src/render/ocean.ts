@@ -27,16 +27,34 @@
 //     sunk water fails the depth test instead of being shaded twice.
 //   * The landcover decides where the mesh draws: the ocean fragment shader
 //     discards anything the terrain would shade as land.
+//   * The open-ocean swell is not in the FFT (a 12 s swell is longer than
+//     the biggest patch): it is a few analytic components (SWELL_GLSL),
+//     scaled by how exposed each place is to the open sea, which the CPU
+//     works out from the coast about the camera (swellExposure). The mesh
+//     displaces by it and every water pixel, in the disc or not, takes its
+//     slope.
 
 import * as THREE from "three";
 import { TERRAIN_FRAG, type Terrain, type TerrainUniforms } from "./terrain";
-import { OCEAN_VS_GLSL, oceanLinkUniforms, type OceanLinkUniforms } from "./oceanglsl";
+import { OCEAN_VS_GLSL, SWELL_GLSL, SWELL_GRID, oceanLinkUniforms, type OceanLinkUniforms } from "./oceanglsl";
 import type { OceanPlan } from "./budget";
+import { SHORE_MAX_FAR_M, SHORE_MAX_NEAR_M } from "./landmask";
 import {
-  OCEAN_CHOP, OCEAN_FETCH_REF_M, PHASE_PERIOD_S,
-  cascadeBands, cascadeGaussians, cascadeStats, foamThreshold, writeH0,
+  FOAM_ACTIVE_SHARE, FOAM_TAU_S, OCEAN_CHOP, OCEAN_FETCH_REF_M, PHASE_PERIOD_S,
+  cascadeBands, cascadeGaussians, cascadeStats, foamThreshold, shoreSampler, swellExposure, swellWaves, writeH0,
   type OceanBand, type CascadeStats, type FoamThreshold,
 } from "./oceanspectrum";
+
+/**
+ * Foam history the sea is given before its first frame: a step of this many
+ * seconds, this many times. Without it the first frames (and every shot, whose
+ * clock is frozen) show only the crests breaking at that instant, with none of
+ * the trailing residue that is most of what foam looks like.
+ */
+const FOAM_WARM_DT_S = 0.25;
+const FOAM_WARM_STEPS = 48;
+/** Swell exposure grid spacing, metres: see SWELL_GRID. */
+const SWELL_CELL_M = 1200;
 
 const PASS_VERT = /* glsl */ `
 precision highp float;
@@ -177,7 +195,9 @@ uniform float uOceanN;
 // frame; see Terrain.drapeUv.
 uniform vec3 uOceanUvU;
 uniform vec3 uOceanUvV;
+uniform vec2 uOceanWind;
 ${OCEAN_VS_GLSL}
+${SWELL_GLSL}
 out vec2 vUv;
 out vec3 vNormal;
 out vec3 vWorld;
@@ -187,16 +207,29 @@ out float vOceanH;
 void main() {
   vec2 xz = uOceanCentre.xz + position.xz;
   float sd = oceanShoreD(xz);
-  float amp = oceanRadial(xz) * oceanGeomRamp(sd) * oceanFetchAmp(sd);
-  vec3 d = textureLod(uOceanDisp0, xz / uOceanPatch.x, log2(max(position.y * uOceanN / uOceanPatch.x, 1.0))).xyz;
+  float rad = oceanRadial(xz) * oceanGeomRamp(sd);
+  float amp = rad * oceanFetchAmp(sd);
+  float lod0 = log2(max(position.y * uOceanN / uOceanPatch.x, 1.0));
+  vec3 d = textureLod(uOceanDisp0, xz / uOceanPatch.x, lod0).xyz;
+#ifdef OCEAN_DETILE
+  vec3 dB = textureLod(uOceanDisp0, oceanMirror(xz, uOceanWind) / uOceanPatch.x + OCEAN_DETILE_OFS, lod0).xyz;
+  dB.xz = oceanMirror(dB.xz, uOceanWind);
+  float m = oceanDetileMask(xz);
+  d = (d * (1.0 - m) + dB * m) * oceanDetileNorm(m);
+#endif
 #if OCEAN_CASCADES > 1
   d += textureLod(uOceanDisp1, xz / uOceanPatch.y, log2(max(position.y * uOceanN / uOceanPatch.y, 1.0))).xyz;
 #endif
   d *= amp;
+  vOceanH = d.y;
+  // The swell, which this wind did not make, so not scaled by its fetch.
+  // Only where the grid is fine enough to carry it: past ~60 m a vertex the
+  // swell's 150 m crests would be sampled near Nyquist and swim as the grid
+  // slides with the camera, and the fragment stage's normals carry it there.
+  d += swellDisp(xz, swellAmpAt(xz) * rad * smoothstep(90.0, 45.0, position.y));
   vec3 w = vec3(xz.x + d.x, uWaterLevel + d.y, xz.y + d.z);
   vWorld = w;
   vOceanXZ = xz;
-  vOceanH = d.y;
   vUv = vec2(dot(uOceanUvU, vec3(1.0, w.xz)), dot(uOceanUvV, vec3(1.0, w.xz)));
   // Level, in WORLD space: the shader hangs the wave normal off this, and the
   // water mask is ~1 everywhere the mesh survives its discard.
@@ -219,6 +252,8 @@ interface OceanOwnUniforms {
   uOceanSlopeVar: THREE.IUniform<THREE.Vector2>;
   uOceanHeightSd: THREE.IUniform<number>;
   uOceanBand: THREE.IUniform<THREE.Vector2>;
+  uOceanWind: THREE.IUniform<THREE.Vector2>;
+  uOceanFoamTh: THREE.IUniform<THREE.Vector4>;
 }
 
 /**
@@ -390,6 +425,8 @@ export class Ocean {
       uOceanSlopeVar: { value: new THREE.Vector2() },
       uOceanHeightSd: { value: 0.1 },
       uOceanBand: { value: new THREE.Vector2(this.bands[nc - 1].lamLo, this.bands[0].lamHi) },
+      uOceanWind: { value: new THREE.Vector2(1, 0) },
+      uOceanFoamTh: { value: new THREE.Vector4(-10, 0.1, -10, 0.1) },
     };
     // Every terrain uniform by reference (ring 1's: all rings hold the same
     // values except their drape, which the ocean picks for itself), then its
@@ -400,7 +437,10 @@ export class Ocean {
       fragmentShader: TERRAIN_FRAG,
       uniforms: { ...shared, ...this.link, ...this.own },
       glslVersion: THREE.GLSL3,
-      defines: { OCEAN: 1, OCEAN_CASCADES: nc },
+      // One cascade repeats every patch, plainly; two of unrelated sizes
+      // already break each other's repeat, so only the first pays for the
+      // second read (see oceanDetileMask).
+      defines: nc === 1 ? { OCEAN: 1, OCEAN_CASCADES: nc, OCEAN_DETILE: 1 } : { OCEAN: 1, OCEAN_CASCADES: nc },
       // The grid's triangles all face up, so culling would only ever cut the
       // whole sea when seen from below the surface, where nothing is drawn.
       side: THREE.DoubleSide,
@@ -415,11 +455,15 @@ export class Ocean {
     this.mesh.frustumCulled = false;
     // Before the terrain, so the sunk water under it fails the depth test.
     this.mesh.renderOrder = -1;
+    // For the console and the shot harness's --eval (probe() and the swell
+    // grid); nothing in the app reads it.
+    (globalThis as { flybyOcean?: Ocean }).flybyOcean = this;
   }
 
   /** Switch the whole ocean on or off (the "ocean" kill switch), sink included. */
   setActive(on: boolean): void {
     this.link.uOceanOn.value = on ? 1 : 0;
+    this.link.uSwellOn.value = on ? 1 : 0;
     this.mesh.visible = on;
   }
 
@@ -439,8 +483,11 @@ export class Ocean {
     dd = Math.min(dd, 2 * Math.PI - dd);
     if (this.builtU < 0 || Math.abs(U - this.builtU) > 0.25 || dd > 0.04) this.rebuild(U, dir);
     this.time = time % PHASE_PERIOD_S;
-    this.keep = Math.exp(-Math.max(0, dt) / 4);
+    this.keep = Math.exp(-Math.max(0, dt) / FOAM_TAU_S);
     this.link.uOceanCentre.value.set(camera.x, 0, camera.z);
+    this.link.uSwellTime.value = this.time;
+    this.own.uOceanWind.value.set(Math.cos(dir), Math.sin(dir));
+    this.updateSwell(camera.x, camera.z);
 
     // The finest static drape that covers the whole disc; see Terrain.drapeUv.
     const ring = this.terrain.drapeCovering(camera.x, camera.z, this.plan.radiusM);
@@ -469,13 +516,98 @@ export class Ocean {
     // Each cascade foams on its own Jacobian and the shader takes the larger:
     // in a light wind the peak sits in the short cascade and the long one
     // holds only swell, and in a gale the reverse.
-    this.foam = this.stats.map((s) => foamThreshold(U, s.slopeVar));
+    this.foam = this.stats.map((s) => foamThreshold(U, s.slopeVar, OCEAN_CHOP, FOAM_ACTIVE_SHARE));
     const sv = this.stats.map((s) => s.slopeVar);
     this.own.uOceanSlopeVar.value.set(sv[0], sv.length > 1 ? sv[1] : 0);
     const hv = this.stats.reduce((a, s) => a + s.heightVar, 0);
     this.own.uOceanHeightSd.value = Math.sqrt(hv);
-    // 1.4 is oceanFetchAmp's cap; 3.5 sd is past any trough a frame shows.
-    this.link.uOceanSink.value = 1.4 * 3.5 * Math.sqrt(hv) + 0.3;
+    const th = this.own.uOceanFoamTh.value;
+    th.set(this.foam[0].jth, this.foam[0].soft, this.foam[this.foam.length - 1].jth, this.foam[this.foam.length - 1].soft);
+    this.windSink = 1.4 * 3.5 * Math.sqrt(hv) + 0.3;
+    this.setSink();
+  }
+
+  private windSink = 0;
+  private swellPeak = 0;
+  private swellKey = "";
+  private shoreAt: ((x: number, z: number) => number) | null = null;
+  /** The swell's crest height at full exposure: every component in phase. */
+  private readonly swellAmpSum = swellWaves().reduce((a, w) => a + w.amp, 0);
+
+  // 1.4 is oceanFetchAmp's cap; 3.5 sd is past any trough a frame shows. The
+  // swell adds its worst case outright: its components can all line up.
+  private setSink(): void {
+    this.link.uOceanSink.value = this.windSink + this.swellAmpSum * this.swellPeak;
+  }
+
+  /**
+   * The swell exposure grid about the camera (see swellExposure), recomputed
+   * when the camera crosses a cell: a few ms of CPU, every 1.2 km of flight.
+   * Built from the same shore grids the GPU samples, read back off the
+   * textures rather than recomputed, so the CPU and the shader agree on
+   * where the coast is.
+   */
+  private updateSwell(cx: number, cz: number): void {
+    const u = this.terrain.uniforms[0];
+    const half = (SWELL_GRID - 1) / 2;
+    const ox = (Math.round(cx / SWELL_CELL_M) - half) * SWELL_CELL_M;
+    const oz = (Math.round(cz / SWELL_CELL_M) - half) * SWELL_CELL_M;
+    const key = `${ox},${oz}`;
+    if (key === this.swellKey) return;
+    this.swellKey = key;
+    this.link.uSwellGridO.value.set(ox, oz, SWELL_CELL_M);
+    const grid = this.link.uSwellGrid.value;
+    if (!this.shoreAt) {
+      const near = u.uShoreNear.value?.image as { data?: Uint8Array; width: number } | undefined;
+      const far = u.uShoreFar.value?.image as { data?: Uint8Array; width: number } | undefined;
+      // No coast data (a 1x1 stand-in): no way to tell open sea from a
+      // harbour, so no swell rather than swell up every river.
+      if (!near?.data || !far?.data || near.width < 2 || far.width < 2) {
+        for (const v of grid) v.set(0, 0, 0, 0);
+        this.swellPeak = 0;
+        this.setSink();
+        return;
+      }
+      this.shoreAt = shoreSampler(
+        { data: near.data, n: near.width, extentM: u.uLandNearExtent.value, maxM: SHORE_MAX_NEAR_M },
+        { data: far.data, n: far.width, extentM: u.uLandFarExtent.value, maxM: SHORE_MAX_FAR_M },
+      );
+    }
+    // Lake Michigan is not the Pacific: water well above sea level gets none.
+    const sea = u.uWaterLevel.value < 5 ? 1 : 0;
+    const S = SWELL_GRID;
+    const raw = new Float32Array(S * S);
+    const land = new Uint8Array(S * S);
+    for (let j = 0; j < S; j++) {
+      for (let i = 0; i < S; i++) {
+        const x = ox + i * SWELL_CELL_M;
+        const z = oz + j * SWELL_CELL_M;
+        land[j * S + i] = this.shoreAt(x, z) < 20 ? 1 : 0;
+        raw[j * S + i] = sea * swellExposure(this.shoreAt, x, z);
+      }
+    }
+    // A node on land has no swell of its own, and left at 0 it would drag the
+    // bilinear read down across a cell of the open water beside it (all of
+    // Ocean Beach). It takes the most exposed water node next to it instead;
+    // the shader only ever reads the grid over water.
+    let peak = 0;
+    for (let j = 0; j < S; j++) {
+      for (let i = 0; i < S; i++) {
+        let e = raw[j * S + i];
+        if (land[j * S + i]) {
+          for (let b = Math.max(0, j - 1); b <= Math.min(S - 1, j + 1); b++) {
+            for (let a = Math.max(0, i - 1); a <= Math.min(S - 1, i + 1); a++) {
+              if (!land[b * S + a]) e = Math.max(e, raw[b * S + a]);
+            }
+          }
+        }
+        const n = j * S + i;
+        grid[n >> 2].setComponent(n & 3, e);
+        peak = Math.max(peak, e);
+      }
+    }
+    this.swellPeak = peak;
+    this.setSink();
   }
 
   /**
@@ -516,13 +648,28 @@ export class Ocean {
   simulate(renderer: THREE.WebGLRenderer): void {
     if (!this.active) return;
     const prevTarget = renderer.getRenderTarget();
+    if (!this.warmed) {
+      this.warmed = true;
+      const keep = Math.exp(-FOAM_WARM_DT_S / FOAM_TAU_S);
+      for (let i = FOAM_WARM_STEPS; i > 0; i--) {
+        const t = this.time - i * FOAM_WARM_DT_S;
+        this.step(renderer, ((t % PHASE_PERIOD_S) + PHASE_PERIOD_S) % PHASE_PERIOD_S, keep);
+      }
+    }
+    this.step(renderer, this.time, this.keep);
+    renderer.setRenderTarget(prevTarget);
+  }
+
+  private warmed = false;
+
+  private step(renderer: THREE.WebGLRenderer, time: number, keep: number): void {
     const draw = (mat: THREE.RawShaderMaterial, to: THREE.WebGLRenderTarget): void => {
       this.quad.material = mat;
       renderer.setRenderTarget(to);
       renderer.render(this.passScene, this.passCamera);
     };
 
-    this.spectrumMat.uniforms.uT.value = this.time;
+    this.spectrumMat.uniforms.uT.value = time;
     draw(this.spectrumMat, this.fft[0]);
     let src = 0;
     const fu = this.fftMat.uniforms;
@@ -540,7 +687,7 @@ export class Ocean {
     const cur = this.frame & 1;
     const pu = this.postMat.uniforms;
     pu.uFft.value = this.fft[src].texture;
-    pu.uKeep.value = this.keep;
+    pu.uKeep.value = keep;
     for (let c = 0; c < this.plan.cascades.length; c++) {
       pu.uC.value = c;
       pu.uL.value = this.plan.cascades[c].patchM;
@@ -555,6 +702,5 @@ export class Ocean {
     this.own.uOceanDisp1.value = this.out[last][cur].textures[0];
     this.own.uOceanNrm1.value = this.out[last][cur].textures[1];
     this.frame++;
-    renderer.setRenderTarget(prevTarget);
   }
 }

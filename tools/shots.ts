@@ -762,6 +762,57 @@ export const POSES: Pose[] = [
     wx: `${CLEAR},wind:11:265`,
     what: "SF bay from 300 m in a westerly, toward the Gate",
   },
+  // The two poses above on the phone tier: one 80 m cascade, where tiling
+  // and the rim show first.
+  {
+    name: "sf-bay-ocean-low-phone",
+    city: "sf",
+    lat: 37.8240, lon: -122.4150, altM: 10, hdgDeg: 262, pitchDeg: -4,
+    t: D("2025-06-21T20:00:00Z"),
+    wx: "low:0.85:600:1400,mid:0.6:3000:4200,high:0:8500:9400,precip:0,wind:12:265",
+    query: "tier=reduced",
+    what: "sf-bay-ocean-low on the reduced tier",
+  },
+  {
+    name: "sf-bay-ocean-300-phone",
+    city: "sf",
+    lat: 37.8240, lon: -122.4150, altM: 300, hdgDeg: 262, pitchDeg: -16,
+    t: D("2025-06-21T21:00:00Z"),
+    wx: `${CLEAR},wind:11:265`,
+    query: "tier=reduced",
+    what: "sf-bay-ocean-300 on the reduced tier",
+  },
+  {
+    // Open ocean 2 km west of the Golden Gate at 15 m, looking out to sea:
+    // the Pacific swell outside the gate on top of the local wind sea. The
+    // check that the swell is there at all, and long-crested, not chop.
+    name: "sf-gate-swell",
+    city: "sf",
+    lat: 37.8060, lon: -122.5020, altM: 15, hdgDeg: 280, pitchDeg: -3,
+    t: D("2025-06-21T22:00:00Z"), // 15:00 PDT
+    wx: "low:0.25:900:1600,mid:0:3800:5000,high:0:8500:9400,precip:0,wind:8:290",
+    what: "open ocean west of the Golden Gate from 15 m, swell rolling in",
+  },
+  {
+    // The same in a near calm, where there is no wind sea to hide under:
+    // what is left on the water is the swell alone.
+    name: "sf-gate-swell-calm",
+    city: "sf",
+    lat: 37.8060, lon: -122.5020, altM: 15, hdgDeg: 280, pitchDeg: -3,
+    t: D("2025-06-21T22:00:00Z"),
+    wx: "low:0.25:900:1600,mid:0:3800:5000,high:0:8500:9400,precip:0,wind:1:290",
+    what: "the swell west of the Golden Gate in a near calm",
+  },
+  {
+    // Clear-sky sunset over the bay from 12 m, into the sun: the glitter
+    // path, crests backlit by a low sun, and the horizon in the water.
+    name: "sf-bay-sunset",
+    city: "sf",
+    lat: 37.8240, lon: -122.4150, altM: 12, hdgDeg: 292, pitchDeg: -2,
+    t: D("2025-06-22T02:50:00Z"), // 19:50 PDT, sun ~5 degrees up
+    wx: `${CLEAR},wind:9:265`,
+    what: "SF bay at sunset from 12 m, looking into the sun",
+  },
   {
     // Hong Kong, over Victoria Harbour looking at the Central towers.
     //

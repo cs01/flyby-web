@@ -409,15 +409,161 @@ export interface FoamThreshold {
  * distribution when a cascade held only the calm tail below the peak (the
  * 240 m cascade in a 4 m/s breeze), and foamed a third of the sea.
  */
-export function foamThreshold(U: number, slopeVar: number, chop = OCEAN_CHOP): FoamThreshold {
-  const W = whitecapCoverage(U);
+export function foamThreshold(U: number, slopeVar: number, chop = OCEAN_CHOP, share = 1): FoamThreshold {
+  const W = whitecapCoverage(U) * share;
   const sd = chop * Math.sqrt(Math.max(slopeVar, 0));
   if (W < 1e-5 || sd <= 1e-6) return { jth: -10, soft: 0.1 };
   return { jth: 1 + sd * invNorm(W), soft: 0.3 * sd };
 }
 
+/**
+ * The share of the whitecap coverage that is the breaker itself, as against
+ * the foam it leaves behind. The GPU keeps foam for seconds after the crest
+ * that made it has run on (render/ocean.ts, FOAM_TAU_S), so a threshold set for
+ * the whole coverage foamed a quarter of the sea once that history built up:
+ * the crests sweep across most of it in a few seconds. With this share the
+ * accumulated map averages about the coverage again (test/ocean.check.ts
+ * replays the accumulation to hold it there).
+ */
+export const FOAM_ACTIVE_SHARE = 0.18;
+
+/** Seconds a foam patch takes to fall to 1/e once its crest has passed. */
+export const FOAM_TAU_S = 5;
+
 /** Foam from the Jacobian, as the GPU post pass writes it before accumulation. */
 export function foamAt(J: number, f: FoamThreshold): number {
   const t = Math.min(1, Math.max(0, (f.jth + f.soft - J) / (2 * f.soft)));
   return t * t * (3 - 2 * t);
+}
+
+// --- swell --------------------------------------------------------------------
+
+/**
+ * The open-ocean swell: waves from storms far away, not the local wind, so no
+ * wind or fetch here can produce them. There is no live swell feed, so this is
+ * the Northern California climatology: from the west-northwest, around a 12 s
+ * peak, Hs about 3 m offshore. A bay chop rides on it outside a coast and is all there
+ * is behind one; swellExposure says which.
+ */
+export const SWELL_FROM_DEG = 290;
+export const SWELL_HS_M = 3.0;
+export const SWELL_TP_S = 12;
+
+/** One long-crested swell component, in world axes (x east, z south). */
+export interface SwellWave {
+  /** Unit direction of travel. */
+  dx: number;
+  dz: number;
+  k: number;
+  /** Rounded to the phase clock, as every FFT frequency is. */
+  omega: number;
+  amp: number;
+  phase: number;
+}
+
+/** Components in the swell sum; render/oceanglsl.ts sizes its arrays from this. */
+export const SWELL_N = 6;
+
+/**
+ * The swell as a few long-crested components around the peak, within +-12
+ * degrees of the mean direction (a real swell is that narrow after a thousand
+ * kilometres of travel; it is the spread and the slightly different periods
+ * that make the crests come in sets rather than as a ruled corduroy).
+ * Amplitudes are normalised so 4 sqrt(sum a^2 / 2) is exactly hsM.
+ */
+export function swellWaves(hsM = SWELL_HS_M, tpS = SWELL_TP_S, fromDeg = SWELL_FROM_DEG): SwellWave[] {
+  // Period ratio, direction offset (deg), relative energy, phase. Fixed, not
+  // random per load: the same sea every session, and every shot.
+  const comps: [number, number, number, number][] = [
+    [0.86, -9, 0.55, 0.3], [0.93, 6, 0.85, 2.1], [1.0, -2, 1.0, 4.4],
+    [1.06, 11, 0.8, 1.2], [1.13, -12, 0.55, 5.6], [1.24, 3, 0.35, 3.3],
+  ];
+  const eSum = comps.reduce((s, c) => s + c[2], 0);
+  // Variance of the sum is sum a^2 / 2 = (hs / 4)^2.
+  const varTotal = (hsM / 4) ** 2;
+  return comps.map(([pr, dDeg, e, ph]) => {
+    const omega = Math.max(OMEGA0, quantisedOmega(((2 * Math.PI) / (tpS * pr)) ** 2 / G));
+    const k = (omega * omega) / G;
+    // Travelling AWAY from fromDeg: compass bearing fromDeg + 180.
+    const b = ((fromDeg + 180 + dDeg) * Math.PI) / 180;
+    return {
+      dx: Math.sin(b), dz: -Math.cos(b), k, omega,
+      amp: Math.sqrt((2 * varTotal * e) / eSum), phase: ph,
+    };
+  });
+}
+
+/** Significant height of a swell sum, 4 sigma. */
+export function swellHs(waves: SwellWave[]): number {
+  return 4 * Math.sqrt(waves.reduce((s, w) => s + (w.amp * w.amp) / 2, 0));
+}
+
+/**
+ * How much of the open-ocean swell reaches (x, z), 0..1, from the distance to
+ * the nearest land: rays cast back toward where the swell comes from, sphere
+ * traced on that distance field (every step can be as long as the distance to
+ * shore without crossing land). A ray that runs 30 km of open water has reached
+ * the open sea; one that meets a coast inside 6 km is in its lee. 6 km and not
+ * less because a bay is that wide: a ray across SF bay runs 8 to 10 km before
+ * it meets Marin, and the bay must not read as half open ocean. Seven rays
+ * across +-27 degrees, because a swell bends round a headland and spreads
+ * through a gap: inside the Golden Gate some of it arrives through the gap even
+ * where the straight line upwind lands on the Marin cliffs.
+ *
+ * shoreAt(x, z) is metres to the nearest land, 0 on land; the grid edge reads
+ * as open water (see shoreDistanceM in data/landmask.ts), which is right for
+ * a sea that runs off the map.
+ */
+const RAYS = [-27, -18, -9, 0, 9, 18, 27];
+
+export function swellExposure(shoreAt: (x: number, z: number) => number, x: number, z: number, fromDeg = SWELL_FROM_DEG): number {
+  if (shoreAt(x, z) < 20) return 0;
+  const OPEN_M = 30000;
+  let sum = 0;
+  for (const off of RAYS) {
+    const b = ((fromDeg + off) * Math.PI) / 180;
+    const ux = Math.sin(b);
+    const uz = -Math.cos(b);
+    let t = 0;
+    for (let i = 0; i < 48 && t < OPEN_M; i++) {
+      const d = shoreAt(x + ux * t, z + uz * t);
+      if (d < 25) break;
+      // Never shorter than 2% of the way so far: along a coast parallel to
+      // the ray the distance stays small and the march would crawl.
+      t += Math.max(d * 0.9, 40, 0.02 * t);
+    }
+    const open = Math.min(t, OPEN_M);
+    const e = Math.min(1, Math.max(0, (open - 6000) / (OPEN_M - 6000)));
+    sum += e * e * (3 - 2 * e);
+  }
+  return sum / RAYS.length;
+}
+
+/**
+ * Metres to land from the two sqrt-encoded R8 shore grids the GPU samples, the
+ * same bilinear read and near/far crossfade as the terrain shader's, for code
+ * that needs the field on the CPU. See encodeShoreDistance in data/landmask.ts.
+ */
+export function shoreSampler(
+  near: { data: Uint8Array; n: number; extentM: number; maxM: number },
+  far: { data: Uint8Array; n: number; extentM: number; maxM: number },
+): (x: number, z: number) => number {
+  const read = (g: typeof near, x: number, z: number): number => {
+    // Texel centres at (i + 0.5) / n, clamped to the edge like the GPU's.
+    const fx = Math.min(g.n - 1, Math.max(0, ((x / (2 * g.extentM)) + 0.5) * g.n - 0.5));
+    const fz = Math.min(g.n - 1, Math.max(0, ((z / (2 * g.extentM)) + 0.5) * g.n - 0.5));
+    const i = Math.min(g.n - 2, Math.floor(fx));
+    const k = Math.min(g.n - 2, Math.floor(fz));
+    const ax = fx - i;
+    const az = fz - k;
+    const at = (a: number, b: number): number => g.data[b * g.n + a] / 255;
+    const v = (at(i, k) * (1 - ax) + at(i + 1, k) * ax) * (1 - az) + (at(i, k + 1) * (1 - ax) + at(i + 1, k + 1) * ax) * az;
+    return v * v * g.maxM;
+  };
+  return (x, z) => {
+    const r = Math.max(Math.abs(x), Math.abs(z)) / Math.max(1, near.extentM);
+    const w = Math.min(1, Math.max(0, (r - 0.9) / 0.1));
+    const s = w * w * (3 - 2 * w);
+    return s >= 1 ? read(far, x, z) : s <= 0 ? read(near, x, z) : read(near, x, z) * (1 - s) + read(far, x, z) * s;
+  };
 }
