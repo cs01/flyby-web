@@ -40,6 +40,7 @@ import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, Townsfolk, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
+import { restoreCoast79 } from "./data/pompeiisuburbs";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
 import { PompeiiLamps } from "./render/pompeiilamps";
 import { EscapeUi } from "./app/escape";
@@ -374,6 +375,8 @@ async function main() {
   const pompeiiOn = city.id === "pompeii" && !new URLSearchParams(location.search).get("off")?.split(",").includes("pompeii");
   const pompeiiData = pompeiiOn ? await loadPompeii(`${import.meta.env.BASE_URL}landmarks`) : null;
   if (city.id === "pompeii") console.log(`[flyby] vesuvius: ${restoreVesuvius(fields)} DEM cells raised to the pre-79 cone`);
+  // The 79 AD shore and the Sarno as it then ran (data/pompeiisuburbs.ts).
+  if (pompeiiData?.suburbs) console.log(`[flyby] pompeii: ${restoreCoast79(fields, pompeiiData.suburbs, pompeiiData.lat0, pompeiiData.lon0)} DEM cells set to the 79 AD coast and river`);
   const fieldHeight = (lat: number, lon: number): number => (fields[0].contains(lat, lon) ? fields[0] : fields[1]).sample(lat, lon);
 
   loading.set(0.44, "loading imagery");
@@ -387,7 +390,7 @@ async function main() {
   }
   if (city.id === "pompeii") {
     const t0 = performance.now();
-    antiquateDrape(drapes, fieldHeight, { ring: pompeiiData?.wall ?? [], origin: new Origin(city.lat, city.lon) });
+    antiquateDrape(drapes, fieldHeight, { ring: pompeiiData?.wall ?? [], origin: new Origin(city.lat, city.lon), suburbs: pompeiiData?.suburbs });
     console.log(`[flyby] pompeii: drapes repainted as 79 AD farmland in ${(performance.now() - t0).toFixed(0)} ms`);
   }
 
@@ -1140,7 +1143,7 @@ async function main() {
   // Pompeii has no .land pack (its modern landcover is the wrong century):
   // its trees come from the town's gardens and the farmland's olive groves
   // and orchards, through the same renderer.
-  const pompeiiVeg = pompeiiData && !landPack ? pompeiiVegetation(pompeiiData, undefined, undefined, (x, z) => terrain.heightAt(x, z) > waterLevel + 1) : null;
+  const pompeiiVeg = pompeiiData && !landPack ? pompeiiVegetation(pompeiiData, undefined, undefined, (x, z) => terrain.heightAt(x, z) > waterLevel + 1, pompeiiData.suburbs) : null;
   if (landPack || pompeiiVeg) {
     const t0 = performance.now();
     const level = landPack?.levels[0];
@@ -1558,8 +1561,9 @@ async function main() {
       return out;
     },
     toast: (t) => hud.toast(t),
-    // A walled town a kilometre and a half across: missions inside the walls.
-    range: pompeiiData ? { minM: 250, maxM: 1400 } : undefined,
+    // A walled town a kilometre and a half across, and its suburbs out to the
+    // harbour at the Sarno mouth about 2 km from the forum.
+    range: pompeiiData ? { minM: 250, maxM: 2200 } : undefined,
   });
   // A mission asked for from the air starts once the walker is on the ground.
   let missionPending = false;
@@ -3160,6 +3164,9 @@ async function main() {
       skipIntro: () => skipIntro(),
       /** Why a point is no place to stand, or null. */
       spawnCheck: (x: number, z: number) => unstandable(x, z),
+      /** The ground as everything stands on it, and the water level: for probing a coast from a shot. */
+      groundAt: (x: number, z: number) => terrain.heightAt(x, z),
+      waterLevel,
       /**
        * Points that MUST fail spawnCheck, nearest the spawn: a carriageway
        * vertex, a building centroid, open water. The verifier asserts each

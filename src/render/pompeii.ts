@@ -25,6 +25,7 @@ import { Order, columnTemplate } from "./pompeiiorders";
 import { ART_WORKS, type ArtAtlas } from "../data/pompeiiart";
 import { HORSE_BONES, STRIDE_M, buildHorse, poseHorse, type Gait, type HorseMesh } from "./horse";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
+import { Land, LandGrid, type PompeiiSuburbs } from "../data/pompeiisuburbs";
 import { PompeiiLife } from "../data/pompeiilife";
 import { BuildingKind, RoofShape, type Building, type CityPack } from "../data/citypack";
 import { Heightfield } from "../data/dem";
@@ -394,6 +395,16 @@ void main() {
     vec3 sky = shIrradiance(reflect(-v, n)) * 0.35;
     vec3 sunE = uSunColor * uSunIntensity * uSunSurface;
     vec3 col = albedo * 0.25 * occludedSkyIrradiance(n) + sky * (0.2 + fres);
+    // Open water (p1 set: the Sarno) under the open sky: the sky fills it as
+    // it does the sea, where a fountain basin between walls stays dark.
+    if (p1 > 0.5) {
+      // Ripples on the current, so the sky in it breaks up as the sea's does.
+      vec2 rp = vWorld.xz * vec2(0.35, 0.9);
+      vec3 rn = normalize(n + vec3(vnoise(rp) - 0.5, 0.0, vnoise(rp + 17.0) - 0.5) * 0.35);
+      float rf = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(rn, v)), 5.0);
+      col = albedo * 0.45 * occludedSkyIrradiance(n) + shIrradiance(reflect(-v, rn)) * (0.75 + rf);
+      col += sunE * pow(max(0.0, dot(rn, normalize(uSunDir + v))), 120.0) * 0.6;
+    }
     col += sunE * pow(max(0.0, dot(n, normalize(uSunDir + v))), 200.0) * 0.5;
     vec3 ro = atmoOrigin(uCamAltitude);
     vec3 rd = normalize(vWorld - uCameraPos);
@@ -426,6 +437,34 @@ void main() {
       albedo *= 0.75 + 0.4 * h21(vo.yz);
       albedo *= 0.7 + 0.3 * smoothstep(0.02, 0.08, vo.x);
     }
+  } else if (style < 11.5 && p2 > 0.5) {
+    // A tomb's inscription panel (render/pompeiisuburbs.ts): lines of
+    // capitals cut in the marble and picked out in red, as the surviving
+    // ones were. Each letter is a few strokes in its cell, chosen by hash:
+    // it reads as lettering at the distance a passer-by reads it, and fades
+    // to a pale band past 30 m where the strokes would only alias.
+    vec3 c = albedo * (0.95 + 0.05 * vnoise(vec2(u, h) * 9.0));
+    float lineH = clamp(H / 5.0, 0.09, 0.16);
+    float lrow = floor(h / lineH), ly = fract(h / lineH);
+    float margin = 0.12, cw = lineH * 0.62;
+    float lcol = floor((u - margin) / cw), lx = fract((u - margin) / cw);
+    float lineLen = (len - 2.0 * margin) * (0.55 + 0.45 * h21(vec2(lrow, seed * 31.0)));
+    bool inText = u > margin && u < len - margin && h > lineH * 0.6 && h < H - lineH * 0.6 && abs(u - len * 0.5) < lineLen * 0.5;
+    float lg = h21(vec2(lcol, lrow + seed * 57.0));
+    float ink = 0.0;
+    if (inText && ly > 0.22 && ly < 0.86 && lx > 0.12 && lx < 0.88) {
+      float sx = (lx - 0.12) / 0.76, sy = (ly - 0.22) / 0.64, w = 0.17;
+      ink += step(0.35, lg) * step(sx, w);
+      ink += step(lg, 0.7) * step(1.0 - w, sx);
+      ink += step(0.5, fract(lg * 7.0)) * step(1.0 - w * 1.2, sy);
+      ink += step(0.5, fract(lg * 13.0)) * step(sy, w * 1.2);
+      ink += step(0.6, fract(lg * 3.0)) * step(abs(sy - 0.5), w * 0.6);
+      ink += step(fract(lg * 5.0), 0.25) * step(abs(sx - sy), w);
+    }
+    float far = smoothstep(12.0, 30.0, vViewDist);
+    albedo = mix(c, vec3(0.42, 0.14, 0.1), clamp(ink, 0.0, 1.0) * 0.85 * (1.0 - far));
+    if (inText) albedo = mix(albedo, c * vec3(0.86, 0.8, 0.78), far * 0.5);
+    gloss = 0.2;
   } else if (style < 11.5 && p1 > 0.5) {
     // A thermopolium's counter front: offcuts of coloured marble set as
     // crazy paving (giallo antico, pavonazzetto, cipollino, rosso, white).
@@ -976,8 +1015,9 @@ export function pompeiiRingFields(fields: Heightfield[], data: PompeiiData): Hei
  * bare. The original pixel's lightness is kept as a faint texture, clamped so
  * a white modern roof cannot show through as a speck.
  */
-export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, lon: number) => number, wall: { ring: number[]; origin: Origin }): void {
+export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, lon: number) => number, wall: { ring: number[]; origin: Origin; suburbs?: PompeiiSuburbs }): void {
   const R0 = 12000, R1 = 15000;
+  const land = wall.suburbs ? new LandGrid(wall.suburbs, wall.ring) : null;
   const lat0 = wall.origin.lat, lon0 = wall.origin.lon;
   const mLat = metresPerDegLat(lat0), mLon = metresPerDegLon(lat0);
   // Fields on the centuriation grid: about 20 actus (710 m) squares, each cut
@@ -1020,12 +1060,20 @@ export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, 
         const lum = (R + G + B) / 3;
         // Water stays: the sea and the Sarno. Blue and not dark, so the
         // bluish shadow under a modern tree is not taken for a pond.
-        if (B > R + 15 && B > G && lum > 45 && lum < 170) continue;
+        const blue = B > R + 15 && B > G && lum > 45 && lum < 170;
         const elev = heightAt(lat, lon);
         let c: [number, number, number];
         // The centuriation grid: 710 m squares, each in strips, each strip in
         // parcels, each parcel its own crop (cropAt, shared with the trees).
-        const { kind, tone, lu, lv, sw, pl, fu, strip } = cropAt(x, y);
+        let { kind, tone, lu, lv, sw, pl, fu, strip } = cropAt(x, y);
+        // The gradient out from the walls (data/pompeiisuburbs.ts): with the
+        // suburbs known, today's water is kept only inside the 79 AD sea, and
+        // the band between it and today's coast, and the modern Sarno's
+        // channel, are land again.
+        const lc = land ? land.at(x, -y, kind) : blue ? Land.Sea : Land.Fields;
+        if (lc === Land.Sea && blue) continue;
+        if (lc === Land.Vineyard) kind = 0;
+        else if (lc === Land.Olive) kind = kind === 4 ? 4 : 2;
         c = [crops[kind][0] * tone, crops[kind][1] * tone, crops[kind][2] * tone];
         if (kind === 0 || kind === 4 || kind === 2) {
           // Rows in vineyards, orchards and olive groves.
@@ -1035,6 +1083,7 @@ export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, 
         }
         // Field margins: a darker hedge or a track.
         if (lu < 5 || (lv % sw) < 3 || ((lu % pl) < 2.5)) c = hash2(fu, strip) > 0.5 ? [72, 88, 46] : [150, 132, 100];
+        if (lc !== Land.Fields && lc !== Land.Vineyard && lc !== Land.Olive) c = suburbColour(lc, x, y, c);
         // The volcano: vines on the lower slopes, oak and chestnut woods
         // above, the bare ash-grey summit Strabo describes.
         if (elev > 250) c = mixC(c, [92, 112, 54], Math.min(1, (elev - 250) / 200));
@@ -1049,6 +1098,55 @@ export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, 
       }
     }
     ctx.putImageData(img, i0, j0);
+  }
+}
+
+/**
+ * The ground colour of the land between the walls and the fields (x east, y
+ * north): tomb verges, garden plots, market-garden strips, beach, dunes, the
+ * river and its banks. `under` is the parcel colour, for the plots to vary from.
+ */
+function suburbColour(lc: Land, x: number, y: number, under: [number, number, number]): [number, number, number] {
+  const n = hash2(Math.floor(x / 3), Math.floor(y / 3));
+  switch (lc) {
+    case Land.Town: return under;
+    case Land.Road: return [168, 150, 116];
+    case Land.Tombs: return mixC([178, 166, 130], [132, 136, 88], hash2(Math.floor(x / 7), Math.floor(y / 7)) * 0.5 + n * 0.15);
+    case Land.Suburb: {
+      // House gardens and yards: plots of 12-20 m behind low walls.
+      // Each row of plots shifted along by its own hash, so the walls do not line up into a lattice.
+      const py = Math.floor(y / 13), sx = x + 16 * hash2(py, 71);
+      const px = Math.floor(sx / 16);
+      const h = hash2(px * 3 + 1, py * 5 - 2);
+      const edge = (((sx % 16) + 16) % 16) < 0.9 || (((y % 13) + 13) % 13) < 0.9;
+      if (edge) return [148, 136, 104];
+      return h < 0.45 ? mixC([86, 108, 54], [110, 124, 66], n) : h < 0.75 ? [150, 128, 92] : [124, 122, 78];
+    }
+    case Land.Garden: {
+      // Horti: long narrow beds of greens, onions, cabbage and beans, earth between, a channel every few beds.
+      // Plots of 30-50 m, each with its beds running one way or the other,
+      // so the whole does not read as one grid.
+      const tilt = (-24 * Math.PI) / 180;
+      const gu = x * Math.cos(tilt) - y * Math.sin(tilt), gv = x * Math.sin(tilt) + y * Math.cos(tilt);
+      const pv = Math.floor(gv / 52), su = gu + 38 * hash2(pv, 5);
+      const pu = Math.floor(su / 38);
+      const plot = hash2(pu * 11 + 3, pv * 17 - 5);
+      const bw = 4 + 5 * hash2(pu, pv * 3);
+      const a = plot < 0.5 ? gu : gv;
+      const bed = Math.floor(a / bw);
+      const h = hash2(bed * 7 + pu, pv * 13 - bed);
+      const tone = 0.9 + 0.2 * hash2(pu + 1, pv);
+      let c: [number, number, number] = plot < 0.1 ? [128, 116, 82] : h < 0.75 ? mixC([86, 106, 54], [108, 120, 62], h / 0.75) : h < 0.9 ? [118, 110, 76] : [108, 112, 64];
+      if (((a % bw) + bw) % bw < 0.7) c = [128, 112, 82];
+      if (((su % 38) + 38) % 38 < 1 || ((gv % 52) + 52) % 52 < 1) c = [104, 110, 66];
+      return [c[0] * tone, c[1] * tone, c[2] * tone];
+    }
+    case Land.Beach: return mixC([222, 208, 172], [176, 164, 132], n * 0.3);
+    case Land.Dunes: return mixC([200, 188, 146], [128, 138, 88], hash2(Math.floor(x / 5), Math.floor(y / 5)) > 0.6 ? 0.7 : 0.1);
+    case Land.Sea: return [92, 112, 112];
+    case Land.River: return [52, 70, 68];
+    case Land.Banks: return mixC([84, 108, 60], [120, 128, 76], n);
+    default: return under;
   }
 }
 
@@ -1081,7 +1179,11 @@ export function pompeiiVegetation(
   // The field pattern is drawn over everything outside the walls, the Bay of
   // Naples included, so without this the olive groves run out to sea.
   dry: (x: number, z: number) => boolean = () => true,
+  // With the suburbs: trees by the land-use gradient (cypress by the tombs,
+  // fruit trees in the gardens, willows on the Sarno, pines on the dunes).
+  suburbs?: PompeiiSuburbs,
 ): { rgba: Uint8Array; n: number; extentM: number } {
+  const land = suburbs ? new LandGrid(suburbs, data.wall) : null;
   const n = Math.ceil((extentM * 2) / cellM);
   const rgba = new Uint8Array(n * n * 4);
   const palestra = data.publics.find((p) => p.kind === "palestra")?.ring ?? null;
@@ -1103,6 +1205,7 @@ export function pompeiiVegetation(
         else if (data.insulae.some((i) => pointInRing(i.ring, x, z))) tree = 0.22;
       } else {
         const crop = cropAt(x, -z);
+        const lc = land ? land.at(x, z, crop.kind) : Land.Fields;
         // Olive groves (2) and orchards (4) are trees; the hedges between
         // fields carry a few.
         if (crop.kind === 2) tree = 0.55;
@@ -1111,6 +1214,7 @@ export function pompeiiVegetation(
         // A clear ring round the walls: the tombs and gardens along the roads
         // out of the gates, not woodland.
         if (nearWallBox(x, z, 60) && distToWall(data.wall, x, z) < 60) tree *= 0.3;
+        if (lc !== Land.Fields) tree = LAND_TREES[lc] ?? tree;
       }
       rgba[o + 2] = Math.round(tree * 255);
       rgba[o + 3] = Math.round((1 - tree) * 200);
@@ -1118,6 +1222,12 @@ export function pompeiiVegetation(
   }
   return { rgba, n, extentM };
 }
+
+/** Tree cover by land use outside the open fields, indexed by Land. */
+const LAND_TREES: Record<number, number> = {
+  [Land.Tombs]: 0.03, [Land.Suburb]: 0.07, [Land.Garden]: 0.09, [Land.Vineyard]: 0.04, [Land.Olive]: 0.55,
+  [Land.Sea]: 0, [Land.Beach]: 0, [Land.Dunes]: 0.12, [Land.River]: 0, [Land.Banks]: 0.4, [Land.Road]: 0, [Land.Town]: 0,
+};
 
 function distToWall(r: number[], x: number, z: number): number {
   let best = Infinity;

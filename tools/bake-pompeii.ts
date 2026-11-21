@@ -24,6 +24,7 @@ import {
   plainName, pointInRing, polylineLength, ringArea, ringCentroid,
   type PompeiiData, type PompeiiInsula, type PompeiiPlace, type PompeiiPublic, type PompeiiStreet, type PublicKind, type Ring,
 } from "../src/data/pompeii";
+import { layoutSuburbs, tombsByGate, type OsmTomb } from "../src/data/pompeiisuburbs";
 
 const RAW = new URL("./.cache/pompeii/raw.json", import.meta.url).pathname;
 const OUT = new URL("../public/landmarks/pompeii.json", import.meta.url).pathname;
@@ -857,6 +858,58 @@ for (const e of raw.elements) {
 }
 console.log(`sites: ${["bakery", "thermopolium", "artwork"].map((k) => `${sites.filter((s) => s.kind === k).length} ${k}`).join(", ")}; villa ${villa ? "found" : "missing"}`);
 
+// --- outside the walls -------------------------------------------------------------
+// The mapped tombs, Via delle Tombe and the two suburban markers; the rest of
+// the suburbs is laid out from documented and estimated positions in
+// data/pompeiisuburbs.ts.
+const osmTombs: OsmTomb[] = [];
+const markers: Record<string, [number, number]> = {};
+let sepolcri: number[] | null = null;
+for (const e of raw.elements) {
+  const t = e.tags;
+  if (!t) continue;
+  if (e.type === "way" && t.highway && t.name === "Via delle Tombe") sepolcri = wayPts(e).map(r1);
+  if (t.name === "Villa di Diomede" || t.name === "Terme Suburbane") {
+    const p = e.type === "node" ? nodes.get(e.id) : null;
+    if (p) markers[t.name] = [r1(p[0]), r1(p[1])];
+  }
+  if (t.historic !== "tomb") continue;
+  let ring: number[] | null = null, p: [number, number] | null = null;
+  if (e.type === "node") p = nodes.get(e.id) ?? null;
+  else if (e.type === "way") {
+    const q = wayPts(e);
+    if (q.length >= 6) {
+      ring = q.length >= 8 && q[0] === q[q.length - 2] && q[1] === q[q.length - 1] ? q.slice(0, -2) : q;
+      p = ringCentroid(ring) as [number, number];
+    }
+  }
+  if (!p) continue;
+  // "Tomba sconosciuta", "Unknown tomb": not names.
+  const name = /sconosciuta|senza nome|unknown/i.test(t.name ?? "") ? "" : plainName(t.name ?? "");
+  osmTombs.push({ name, tag: t.tomb ?? "", ring, x: p[0], z: p[1] });
+}
+if (osmTombs.length < 100) throw new Error(`only ${osmTombs.length} tombs in the raw OSM`);
+if (!sepolcri) throw new Error("no Via delle Tombe in the raw OSM");
+const suburbs = layoutSuburbs({ lat0: LAT0, lon0: LON0, wall, gates, osmTombs, sepolcri, markers, misteri: villa?.ring ?? null });
+{
+  // Destinations outside the walls for the mission list.
+  const add = (name: string, x: number, z: number): void => {
+    if (!seenPlace.has(name)) { seenPlace.add(name); places.push({ name, x: r1(x), z: r1(z), kind: "suburb" }); }
+  };
+  const mean = (l: { x: number; z: number }[]): [number, number] => [l.reduce((s, q) => s + q.x, 0) / l.length, l.reduce((s, q) => s + q.z, 0) / l.length];
+  for (const g of ["Porta di Ercolano", "Porta Nocera"]) {
+    const l = suburbs.tombs.filter((t) => suburbs.roads[t.road].gate === g && !t.inferred);
+    if (l.length) add(`Necropoli di ${g.replace("Porta di ", "Porta ")}`, ...mean(l));
+  }
+  for (const t of suburbs.tombs) if (/Eumachia|Naevoleia|Mamia|Venerius/.test(t.name)) add(t.name, t.x, t.z);
+  for (const b of suburbs.buildings) if (/Diomede|Imperiale|Terme Suburbane|Horrea|Villa Regina|Colonne/.test(b.name)) add(b.name, b.x, b.z);
+  if (villa) add("Villa dei Misteri", ...(ringCentroid(villa.ring) as [number, number]));
+  const q = suburbs.quay;
+  add("Porto alla foce del Sarno", q[q.length - 2], q[q.length - 1]);
+}
+console.log(`suburbs: ${suburbs.tombs.length} tombs (${suburbs.tombs.filter((t) => !t.inferred).length} from OSM), ${suburbs.buildings.length} buildings, ${suburbs.roads.length} roads, ${suburbs.bridges.length} bridges`);
+for (const [g, n] of tombsByGate(suburbs)) console.log(`  ${g}: ${n} tombs`);
+
 const streetM = streets.reduce((s, st) => s + polylineLength(st.pts), 0);
 const stats = {
   rawElements: raw.elements.length,
@@ -875,7 +928,7 @@ const stats = {
   places: places.length,
 };
 const data: PompeiiData = {
-  lat0: LAT0, lon0: LON0, wall: wall.map(r1), gates, towers, fountains, streets, insulae, publics, amphitheatre, places, domus, sites, villa, stats,
+  lat0: LAT0, lon0: LON0, wall: wall.map(r1), gates, towers, fountains, streets, insulae, publics, amphitheatre, places, domus, sites, villa, suburbs, stats,
 };
 writeFileSync(OUT, JSON.stringify(data));
 console.log(JSON.stringify(stats, null, 1));
