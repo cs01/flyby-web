@@ -52,11 +52,19 @@ const BASE: { name: string; query: string; act?: string; settleMs?: number; atMs
   { name: "pompeii-cart", query: "city=pompeii&intro=0", act: tap("cart"), settleMs: 2500 },
   { name: "pompeii-drone", query: "city=pompeii&intro=0", act: tap("drone"), settleMs: 2500 },
   { name: "pompeii-intro", query: "city=pompeii", atMs: 5000 },
+  // The escape (app/escape.ts): its card on the street, an ending, the 79 AD switches in the menu.
+  { name: "pompeii-escape", query: "city=pompeii&intro=0&escape=bakery", settleMs: 3000 },
+  { name: "pompeii-escape-end", query: "city=pompeii&intro=0", act: "flybyEscape.forceEnding('road')", settleMs: 1500 },
+  { name: "pompeii-eruption-menu", query: "city=pompeii&intro=0", act: "document.querySelector('.topbar-menu')?.click()", settleMs: 600 },
 ];
 
 const SCENES: Scene[] = [
   ...BASE.flatMap((b) => SIZES.map((s) => ({ ...b, name: `${b.name}-${s.tag}`, w: s.w, h: s.h, dpr: s.dpr }))),
   { name: "desktop-pompeii-walk", query: "city=pompeii&intro=0", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 2500 },
+  { name: "desktop-pompeii-escape", query: "city=pompeii&intro=0&escape=lupanar", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 3000 },
+  { name: "desktop-pompeii-escape-end", query: "city=pompeii&intro=0", act: "flybyEscape.forceEnding('town')", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 1500 },
+  // At the Porta di Stabia an hour into the fall: the road out offered.
+  { name: "desktop-pompeii-escape-gate", query: "city=pompeii&intro=0&escape=bakery", act: "setTimeout(() => { flybyEscape.setHourForTest(14.3); flyby.drone.enterWalk(161, 64, flyby.terrain.heightAt(161, 64), 160); }, 1500)", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 5000 },
   { name: "desktop-sf-plane", query: "city=sf&intro=0&start=plane", w: 1280, h: 720, dpr: 1, desktop: true },
 ];
 const failures: string[] = [];

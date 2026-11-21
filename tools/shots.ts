@@ -994,13 +994,13 @@ export const POSES: Pose[] = [
     what: "Roofs, atria and peristyles from 100 m",
   },
   // The eruption (sim/eruption.ts, render/eruption.ts), on its own clock:
-  // local mean time is UTC + 0:58, so 13:02Z is 14:00 in the town.
+  // the town clock the app shows is UTC + 0:49:56, so 13:10Z is 14:00 there.
   {
     // The forum toward the mountain an hour after the column rose.
     name: "eruption-plume-forum",
     city: "pompeii",
     lat: 40.74888, lon: 14.48514, altM: 36.2, hdgDeg: 336, pitchDeg: 16,
-    t: D("0079-08-22T13:02:00Z"),
+    t: D("0079-08-22T13:10:04Z"),
     wx: POMPEII_WX,
     what: "The column and umbrella from the Forum at 14:00",
     query: "eruption=1&fov=70",
@@ -1010,7 +1010,7 @@ export const POSES: Pose[] = [
     name: "eruption-street-1630",
     city: "pompeii",
     lat: 40.75092, lon: 14.49024, altM: 34.0, hdgDeg: 58, pitchDeg: -4,
-    t: D("0079-08-22T15:32:00Z"),
+    t: D("0079-08-22T15:40:04Z"),
     wx: POMPEII_WX,
     what: "A street in the pumice fall at 16:30, lamp-lit",
     query: "eruption=1",
@@ -1020,7 +1020,7 @@ export const POSES: Pose[] = [
     name: "eruption-roofs-1800",
     city: "pompeii",
     lat: 40.75092, lon: 14.49024, altM: 34.4, hdgDeg: 58, pitchDeg: 2,
-    t: D("0079-08-22T17:01:02Z"), // a lightning flash, read off the eruption hour
+    t: D("0079-08-22T17:09:03Z"), // a lightning flash, read off the eruption hour
     wx: POMPEII_WX,
     what: "Roofs giving way at 18:00",
     query: "eruption=1",
@@ -1030,7 +1030,7 @@ export const POSES: Pose[] = [
     name: "eruption-surge-dawn",
     city: "pompeii",
     lat: 40.75323, lon: 14.48409, altM: 60, hdgDeg: 330, pitchDeg: 2,
-    t: D("0079-08-23T06:01:33Z"), // a flash in the surge, read off the eruption hour
+    t: D("0079-08-23T06:09:34Z"), // a flash in the surge, read off the eruption hour
     wx: POMPEII_WX,
     what: "The surge coming down on the town at dawn",
     query: "eruption=1&fov=70",

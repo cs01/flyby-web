@@ -23,7 +23,7 @@ import type { Origin } from "../geo";
 const START_H = 12.75;
 /** Close enough to a gate to be offered the road. */
 const GATE_M = 16;
-const PICKUP_M = 2.2;
+const PICKUP_M = 1.8;
 
 export interface EscapeHost {
   ui: HTMLElement;
@@ -36,6 +36,8 @@ export interface EscapeHost {
   advance: (seconds: number) => void;
   /** Stand on foot at the nearest standable point to (x, z), facing (fx, fz); the point used, or null. */
   placeOnFoot: (x: number, z: number, fx: number, fz: number) => { x: number; z: number } | null;
+  /** Metres of open ground from (x, z) along the unit (dx, dz). */
+  openAhead: (x: number, z: number, dx: number, dz: number) => number;
   groundAt: (x: number, z: number) => number;
   toast: (s: string) => void;
 }
@@ -119,8 +121,30 @@ export class EscapeUi {
     return localHours(this.host.nowMs());
   }
 
+  /** For tools/phoneshots.ts: jump the story clock. */
+  setHourForTest(h: number): void {
+    this.setHour(h);
+  }
+
   private setHour(h: number): void {
     this.host.advance((h - this.hour()) * 3600);
+  }
+
+  /**
+   * The most open way from (x, z): sixteen bearings, each scored by the open
+   * ground ahead, ties going toward the Porta di Stabia. Facing down a street
+   * rather than at a house wall a metre away.
+   */
+  private openWay(x: number, z: number): [number, number] {
+    const g = this.host.data.gates.find((q) => q.name === "Porta di Stabia");
+    const gx = g ? g.x - x : 0, gz = g ? g.z - z : 1, gl = Math.hypot(gx, gz) || 1;
+    let best = -Infinity, dx = 0, dz = 1;
+    for (let k = 0; k < 16; k++) {
+      const a = (k / 16) * Math.PI * 2, ux = Math.sin(a), uz = -Math.cos(a);
+      const score = this.host.openAhead(x, z, ux, uz) + 3 * (ux * gx + uz * gz) / gl;
+      if (score > best) { best = score; dx = ux; dz = uz; }
+    }
+    return [dx, dz];
   }
 
   /** Start the story from one of the two houses. */
@@ -130,14 +154,16 @@ export class EscapeUi {
     this.host.view.enabled = true;
     this.toggle.checked = true;
     this.setHour(START_H);
-    const at = this.host.placeOnFoot(s.x, s.z, s.faceX, s.faceZ);
+    let at = this.host.placeOnFoot(s.x, s.z, s.faceX, s.faceZ);
     if (!at) {
       this.host.toast("Could not find the door: the town is not loaded");
       return;
     }
-    // The lamp is on the counter by the door, a step toward the street.
-    const dx = s.faceX - at.x, dz = s.faceZ - at.z, d = Math.hypot(dx, dz) || 1;
-    const px = at.x + (dx / d) * 1.6, pz = at.z + (dz / d) * 1.6;
+    const [fx, fz] = this.openWay(at.x, at.z);
+    at = this.host.placeOnFoot(at.x, at.z, at.x + fx * 10, at.z + fz * 10) ?? at;
+    // The lamp is on a counter a few steps ahead: the first thing to do.
+    const d = Math.hypot(fx, fz) || 1;
+    const px = at.x + (fx / d) * 3.5, pz = at.z + (fz / d) * 3.5;
     this.pickup = new THREE.Vector3(px, this.host.groundAt(px, pz) + 0.9, pz);
     this.run = { lampH: null, exit: null, roofH: null };
     this.gate = null;
@@ -148,11 +174,14 @@ export class EscapeUi {
     this.end.style.display = "none";
     this.indoors.style.display = "none";
     this.card.style.display = "";
+    // The everyday mission chip has no place in this story.
+    this.host.ui.classList.add("escaping");
     this.host.toast(`${s.title}. ${s.intro}`);
   }
 
   stop(): void {
     this.mode = "off";
+    this.host.ui.classList.remove("escaping");
     this.pickup = null;
     this.host.view.pickup = null;
     this.card.style.display = "none";
@@ -338,6 +367,8 @@ export class EscapeUi {
     this.card.style.display = "none";
     this.indoors.style.display = "none";
     this.host.view.pickup = null;
+    this.host.view.enabled = true;
+    this.toggle.checked = true;
     // The world behind the card is the moment it ended.
     this.setHour(Math.min(o.h, SURGES_END_H));
     const t = ENDINGS[o.ending];
@@ -349,14 +380,14 @@ export class EscapeUi {
       km: (o.distM / 1000).toFixed(1),
       depth: `${Math.round(pumiceDepthM(o.h) * 100)} cm`,
     };
-    const start = STARTS[this.start];
+
     this.end.innerHTML =
       `<div class="e-box"><h2></h2><p class="e-body"></p><p class="e-hist"></p><p class="e-note"></p>` +
       `<div class="e-btns"><button data-a="again">Try again</button><button data-a="close">Back to Pompeii</button></div></div>`;
     (this.end.querySelector("h2") as HTMLElement).textContent = t.title;
     (this.end.querySelector(".e-body") as HTMLElement).textContent = fill(t.body, vars);
     (this.end.querySelector(".e-hist") as HTMLElement).textContent = t.history;
-    (this.end.querySelector(".e-note") as HTMLElement).textContent = `${start.title}. ${HISTORY_NOTE}`;
+    (this.end.querySelector(".e-note") as HTMLElement).textContent = HISTORY_NOTE;
     (this.end.querySelector('[data-a="again"]') as HTMLElement).addEventListener("click", () => this.begin(this.start));
     (this.end.querySelector('[data-a="close"]') as HTMLElement).addEventListener("click", () => {
       this.end.style.display = "none";

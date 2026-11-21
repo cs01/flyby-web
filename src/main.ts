@@ -1668,11 +1668,14 @@ async function main() {
   // The 79 AD switch and the escape mission (app/escape.ts). The walker is
   // placed through a closure: the spawn search is defined further down.
   let escapePlace: (x: number, z: number, fx: number, fz: number) => { x: number; z: number } | null = () => null;
+  let escapeBlocked: (x: number, z: number) => boolean = () => false;
   const escape = eruptView && pompeiiData ? new EscapeUi({
     ui, data: pompeiiData, view: eruptView, origin,
     nowMs: () => now.getTime(),
     advance: (sec) => { timebar.setOffset(timebar.offsetSeconds + sec); now = sceneNow(); },
     placeOnFoot: (x, z, fx, fz) => escapePlace(x, z, fx, fz),
+    // Metres of open ground ahead, in 2 m steps up to 30: to face the street, not a wall.
+    openAhead: (x, z, dx, dz) => { let m = 0; while (m < 30 && !escapeBlocked(x + dx * (m + 2), z + dz * (m + 2))) m += 2; return m; },
     groundAt: (x, z) => terrain.heightAt(x, z),
     toast: (t) => hud.toast(t),
   }) : null;
@@ -1776,8 +1779,10 @@ async function main() {
       sortByRange();
     }
   }
+  escapeBlocked = (x, z) => { const u = unstandable(x, z); return u === "building" || u === "water"; };
   escapePlace = (x, z, fx, fz) => {
-    const at = findSpawn(x, z, false);
+    // Pavement first: a wish inside a house can land in a walled courtyard.
+    const at = findSpawn(x, z, true);
     if (!at) return null;
     const hdg = (Math.atan2(fx - at.x, -(fz - at.z)) * 180) / Math.PI;
     carActive = false;

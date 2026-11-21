@@ -31,7 +31,7 @@ const hm = (h: number) => `${String(Math.floor(h % 24)).padStart(2, "0")}:${Stri
 
 // --- the clock --------------------------------------------------------------
 const era = Date.parse("0079-08-22T07:30:00Z");
-check("era start is about 08:28 local mean time", within(localHours(era), 8.4, 8.55), hm(localHours(era)));
+check("era start reads 08:20 on the town clock", within(localHours(era), 8.3, 8.4), hm(localHours(era)));
 check("utcMsAt inverts localHours", Math.abs(localHours(utcMsAt(13.25)) - 13.25) < 1e-9, "");
 
 // --- the column -------------------------------------------------------------

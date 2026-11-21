@@ -10,8 +10,10 @@
 // the pyroclastic surges S1..S6 overnight and at dawn, S4 the first to enter
 // the town.
 //
-// The clock is local mean time in hours from midnight on the day the column
-// rose: 13.0 is 13:00 on the first day, 31.0 is 07:00 the next morning.
+// The clock is the town clock the app shows (Rome's local mean time, which is
+// what the Europe/Rome zone gives for the year 79: UTC + 0:49:56), in hours
+// from midnight on the day the column rose: 13.0 is 13:00 on the first day,
+// 31.0 is 07:00 the next morning.
 // Where the record gives a range, the middle of it is used and the range is
 // what test/eruption.check.ts holds the numbers to.
 //
@@ -19,8 +21,13 @@
 
 /** 0079-08-22 00:00 UTC, proleptic Gregorian: 24 August 79 in the Julian calendar (cities.ts). */
 export const ERUPTION_DAY_UTC_MS = Date.parse("0079-08-22T00:00:00Z");
-/** Pompeii's local mean time is UTC plus its longitude (14.488 E) in hours. */
-export const POMPEII_LMT_OFFSET_H = 14.488 / 15;
+
+/**
+ * UTC + 0:49:56: the offset the time bar and top bar display for Pompeii.
+ * The town's own mean time is 8 minutes later; the story keeps to the clock the
+ * player can see, or the card and the bar would disagree.
+ */
+export const POMPEII_LMT_OFFSET_H = 49 / 60 + 56 / 3600;
 
 export function localHours(utcMs: number): number {
   return (utcMs - ERUPTION_DAY_UTC_MS) / 3.6e6 + POMPEII_LMT_OFFSET_H;

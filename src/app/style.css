@@ -2049,3 +2049,4 @@ html, body {
 #ui.phone .sheet .hud-eruption .esc-starts { flex-direction: row; flex-wrap: wrap; align-items: center; }
 #ui.phone .sheet .hud-eruption .esc-starts span { flex-basis: 100%; }
 #ui.phone .sheet .hud-eruption .esc-starts button { min-height: 40px; }
+#ui.escaping .mission-btn, #ui.escaping .mission-card { display: none !important; }
