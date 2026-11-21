@@ -52,6 +52,7 @@ const box = (x0: number, y0: number, x1: number, y1: number): Recipe["quad"] => 
 
 // Corners read off a 10% grid laid over each photograph.
 const RECIPES: Record<string, Recipe> = {
+  // Lacunae off: the photograph's flash glare reads as bare plaster and the fill would wipe out figures.
   "misteri-north": { src: "misteri-north", quad: [0.345, 0.19, 1.0, 0.13, 1.0, 0.7, 0.345, 0.73], px: [1024, 395], lacunae: false, frame: "tb", sat: 1.2, red: true },
   "misteri-east": { src: "misteri-east", quad: [0.0, 0.33, 0.79, 0.06, 0.79, 0.86, 0.0, 0.8], px: [760, 410], lacunae: true, frame: "tb", sat: 1.2, red: true },
   "vettii-ixion": { src: "vettii-ixion", quad: box(0.02, 0.02, 0.98, 0.98), px: [460, 504], lacunae: false, frame: "all", sat: 1.25 },
