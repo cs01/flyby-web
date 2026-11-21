@@ -1650,6 +1650,11 @@ async function main() {
         if (car && car.enterFrom(from, hdg, new THREE.Vector3(), terrain.heightAt)) {
           spot = { x: car.position.x, z: car.position.z };
           facing = car.headingDeg;
+          // Out of the lane and onto the kerb: a pedestrian spawned in the
+          // carriageway is standing in the traffic.
+          const a = facing * (Math.PI / 180);
+          const kerb = pavement?.sidewalkBeside(spot.x, spot.z, Math.sin(a), -Math.cos(a));
+          if (kerb && terrain.heightAt(kerb.x, kerb.z) > waterLevel + 0.6) spot = kerb;
         }
         if (!spot) {
           hud.toast("No dry land within reach \u00b7 fly closer to shore");

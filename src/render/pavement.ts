@@ -515,6 +515,24 @@ export class Pavement {
   }
 
   /**
+   * A point on the pavement beside a carriageway point, for putting a walker
+   * on the kerb instead of in the traffic lane. Walks out along the road's
+   * right-hand normal (then the left) until it leaves the tarmac, then steps
+   * `inM` further in. Null when neither side leaves the tarmac within 30 m.
+   */
+  sidewalkBeside(x: number, z: number, dirX: number, dirZ: number, inM = 1.5): { x: number; z: number } | null {
+    for (const side of [1, -1]) {
+      const nx = -dirZ * side, nz = dirX * side;
+      for (let d = 0.5; d <= 30; d += 0.5) {
+        if (!this.world.onCarriageway(x + nx * d, z + nz * d)) {
+          return { x: x + nx * (d + inM), z: z + nz * (d + inM) };
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
    * Follow a camera. Safe to call every frame; it does nothing until the camera
    * has crossed into a different tile, which at 400 m is every eighteen seconds
    * at the car's top speed and never at all in a fixed pose.
