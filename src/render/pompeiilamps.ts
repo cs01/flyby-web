@@ -389,11 +389,11 @@ export class PompeiiLamps {
   private readonly order: number[] = [];
   private readonly score: Float32Array;
 
-  constructor(opts: { data: PompeiiData; sites: LampSites; uniforms: PompeiiUniforms; groundAt: (x: number, z: number) => number; offX: number; offZ: number; lean: boolean }) {
+  constructor(opts: { data: PompeiiData; sites: LampSites; uniforms: PompeiiUniforms; groundAt: (x: number, z: number) => number; offX: number; offZ: number; lean: boolean; /** Lamps placed elsewhere (the baths, render/pompeiiwater.ts), local metres. */ extra?: Lamp[] }) {
     const { offX, offZ } = opts;
     this.tier = opts.lean ? LAMP_TIERS.lean : LAMP_TIERS.full;
     this.group.name = "pompeii-lamps";
-    this.lamps = placeLamps(opts.data, opts.sites, { groundAt: (x, z) => opts.groundAt(x + offX, z + offZ) });
+    this.lamps = placeLamps(opts.data, opts.sites, { groundAt: (x, z) => opts.groundAt(x + offX, z + offZ) }).concat(opts.extra ?? []);
     // World positions: fittings and flames.
     this.world = new Float32Array(this.lamps.length * 3);
     this.level = new Float32Array(this.lamps.length);

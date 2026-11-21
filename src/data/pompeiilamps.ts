@@ -31,7 +31,7 @@ export const enum LampKind {
 }
 export const LAMP_KINDS = 5;
 
-export type LampRole = "shop" | "tavern" | "doorway" | "lararium" | "atrium" | "peristyle" | "forum";
+export type LampRole = "shop" | "tavern" | "doorway" | "lararium" | "atrium" | "peristyle" | "forum" | "baths";
 
 export interface Lamp {
   kind: LampKind;
@@ -253,7 +253,7 @@ export function placeLamps(data: PompeiiData, sites: LampSites, opts: PlaceOptio
 
 /** Counts by role and by kind, for the console and the gate. */
 export function lampCensus(lamps: Lamp[]): { byRole: Record<LampRole, number>; byKind: number[] } {
-  const byRole: Record<LampRole, number> = { shop: 0, tavern: 0, doorway: 0, lararium: 0, atrium: 0, peristyle: 0, forum: 0 };
+  const byRole: Record<LampRole, number> = { shop: 0, tavern: 0, doorway: 0, lararium: 0, atrium: 0, peristyle: 0, forum: 0, baths: 0 };
   const byKind = new Array<number>(LAMP_KINDS).fill(0);
   for (const l of lamps) { byRole[l.role]++; byKind[l.kind]++; }
   return { byRole, byKind };

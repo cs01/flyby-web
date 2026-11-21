@@ -42,6 +42,7 @@ import { Pompeii, Cart, Townsfolk, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiqu
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
 import { PompeiiLamps } from "./render/pompeiilamps";
+import { PompeiiWater } from "./render/pompeiiwater";
 import { EscapeUi } from "./app/escape";
 import { roomLight } from "./render/escaperoom";
 import { localHours, walkPace } from "./sim/eruption";
@@ -547,6 +548,7 @@ async function main() {
   let townsfolk: Townsfolk | null = null;
   let cart: Cart | null = null;
   let pompeiiLamps: PompeiiLamps | null = null;
+  let pompeiiWater: PompeiiWater | null = null;
   let pompeiiOff = { x: 0, z: 0 };
   let eruptView: EruptionView | null = null;
   let flee: Flee | null = null;
@@ -591,12 +593,23 @@ async function main() {
       scene.add(townsfolk.group);
     }
     scene.add(cart.group);
+    // The baths, fountains, water towers and atrium pools (render/pompeiiwater.ts),
+    // `?off=pompeiiwater`. Its stone joins the town's shadow casters, so the
+    // sun gets into a bath only through its oculus and windows.
+    if (!perfOff.has("pompeiiwater")) {
+      pompeiiWater = new PompeiiWater({
+        data: pompeiiData, model: pompeii.model, uniforms: pompeii.uniforms, groundAt: bareHeight ?? terrain.heightAt,
+        offX: off.x, offZ: off.z, lean: budget.pompeii.lean,
+      });
+      pompeii.buildings.add(pompeiiWater.stone);
+      scene.add(pompeiiWater.group);
+    }
     // The town by lamplight at night (render/pompeiilamps.ts); `?off=pompeiilamps`.
     pompeiiOff = off;
     if (!perfOff.has("pompeiilamps")) {
       pompeiiLamps = new PompeiiLamps({
         data: pompeiiData, sites: pompeii.model.lampSites, uniforms: pompeii.uniforms, groundAt: terrain.heightAt,
-        offX: off.x, offZ: off.z, lean: budget.pompeii.lean,
+        offX: off.x, offZ: off.z, lean: budget.pompeii.lean, extra: pompeiiWater?.lamps.map((l) => ({ ...l })),
       });
       scene.add(pompeiiLamps.group);
     }
@@ -1423,7 +1436,9 @@ async function main() {
    * detail: from 400 m the terrain mesh and the building LOD are.
    */
   const DETAIL_FOLLOW_AGL_M = 40;
-  const PLANE_NEAR = camera.near;
+  // A shot inside a small room (the baths' frigidarium is 6 m across) asks
+  // for a nearer plane than the aeroplane's 2 m: `&near=0.3`.
+  const PLANE_NEAR = (shotMode && Number(new URLSearchParams(location.search).get("near"))) || camera.near;
 
   const model = new AircraftModel(budget);
   model.group.name = "model";
@@ -2201,6 +2216,7 @@ async function main() {
       }
     }
     pompeii?.update(camera.position);
+    pompeiiWater?.update({ t: elapsed, camera: camera.position, night: 0 });
     if (townsfolk) {
       // Once the column is up everyone is hurrying, and after dark one in three carries a torch.
       // From the first stones (13:30) everyone heads for a gate (sim/flee.ts),
@@ -3405,7 +3421,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean, pompeii, pompeiiLamps, origin,
+      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean, pompeii, pompeiiLamps, pompeiiWater, origin,
       get droneActive() { return droneActive; },
       get carActive() { return carActive; },
       get wx() { return wx; },

@@ -10,8 +10,9 @@
 //
 // One pose per path, not per feature: the city shaders (sf-street), the
 // lidar island (alcatraz-flyover), Pompeii by day with its art and columns
-// (pompeii-forum-colonnade), Pompeii's lamps at night, the eruption, and the
-// phone tier's lean variants (pompeii-forum on the reduced tier is covered by
+// (pompeii-forum-colonnade), Pompeii's lamps at night, its water (the baths' rooms,
+// pools, jets and steam), the eruption, and the
+// phone tier's lean variants (pompeii-fountain-phone for the water's; pompeii-forum on the reduced tier is covered by
 // the shot's own query).
 
 import { spawnSync } from "node:child_process";
@@ -24,6 +25,8 @@ const POSES = [
   "alcatraz-flyover",
   "pompeii-forum-colonnade",
   "pompeii-lamps-abbondanza",
+  "pompeii-baths-caldarium",
+  "pompeii-fountain-phone",
   "eruption-street-1630",
 ];
 

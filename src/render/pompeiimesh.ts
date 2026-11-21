@@ -31,6 +31,8 @@ import { ART_INDEX, ART_WORKS, ATRIUM_SCHEMES, GARDEN_SCHEMES } from "../data/po
 import { ORDERS, Order, TOP_DIAMETER, cube, figure, lathe, mill, oven } from "./pompeiiorders";
 import { HORSE_BONES, buildHorse, poseHorse } from "./horse";
 import type { LampSites } from "../data/pompeiilamps";
+import type { WaterSites } from "../data/pompeiiwater";
+import { hasBathPlan } from "../data/pompeiibaths";
 
 /** What the fragment shader draws on a surface. */
 export const enum Surf {
@@ -184,6 +186,8 @@ export interface PompeiiModel {
   lots: LotInfo[];
   /** Where the lamps can go: render/pompeiilamps.ts. */
   lampSites: LampSites;
+  /** Fountains, impluvia and the planned baths, built by render/pompeiiwater.ts. */
+  waterSites: WaterSites;
   /** Counts the gate reads. */
   stats: {
     lots: number; domus: number; tabernae: number; compluvia: number; fountains: number;
@@ -237,6 +241,13 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const solids: Solid[] = [];
   const lots: LotInfo[] = [];
   const lampSites: LampSites = { openings: [], courts: [] };
+  const waterSites: WaterSites = { fountains: [], impluvia: [], baths: [] };
+  /** Record an atrium pool for its rim; returns the town shader's p1, p2 for the sky in it. */
+  function impluvium(pool: V3[], cx: number, cz: number, floor: number, openY: number, openR: number): [number, number] {
+    const water = pool[0][1];
+    waterSites.impluvia.push({ ring: pool.flatMap((p) => [p[0], p[2]]), water, floor, open: { cx, cz, y: openY, r: openR } });
+    return [Math.min(255, Math.max(1, Math.round((openY - water) * 10))), Math.min(255, Math.round(openR * 10))];
+  }
   const stats = {
     lots: 0, domus: 0, tabernae: 0, compluvia: 0, fountains: 0, steppingStones: 0, columns: 0,
     towers: 0, roofTriangles: 0, flatRoofs: 0, plasterTriangles: 0, buildMs: 0, surveyedHouses: 0,
@@ -581,15 +592,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const dx = jx - best[0], dz = jz - best[1], dl = Math.hypot(dx, dz) || 1;
     const fx = best[0] + (dx / dl) * 1.3, fz = best[1] + (dz / dl) * 1.3;
     const ang = Math.atan2(dz, dx);
-    const ca = Math.cos(ang), sa = Math.sin(ang);
-    const q: number[] = [];
-    for (const [u, w] of [[-0.75, -1.05], [0.75, -1.05], [0.75, 1.05], [-0.75, 1.05]]) q.push(fx + ca * u - sa * w, fz + sa * u + ca * w);
-    const g = ground(fx, fz);
-    // Four lava slabs and the water inside them.
-    box(q, g - 0.2, g + 0.85, [0.33, 0.31, 0.29], hash(ji), Surf.Kerb, Surf.Water, [0.2, 0.3, 0.32]);
-    const pq: number[] = [];
-    for (const [u, w] of [[-0.95, -0.25], [-0.75, -0.25], [-0.75, 0.25], [-0.95, 0.25]]) pq.push(fx + ca * u - sa * w, fz + sa * u + ca * w);
-    box(pq, g, g + 1.5, [0.7, 0.68, 0.62], hash(ji, 2), Surf.Stucco);
+    // The basin, spout stone and water are render/pompeiiwater.ts's.
+    waterSites.fountains.push({ x: fx, z: fz, g: ground(fx, fz), ang });
     stats.fountains++;
   }
 
@@ -1069,8 +1073,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           poly(S, [p, q, qi, pi], [-(ccx - (p[0] + q[0]) / 2), -2, -(ccz - (p[2] + q[2]) / 2)], [0.42, 0.3, 0.2], seed, Surf.Wood, 0, 0, uv4());
         }
       } else if (!garden) {
-        const pool = fp.map((p): V3 => [ccx + (p[0] - ccx) * 0.45, fl(ccx, ccz) + 0.07, ccz + (p[2] - ccz) * 0.45]);
-        poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], seed, Surf.Water, 0, 0, pool.map((p) => [p[0], p[2], 0, 0]));
+        // Level with the court's highest corner: the court floor is a sloped quad and would cover a pool set at its middle.
+        const pool = fp.map((p): V3 => [ccx + (p[0] - ccx) * 0.45, Math.max(...fp.map((q) => q[1])) + 0.05, ccz + (p[2] - ccz) * 0.45]);
+        // The court is the opening: p1 its height over the water, p2 its radius, in decimetres.
+        const op = impluvium(pool, ccx, ccz, fl(ccx, ccz), top, Math.sqrt(Math.abs(ringArea(c.slice(0, 8))) / Math.PI));
+        poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], seed, Surf.Water, op[0], op[1], pool.map((p) => [p[0], p[2], ccx, ccz]));
       }
     });
 
@@ -1642,7 +1649,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       poly(S, inner.map((p): V3 => [p[0], g + 0.02, p[1]]), [0, 1, 0], [0.55, 0.38, 0.3], s, Surf.Pavement, 0, 0, inner.map((p) => [p[0], p[1], 0, 0]));
       lampSites.courts.push({ ring: inner.flat(), g, garden: false });
       const pool = inner.map((p): V3 => [mx + (p[0] - mx) * 0.6, g + 0.06, mz + (p[1] - mz) * 0.6]);
-      poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], s, Surf.Water, 0, 0, pool.map((p) => [p[0], p[2], 0, 0]));
+      const op = impluvium(pool, mx, mz, g, lo, Math.sqrt(Math.abs(ringArea(inner.flat())) / Math.PI));
+      poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], s, Surf.Water, op[0], op[1], pool.map((p) => [p[0], p[2], mx, mz]));
     }
   }
 
@@ -1734,7 +1742,12 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       case "forum": buildForum(r, g, seed); break;
       case "temple": buildTemple(p, r, seed); break;
       case "basilica": buildHall(r, g, 12, seed, true); break;
-      case "hall": case "baths": buildCourtBuilding(r, g, p.kind === "baths" ? 9 : 8, seed); break;
+      case "baths":
+        // A planned bath is built room by room by render/pompeiiwater.ts.
+        if (hasBathPlan(p.name) && !grey) waterSites.baths.push({ name: p.name, ring: p.ring, g });
+        else buildCourtBuilding(r, g, 9, seed);
+        break;
+      case "hall": buildCourtBuilding(r, g, 8, seed); break;
       case "portico": case "palestra": buildPortico(r, g, seed, p.kind === "palestra"); break;
       case "theatre": buildTheatre(r, seed); break;
       case "odeon": buildHall(r, g, 12, seed, false); break;
@@ -2438,6 +2451,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     solids,
     lots,
     lampSites,
+    waterSites,
     stats,
     amphitheatre: { cx: amph.cx, cz: amph.cz, a: AMPHI.a, b: AMPHI.b, rot: amph.rot, floorY: amphY.floor, rimY: amphY.rim },
   };
