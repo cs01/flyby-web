@@ -181,6 +181,15 @@ uniform vec4 uArtRect[${ART_WORKS.length}];
 uniform vec4 uArtInfo[${ART_WORKS.length}];
 uniform float uArtReady;
 uniform float uWaterTime;
+// The escape's start room (render/escaperoom.ts) is built inside a house the
+// town draws as a hollow solid, and the house front's shop and door recesses
+// reach into it. A: the room's front middle (x, z) and its frontage unit
+// vector u; B: half width, depth (its sign picks the inward normal, +-perp
+// u), floor y, and 1 while a room stands. Town fragments in that box, from
+// just behind the front wall up to the ceiling, are dropped; the room's own
+// mesh is drawn with w 0.
+uniform vec4 uRoomCutA;
+uniform vec4 uRoomCutB;
 
 float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 vec2 h22(vec2 p) { return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
@@ -281,6 +290,12 @@ vec3 mosaicFigure(vec2 p, bool robed, bool armUp) {
 }
 
 void main() {
+  if (uRoomCutB.w > 0.5) {
+    vec2 rd = vWorld.xz - uRoomCutA.xy;
+    vec2 rn = sign(uRoomCutB.y) * vec2(-uRoomCutA.w, uRoomCutA.z);
+    float ra = dot(rd, uRoomCutA.zw), rb = dot(rd, rn), ry = vWorld.y - uRoomCutB.z;
+    if (abs(ra) < uRoomCutB.x && rb > 0.03 && rb < abs(uRoomCutB.y) && ry > -0.6 && ry < 3.35) discard;
+  }
   vec3 n = normalize(vNormal);
   vec3 v = normalize(uCameraPos - vWorld);
   float style = floor(vSurf.x + 0.5);
@@ -1287,6 +1302,9 @@ export interface ArtUniforms {
 export type PompeiiUniforms = StreetLampUniforms & ArtUniforms & EruptionSurfaceUniforms & TownLampUniforms & {
   /** Seconds, for the ripples on the atrium pools (render/pompeiiwater.ts advances it). */
   uWaterTime: { value: number };
+  /** The escape room's box, where the town is not drawn (see FRAG). */
+  uRoomCutA: { value: THREE.Vector4 };
+  uRoomCutB: { value: THREE.Vector4 };
 };
 
 function makeArtUniforms(): ArtUniforms {
@@ -1517,7 +1535,7 @@ export class Pompeii {
     // it is applied rather than assumed so a moved City entry cannot shift the
     // town off its streets silently.
     this.model = buildPompeii({ data, groundAt: (x, z) => opts.heightAt(x + opts.offsetX, z + opts.offsetZ), lean: opts.lean, art: opts.art !== false });
-    this.uniforms = Object.assign(makeStreetLampUniforms(opts.shadow), makeArtUniforms(), { ...eruptionSurfaceUniforms, ...townLampUniforms, uWaterTime: { value: 0 } });
+    this.uniforms = Object.assign(makeStreetLampUniforms(opts.shadow), makeArtUniforms(), { ...eruptionSurfaceUniforms, ...townLampUniforms, uWaterTime: { value: 0 }, uRoomCutA: { value: new THREE.Vector4() }, uRoomCutB: { value: new THREE.Vector4() } });
     // A column 0.8 m across is a few pixels wide past 130 m: the prism does there.
     this.columns = new DetailColumns(this.model.orders, this.uniforms, opts.lean ? COLUMN_LOD.phone : COLUMN_LOD.desktop);
     this.columns.group.position.set(opts.offsetX, 0, opts.offsetZ);

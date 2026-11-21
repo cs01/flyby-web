@@ -54,6 +54,10 @@ const BASE: { name: string; query: string; act?: string; settleMs?: number; atMs
   { name: "pompeii-intro", query: "city=pompeii", atMs: 5000 },
   // The escape (app/escape.ts): its card on the street, an ending, the 79 AD switches in the menu.
   { name: "pompeii-escape", query: "city=pompeii&intro=0&escape=bakery", settleMs: 3000 },
+  { name: "pompeii-escape-lupanar", query: "city=pompeii&intro=0&escape=lupanar", settleMs: 3000 },
+  // The start rooms (render/escaperoom.ts) turned round from the doorway, to see the room itself.
+  { name: "pompeii-escape-in", query: "city=pompeii&intro=0&escape=bakery", act: "setTimeout(() => { flyby.drone.yawDeg += 180; }, 2500)", settleMs: 4500 },
+  { name: "pompeii-escape-lupanar-in", query: "city=pompeii&intro=0&escape=lupanar", act: "setTimeout(() => { flyby.drone.yawDeg += 180; }, 2500)", settleMs: 4500 },
   { name: "pompeii-escape-end", query: "city=pompeii&intro=0", act: "flybyEscape.forceEnding('road')", settleMs: 1500 },
   { name: "pompeii-eruption-menu", query: "city=pompeii&intro=0", act: "document.querySelector('.topbar-menu')?.click()", settleMs: 600 },
   // The town by lamplight at 21:30 on the lean tier: 16 lights, 128 flames (render/pompeiilamps.ts).
@@ -64,6 +68,9 @@ const SCENES: Scene[] = [
   ...BASE.flatMap((b) => SIZES.map((s) => ({ ...b, name: `${b.name}-${s.tag}`, w: s.w, h: s.h, dpr: s.dpr }))),
   { name: "desktop-pompeii-walk", query: "city=pompeii&intro=0", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 2500 },
   { name: "desktop-pompeii-escape", query: "city=pompeii&intro=0&escape=lupanar", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 3000 },
+  { name: "desktop-pompeii-escape-bakery", query: "city=pompeii&intro=0&escape=bakery", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 3000 },
+  { name: "desktop-pompeii-escape-bakery-in", query: "city=pompeii&intro=0&escape=bakery", act: "setTimeout(() => { flyby.drone.yawDeg += 180; }, 2500)", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 4500 },
+  { name: "desktop-pompeii-escape-lupanar-in", query: "city=pompeii&intro=0&escape=lupanar", act: "setTimeout(() => { flyby.drone.yawDeg += 180; }, 2500)", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 4500 },
   { name: "desktop-pompeii-escape-end", query: "city=pompeii&intro=0", act: "flybyEscape.forceEnding('town')", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 1500 },
   // At the Porta di Stabia an hour into the fall: the road out offered.
   { name: "desktop-pompeii-escape-gate", query: "city=pompeii&intro=0&escape=bakery", act: "setTimeout(() => { flybyEscape.setHourForTest(14.3); flyby.drone.enterWalk(161, 64, flyby.terrain.heightAt(161, 64), 160); }, 1500)", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 5000 },
