@@ -57,7 +57,7 @@ export function ashFanAt(ventX: number, ventZ: number, x: number, z: number): nu
   const along = dx * fx + dz * fz, cross = Math.abs(-dx * fz + dz * fx);
   const half = 5000 + 0.35 * Math.max(0, along);
   const c = Math.min(1, Math.max(0, (half + 2500 - cross) / 5000));
-  return c * Math.min(1, Math.max(0, (along + 2000) / 3000));
+  return c * Math.min(1, Math.max(0, (along - 500) / 3500));
 }
 
 /** Metres the ground at (x, z) is raised by pumice: none on the sea or the shore line. */
@@ -74,7 +74,7 @@ float ashFan(vec2 xz) {
   vec2 d = xz - uAshFan.xy;
   float along = dot(d, f), cross = abs(-d.x * f.y + d.y * f.x);
   float half_ = 5000.0 + 0.35 * max(0.0, along);
-  return clamp((half_ + 2500.0 - cross) / 5000.0, 0.0, 1.0) * clamp((along + 2000.0) / 3000.0, 0.0, 1.0);
+  return clamp((half_ + 2500.0 - cross) / 5000.0, 0.0, 1.0) * clamp((along - 500.0) / 3500.0, 0.0, 1.0);
 }
 float ashLift(vec3 p) {
   if (uAshFan.z <= 0.0) return 0.0;
@@ -85,7 +85,7 @@ vec3 ashGround(vec3 albedo, vec3 n, vec3 p) {
   if (uAshFan.z <= 0.0) return albedo;
   float cover = smoothstep(0.0, 0.05, uAshFan.z * ashFan(p.xz)) * smoothstep(0.45, 0.85, n.y) * smoothstep(0.3, 1.5, p.y);
   float g = fract(sin(dot(floor(p.xz * 0.7), vec2(12.9898, 78.233))) * 43758.5453);
-  vec3 pum = mix(vec3(0.26, 0.25, 0.24), vec3(0.40, 0.38, 0.35), uAshFan.w) * (0.88 + 0.2 * g);
+  vec3 pum = mix(vec3(0.2, 0.19, 0.18), vec3(0.3, 0.285, 0.26), uAshFan.w) * (0.88 + 0.2 * g);
   return mix(albedo, pum, cover);
 }
 `;
@@ -218,7 +218,7 @@ uniform vec4 uShape;    // upwind m, downwind m, half width m, wind bearing
 // column below it stands in the umbrella's shadow from most sides, but the
 // low sun can still reach in under the upwind edge.
 float umbrellaShadow(vec3 p) {
-  if (uUmbY < -1.0e8 || p.y > uUmbY) return 0.0;
+  if (uUmbY < -1.0e8) return 0.0;
   float t = (uUmbY - p.y) / max(uSunDir.y, 0.05);
   vec2 q = p.xz + uSunDir.xz * t - uCanopy.xy;
   vec2 f = vec2(sin(uShape.w), -cos(uShape.w));
@@ -226,7 +226,9 @@ float umbrellaShadow(vec3 p) {
   float along = dot(q, f), cross = dot(q, r);
   float u = along < 0.0 ? along / uShape.x : along / uShape.y;
   float v = cross / (uShape.z * (0.55 + 0.45 * clamp(1.0 + u, 0.0, 1.0)));
-  return 1.0 - smoothstep(0.7, 1.0, length(vec2(u, v)));
+  // Faded over the sheet's thickness, not cut at its base: a hard cut drew
+  // a ruler line across every billow that straddled it.
+  return (1.0 - smoothstep(0.7, 1.0, length(vec2(u, v)))) * (1.0 - smoothstep(uUmbY - 1500.0, uUmbY + 1000.0, p.y));
 }
 void main() {
   float r2 = dot(vUv, vUv);
@@ -252,7 +254,7 @@ void main() {
   // Sky light on a cloud is about an eighth of the sun's (uAmb alone, the
   // ground's ambient, left the shaded trunk black). The trunk under the
   // umbrella still sees the open sky round its edge.
-  vec3 sky = uSunE * 0.3 + uAmb;
+  vec3 sky = uSunE * 0.45 + uAmb;
   vec3 amb = shaded ? uNearAmb * 3.0 : sky * mix(0.65, 1.0, sunVis);
   // A dense ash cloud is dark inside: the sunlit side is lit, the rest is
   // its own shadow, and the outline catches the light (the lit rim).
@@ -312,6 +314,8 @@ void main() {
   float n2 = vnoise(vWorld.xz / 900.0);
   float rr = length(vUv);
   float a = smoothstep(1.0, 0.7, rr + 0.25 * (n1 - 0.5)) * uCanopyAlpha;
+  // Edge-on from far off, the sheet's rim is a ruler-straight line: fade it.
+  a *= smoothstep(0.02, 0.18, abs(normalize(vWorld - uCamPos).y));
   if (a < 0.004) discard;
   // Seen from below: the underside of a cloud full of stones, lit by the
   // sky round its edge and not at all by the sun above it. Lumps (mammatus)
