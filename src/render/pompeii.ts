@@ -180,6 +180,7 @@ uniform sampler2D uArt;
 uniform vec4 uArtRect[${ART_WORKS.length}];
 uniform vec4 uArtInfo[${ART_WORKS.length}];
 uniform float uArtReady;
+uniform float uWaterTime;
 
 float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 vec2 h22(vec2 p) { return fract(sin(vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)))) * 43758.5453); }
@@ -238,6 +239,10 @@ void main() {
   vec3 albedo = vColour.rgb;
   float gloss = 0.0;
   float covered = 0.0;
+  // A closed room's share of the sky light kept out (the baths' style 20).
+  // Unlike covered it leaves the sun alone: the shadow map already lets
+  // it in only through the oculus and the windows.
+  float shut = 0.0;
   float u = vWall.x, h = vWall.y, len = vWall.z, H = vWall.w;
   vec2 tng = normalize(vec2(-n.z, n.x) + vec2(1e-4, 0.0));
   vec2 wp = vec2(dot(vWorld.xz, tng), vWorld.y);
@@ -401,22 +406,41 @@ void main() {
     albedo *= 0.9 + 0.15 * vnoise(vec2(u * 2.0, h * 12.0));
     }
   } else if (style < 8.5) {
-    // Water: dark, with the sky in it at a grazing angle.
-    float fres = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(n, v)), 5.0);
-    vec3 sky = shIrradiance(reflect(-v, n)) * 0.35;
-    vec3 sunE = uSunColor * uSunIntensity * uSunSurface;
-    vec3 col = albedo * 0.25 * occludedSkyIrradiance(n) + sky * (0.2 + fres);
-    // Open water (p1 set: the Sarno) under the open sky: the sky fills it as
-    // it does the sea, where a fountain basin between walls stays dark.
-    if (p1 > 0.5) {
-      // Ripples on the current, so the sky in it breaks up as the sea's does.
+    // Water: dark, with the sky in it at a grazing angle. An atrium's pool
+    // (p2 set) sees the sky only through the compluvium over it: p1 is the
+    // opening's height over the water and p2 its radius, in decimetres,
+    // vWall.zw its middle. A reflected ray that leaves past the opening's
+    // edge sees the shaded underside of the roof instead. p1 alone (the
+    // Sarno, render/pompeiisuburbs.ts) is open water under the open sky.
+    vec2 q = vWorld.xz * 2.3 + vec2(uWaterTime * 0.11, uWaterTime * 0.07);
+    vec2 rip = vec2(vnoise(q) - vnoise(q + vec2(0.37, 0.0)), vnoise(q) - vnoise(q + vec2(0.0, 0.37)));
+    // Calm: a breath of wind on a pool sheltered by four walls.
+    vec3 wn = normalize(vec3(rip.x * 0.18, 1.0, rip.y * 0.18) * (1.0 - smoothstep(20.0, 60.0, vViewDist)) + vec3(0.0, 1e-3, 0.0));
+    float fres = 0.02 + 0.98 * pow(1.0 - max(0.0, dot(wn, v)), 5.0);
+    vec3 r = reflect(-v, wn);
+    vec3 sky = shIrradiance(r) * 0.35;
+    if (p2 > 0.5 && r.y > 0.0) {
+      vec2 hit = vWorld.xz + r.xz * (p1 * 0.1) / r.y;
+      float open = 1.0 - smoothstep(p2 * 0.085, p2 * 0.1, length(hit - vWall.zw));
+      vec3 eaves = vec3(0.3, 0.17, 0.1) * occludedSkyIrradiance(vec3(0.0, -1.0, 0.0)) * 0.6;
+      sky = mix(eaves, sky, open);
+    }
+    vec3 sunE = uSunColor * uSunIntensity * uSunSurface * sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
+    float sv = sunVisibility(vWorld, vec3(0.0, 1.0, 0.0), uSunDir, vViewDist);
+    // The pool's floor through a hand's depth of water: tiles or signinum, lit.
+    vec3 floorLit = vec3(0.42, 0.34, 0.28) * (occludedSkyIrradiance(vec3(0.0, 1.0, 0.0)) + sunE * max(0.0, uSunDir.y) * sv + townLamps(vWorld, vec3(0.0, 1.0, 0.0)));
+    vec3 col = mix(floorLit * vec3(0.22, 0.3, 0.31), sky, fres);
+    col += sunE * pow(max(0.0, dot(wn, normalize(uSunDir + v))), 300.0) * 2.0 * sv;
+    col += townLampSpec(vWorld, wn, v) * 0.5;
+    if (p1 > 0.5 && p2 < 0.5) {
+      // Open water under the open sky (the Sarno): the sky fills it as it
+      // does the sea, and ripples on the current break it up as the sea's do.
       vec2 rp = vWorld.xz * vec2(0.35, 0.9);
       vec3 rn = normalize(n + vec3(vnoise(rp) - 0.5, 0.0, vnoise(rp + 17.0) - 0.5) * 0.35);
       float rf = 0.04 + 0.96 * pow(1.0 - max(0.0, dot(rn, v)), 5.0);
       col = albedo * 0.45 * occludedSkyIrradiance(n) + shIrradiance(reflect(-v, rn)) * (0.75 + rf);
       col += sunE * pow(max(0.0, dot(rn, normalize(uSunDir + v))), 120.0) * 0.6;
     }
-    col += sunE * pow(max(0.0, dot(n, normalize(uSunDir + v))), 200.0) * 0.5;
     vec3 ro = atmoOrigin(uCamAltitude);
     vec3 rd = normalize(vWorld - uCameraPos);
     vec3 trans;
@@ -556,10 +580,67 @@ void main() {
     // Indoors, but lit from the doorway and the court: dimmer than the
     // court walls, not as dark as a shop's back room.
     if (mode > 1.5) covered = 0.4;
-  } else {
+  } else if (style < 17.5) {
     // Bronze (17, render/pompeiilamps.ts): the lamp fittings, mottled like cast metal.
     albedo *= 0.9 + 0.15 * vnoise(vWorld.xz * 5.0 + vWorld.y * 3.0);
     gloss = 0.6;
+  } else if (style > 19.5 && style < 20.5) {
+    // A bath's rooms (render/pompeiiwater.ts): p1 the finish, p2 how much
+    // of the sky the room keeps out (0..255). u, h the wall's own metres.
+    shut = p2 / 255.0;
+    if (p1 < 0.5) {
+      // Painted plaster: black socle, a red dado, yellow panels framed in red, a white cornice.
+      vec3 c = albedo;
+      float pw = 2.4;
+      float px = fract(u / pw);
+      if (h < 0.35) c = vec3(0.08, 0.07, 0.06);
+      else if (h < 1.3) c = vec3(0.5, 0.11, 0.07);
+      else if (h > H - 0.35) c = vec3(0.86, 0.84, 0.78);
+      else if (px < 0.035 || px > 0.965 || abs(h - 1.36) < 0.05) c = vec3(0.5, 0.11, 0.07);
+      albedo = c * (0.92 + 0.1 * fbm(vec2(u, h) * 0.8 + seed * 9.0));
+      // Damp: steam condensing low on the walls of the hot rooms.
+      albedo *= 1.0 - 0.15 * smoothstep(1.2, 0.0, h) * step(0.5, fract(seed * 3.3));
+    } else if (p1 < 1.5) {
+      // Marble: white slabs on the floors and the pool rims, faint veins,
+      // warmed for the light off the ochre walls the sky term leaves out.
+      albedo *= vec3(1.06, 1.0, 0.88);
+      vec2 b = abs(n.y) > 0.6 ? vWorld.xz / 0.9 : vec2(u / 0.9, h / 0.45);
+      albedo *= 0.88 + 0.14 * h21(floor(b) + seed);
+      albedo *= 0.94 + 0.08 * vnoise(vWorld.xz * 5.0 + vWorld.y * 2.0);
+      vec2 f = fract(b);
+      albedo *= 0.86 + 0.14 * smoothstep(0.0, 0.03, min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)));
+      gloss = 0.45;
+    } else if (p1 < 2.5) {
+      // The stuccoed vault: fluted in shallow channels across it, as the Stabian caldarium's.
+      float fl = abs(fract(u / 0.3) - 0.5) * 2.0;
+      albedo *= 0.86 + 0.16 * fl;
+      albedo *= 0.95 + 0.06 * vnoise(vec2(u, h) * 1.7);
+    } else if (p1 < 3.5) {
+      // The frigidarium's cone, painted as a night sky: blue ground, gold stars.
+      vec2 sc = vec2(u * 3.0, h * 3.0);
+      vec2 cell = floor(sc), fp = fract(sc) - 0.5;
+      float star = (1.0 - smoothstep(0.04, 0.11, length(fp - (h22(cell) - 0.5) * 0.6))) * step(0.45, h21(cell + 3.0));
+      albedo = mix(albedo * (0.9 + 0.12 * vnoise(sc * 0.7)), vec3(0.85, 0.65, 0.25), star);
+    } else if (p1 < 4.5) {
+      // Opus signinum: the pools' waterproof lining, crushed tile in lime.
+      albedo *= 0.85 + 0.2 * fbm(vWorld.xz * 2.2 + vWorld.y * 1.3);
+      albedo = mix(albedo, vec3(0.85, 0.8, 0.72), 0.4 * step(0.97, h21(floor(vec2(u, h) * 30.0 + vWorld.xz * 30.0))));
+    } else if (p1 < 5.5) {
+      // The furnace's bronze boiler, sooted.
+      albedo *= 0.75 + 0.3 * vnoise(vWorld.xz * 4.0 + vWorld.y * 6.0);
+      gloss = 0.3;
+    } else {
+      // An apodyterium wall: the row of niches the clothes went in, on a red ground.
+      float nw = 0.62;
+      float nx = fract(u / nw) - 0.5;
+      float y0 = 1.75, y1 = 2.25;
+      float arch = y1 + sqrt(max(0.0, 0.0625 - nx * nx * 1.2));
+      bool inNiche = abs(nx) < 0.25 && h > y0 && h < arch && u > 0.4 && u < len - 0.4;
+      vec3 c = h < 0.35 ? vec3(0.08, 0.07, 0.06) : h < 1.6 ? vec3(0.55, 0.13, 0.08) : vec3(0.86, 0.82, 0.7);
+      if (abs(h - 1.62) < 0.04 || abs(h - y0 + 0.06) < 0.025) c = vec3(0.85, 0.82, 0.74);
+      if (inNiche) c = vec3(0.16, 0.1, 0.07) * (0.6 + 0.6 * (h - y0));
+      albedo = c * (0.92 + 0.1 * fbm(vec2(u, h) * 0.9 + seed * 7.0));
+    }
   }
 
 #ifdef ROOF_COLLAPSE
@@ -589,8 +670,8 @@ void main() {
   // or forum got the sky alone and went near black, worst on a phone with
   // no ambient occlusion pass to balance it against.
   vec3 bounce = sunE * max(0.0, uSunDir.y) * (0.15 * (1.0 - n.y) + 0.07 * max(0.0, n.y));
-  float inside = 1.0 - covered * 0.7;
-  vec3 lit = albedo * ((sunE * ndl * sunVis) * (1.0 - covered * 0.85) + (ambient + bounce) * inside + moon);
+  float inside = (1.0 - covered * 0.7) * (1.0 - 0.9 * shut);
+  vec3 lit = albedo * ((sunE * ndl * sunVis) * (1.0 - covered * 0.85) + (ambient + bounce) * inside + moon * (1.0 - shut));
   // Lamps and hearths inside at night. Stand-ins for the oil lamps, which
   // replace them while render/pompeiilamps.ts runs (uLampNight 1).
   lit += albedo * uNightGlow * uNight * 0.3 * (1.0 - uLampNight);
@@ -615,7 +696,10 @@ export interface ArtUniforms {
   uArtInfo: { value: THREE.Vector4[] };
   uArtReady: { value: number };
 }
-export type PompeiiUniforms = StreetLampUniforms & ArtUniforms & EruptionSurfaceUniforms & TownLampUniforms;
+export type PompeiiUniforms = StreetLampUniforms & ArtUniforms & EruptionSurfaceUniforms & TownLampUniforms & {
+  /** Seconds, for the ripples on the atrium pools (render/pompeiiwater.ts advances it). */
+  uWaterTime: { value: number };
+};
 
 function makeArtUniforms(): ArtUniforms {
   const blank = new THREE.DataTexture(new Uint8Array([128, 128, 128, 255]), 1, 1);
@@ -845,7 +929,7 @@ export class Pompeii {
     // it is applied rather than assumed so a moved City entry cannot shift the
     // town off its streets silently.
     this.model = buildPompeii({ data, groundAt: (x, z) => opts.heightAt(x + opts.offsetX, z + opts.offsetZ), lean: opts.lean, art: opts.art !== false });
-    this.uniforms = Object.assign(makeStreetLampUniforms(opts.shadow), makeArtUniforms(), { ...eruptionSurfaceUniforms, ...townLampUniforms });
+    this.uniforms = Object.assign(makeStreetLampUniforms(opts.shadow), makeArtUniforms(), { ...eruptionSurfaceUniforms, ...townLampUniforms, uWaterTime: { value: 0 } });
     // A column 0.8 m across is a few pixels wide past 130 m: the prism does there.
     this.columns = new DetailColumns(this.model.orders, this.uniforms, opts.lean ? COLUMN_LOD.phone : COLUMN_LOD.desktop);
     this.columns.group.position.set(opts.offsetX, 0, opts.offsetZ);

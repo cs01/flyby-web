@@ -10,12 +10,13 @@
 //
 // One pose per path, not per feature: the city shaders (sf-street), the
 // lidar island (alcatraz-flyover), Pompeii by day with its art and columns
-// (pompeii-forum-colonnade), Pompeii's lamps at night, the eruption, and the
-// phone tier's lean variants (pompeii-forum on the reduced tier is covered by
+// (pompeii-forum-colonnade), Pompeii's lamps at night, its water (the baths' rooms,
+// pools, jets and steam), the eruption, and the
+// phone tier's lean variants (pompeii-fountain-phone for the water's; pompeii-forum on the reduced tier is covered by
 // the shot's own query).
 
 import { spawnSync } from "node:child_process";
-import { lstatSync, mkdtempSync } from "node:fs";
+import { lstatSync, mkdtempSync, readlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +25,8 @@ const POSES = [
   "alcatraz-flyover",
   "pompeii-forum-colonnade",
   "pompeii-lamps-abbondanza",
+  "pompeii-baths-caldarium",
+  "pompeii-fountain-phone",
   "eruption-street-1630",
 ];
 
@@ -36,8 +39,22 @@ const port = String(5600 + Math.floor(Math.random() * 300));
 // Chrome holds a profile while it runs (SingletonLock) and refuses a second
 // instance on it, which made a build right after another build fail to launch.
 // A few fixed slots keep the tile cache warm without sharing a live profile.
-// The lock is a symlink to a host-pid name that dangles, so only lstat sees it.
-const locked = (dir: string): boolean => !!lstatSync(`${dir}/SingletonLock`, { throwIfNoEntry: false });
+// The lock is a symlink named "<host>-<pid>" that dangles, so only lstat sees
+// it, and a Chrome that was killed leaves it behind. A slot is busy only while
+// that pid is alive: all four slots once read as busy from dead runs, and
+// Chrome itself takes over a stale lock from the same host.
+const locked = (dir: string): boolean => {
+  const lock = `${dir}/SingletonLock`;
+  if (!lstatSync(lock, { throwIfNoEntry: false })) return false;
+  const pid = Number(readlinkSync(lock).split("-").pop());
+  if (!Number.isInteger(pid) || pid <= 0) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 const slot = [0, 1, 2, 3].map((i) => `/tmp/flyby-compile-profile-${i}`).find((d) => !locked(d));
 if (!slot) {
   console.error("verify-compile: all four Chrome profile slots are in use; is another build running?");
