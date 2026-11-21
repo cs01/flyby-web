@@ -1114,6 +1114,18 @@ export const POSES: Pose[] = [
     query: "tier=reduced",
     what: "pompeii-sepolcri on the reduced tier",
   },
+  {
+    // Down Via dell'Abbondanza at a grazing angle along the south kerb, 1.5 m
+    // up, on the phone tier: where coplanar kerb and pavement faces stipple
+    // through each other (test/pompeii.check.ts section 16).
+    name: "pompeii-kerb-phone",
+    city: "pompeii",
+    lat: 40.750905, lon: 14.490253, altM: 33.4, hdgDeg: 58, pitchDeg: -6,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    query: "tier=reduced",
+    what: "A kerb at a grazing angle on the reduced tier",
+  },
   // Herculaneum on the same morning (data/herculaneum.ts, render/herculaneummesh.ts),
   // built by Pompeii's systems from its own pack. Altitudes are over the 79 AD
   // ground the town's terrain field answers: the beach 4.3 m, the terrace 12.8 m.

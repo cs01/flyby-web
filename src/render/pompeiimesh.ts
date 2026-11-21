@@ -2182,12 +2182,18 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       if (dressed && o.kind === "door") {
         // A stone sill out to the pavement and the raised threshold the
         // leaves close against.
-        fbox(F, o.u0, o.u1, -rd, 0.04, gf - 0.2, gf + 0.04, [0.54, 0.52, 0.48], seed, Surf.Kerb, { skip: FB.Back | FB.End0 | FB.End1 });
+        fbox(F, o.u0, o.u1, -rd, 0.06, gf - 0.2, gf + 0.04, [0.54, 0.52, 0.48], seed, Surf.Kerb, { skip: FB.Back | FB.End0 | FB.End1 });
         fbox(F, o.u0, o.u1, -rd - 0.01, -rd + 0.14, gf + 0.04, gf + 0.13, [0.36, 0.34, 0.32], seed, Surf.Kerb, { skip: FB.Back | FB.End0 | FB.End1 });
       } else {
         // Behind the sill where there is one: under it the floor and the sunk groove were millimetres apart.
-        const s0 = dressed && o.kind === "shop" ? 0.36 : 0, sx = -ox * s0, sz = -oz * s0;
-        poly(S, [[x0 + sx, gf, z0 + sz], [x1 + sx, gf, z1 + sz], [x1 + ix, gf, z1 + iz], [x0 + ix, gf, z0 + iz]], [0, 1, 0], [0.5, 0.45, 0.4], seed, Surf.Pavement, 0, 0, uv4());
+        // With no sill the floor runs 6 cm out past the facade line onto the
+        // pavement with a step face: the lot fronts stand on the simplified
+        // block outline, a few centimetres inside the block slab's, and the
+        // green of the slab showed in that sliver at every threshold.
+        if (dressed && o.kind === "shop") {
+          const sx = -ox * 0.36, sz = -oz * 0.36;
+          poly(S, [[x0 + sx, gf, z0 + sz], [x1 + sx, gf, z1 + sz], [x1 + ix, gf, z1 + iz], [x0 + ix, gf, z0 + iz]], [0, 1, 0], [0.5, 0.45, 0.4], seed, Surf.Pavement, 0, 0, uv4());
+        } else fbox(F, o.u0, o.u1, -rd, 0.06, gf - 0.2, gf, [0.5, 0.45, 0.4], seed, Surf.Pavement, { skip: FB.Back | FB.End0 | FB.End1, front: [Surf.Kerb, 0, 0, [0.54, 0.52, 0.48]] });
       }
     });
     if (u < fl - 0.01) {
@@ -2233,11 +2239,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     // Its top in three strips, the groove sunk between them: a dark quad
     // laid on the stone 2 mm up fought it on a phone.
     const sillC: RGB = [0.54, 0.52, 0.48], gy = gf + 0.04;
-    fbox(F, u0, u1, -0.36, 0.03, gf - 0.2, gy, sillC, seed, Surf.Kerb, { skip: FB.Back | FB.End0 | FB.End1 | FB.Top });
+    fbox(F, u0, u1, -0.36, 0.06, gf - 0.2, gy, sillC, seed, Surf.Kerb, { skip: FB.Back | FB.End0 | FB.End1 | FB.Top });
     const strip = (v0: number, v1: number, y: number, c: RGB): void => poly(S, [fp(F, u0, v0, y), fp(F, u1, v0, y), fp(F, u1, v1, y), fp(F, u0, v1, y)], [0, 1, 0], c, seed, Surf.Kerb, 0, 0, uv4());
     strip(-0.36, -0.1, gy, sillC);
     strip(-0.1, -0.06, gy - 0.025, [0.12, 0.11, 0.1]);
-    strip(-0.06, 0.03, gy, sillC);
+    strip(-0.06, 0.06, gy, sillC);
     const gap = counterGap(w);
     if (r(2) < 0.4) {
       // Part shut: boards slid along the groove in front of the counter, the doorway left open.
