@@ -1202,6 +1202,8 @@ async function main() {
   // A historical place has no live weather worth showing: a clear summer
   // morning with a light sea breeze, unless `?wx=` says otherwise.
   const pinned = wxOverride(observed, era ? "low:0:900:2100,mid:0:3800:5000,high:0.12:8500:9400,precip:0,wind:3:240" : undefined);
+  // The pinned sky is 15 C, a spring day; a Campanian August morning is warmer.
+  if (era && pinned && !new URLSearchParams(location.search).has("wx")) Object.assign(pinned, { tempC: 25, dewC: 15, humidity: 0.54 });
   let wx: Weather = pinned ?? observed;
 
   const hud = new Hud(ui);
