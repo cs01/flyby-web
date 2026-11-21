@@ -30,6 +30,7 @@ import { KERB_M, pointInRing, ringArea, ringCentroid, villaFloorPoint } from "..
 import { ART_INDEX, ART_WORKS, ATRIUM_SCHEMES, GARDEN_SCHEMES } from "../data/pompeiiart";
 import { ORDERS, Order, TOP_DIAMETER, cube, figure, lathe, mill, oven } from "./pompeiiorders";
 import { HORSE_BONES, buildHorse, poseHorse } from "./horse";
+import { buildSuburbs, type SuburbStats } from "./pompeiisuburbs";
 import type { LampSites } from "../data/pompeiilamps";
 import type { WaterSites } from "../data/pompeiiwater";
 import { hasBathPlan } from "../data/pompeiibaths";
@@ -196,6 +197,8 @@ export interface PompeiiModel {
     /** Named houses built on their OSM outline with courts. */
     surveyedHouses: number;
   };
+  /** What was built outside the walls (render/pompeiisuburbs.ts), null for a pack without suburbs. */
+  suburbs: SuburbStats | null;
   /** Where the amphitheatre was put, for the gate. */
   amphitheatre: { cx: number; cz: number; a: number; b: number; rot: number; floorY: number; rimY: number };
 }
@@ -209,6 +212,8 @@ export interface BuildOptions {
   greyBoxes?: boolean;
   /** The art atlas's paintings and mosaics (kill switch `?off=pompeiiart`); on unless false. */
   art?: boolean;
+  /** The tomb streets, suburbs, river and harbour outside the walls; on unless false. */
+  suburbs?: boolean;
 }
 
 // --- deterministic noise ---------------------------------------------------------
@@ -2431,6 +2436,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     }
   });
 
+  // Outside the walls, drawn with the same emitters into the same stores.
+  const suburbs = data.suburbs && opts.suburbs !== false
+    ? buildSuburbs({ S, F, R, poly, wall, box, column, ground, solids, lean }, data.suburbs)
+    : null;
+
   const pack = (st: Store): PompeiiMeshData => ({
     position: st.pos.slice(0, st.n * 3),
     normal: st.nrm.slice(0, st.n * 4),
@@ -2453,6 +2463,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     lampSites,
     waterSites,
     stats,
+    suburbs,
     amphitheatre: { cx: amph.cx, cz: amph.cz, a: AMPHI.a, b: AMPHI.b, rot: amph.rot, floorY: amphY.floor, rimY: amphY.rim },
   };
 }

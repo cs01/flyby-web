@@ -31,11 +31,14 @@ const POSES = [
 ];
 
 const out = mkdtempSync(join(tmpdir(), "flyby-compile-"));
-// A port of its own: the default may be a developer's running server, and
-// the harness refuses to screenshot someone else's build.
+// Ports and a Chrome profile of its own: the defaults are shared with every
+// other shots run, and a second Chrome on the same debug port or profile made
+// this time out while parallel work was rendering. The profile is fixed (not
+// per run) so its tile cache stays warm between builds.
 const port = String(5600 + Math.floor(Math.random() * 300));
+const debugPort = String(9500 + Math.floor(Math.random() * 300));
 const t0 = Date.now();
-const r = spawnSync("bun", ["tools/shots.ts", "--port", port, "--out", out, "--only", POSES.join(",")], {
+const r = spawnSync("bun", ["tools/shots.ts", "--port", port, "--debug-port", debugPort, "--profile", "/tmp/flyby-compile-profile", "--out", out, "--only", POSES.join(",")], {
   stdio: ["ignore", "inherit", "inherit"],
 });
 const secs = ((Date.now() - t0) / 1000).toFixed(0);

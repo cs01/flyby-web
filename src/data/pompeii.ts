@@ -5,6 +5,8 @@
 //
 // Pure (no DOM, no THREE): the gate builds the town from this under Bun.
 
+import type { PompeiiSuburbs } from "./pompeiisuburbs";
+
 /** x,z pairs, world metres (+x east, +z south) about the pack origin. */
 export type Ring = number[];
 
@@ -57,7 +59,7 @@ export interface PompeiiPlace {
   name: string;
   x: number;
   z: number;
-  kind: "domus" | "gate" | "public";
+  kind: "domus" | "gate" | "public" | "suburb";
 }
 
 export interface PompeiiAmphitheatre {
@@ -98,6 +100,8 @@ export interface PompeiiData {
   sites?: { name: string; kind: "bakery" | "thermopolium" | "artwork"; x: number; z: number }[];
   /** The Villa dei Misteri, outside the wall to the north-west. */
   villa?: { name: string; ring: Ring; courts?: Ring[]; wallM?: number };
+  /** Outside the walls: tomb streets, suburbs, the Sarno and its harbour, the 79 AD shore (data/pompeiisuburbs.ts). */
+  suburbs?: PompeiiSuburbs;
   stats: Record<string, number>;
 }
 

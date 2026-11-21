@@ -1014,6 +1014,58 @@ export const POSES: Pose[] = [
     wx: POMPEII_WX,
     what: "Roofs, atria and peristyles from 100 m",
   },
+  // Outside the walls (render/pompeiisuburbs.ts): the tomb streets, the
+  // gradient out to the fields, the 79 AD sea and the harbour.
+  {
+    // Via dei Sepolcri 170 m out, eye height, back toward Porta Ercolano
+    // between the tombs. Road ground 36.1 m here.
+    name: "pompeii-sepolcri",
+    city: "pompeii",
+    lat: 40.752422, lon: 14.479190, altM: 37.9, hdgDeg: 112, pitchDeg: 1,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Via dei Sepolcri toward Porta Ercolano at eye height",
+  },
+  {
+    // As pompeii-flyover but 400 m up and further back: tombs and suburbs,
+    // market gardens, vineyards and grain going out from the walls.
+    name: "pompeii-gradient",
+    city: "pompeii",
+    lat: 40.7405, lon: 14.4868, altM: 430, hdgDeg: 345, pitchDeg: -24,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "The land-use gradient round the walls from 400 m",
+  },
+  {
+    // Below Porta Marina, 12 m over the road (ground 21.7 m), looking down
+    // to the sea 1.3 km off: at eye height the roadside trees hide it.
+    name: "pompeii-marina-sea",
+    city: "pompeii",
+    lat: 40.748424, lon: 14.482435, altM: 34, hdgDeg: 258, pitchDeg: -1.2,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "From Porta Marina to the 79 AD sea",
+    // A long lens: at 1.3 km the sea is a band two degrees deep under the horizon.
+    query: "fov=28",
+  },
+  {
+    // Over the north bank at the Sarno mouth: quay, horrea, boats, the beach.
+    name: "pompeii-harbour",
+    city: "pompeii",
+    lat: 40.739994, lon: 14.473198, altM: 45, hdgDeg: 225, pitchDeg: -16,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "The harbour at the Sarno mouth from 40 m",
+  },
+  {
+    name: "pompeii-sepolcri-phone",
+    city: "pompeii",
+    lat: 40.752422, lon: 14.479190, altM: 37.9, hdgDeg: 112, pitchDeg: 1,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    query: "tier=reduced",
+    what: "pompeii-sepolcri on the reduced tier",
+  },
   // The town by lamplight (render/pompeiilamps.ts) at 21:30 local on a clear
   // night: 20:40:04Z, the town clock being UTC + 0:49:56.
   {

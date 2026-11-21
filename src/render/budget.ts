@@ -375,8 +375,10 @@ export interface PompeiiPlan {
 // Measured off buildPompeii over the committed pack, with a little headroom;
 // test/pompeii.check.ts holds the real build under these and within a
 // quarter of them, so they can neither be exceeded nor drift into fiction.
-export const POMPEII_FULL_BYTES = Math.round(31 * 1048576);
-export const POMPEII_LEAN_BYTES = Math.round(17.5 * 1048576);
+// The suburbs outside the walls (tombs, villas, roads, river) are about 6 MB
+// of the full build and 3 of the lean.
+export const POMPEII_FULL_BYTES = Math.round(38 * 1048576);
+export const POMPEII_LEAN_BYTES = Math.round(19.5 * 1048576);
 
 /** The art atlas on the GPU: RGBA8 with its mip chain. */
 export function pompeiiArtBytes(p: PompeiiPlan): number {
