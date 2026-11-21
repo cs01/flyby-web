@@ -1565,3 +1565,25 @@ html, body {
   pointer-events: none;
   z-index: 1;
 }
+
+/* Missions (app/mission.ts): the button sits top-centre, clear of the city
+   panel and the cities button; the card sits above the bottom speed readout,
+   because the time bar opens across the top on a phone. */
+.mission-btn {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  padding: 8px 14px; font: inherit; font-size: 12px; letter-spacing: 0.18em;
+  color: #ffd166; background: rgba(8, 12, 18, 0.72); border: 1px solid rgba(255, 209, 102, 0.55);
+  border-radius: 8px; pointer-events: auto; cursor: pointer; z-index: 6;
+}
+.mission-card {
+  position: absolute; bottom: 150px; left: 50%; transform: translateX(-50%);
+  min-width: 200px; max-width: calc(100vw - 32px); box-sizing: border-box;
+  padding: 8px 12px; background: rgba(8, 12, 18, 0.78); border-radius: 8px;
+  color: var(--ink); font-size: 13px; z-index: 6; pointer-events: none;
+}
+.mission-card .m-to { display: flex; align-items: center; gap: 8px; }
+.mission-card .m-to b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mission-card .m-arrow { display: inline-block; color: #ffd166; font-size: 18px; line-height: 1; }
+.mission-card .m-row { display: flex; justify-content: space-between; gap: 12px; margin-top: 4px; color: var(--dim); }
+.mission-card .m-clock.over { color: #ff8a65; }
+.mission-card .m-legs { margin-top: 2px; font-size: 11px; color: var(--dim); }

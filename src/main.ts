@@ -10,6 +10,7 @@ import { createRenderer, createSceneTarget } from "./render/renderer";
 import { AdaptiveQuality } from "./render/quality";
 import { Telemetry } from "./app/telemetry";
 import { browserSafeMode } from "./app/safemode";
+import { MissionUi } from "./app/mission";
 import { Sky } from "./render/sky";
 import { Terrain } from "./render/terrain";
 import { Ocean, oceanSupported } from "./render/ocean";
@@ -1333,6 +1334,32 @@ async function main() {
   // Riding trains and boats on foot; see app/ride.ts.
   const ride = new RideController({ scene, ui, model, transit, drone, groundAt: terrain.heightAt, standable: nearestStandable, toast: (t) => hud.toast(t) });
   const easyStick = new EasyStick();
+  const missions = new MissionUi({
+    scene, ui,
+    groundAt: terrain.heightAt,
+    standable: (x, z) => terrain.heightAt(x, z) > waterLevel + 0.6,
+    // Landmarks plus every named stop: a stop is a place the timetable can get
+    // you to, which is what makes it a fair destination.
+    destinations: () => {
+      const seen = new Set<string>();
+      const out: { name: string; x: number; z: number }[] = [];
+      for (const l of city.landmarks) {
+        const w = origin.toWorld(l.lat, l.lon);
+        if (!seen.has(l.name)) { seen.add(l.name); out.push({ name: l.name, x: w.x, z: w.z }); }
+      }
+      for (const s of transit.pack?.stops ?? []) {
+        // "Steiner St & Sacramento St" is a bus pole, not a place anyone sets
+        // out for; stations, piers and terminals are.
+        if (s.name.includes("&")) continue;
+        if (!seen.has(s.name)) { seen.add(s.name); out.push({ name: s.name, x: s.x, z: s.z }); }
+      }
+      return out;
+    },
+    toast: (t) => hud.toast(t),
+  });
+  // A mission asked for from the air starts once the walker is on the ground.
+  let missionPending = false;
+  const _missionDir = new THREE.Vector3();
   /**
    * Put the aircraft half a mile off a place, pointed at it.
    *
@@ -2412,6 +2439,24 @@ async function main() {
         ground,
       );
       modeBar.update(carActive ? "car" : droneActive ? (drone.walk ? "walk" : "drone") : "plane", !shotMode);
+    }
+    {
+      const leg = ride.riding ? "ride" : carActive ? "car" : droneActive ? (drone.walk ? "walk" : "drone") : "plane";
+      const asked = input.missionPressed + missions.requested;
+      input.missionPressed = 0;
+      missions.requested = 0;
+      if (asked > 0) {
+        if (missions.active) missions.cancel();
+        if (leg === "plane" || leg === "drone") {
+          missionPending = true;
+          input.walkToggled++;
+        } else missions.start(camera.position.x, camera.position.z);
+      } else if (missionPending && leg === "walk") {
+        missionPending = false;
+        missions.start(camera.position.x, camera.position.z);
+      }
+      const look = camera.getWorldDirection(_missionDir);
+      missions.update(dt, leg, camera.position.x, camera.position.z, Math.atan2(look.x, -look.z));
     }
     if (!droneActive && !carActive) {
       osd.update({

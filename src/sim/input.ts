@@ -101,6 +101,7 @@ export class Input {
   /** F presses: board or leave a train on foot. F is the drone's descend key
    *  too, which walking has no use for. */
   boardPressed = 0;
+  missionPressed = 0;
   paused = false;
 
   /**
@@ -156,6 +157,7 @@ export class Input {
       if (e.code === "KeyG") this.carToggled++;
       if (e.code === "KeyN") this.walkToggled++;
       if (e.code === "KeyF") this.boardPressed++;
+      if (e.code === "KeyM") this.missionPressed++;
       // Escape already drops pointer lock in every browser; doing it here as
       // well is what stops us asking for it straight back on the next click.
       if (e.code === "Escape") this.setPointerLock(false);
