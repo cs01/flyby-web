@@ -683,7 +683,7 @@ export class LandGrid {
     if (sh.w > 0.5) {
       if (sh.s < 0) return Land.Sea;
       if (sh.s < 40) return Land.Beach;
-      if (sh.s < 150) return Land.Dunes;
+      if (sh.s < 170) return Land.Dunes;
     }
     const n = this.n, C = LandGrid.CELL, H = LandGrid.HALF;
     const i = Math.floor((x + H) / C), j = Math.floor((z + H) / C);
@@ -752,24 +752,36 @@ function chamfer(d: Float32Array, n: number, C: number): Uint16Array {
  * sea floor beyond it; the Sarno's channel cut below its water with low banks.
  * Returns g where neither applies.
  */
+/**
+ * The lowest dry ground the coast edit leaves: with no landcover pack, the
+ * terrain shader takes ground under 3.5 m for water (render/terrain.ts,
+ * byElevation), and the plain behind the old shore and today's Sarno flats
+ * are lower than that in the DEM. The 79 AD surface lies a few metres under
+ * the eruption's deposits anyway, so this is a rendering floor, not a survey.
+ */
+export const LAND_MIN = 4.2;
+
 export function coastGround(sub: PompeiiSuburbs, x: number, z: number, g: number): number {
   let h = g;
   const sh = shoreAt(sub.shore, x, z);
-  if (sh.w > 0 && sh.s < 900) {
+  if (sh.w > 0) {
     const s = sh.s;
     let p: number;
     if (s < 0) p = Math.min(g, Math.max(-14, -0.5 + s * 0.012));
-    else if (s < 40) p = (s / 40) * 1.3;
+    // The swash zone is short: the terrain shades anything under 3.5 m as
+    // water (LAND_MIN), so the dry beach is the shelf above it.
+    else if (s < 12) p = 0.2 + (s / 12) * 3.4;
+    else if (s < 40) p = 3.6 + ((s - 12) / 28) * 0.4;
     else if (s < 170) {
       // Dunes: a ridge or two a few metres high, broken by hollows.
       const t = (s - 40) / 130;
-      const ridge = Math.sin(t * Math.PI) * (3.2 + 1.6 * vnoise(z / 90, x / 90));
-      p = 1.3 + ridge + 0.6 * (vnoise(x / 35, z / 35) - 0.5);
-    } else {
-      const t = Math.min(1, (s - 170) / 730);
+      const ridge = Math.sin(t * Math.PI) * (2.6 + 1.6 * vnoise(z / 90, x / 90));
+      p = LAND_MIN - 0.4 + ridge + 0.6 * (vnoise(x / 35, z / 35) - 0.5);
+    } else if (s < 900) {
+      const t = (s - 170) / 730;
       const e = t * t * (3 - 2 * t);
-      p = 1.4 + (g - 1.4) * e;
-    }
+      p = Math.max(LAND_MIN, LAND_MIN + (g - LAND_MIN) * e);
+    } else p = Math.max(g, LAND_MIN);
     h = g + (p - g) * sh.w;
   }
   const rv = riverAt(sub.river, x, z);
@@ -785,7 +797,7 @@ export function coastGround(sub: PompeiiSuburbs, x: number, z: number, g: number
       const t = (rv.d - rv.halfW) / 45;
       const e = t * t * (3 - 2 * t);
       const bank = rv.level + 0.5 + (h - rv.level - 0.5) * e;
-      h = Math.max(rv.level + 0.35, Math.min(h, bank));
+      h = Math.max(rv.level + 0.35, LAND_MIN, Math.min(h, bank));
     }
   }
   return h;

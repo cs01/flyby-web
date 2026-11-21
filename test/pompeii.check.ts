@@ -495,6 +495,10 @@ let built: PompeiiModel;
     check("probe: today's coast (2.7 km out) fails the band", !(dt > 800 && dt < 2200), `${(dt / 1000).toFixed(2)} km`);
     const west = (s: number): [number, number] => { for (let x = pm.x; x > pm.x - 4000; x -= 5) if (shoreAt(sub.shore, x, pm.z).s < s) return [x, pm.z]; return [pm.x, pm.z]; };
     const [sx, sz] = west(-200), [bx2, bz2] = west(20);
+    // The terrain without a landcover pack shades ground under 3.5 m as water:
+    // the plain behind the dunes, low in today's DEM, must stay above it.
+    const [px2, pz2] = west(400);
+    check("terrain: the plain 400 m behind the shore stays dry (over 3.5 m) on a 2 m DEM", coastGround(sub, px2, pz2, 2) > 3.5, `${coastGround(sub, px2, pz2, 2).toFixed(1)} m`);
     check("terrain: sea floor 200 m off the old shore, beach above water at it", coastGround(sub, sx, sz, 6) < -1 && coastGround(sub, bx2, bz2, 6) > 0 && coastGround(sub, pm.x, pm.z, 35) === 35,
       `${coastGround(sub, sx, sz, 6).toFixed(1)} / ${coastGround(sub, bx2, bz2, 6).toFixed(1)} m`);
 

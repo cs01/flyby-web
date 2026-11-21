@@ -1037,10 +1037,11 @@ export const POSES: Pose[] = [
     what: "The land-use gradient round the walls from 400 m",
   },
   {
-    // Just outside Porta Marina, eye height, looking down to the sea 1.3 km off.
+    // Below Porta Marina, 12 m over the road (ground 21.7 m), looking down
+    // to the sea 1.3 km off: at eye height the roadside trees hide it.
     name: "pompeii-marina-sea",
     city: "pompeii",
-    lat: 40.74846, lon: 14.48279, altM: 26.0, hdgDeg: 258, pitchDeg: -3,
+    lat: 40.748424, lon: 14.482435, altM: 34, hdgDeg: 258, pitchDeg: -2,
     t: D("0079-08-22T07:30:00Z"),
     wx: POMPEII_WX,
     what: "From Porta Marina to the 79 AD sea",

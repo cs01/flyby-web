@@ -48,11 +48,13 @@ export interface SuburbStats {
   solidsFrom: number;
 }
 
-const WHITE: RGB = [0.9, 0.88, 0.83];
+const WHITE: RGB = [0.86, 0.84, 0.78];
 const TUFF: RGB = [0.62, 0.58, 0.5];
 const TILE: RGB = [0.62, 0.31, 0.2];
 const WOOD: RGB = [0.42, 0.3, 0.2];
 const DARK: RGB = [0.12, 0.1, 0.09];
+// Tomb stucco: mostly white, some cream, ochre-washed or pale red, as the painted fronts were.
+const TOMB_WHITES: RGB[] = [[0.86, 0.84, 0.78], [0.86, 0.84, 0.78], [0.88, 0.82, 0.7], [0.84, 0.74, 0.58], [0.8, 0.62, 0.54], [0.78, 0.76, 0.72]];
 const WASH: RGB[] = [[0.82, 0.66, 0.4], [0.62, 0.2, 0.12], [0.86, 0.8, 0.68], [0.78, 0.56, 0.32], [0.7, 0.3, 0.18]];
 const NO: UV = [0, 0, 0, 0];
 
@@ -188,7 +190,7 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
             [a.x + na[0] * side * o0, y0a, a.z + na[1] * side * o0], [a.x + na[0] * side * o1, y0a, a.z + na[1] * side * o1],
             [b.x + nb[0] * side * o1, y0b, b.z + nb[1] * side * o1], [b.x + nb[0] * side * o0, y0b, b.z + nb[1] * side * o0],
           ];
-          poly(R, q, [0, 1, 0], [0.6, 0.57, 0.5], 0.3, Surf.Pavement, 0, 0, [NO, NO, NO, NO]);
+          poly(R, q, [0, 1, 0], [0.5, 0.46, 0.4], 0.3, Surf.Pavement, 0, 0, [NO, NO, NO, NO]);
           // The kerb face down to the carriageway.
           poly(R, [[q[0][0], ya - 0.05, q[0][2]], [q[3][0], yb - 0.05, q[3][2]], q[3], q[0]], [-na[0] * side, 0, -na[1] * side], [0.56, 0.54, 0.5], 0.3, Surf.Kerb, 0, 0,
             [[s, 0, 0, 0.4], [s1, 0, 0, 0.4], [s1, 0.4, 0, 0.4], [s, 0.4, 0, 0.4]]);
@@ -225,7 +227,7 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
         [a.x + a.tz * wa, ra.level, a.z - a.tx * wa], [a.x - a.tz * wa, ra.level, a.z + a.tx * wa],
         [b.x - b.tz * wb, rb.level, b.z + b.tx * wb], [b.x + b.tz * wb, rb.level, b.z - b.tx * wb],
       ];
-      poly(F, pts, [0, 1, 0], [0.18, 0.26, 0.24], 0.5, Surf.Water, 0, 0, [NO, NO, NO, NO]);
+      poly(F, pts, [0, 1, 0], [0.5, 0.62, 0.6], 0.5, Surf.Water, 1, 0, [NO, NO, NO, NO]);
     }
     // The quay: a masonry face along the north bank with a paved top.
     const q = sub.quay;
@@ -237,7 +239,8 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
       let ox = (bz - az) / L2, oz = -(bx - ax) / L2;
       const c = pointAlong(r.pts, ra.s);
       if (ox * (c.x - ax) + oz * (c.z - az) < 0) { ox = -ox; oz = -oz; }
-      const top = ra.level + 1.6;
+      // Level with the bank behind it: a quay sunk below the ground is a trench.
+      const top = Math.max(ra.level + 1.6, ground(ax - ox * 3, az - oz * 3) + 0.1);
       wall(ax, az, bx, bz, ra.level - 1.2, ra.level - 1.2, top, top, ox, oz, TUFF, 0.6, Surf.Masonry, 2, 0, i * 8, 1e4, ra.level - 1.2, 2.8);
       poly(S, [[ax, top, az], [bx, top, bz], [bx - ox * 6, top, bz - oz * 6], [ax - ox * 6, top, az - oz * 6]], [0, 1, 0], [0.6, 0.57, 0.5], 0.6, Surf.Kerb, 0, 0, [NO, NO, NO, NO]);
       // Mooring bollards.
@@ -295,8 +298,11 @@ export function buildSuburbs(k: SuburbKit, sub: PompeiiSuburbs): SuburbStats {
     const g = minGround(foot);
     const seed = hash(ti, 17);
     // A little weathering in the white: some fresher than others.
-    const W: RGB = [WHITE[0] - seed * 0.06, WHITE[1] - seed * 0.07, WHITE[2] - seed * 0.08];
+    const base = TOMB_WHITES[Math.floor(hash(ti, 5) * TOMB_WHITES.length)];
+    const W: RGB = [base[0] - seed * 0.05, base[1] - seed * 0.06, base[2] - seed * 0.07];
     let top = g + 3;
+    // A tuff plinth under all but the bench tombs: the stucco stops short of the ground.
+    if (t.kind !== "schola" && t.kind !== "altar") fbox(f, -hw - 0.12, -hd - 0.12, hw + 0.12, hd + 0.12, g - 0.6, g + 0.3, TUFF, seed, Surf.Masonry, Surf.Kerb, TUFF);
     switch (t.kind) {
       case "altar": {
         // Podium with a moulded base and cornice, the altar on it with its bolsters.

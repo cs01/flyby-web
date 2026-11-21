@@ -395,6 +395,9 @@ void main() {
     vec3 sky = shIrradiance(reflect(-v, n)) * 0.35;
     vec3 sunE = uSunColor * uSunIntensity * uSunSurface;
     vec3 col = albedo * 0.25 * occludedSkyIrradiance(n) + sky * (0.2 + fres);
+    // Open water (p1 set: the Sarno) under the open sky: the sky fills it as
+    // it does the sea, where a fountain basin between walls stays dark.
+    if (p1 > 0.5) col += sky * 0.9 + albedo * 0.35 * occludedSkyIrradiance(n);
     col += sunE * pow(max(0.0, dot(n, normalize(uSunDir + v))), 200.0) * 0.5;
     vec3 ro = atmoOrigin(uCamAltitude);
     vec3 rd = normalize(vWorld - uCameraPos);
@@ -1104,10 +1107,12 @@ function suburbColour(lc: Land, x: number, y: number, under: [number, number, nu
     case Land.Tombs: return mixC([178, 166, 130], [132, 136, 88], hash2(Math.floor(x / 7), Math.floor(y / 7)) * 0.5 + n * 0.15);
     case Land.Suburb: {
       // House gardens and yards: plots of 12-20 m behind low walls.
-      const px = Math.floor(x / 16), py = Math.floor(y / 13);
+      // Each row of plots shifted along by its own hash, so the walls do not line up into a lattice.
+      const py = Math.floor(y / 13), sx = x + 16 * hash2(py, 71);
+      const px = Math.floor(sx / 16);
       const h = hash2(px * 3 + 1, py * 5 - 2);
-      const edge = (((x % 16) + 16) % 16) < 1.2 || (((y % 13) + 13) % 13) < 1.2;
-      if (edge) return [196, 186, 160];
+      const edge = (((sx % 16) + 16) % 16) < 0.9 || (((y % 13) + 13) % 13) < 0.9;
+      if (edge) return [148, 136, 104];
       return h < 0.45 ? mixC([86, 108, 54], [110, 124, 66], n) : h < 0.75 ? [150, 128, 92] : [124, 122, 78];
     }
     case Land.Garden: {
@@ -1212,7 +1217,7 @@ export function pompeiiVegetation(
 
 /** Tree cover by land use outside the open fields, indexed by Land. */
 const LAND_TREES: Record<number, number> = {
-  [Land.Tombs]: 0.06, [Land.Suburb]: 0.14, [Land.Garden]: 0.18, [Land.Vineyard]: 0.04, [Land.Olive]: 0.55,
+  [Land.Tombs]: 0.03, [Land.Suburb]: 0.07, [Land.Garden]: 0.09, [Land.Vineyard]: 0.04, [Land.Olive]: 0.55,
   [Land.Sea]: 0, [Land.Beach]: 0, [Land.Dunes]: 0.12, [Land.River]: 0, [Land.Banks]: 0.4, [Land.Road]: 0, [Land.Town]: 0,
 };
 
