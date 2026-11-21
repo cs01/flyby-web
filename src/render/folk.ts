@@ -135,8 +135,6 @@ export interface PoseSpec {
   poles: [V3, V3];
   /** Extra hand turn (radians about the forearm's side axis), left and right. */
   handBend?: [number, number];
-  /** The forearm keeps the upper arm's roll (the detailed faun's bare arms). */
-  carryRoll?: boolean;
 }
 
 /** Bone matrices (16 floats each, column-major) for a pose. */
@@ -167,11 +165,8 @@ export function solvePose(spec: PoseSpec, out = new Float32Array(FOLK_BONES * 16
     const W = apply(mc, spec.wrists[li]);
     const { mid: E, end: Wr } = ik(S, W, UPPER_ARM, FOREARM, applyDir(mc, spec.poles[li]));
     const sr = mir(SHOULDER, s), er = mir(ELBOW, s), wr = mir(WRIST, s);
-    const ru = rotFromTo(sub(er, sr), sub(E, S));
-    // The shortest arc alone rolls the forearm against the upper arm by whatever the elbow's bend makes of it
-    // (wildly so with the arm raised straight up); carrying the upper arm's roll keeps a bare arm from twisting.
-    const rf = spec.carryRoll ? mul(rotFromTo(applyDir(ru, sub(wr, er)), sub(Wr, E)), ru) : rotFromTo(sub(wr, er), sub(Wr, E));
-    set(s > 0 ? L_ARM : R_ARM, boneAt(sr, S, ru));
+    const rf = rotFromTo(sub(wr, er), sub(Wr, E));
+    set(s > 0 ? L_ARM : R_ARM, boneAt(sr, S, rotFromTo(sub(er, sr), sub(E, S))));
     set(s > 0 ? L_FORE : R_FORE, boneAt(er, E, rf));
     const bend = spec.handBend ? spec.handBend[li] : 0;
     const side = norm(cross(sub(Wr, E), [0, 0, 1]));
@@ -903,23 +898,21 @@ export function buildFolkFar(): FolkMesh {
 // --- the Dancing Faun -------------------------------------------------------------
 
 /** The bronze's pose (Naples, MANN 5002): up on the balls of both feet, arms up and out, head back. */
-export function faunPose(detailed = false): PoseSpec {
+export function faunPose(): PoseSpec {
   const lp = -0.75, rp = -0.62;
   return {
-    hip: detailed ? [0.06, -0.07, -0.02] : [0.03, -0.035, -0.01],
-    // The detailed statue winds up harder: hips and chest turned against each other, the shoulders tilted.
-    pelvis: detailed ? [0.3, -0.05, 0.1] : [0.18, -0.04, 0.05],
-    chest: detailed ? [-0.5, -0.14, -0.2] : [-0.28, -0.12, -0.06],
-    head: detailed ? [-0.3, -0.55, -0.1] : [-0.35, -0.45, -0.12],
+    hip: [0.03, -0.035, -0.01],
+    pelvis: [0.18, -0.04, 0.05],
+    chest: [-0.28, -0.12, -0.06],
+    head: [-0.35, -0.45, -0.12],
     feet: [
-      { ankle: ankleFrom([detailed ? 0.25 : 0.19, 0, (detailed ? 0.16 : 0.12) + BALL_Z - HEEL_Z], BALL_Z, lp, 1), pitch: lp },
-      { ankle: ankleFrom([detailed ? -0.16 : -0.1, 0, (detailed ? -0.2 : -0.12) + BALL_Z - HEEL_Z], BALL_Z, rp, -1), pitch: rp },
+      { ankle: ankleFrom([0.19, 0, 0.12 + BALL_Z - HEEL_Z], BALL_Z, lp, 1), pitch: lp },
+      { ankle: ankleFrom([-0.1, 0, -0.12 + BALL_Z - HEEL_Z], BALL_Z, rp, -1), pitch: rp },
     ],
     // The right hand high over the head, the left out level with the shoulder and forward.
     wrists: [[0.6, 1.5, 0.18], [-0.36, 1.87, 0.05]],
     poles: [[0.2, -1, -0.6], [-1, -0.3, -0.4]],
     handBend: [0.5, 0.4],
-    ...(detailed ? { carryRoll: true } : {}),
   };
 }
 
@@ -945,13 +938,8 @@ export function lampbearerPose(tray: V3): PoseSpec {
 }
 
 /** A nude figure (the faun, the lampbearer) with a pose applied: positions and normals in the figure's frame. */
-export function posedStatue(o: FolkOpts, spec: PoseSpec): PosedMesh {
-  return poseMesh(buildFolk(o), spec);
-}
-
-export type PosedMesh = { position: Float32Array; normal: Float32Array; index: Uint16Array; colour: Uint8Array };
-
-function poseMesh(mesh: FolkMesh, spec: PoseSpec): PosedMesh {
+export function posedStatue(o: FolkOpts, spec: PoseSpec): { position: Float32Array; normal: Float32Array; index: Uint16Array; colour: Uint8Array } {
+  const mesh = buildFolk(o);
   const bones = solvePose(spec);
   const n = mesh.position.length / 3;
   const pos = new Float32Array(n * 3), nrm = new Float32Array(n * 3);
@@ -972,216 +960,7 @@ function poseMesh(mesh: FolkMesh, spec: PoseSpec): PosedMesh {
   return { position: pos, normal: nrm, index: mesh.index, colour: mesh.colour };
 }
 
-/** The Dancing Faun posed; `detailed` swaps in the muscled, bearded body (desktop only). */
-export const posedFaun = (detailed = false): PosedMesh => (detailed ? poseMesh(buildFaunBody(), faunPose(true)) : posedStatue({ dress: "nude", faun: true }, faunPose()));
-
-// --- the detailed Dancing Faun body ------------------------------------------------
-// Its own builder over the same 17-bone skeleton so solvePose poses it. Only the
-// desktop statue uses it (render/pompeiiorders.ts); the townsfolk never do.
-
-const bell = (x: number, c: number, w: number): number => Math.exp(-(((x - c) / w) ** 2));
-/** A bump with different widths below and above its centre. */
-const bell2 = (x: number, c: number, wLo: number, wHi: number): number => bell(x, c, x < c ? wLo : wHi);
-
-/** Catmull-Rom through key rows (sorted by falling y), sampled at height y. */
-function rowAt(rows: Row[], y: number): Row {
-  let i = 0;
-  while (i + 2 < rows.length && y < rows[i + 1][0]) i++;
-  const t = clamp01((rows[i][0] - y) / (rows[i][0] - rows[i + 1][0]));
-  const a = rows[Math.max(0, i - 1)], b = rows[i], c = rows[i + 1], d = rows[Math.min(rows.length - 1, i + 2)];
-  const out = [y, 0, 0, 0, 0] as Row;
-  for (let k = 1; k < 5; k++) {
-    out[k] = 0.5 * (2 * b[k] + (c[k] - a[k]) * t + (2 * a[k] - 5 * b[k] + 4 * c[k] - d[k]) * t * t + (3 * b[k] - a[k] - 3 * c[k] + d[k]) * t ** 3);
-  }
-  return out;
-}
-
-const FAUN_TORSO: Row[] = [
-  [1.465, 0.05, 0.045, 0.05, -0.016],
-  [1.44, 0.12, 0.06, 0.07, -0.02],
-  [1.405, 0.195, 0.09, 0.088, -0.022],
-  [1.36, 0.215, 0.118, 0.1, -0.022],
-  [1.3, 0.205, 0.13, 0.106, -0.02],
-  [1.23, 0.185, 0.124, 0.098, -0.016],
-  [1.16, 0.162, 0.11, 0.09, -0.012],
-  [1.09, 0.142, 0.1, 0.084, -0.008],
-  [1.03, 0.132, 0.094, 0.08, -0.004],
-  [0.97, 0.148, 0.096, 0.09, -0.004],
-  [0.91, 0.165, 0.098, 0.108, -0.006],
-  [0.86, 0.162, 0.1, 0.118, -0.01],
-  [0.8, 0.12, 0.09, 0.1, -0.01],
-  [0.75, 0.07, 0.06, 0.06, -0.01],
-  [0.72, 0.03, 0.02, 0.03, -0.01],
-];
-
-/** Muscle relief on the torso ring at height y: pecs, abs, obliques, lats, spine, glutes (fractions of the radius). */
-function torsoRelief(ax: number, y: number, front: number, back: number): number {
-  const pec = 0.2 * bell2(y, 1.33, 0.025, 0.05) * bell(ax, 0.085, 0.05);
-  const sternum = -0.07 * bell(y, 1.32, 0.07) * bell(ax, 0, 0.02);
-  const clavicle = 0.05 * bell(y, 1.425, 0.014) * bell(ax, 0.075, 0.06);
-  let abs = 0;
-  for (const yk of [1.245, 1.175, 1.105, 1.035]) abs += 0.13 * bell(y, yk, 0.026) * bell(ax, 0.036, 0.03);
-  const alba = -0.06 * bell(ax, 0, 0.014) * smooth((y - 1.0) / 0.03) * smooth((1.3 - y) / 0.03);
-  const ribs = 0.06 * bell(y, 1.26, 0.03) * bell(ax, 0.13, 0.04);
-  const oblique = 0.05 * bell(y, 1.08, 0.05) * bell(ax, 0.14, 0.03);
-  const iliac = 0.06 * bell(y, 0.985, 0.025) * bell(ax, 0.105, 0.03);
-  const lat = 0.1 * bell(y, 1.28, 0.07) * bell(ax, 0.12, 0.05);
-  const trap = 0.1 * bell(y, 1.4, 0.04) * bell(ax, 0.06, 0.06);
-  const blade = 0.07 * bell(y, 1.32, 0.04) * bell(ax, 0.09, 0.04);
-  const spine = -0.05 * bell(ax, 0, 0.016) * smooth((y - 0.95) / 0.04) * smooth((1.38 - y) / 0.04);
-  const glute = 0.16 * bell(y, 0.87, 0.05) * bell(ax, 0.08, 0.05);
-  return front * (pec + sternum + clavicle + abs + alba + ribs + oblique + iliac) + back * (lat + trap + blade + spine + glute);
-}
-
-/** The torso's ring at y, relief applied by scaling each point from the ring's centre. */
-function faunTorsoRing(y: number, m: number): V3[] {
-  const [, hw, f, b, zc] = rowAt(FAUN_TORSO, y);
-  return flat(y, zc, hw, f, b, m, 2.2).map((p) => {
-    const dz = p[2] - zc, c = dz > 0 ? dz / f : dz / b;
-    const k = 1 + torsoRelief(Math.abs(p[0]), y, Math.max(0, c), Math.max(0, -c));
-    return [p[0] * k, p[1], zc + dz * k] as V3;
-  });
-}
-
-function faunTorsoSkin(p: V3): Skin {
-  if (p[1] < 0.95) return one(PELVIS);
-  const wc = smooth((p[1] - 0.98) / 0.16);
-  // Less pull from the arm than the townsfolk's shirt: bare ribs must not ride up with the raised arm.
-  const wa = p[1] > 1.3 ? 0.4 * smooth((Math.abs(p[0]) - 0.13) / 0.07) * smooth((p[1] - 1.3) / 0.1) : 0;
-  return { b: [PELVIS, CHEST, p[0] >= 0 ? L_ARM : R_ARM], w: [1 - wc, wc * (1 - wa), wc * wa] };
-}
-
-function faunTorso(B: Builder): void {
-  const ys: number[] = [];
-  for (let y = 1.465; y > 0.71; y -= y > 1.3 ? 0.03 : 0.035) ys.push(y);
-  B.loft(ys.map((y) => faunTorsoRing(y, 40)), (p) => ({ slot: SLOT_SKIN, mat: M_SKIN, skin: faunTorsoSkin(p) }), false, true);
-  // The tail: a goat's tail out of the base of the spine, turned up.
-  const path: V3[] = [[0, 0.935, -0.06], [0, 0.935, -0.122], [0, 0.965, -0.16], [0, 1.012, -0.174], [0, 1.05, -0.16], [0, 1.068, -0.138]];
-  B.loft(along(path, [[0.024, 0.024, 0.024], [0.024, 0.024, 0.024], [0.02, 0.02, 0.02], [0.015, 0.015, 0.015], [0.009, 0.009, 0.009], [0.003, 0.003, 0.003]], 6, [0, 1, 0]),
-    () => ({ slot: SLOT_SKIN, mat: M_SKIN, skin: one(PELVIS) }), false, true);
-}
-
-/** A thick neck: the sternocleidomastoid and the trapezius running down to the shoulders. */
-function faunNeck(B: Builder): void {
-  const rs = [flat(1.4, -0.02, 0.07, 0.062, 0.066, 12), flat(1.44, -0.014, 0.062, 0.056, 0.06, 12), flat(1.5, 0.0, 0.054, 0.052, 0.054, 12)];
-  B.loft(rs, (p) => ({ slot: SLOT_SKIN, mat: M_SKIN, skin: two(CHEST, HEAD, smooth((p[1] - 1.43) / 0.06)) }), false, false);
-}
-
-type Prof = [number, number, number, number];
-/** Rings along a limb from `a` to `b`: profile rows are [t, across, front, back]. */
-function limbPath(a: V3, b: V3, prof: Prof[]): { path: V3[]; prof: [number, number, number][] } {
-  return { path: prof.map((r) => lerp3(a, b, r[0])), prof: prof.map((r) => [r[1], r[2], r[3]]) };
-}
-
-/** A bare arm, shoulder to wrist: the deltoid, biceps and triceps, then the forearm. */
-function faunArm(B: Builder, s: number): void {
-  const sh = mir(SHOULDER, s), el = mir(ELBOW, s), wr = mir(WRIST, s);
-  const up = limbPath(sh, el, [[-0.08, 0.012, 0.012, 0.012], [0, 0.062, 0.06, 0.058], [0.14, 0.068, 0.068, 0.062], [0.3, 0.061, 0.068, 0.054], [0.5, 0.052, 0.06, 0.05], [0.75, 0.046, 0.05, 0.046], [0.9, 0.043, 0.046, 0.043], [1, 0.042, 0.044, 0.042]]);
-  const lo = limbPath(el, wr, [[0.12, 0.046, 0.043, 0.047], [0.25, 0.048, 0.044, 0.05], [0.45, 0.04, 0.038, 0.042], [0.75, 0.031, 0.03, 0.032], [1, 0.026, 0.026, 0.026]]);
-  const arm = s > 0 ? L_ARM : R_ARM, fore = s > 0 ? L_FORE : R_FORE;
-  // The blend runs most of the arm so the bend reads as muscle, not a hinge; round sections hide any remaining roll between the bones.
-  const toFore = [0, 0, 0.02, 0.06, 0.16, 0.3, 0.4, 0.5, 0.62, 0.8, 0.95, 1, 1];
-  B.loft(along([...up.path, ...lo.path], [...up.prof, ...lo.prof].map(([, f, b]) => [(f + b) / 2, f, b] as [number, number, number]), 10, [0, 0, 1]), (_p, k) => ({
-    slot: SLOT_SKIN, mat: M_SKIN, skin: k < 2 ? two(CHEST, arm, 0.65) : two(arm, fore, toFore[k]),
-  }), false, false);
-  faunHand(B, s);
-}
-
-/** A hand with the fingers spread and a little curled, the thumb forward. */
-function faunHand(B: Builder, s: number): void {
-  const wr = mir(WRIST, s), dn = norm(sub(wr, mir(ELBOW, s))), pn: V3 = [-s, 0, 0];
-  const hand = s > 0 ? L_HAND : R_HAND, fore = s > 0 ? L_FORE : R_FORE;
-  const at = (d: number, side: number): V3 => add(wr, add(scl(dn, d), [0, 0, side]));
-  B.loft(along([at(-0.015, 0), at(0.035, 0), at(0.085, 0)], [[0.022, 0.027, 0.027], [0.016, 0.042, 0.04], [0.013, 0.043, 0.04]], 8, [0, 0, 1], 2.4), (_p, k) => ({
-    slot: SLOT_SKIN, mat: M_SKIN, skin: k === 0 ? two(fore, hand, 0.5) : one(hand),
-  }), false, true);
-  // depth down the palm, sideways (+z is the thumb's side), fan angle, length, radius
-  const fingers: [number, number, number, number, number][] = [
-    [0.082, -0.034, -0.55, 0.062, 0.0085], [0.085, -0.012, -0.22, 0.076, 0.009], [0.086, 0.009, 0.06, 0.084, 0.0095],
-    [0.084, 0.03, 0.34, 0.076, 0.009], [0.03, 0.04, 1.0, 0.07, 0.011],
-  ];
-  for (const [d, side, ang, L, r] of fingers) {
-    const dir = add(scl(dn, Math.cos(ang)), [0, 0, Math.sin(ang)]), b0 = at(d, side);
-    const path = [0, 0.4, 0.72, 1].map((u, k) => add(add(b0, scl(dir, L * u)), scl(pn, L * [0, 0.02, 0.1, 0.22][k])));
-    B.loft(along(path, [[r, r, r], [r * 0.95, r * 0.95, r * 0.95], [r * 0.85, r * 0.85, r * 0.85], [r * 0.6, r * 0.6, r * 0.6]], 5, pn), () => ({ slot: SLOT_SKIN, mat: M_SKIN, skin: one(hand) }), false, true);
-  }
-}
-
-/** A bare foot, lofted from a pinhole at the heel to a closed toe (the loft's start cap faces inward). */
-function faunFoot(B: Builder, s: number): void {
-  const x = ANKLE[0] * s;
-  const rows: [number, number, number, number, number][] = [
-    // z, centre y, half width, up, down
-    [HEEL_Z + 0.002, 0.045, 0.004, 0.004, 0.004],
-    [HEEL_Z + 0.012, 0.047, 0.03, 0.035, 0.044],
-    [ANKLE[2] + 0.03, 0.058, 0.038, 0.05, 0.057],
-    [BALL_Z + 0.005, 0.027, 0.048, 0.023, 0.027],
-    [TOE_Z - 0.006, 0.018, 0.04, 0.013, 0.018],
-  ];
-  const ft = s > 0 ? L_FOOT : R_FOOT, toe = s > 0 ? L_TOE : R_TOE, shin = s > 0 ? L_SHIN : R_SHIN;
-  B.loft(rows.map(([z, y, hw, up, dn]) => ring([x, y, z], [1, 0, 0], [0, 1, 0], hw, up, dn, 8, 2.4)), (_p, k) => ({
-    slot: SLOT_SKIN, mat: M_SKIN, skin: k < 3 ? two(ft, shin, k === 1 ? 0.15 : k === 2 ? 0.3 : 0) : k === 3 ? two(ft, toe, 0.6) : one(toe),
-  }), false, true);
-}
-
-/** A muscled leg: quadriceps and glutes, the knee, the calf, to the ankle. */
-function faunLeg(B: Builder, s: number): void {
-  const hp = add(mir(HIP, s), [0, 0.06, 0]), kn = mir(KNEE, s), an = mir(ANKLE, s);
-  const th = limbPath(hp, kn, [[0, 0.07, 0.08, 0.085], [0.14, 0.1, 0.1, 0.11], [0.32, 0.092, 0.1, 0.1], [0.55, 0.075, 0.088, 0.078], [0.78, 0.055, 0.062, 0.056], [0.9, 0.051, 0.057, 0.052], [1, 0.05, 0.056, 0.05]]);
-  const sn = limbPath(kn, an, [[0.1, 0.05, 0.052, 0.055], [0.2, 0.05, 0.05, 0.064], [0.36, 0.047, 0.046, 0.074], [0.58, 0.037, 0.04, 0.046], [0.85, 0.03, 0.034, 0.032], [1, 0.029, 0.032, 0.03]]);
-  const thigh = s > 0 ? L_THIGH : R_THIGH, shin = s > 0 ? L_SHIN : R_SHIN, ft = s > 0 ? L_FOOT : R_FOOT;
-  const toShin = [0, 0, 0, 0, 0, 0.22, 0.5, 0.78, 1, 1, 1, 1, 1];
-  B.loft(along([...th.path, ...sn.path], [...th.prof, ...sn.prof], 12, [0, 0, 1]), (_p, k) => ({
-    slot: SLOT_SKIN, mat: M_SKIN, skin: k === 0 ? two(PELVIS, thigh, 0.6) : k === 12 ? two(shin, ft, 0.3) : two(thigh, shin, toShin[k]),
-  }), false, true);
-}
-
-
-/** The bearded, curly head with horns and pointed ears. */
-function faunHead(B: Builder): void {
-  const m = 32;
-  const hairLine = (a: number): number => (a < 0.2 ? 1.648 : a < 0.4 ? 1.62 : a < 0.6 ? 1.585 : 1.52);
-  const up = HEAD_ROWS.slice().reverse();
-  const rings: V3[][] = [];
-  for (let k = 0; k < 13; k++) {
-    const y = 1.455 + (k * (1.692 - 1.455)) / 12;
-    const [, hw, f, b, zc] = rowAt(up, y);
-    rings.push(flat(y, zc, hw, f, b, m, 2.2).map((p, j) => {
-      const a = Math.min(j / m, 1 - j / m) * 2;
-      // Nose, brow ridge, cheekbones, lips and chin, all within a few vertices of the front.
-      let r = 0.3 * bell(y, 1.555, 0.022) * bell(a, 0, 0.05) + 0.12 * bell(y, 1.603, 0.012) * bell(a, 0.05, 0.22) - 0.05 * bell(y, 1.592, 0.012) * bell(a, 0.1, 0.05)
-        + 0.07 * bell(y, 1.54, 0.02) * bell(a, 0.22, 0.06) + 0.08 * bell(y, 1.508, 0.012) * bell(a, 0, 0.08) + 0.12 * bell(y, 1.468, 0.014) * bell(a, 0, 0.08);
-      // Hair: a thick cap whose staggered lumps read as curls.
-      if (y > hairLine(a)) r += 0.08 + 0.1 * (0.5 + 0.5 * Math.cos(9 * ((j / m) * Math.PI * 2) + Math.PI * (k & 1))) ** 2;
-      return [p[0] * (1 + r), y, zc + (p[2] - zc) * (1 + r)] as V3;
-    }));
-  }
-  const hair = (): Attr => ({ slot: SLOT_HAIR, mat: M_HAIR, skin: one(HEAD) });
-  const skin = (): Attr => ({ slot: SLOT_SKIN, mat: M_SKIN, skin: one(HEAD) });
-  B.loft(rings, skin, false, true);
-  // The beard: a shell over the jaw whose back half sits inside the head, hanging to a point at the chin.
-  const beard: [number, number, number, number][] = [[1.52, 0.094, 0.05, 0.0], [1.495, 0.1, 0.064, 0.0], [1.47, 0.1, 0.062, 0.01], [1.446, 0.09, 0.05, 0.02], [1.425, 0.074, 0.032, 0.035], [1.41, 0.058, 0.014, 0.045]];
-  B.loft(beard.map(([y, zf, hw, zb]) => flat(y, (zf + zb) / 2, hw, (zf - zb) / 2, (zf - zb) / 2, m, 2)), hair, false, true);
-  // The moustache, drooping a little at the ends.
-  // (Loft start caps face inward, so a part that needs two closed ends is lofted as two halves.)
-  for (const s of [1, -1]) B.loft(along([[0, 1.538, 0.101], [0.018 * s, 1.538, 0.101], [0.036 * s, 1.526, 0.088]], [[0.011, 0.011, 0.011], [0.011, 0.011, 0.011], [0.008, 0.009, 0.009]], 6, [0, 1, 0]), hair, false, true);
-  for (const s of [1, -1]) {
-    // Pointed ears up and back from the sides of the head.
-    B.loft(along([[0.07 * s, 1.58, 0.0], [0.095 * s, 1.612, -0.008], [0.118 * s, 1.664, -0.02], [0.125 * s, 1.69, -0.028]], [[0.008, 0.02, 0.016], [0.007, 0.026, 0.02], [0.005, 0.02, 0.014], [0.002, 0.003, 0.003]], 6, [0, 0, 1]), skin, false, true);
-    // Two small horns out of the curls over the brow.
-    B.loft(along([[0.03 * s, 1.65, 0.068], [0.04 * s, 1.69, 0.074], [0.05 * s, 1.722, 0.066], [0.058 * s, 1.745, 0.05]], [[0.015, 0.015, 0.015], [0.012, 0.012, 0.012], [0.008, 0.008, 0.008], [0.002, 0.002, 0.002]], 6, [0, 0, 1]), skin, false, true);
-  }
-}
-
-/** The detailed Dancing Faun at rest: bare, muscled, bearded, curly, with horns, pointed ears, a tail and splayed fingers. */
-export function buildFaunBody(): FolkMesh {
-  const B = new Builder();
-  faunHead(B);
-  faunNeck(B);
-  faunTorso(B);
-  for (const s of [1, -1]) { faunArm(B, s); faunLeg(B, s); faunFoot(B, s); }
-  return B.finish();
-}
+export const posedFaun = (): ReturnType<typeof posedStatue> => posedStatue({ dress: "nude", faun: true }, faunPose());
 
 /** Skinned positions of a mesh in a pose (the gate measures with it). */
 export function skinned(mesh: FolkMesh, bones: Float32Array): Float32Array {

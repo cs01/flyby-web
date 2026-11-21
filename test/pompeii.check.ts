@@ -20,10 +20,10 @@ import { LIFE_RADIUS_M, PompeiiLife } from "../src/data/pompeiilife";
 import { Heightfield } from "../src/data/dem";
 import { CITIES } from "../src/cities";
 import { HORSE_BONES, buildHorse, hoofPoints, poseHorse } from "../src/render/horse";
-import { Arms, FOLK_SCALE, FOLK_STRIDE_M, Gait, buildFaunBody, buildFolk, buildFolkFar, clipPose, faunPose, skinned, solePoints, solvePose, type FolkMesh, type FolkOpts, type PoseSpec } from "../src/render/folk";
+import { Arms, FOLK_SCALE, FOLK_STRIDE_M, Gait, buildFolk, buildFolkFar, clipPose, skinned, solePoints, solvePose, type FolkMesh, type FolkOpts, type PoseSpec } from "../src/render/folk";
 import { LEAN_NEAR_CAP, folkFragment } from "../src/render/pompeiifolk";
 import { ART_WORKS } from "../src/data/pompeiiart";
-import { ORDERS, Order, columnTemplate, figure, shaftRadius } from "../src/render/pompeiiorders";
+import { ORDERS, Order, columnTemplate, shaftRadius } from "../src/render/pompeiiorders";
 import { statSync } from "node:fs";
 import { FIELD_CLASSES, Land, LandGrid, coastGround, lengthOf, nearestOn, shoreAt } from "../src/data/pompeiisuburbs";
 
@@ -424,45 +424,6 @@ let built: PompeiiModel;
   const frag = folkFragment();
   check("the town's fragment shader carries the figures' materials", frag.includes("style > 22.5 && style < 23.5"), "");
   check("probe: a shader without the anchor line gets none", !folkFragment("void main() {}").includes("style > 22.5"), "");
-
-  // The Dancing Faun: the phone keeps the townsfolk's body, the desktop gets the muscled one.
-  const plainBody = buildFolk({ dress: "nude", faun: true }), fineBody = buildFaunBody();
-  // Torso-only vertices (weighted to the pelvis and chest) in a band across the chest: the box they span, width x depth.
-  const chestBox = (m: FolkMesh): number => {
-    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-    for (let i = 0; i < m.position.length / 3; i++) {
-      const y = m.position[i * 3 + 1];
-      if (y < 1.25 || y > 1.35) continue;
-      let w = 0;
-      for (let k = 0; k < 3; k++) if (m.skin[i * 4 + k] === 0 || m.skin[i * 4 + k] === 1) w += m.weight[i * 4 + k];
-      if (w < 200) continue;
-      x0 = Math.min(x0, m.position[i * 3]); x1 = Math.max(x1, m.position[i * 3]);
-      z0 = Math.min(z0, m.position[i * 3 + 2]); z1 = Math.max(z1, m.position[i * 3 + 2]);
-    }
-    return (x1 - x0) * (z1 - z0);
-  };
-  const near = (m: FolkMesh, f: (x: number, y: number, z: number) => boolean): number => {
-    let n = 0;
-    for (let i = 0; i < m.position.length / 3; i++) if (f(m.position[i * 3], m.position[i * 3 + 1], m.position[i * 3 + 2])) n++;
-    return n;
-  };
-  const bulk = (m: FolkMesh): number => chestBox(m) / chestBox(plainBody);
-  const tailOf = (m: FolkMesh): number => near(m, (x, y, z) => Math.abs(x) < 0.03 && y > 0.9 && y < 1.1 && z < -0.15);
-  const beardOf = (m: FolkMesh): number => near(m, (x, y, z) => Math.abs(x) < 0.05 && y > 1.39 && y < 1.45 && z > 0.06);
-  const looksFine = (m: FolkMesh): boolean => bulk(m) >= 1.3 && tailOf(m) > 0 && beardOf(m) >= 6;
-  check("detailed faun: chest 1.3x the plain body's, a tail behind the pelvis, a beard under the chin", looksFine(fineBody),
-    `chest ${bulk(fineBody).toFixed(2)}x, tail ${tailOf(fineBody)} verts, beard ${beardOf(fineBody)} verts`);
-  check("probe: the plain faun body fails it", !looksFine(plainBody), `chest ${bulk(plainBody).toFixed(2)}x, beard ${beardOf(plainBody)} verts`);
-  const fineTris = fineBody.triangles;
-  check("detailed faun: 2000..6000 triangles", fineTris >= 2000 && fineTris <= 6000, `${fineTris} (plain ${plainBody.triangles})`);
-  const fineLow = low(skinned(fineBody, solvePose(faunPose(true))));
-  check("detailed faun in his pose: the toes on y 0 within 2 cm", Math.abs(fineLow) < 0.02, `${fineLow.toFixed(3)}`);
-  const hopFaun = faunPose(true), up6 = (f: PoseSpec["feet"][0]): PoseSpec["feet"][0] => ({ ...f, ankle: [f.ankle[0], f.ankle[1] + 0.06, f.ankle[2]] });
-  check("probe: feet 6 cm higher lift him off", Math.abs(low(skinned(fineBody, solvePose({ ...hopFaun, feet: [up6(hopFaun.feet[0]), up6(hopFaun.feet[1])] })))) >= 0.02, "");
-  // The phone's statue is the old one, triangle for triangle; only `detailed` swaps the body.
-  const statueTris = (detailed: boolean): number => { const S = new Store(); figure(S, [0, 0, 0], 0, 0.42, "faun", [0.2, 0.15, 0.1], 17, detailed); return S.ni / 3; };
-  check("the phone's faun statue keeps its 965 triangles, the detailed one is the new body", statueTris(false) === 965 && statueTris(true) === fineTris, `${statueTris(false)} / ${statueTris(true)}`);
-  check("probe: asking for the plain statue does not give the detailed body", statueTris(false) !== fineTris, "");
 }
 
 // --- 11. the art: restored works in their houses, the atlas in budget ------------------

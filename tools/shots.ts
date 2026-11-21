@@ -1650,16 +1650,6 @@ export const POSES: Pose[] = [
     what: "Close on the bronze Dancing Faun",
     query: "agl&fov=40",
   },
-  {
-    // The Dancing Faun close up, three-quarter view, the statue filling the frame.
-    name: "pompeii-faun-statue",
-    city: "pompeii",
-    lat: 40.7510733, lon: 14.4846073, altM: 2.0, hdgDeg: 64, pitchDeg: -2,
-    t: D("0079-08-22T09:30:00Z"),
-    wx: POMPEII_WX,
-    what: "The bronze Dancing Faun close up, filling the frame",
-    query: "agl&fov=27&near=0.3",
-  },
   // Inside the houses (render/pompeiiinterior.ts): rooms off the atria, read
   // off PompeiiModel.interiors.
   {

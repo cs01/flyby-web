@@ -234,6 +234,8 @@ export interface PompeiiModel {
   art: ArtPlaced[];
   /** Rooms built inside the houses (full build), with a place to stand and where to look: the poses and the gate read them. */
   interiors: InteriorView[];
+  /** Pedestals built empty for a statue (the garden statuary): top centre and the way the figure faces. */
+  statueBases: { x: number; y: number; z: number; yaw: number; what: "garden" }[];
   /** What was modelled at the mapped sites. */
   sites: { mills: { x: number; z: number; site: string }[]; ovens: string[]; thermopolia: number; statues: string[]; shrines: number; stalls: number };
   /** The town: buildings, kerbs, landmarks, walls. Single-sided. */
@@ -361,6 +363,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const orders: ColumnInstance[] = [];
   const artPlaced: ArtPlaced[] = [];
   const interiors: InteriorView[] = [];
+  const statueBases: PompeiiModel["statueBases"] = [];
   const siteInfo: PompeiiModel["sites"] = { mills: [], ovens: [], thermopolia: 0, statues: [], shrines: 0, stalls: 0 };
   /** Shop counters, emitted at the end so the mapped thermopolia can claim theirs. */
   const counters: { F: Frame; u0: number; w: number; g: number; seed: number }[] = [];
@@ -1066,12 +1069,13 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], seed, Surf.Water, op[0], op[1], pool.map((p) => [p[0], p[2], mx, mz]));
     }
     if (!rich) return;
-    // Statues on pedestals at the ends of the cross path.
+    // Pedestals at the ends of the cross path, for the statues (statueBases).
     for (const [u, v] of [[W / 2, lo - 0.3], [W / 2, D - lo + 0.3]]) {
       const [sx, sz] = P(u, v);
       const y = fl(sx, sz);
       fbox({ ...F, ax: sx, az: sz }, -0.22, 0.22, -0.22, 0.22, y, y + 0.9, [0.86, 0.84, 0.78], seed, Surf.Marble);
-      figure(S, [sx, y + 0.9, sz], Math.atan2(nx, nz) + (v > D / 2 ? Math.PI : 0), 0.55, "togate", [0.88, 0.86, 0.8], Surf.Marble);
+      // The statue on it is drawn by the statue builder from this list.
+      statueBases.push({ x: sx, y: y + 0.9, z: sz, yaw: Math.atan2(nx, nz) + (v > D / 2 ? Math.PI : 0), what: "garden" });
     }
     // Oscilla: marble discs on a cord between the columns, two to a side.
     for (let e = 0; e < 4; e++) {
@@ -1393,15 +1397,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           // The Dancing Faun on his base at the impluvium's edge (the bronze is
           // 71 cm high: modelled at that size, on a half-metre plinth).
           const fb = fl(f.x, f.z);
-          // A low moulded base of travertine: a plinth, the die, a capping slab.
-          const trav: RGB = [0.8, 0.76, 0.64];
-          if (lean) cube(S, f.x - 0.3, fb - 0.1, f.z - 0.3, f.x + 0.3, fb + 0.5, f.z + 0.3, trav, seed, Surf.Sand);
-          else {
-            cube(S, f.x - 0.36, fb - 0.1, f.z - 0.36, f.x + 0.36, fb + 0.08, f.z + 0.36, trav, seed, Surf.Sand);
-            cube(S, f.x - 0.3, fb + 0.08, f.z - 0.3, f.x + 0.3, fb + 0.4, f.z + 0.3, trav, seed, Surf.Sand);
-            cube(S, f.x - 0.34, fb + 0.4, f.z - 0.34, f.x + 0.34, fb + 0.5, f.z + 0.34, trav, seed, Surf.Sand);
-          }
-          figure(S, [f.x, fb + 0.5, f.z], Math.atan2(-vx, -vz), 0.42, "faun", [0.21, 0.16, 0.09], 17 /* bronze */, !lean);
+          cube(S, f.x - 0.3, fb - 0.1, f.z - 0.3, f.x + 0.3, fb + 0.5, f.z + 0.3, [0.85, 0.84, 0.8], seed, Surf.Marble);
+          figure(S, [f.x, fb + 0.5, f.z], Math.atan2(-vx, -vz), 0.42, "faun", [0.21, 0.16, 0.09], 17 /* bronze */);
           siteInfo.statues.push("dancing faun");
           artPlaced.push({ id: "dancing-faun", house: hs.name, x: f.x, y: g + 0.5, z: f.z });
         }
@@ -3871,6 +3868,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     orders,
     art: artPlaced,
     interiors,
+    statueBases,
     sites: siteInfo,
     mesh: pack(S),
     floor: pack(F),

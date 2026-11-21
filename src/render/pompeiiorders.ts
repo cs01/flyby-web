@@ -300,7 +300,7 @@ function prism(st: Sink, poly: [number, number][], y0: number, y1: number, col: 
 /** Joint positions of a standing or dancing figure 1.75 m tall, facing +z. */
 export type Pose = "togate" | "faun" | "rider";
 
-export function figure(st: Sink, at: V3, yaw: number, scale: number, pose: Pose, col: RGB, style: number, detailed = false): void {
+export function figure(st: Sink, at: V3, yaw: number, scale: number, pose: Pose, col: RGB, style: number): void {
   const ca = Math.cos(yaw), sa = Math.sin(yaw);
   const P = (x: number, y: number, z: number): V3 => [at[0] + (x * ca + z * sa) * scale, at[1] + y * scale, at[2] + (-x * sa + z * ca) * scale];
   // The Faun is a statuette: limbs drawn at its proportions read as wire at
@@ -308,7 +308,7 @@ export function figure(st: Sink, at: V3, yaw: number, scale: number, pose: Pose,
   const thick = pose === "faun" ? 1.5 : 1;
   const limb = (a: V3, b: V3, ra: number, rb: number): void => tube(st, P(...a), P(...b), ra * scale * thick, rb * scale * thick, 7, col, 0.5, style);
   if (pose === "faun") {
-    faunStatue(st, at, yaw, scale * 1.7, col, style, detailed);
+    faunStatue(st, at, yaw, scale * 1.7, col, style);
     return;
   }
   if (pose === "rider") {
@@ -334,11 +334,9 @@ export function figure(st: Sink, at: V3, yaw: number, scale: number, pose: Pose,
  * The Dancing Faun: the townsfolk's body (render/folk.ts) nude, with horns,
  * pointed ears and a tail, up on his toes with his arms raised and head
  * thrown back, scaled so the raised hand is `height` over the base.
- * `detailed` swaps in the muscled, bearded, curly body (buildFaunBody, about
- * five times the triangles); the phone build leaves it off.
  */
-export function faunStatue(st: Sink, at: V3, yaw: number, height: number, col: RGB, style: number, detailed = false): void {
-  const f = posedFaun(detailed);
+export function faunStatue(st: Sink, at: V3, yaw: number, height: number, col: RGB, style: number): void {
+  const f = posedFaun();
   let top = 0;
   for (let i = 1; i < f.position.length; i += 3) top = Math.max(top, f.position[i]);
   const k = height / top;
