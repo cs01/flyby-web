@@ -11,19 +11,38 @@ import { SHADOW_CASTER_LAYER } from "./sunshadow";
 import { PompeiiLife, type LifeAgent } from "../data/pompeiilife";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
 import {
-  Arms, FLAG_LONG, FLAG_TORCH, FOLK_BONES, FOLK_SCALE, FOLK_CLIPS, FOLK_FRAMES, Gait, bakeClips, buildFolk, buildFolkFar, clipRow,
+  Arms, FLAG_BARE, FLAG_LONG, FLAG_TORCH, FOLK_BONES, FOLK_SCALE, FOLK_CLIPS, FOLK_FRAMES, Gait, bakeClips, buildFolk, buildFolkFar, clipRow,
   type FolkMesh, type FolkOpts,
 } from "./folk";
 
-/** Inside this a figure is drawn in full; past it, the far figure. */
-const NEAR_M = 32;
 /**
- * The phone draws the full figure only for the closest two, and casts no
- * shadows of people: 2 x 981 + 22 x 78 triangles stays under the 24 x 181
- * the box figures cost there, with no culling at all.
+ * Levels of detail, nearest first: the full figure for the closest 12
+ * within 12 m, the middle one to 45 m, the far one past that. Each tier has
+ * a triangle budget for all its people, so a crowd at the camera steps down
+ * a level rather than going over: the full tier's is 12k (the box figures
+ * cost 64 x 181 there), the phone's the 24 x 181 (it also keeps only two full
+ * figures and casts no shadows of people).
  */
-const LEAN_NEAR_M = 12;
-export const LEAN_NEAR_CAP = 2;
+export const FOLK_LOD = {
+  full: { nearM: 12, nearCap: 12, midM: 45, budget: 12000 },
+  lean: { nearM: 12, nearCap: 2, midM: 45, budget: 24 * 181 },
+} as const;
+
+/**
+ * The level each of the visible walkers (nearest first, at distances d) is
+ * drawn at: 0 full, 1 middle, 2 far, so the total stays inside the budget.
+ */
+export function folkLevels(d: number[], tris: { near: number; mid: number; far: number }, lod: { nearM: number; nearCap: number; midM: number; budget: number }): number[] {
+  let used = 0, near = 0;
+  return d.map((dist, k) => {
+    const rest = (d.length - k - 1) * tris.far;
+    const fits = (t: number): boolean => used + t + rest <= lod.budget;
+    const level = dist < lod.nearM && near < lod.nearCap && fits(tris.near) ? 0 : dist < lod.midM && fits(tris.mid) ? 1 : 2;
+    if (level === 0) near++;
+    used += level === 0 ? tris.near : level === 1 ? tris.mid : tris.far;
+    return level;
+  });
+}
 
 /** The skinning, shared by the picture and the shadow passes. */
 const SKIN_GLSL = /* glsl */ `
@@ -46,7 +65,8 @@ mat4 folkBone(int b, int row) {
 // baked frames; hidden is set for a prop this figure does not carry.
 mat4 folkSkin(out bool hidden) {
   int flags = int(iPose.w + 0.5);
-  hidden = aWeight.w > 0.5 / 255.0 && (flags & ${FLAG_TORCH}) == 0;
+  int mask = int(aWeight.w * 255.0 + 0.5);
+  hidden = (mask == 1 && (flags & ${FLAG_TORCH}) == 0) || (mask == 2 && (flags & ${FLAG_BARE}) != 0);
   float f = fract(iPose.y) * ${FOLK_FRAMES}.0;
   int f0 = int(floor(f));
   float t = f - float(f0);
@@ -108,8 +128,12 @@ void main() {
   else if (slot == 2) col *= hair;
   else if (slot == 3) col *= iCloth.rgb;
   else if (slot == 4) col *= iCloth2.rgb;
+  // Calcei in black or red-brown leather.
+  else if (slot == 5) col = fract(iCloth.w * 13.7) < 0.5 ? vec3(0.05, 0.04, 0.035) : vec3(0.3, 0.1, 0.06);
   vColour = vec4(col, fract(iCloth.w * 7.31 + iCloth2.w * 3.17));
   vSurf = aSurf;
+  // A bare foot is skin where a sandal's straps would be painted.
+  if (aSurf.y > 7.5 && aSurf.y < 8.5 && (int(iPose.w + 0.5) & ${FLAG_BARE}) != 0) vSurf.y = 0.0;
   vWall = aWall;
   vViewDist = distance(w, uCameraPos);
   gl_Position = hidden ? vec4(2.0, 2.0, 2.0, 1.0) : projectionMatrix * viewMatrix * vec4(w, 1.0);
@@ -159,7 +183,7 @@ const FOLK_SHADING = /* glsl */ `
         albedo = mix(albedo, albedo * 0.35, fade * brow * 0.8);
         albedo = mix(albedo, albedo * vec3(0.62, 0.36, 0.34), fade * mouth);
       }
-    } else if (p1 < 1.5 || p1 > 6.5) {
+    } else if (p1 < 1.5 || (p1 > 6.5 && p1 < 7.5)) {
       if (p2 > 0.5) {
         // Folds hang down the cloth: the normal swung across them, their hollows darker.
         float a = vWall.x * p2 * 6.2831853 + 2.2 * vnoise(vec2(vWall.x * p2 * 1.7, vWall.y * 2.0 + seed * 9.0));
@@ -180,6 +204,16 @@ const FOLK_SHADING = /* glsl */ `
     } else if (p1 < 4.5) {
       albedo *= 0.88 + 0.16 * vnoise(vWorld.xz * 18.0 + vWorld.y * 11.0);
       gloss = 0.15;
+    } else if (p1 > 7.5 && p1 < 8.5) {
+      // A sandal on the foot: u round the foot (0 on top), v heel to toe. A
+      // strap round the ankle, two over the instep, the thong between the
+      // toes, and the sole's edge along the bottom.
+      float a = min(vWall.x, 1.0 - vWall.x) * 2.0, fv = vWall.y;
+      float strap = max(max(step(abs(fv - 0.25), 0.07) * step(a, 0.72), step(abs(fv - 0.52), 0.045) * step(a, 0.55)),
+                        max(step(abs(fv - 0.66), 0.035) * step(a, 0.5), step(a, 0.07) * step(0.6, fv) * step(fv, 0.86)));
+      strap = max(strap, step(0.86, a));
+      albedo = mix(albedo, vec3(0.2, 0.12, 0.07), strap);
+      gloss = mix(0.22, 0.3, strap);
     } else if (p1 < 5.5) {
       float wv = step(0.5, fract(vWall.x * p2 * 2.0 + 0.5 * step(0.5, fract(vWorld.y * 40.0))));
       albedo *= 0.72 + 0.4 * mix(0.5, wv, nearP);
@@ -203,7 +237,7 @@ const KINDS: FolkOpts[] = [
   { dress: "stola" }, { dress: "stola", veil: true }, { dress: "stola", load: "basket" },
   { dress: "toga" },
 ];
-const FAR = KINDS.length;
+const MID = KINDS.length, FAR = 2 * KINDS.length;
 
 type RGB = [number, number, number];
 /** Men's tunics: undyed and grey wool, browns, dull madder, olive and grey-green. */
@@ -228,7 +262,7 @@ function hash(i: number, k: number): number {
   return ((h ^ (h >>> 15)) >>> 0) / 4294967296;
 }
 
-interface Look { kind: number; arms: Arms; scale: number; cloth: RGB; cloth2: RGB; skin: number; hair: number; long: boolean }
+interface Look { kind: number; arms: Arms; scale: number; cloth: RGB; cloth2: RGB; skin: number; hair: number; long: boolean; bare: boolean }
 
 interface Bucket { mesh: THREE.Mesh; caster: THREE.Mesh; geo: THREE.InstancedBufferGeometry; data: Float32Array; buf: THREE.InstancedInterleavedBuffer; n: number; triangles: number }
 
@@ -241,7 +275,7 @@ export class Townsfolk {
   readonly depthScene = new THREE.Scene();
   readonly sim: PompeiiLife;
   /** Last frame's draw: figures and triangles at each level. */
-  readonly stats = { near: 0, far: 0, triangles: 0 };
+  readonly stats = { near: 0, mid: 0, far: 0, triangles: 0 };
   private readonly buckets: Bucket[] = [];
   private readonly carts: Cart[] = [];
   private readonly looks: Look[] = [];
@@ -255,8 +289,8 @@ export class Townsfolk {
   private readonly pm = new THREE.Matrix4();
   private readonly sphere = new THREE.Sphere();
   private readonly camAt = new THREE.Vector3();
-  private readonly nearM: number;
-  private readonly nearCap: number;
+  private readonly lod: (typeof FOLK_LOD)["full" | "lean"];
+  private readonly vis: { i: number; d: number; x: number; y: number; z: number }[] = [];
   private readonly order: { i: number; d: number }[] = [];
 
   constructor(data: PompeiiData, uniforms: PompeiiUniforms, private readonly heightAt: (x: number, z: number) => number,
@@ -264,8 +298,7 @@ export class Townsfolk {
     // Enough that the eruption's gates fill (sim/flee.ts puts most of them there).
     this.sim = new PompeiiLife(data, { people: lean ? 24 : 64, carts: lean ? 1 : 2 });
     this.forum = data.publics.find((p) => p.kind === "forum")?.ring ?? null;
-    this.nearM = lean ? LEAN_NEAR_M : NEAR_M;
-    this.nearCap = lean ? LEAN_NEAR_CAP : Infinity;
+    this.lod = lean ? FOLK_LOD.lean : FOLK_LOD.full;
     const n = this.sim.people.length;
     const tex = new THREE.DataTexture(bakeClips(), FOLK_BONES * 3, FOLK_CLIPS * FOLK_FRAMES, THREE.RGBAFormat, THREE.FloatType);
     tex.minFilter = tex.magFilter = THREE.NearestFilter;
@@ -280,7 +313,7 @@ export class Townsfolk {
       vertexShader: FOLK_DEPTH_VERT, fragmentShader: DEPTH_FRAG, glslVersion: THREE.GLSL3, side: THREE.DoubleSide, colorWrite: false,
       uniforms: { uPose },
     });
-    const meshes: FolkMesh[] = [...KINDS.map((k) => buildFolk(k)), buildFolkFar()];
+    const meshes: FolkMesh[] = [...KINDS.map((k) => buildFolk(k)), ...KINDS.map((k) => buildFolk(k, true)), buildFolkFar()];
     meshes.forEach((m, k) => {
       const geo = new THREE.InstancedBufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(m.position, 3));
@@ -375,13 +408,17 @@ export class Townsfolk {
       const cloth = vary(WOMEN[p.tint % WOMEN.length], 10);
       let c2 = Math.floor(h(8) * WOMEN.length);
       if (c2 === p.tint % WOMEN.length) c2 = (c2 + 3) % WOMEN.length;
-      return { kind, arms: kind === 5 ? Arms.Basket : Arms.Woman, scale: lerp(FOLK_SCALE.woman, h(5)), cloth, cloth2: vary(WOMEN[c2], 11), skin: skin * 0.8, hair, long: true };
+      return { kind, arms: kind === 5 ? Arms.Basket : Arms.Woman, scale: lerp(FOLK_SCALE.woman, h(5)), cloth, cloth2: vary(WOMEN[c2], 11), skin: skin * 0.8, hair, long: true, bare: false };
     }
-    const scale = lerp(FOLK_SCALE.man, h(5));
-    if (h(2) < 0.04 || (inForum && h(2) < 0.6)) return { kind: 6, arms: Arms.Toga, scale, cloth: vary(TOGA, 12), cloth2: TOGA_TUNIC, skin, hair, long: true };
-    const load = h(3);
+    // One in nine is a boy, in a short tunic and mostly barefoot.
+    const boy = h(13) < 0.11;
+    const scale = boy ? lerp(FOLK_SCALE.boy, h(5)) : lerp(FOLK_SCALE.man, h(5));
+    if (!boy && (h(2) < 0.04 || (inForum && h(2) < 0.6))) return { kind: 6, arms: Arms.Toga, scale, cloth: vary(TOGA, 12), cloth2: TOGA_TUNIC, skin, hair, long: true, bare: false };
+    const load = boy ? 1 : h(3);
     const kind = load < 0.1 ? 1 : load < 0.2 ? 2 : 0;
-    return { kind, arms: kind === 1 ? Arms.Amphora : kind === 2 ? Arms.Basket : Arms.Free, scale, cloth: vary(MEN[p.tint % MEN.length], 10), cloth2: MEN[0], skin, hair, long: false };
+    // Porters and slaves often went barefoot, boys more often still.
+    const bare = h(14) < (boy ? 0.6 : kind ? 0.5 : 0.12);
+    return { kind, arms: kind === 1 ? Arms.Amphora : kind === 2 ? Arms.Basket : Arms.Free, scale, cloth: vary(MEN[p.tint % MEN.length], 10), cloth2: MEN[0], skin, hair: boy ? hair * 0.85 : hair, long: false, bare };
   }
 
   /**
@@ -414,17 +451,25 @@ export class Townsfolk {
       this.order.push({ i, d: Math.hypot(x - eye.x, z - eye.z) });
     });
     this.order.sort((a, b) => a.d - b.d);
-    let near = 0, far = 0;
     const night = opts.night ?? 0;
+    this.vis.length = 0;
     for (const { i, d } of this.order) {
-      const p = this.sim.people[i], L = this.looks[i];
+      const p = this.sim.people[i];
       const x = p.x + this.offX, z = p.z + this.offZ, y = this.heightAt(x, z);
       // A generous sphere: one just out of view still throws its shadow into it.
       if (cam && !this.frustum.intersectsSphere(this.sphere.set(this.camAt.set(x, y + 0.9, z), 3))) continue;
-      const isNear = d < this.nearM && near < this.nearCap;
-      const b = this.buckets[isNear ? L.kind : FAR];
+      this.vis.push({ i, d, x, y, z });
+    }
+    const T = this.buckets;
+    const levels = folkLevels(this.vis.map((v) => v.d), { near: Math.max(...T.slice(0, MID).map((b) => b.triangles)), mid: Math.max(...T.slice(MID, FAR).map((b) => b.triangles)), far: T[FAR].triangles }, this.lod);
+    const count = [0, 0, 0];
+    this.vis.forEach(({ i, x, y, z }, k) => {
+      const p = this.sim.people[i], L = this.looks[i];
+      const level = levels[k];
+      count[level]++;
+      const b = this.buckets[level === 0 ? L.kind : level === 1 ? MID + L.kind : FAR];
       let arms = L.arms;
-      let flags = L.long ? FLAG_LONG : 0;
+      let flags = (L.long ? FLAG_LONG : 0) | (L.bare ? FLAG_BARE : 0);
       const free = arms === Arms.Free || arms === Arms.Woman;
       // The same walkers render/pompeiilamps.ts and render/eruption.ts pick.
       if (free && night > 0.5 && i % 4 === 1 && i % 3 !== 0) arms = Arms.Lantern;
@@ -439,8 +484,7 @@ export class Townsfolk {
       b.data[o + 8] = L.cloth[0]; b.data[o + 9] = L.cloth[1]; b.data[o + 10] = L.cloth[2]; b.data[o + 11] = L.skin;
       b.data[o + 12] = L.cloth2[0]; b.data[o + 13] = L.cloth2[1]; b.data[o + 14] = L.cloth2[2]; b.data[o + 15] = L.hair;
       b.n++;
-      if (isNear) near++; else far++;
-    }
+    });
     let tris = 0;
     for (const b of this.buckets) {
       b.geo.instanceCount = b.n;
@@ -448,7 +492,7 @@ export class Townsfolk {
       if (b.n) { b.buf.needsUpdate = true; b.buf.addUpdateRange(0, b.n * 16); }
       tris += b.n * b.triangles;
     }
-    this.stats.near = near; this.stats.far = far; this.stats.triangles = tris;
+    this.stats.near = count[0]; this.stats.mid = count[1]; this.stats.far = count[2]; this.stats.triangles = tris;
     this.sim.carts.forEach((c, i) => {
       const x = c.x + this.offX, z = c.z + this.offZ;
       const y = this.heightAt(x, z);
