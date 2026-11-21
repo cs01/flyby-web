@@ -117,7 +117,7 @@ import { SunShadow } from "./render/sunshadow";
 import { SkyProbe } from "./render/skyprobe";
 import { Skyline } from "./sim/skyline";
 import { reverseGeocode, placeLabel } from "./data/place";
-import { Labels } from "./app/labels";
+import { Labels, escapeLabelTargets } from "./app/labels";
 import { PhoneShell } from "./app/phoneui";
 import { isTouchDevice } from "./sim/touch";
 import { StreetSignHud } from "./app/streetsign";
@@ -607,8 +607,7 @@ async function main() {
     cart.group.visible = false;
     if (!perfOff.has("pompeiilife")) {
       townsfolk = new Townsfolk(pompeiiData, pompeii.uniforms, terrain.heightAt, off.x, off.z, budget.pompeii.lean);
-      scene.add(townsfolk.group);
-    }
+      scene.add(townsfolk.group);    }
     scene.add(cart.group);
     // The baths, fountains, water towers and atrium pools (render/pompeiiwater.ts),
     // `?off=pompeiiwater`. Its stone joins the town's shadow casters, so the
@@ -644,6 +643,8 @@ async function main() {
         fall: townDef(pompeiiData.town).eruption.fall,
       });
       eruptView.enabled = new URLSearchParams(location.search).has("eruption");
+      // The town mesh sits at the offset; its roofs are in the town's own frame.
+      eruptView.roofs = pompeii.model.roofs.map((r) => ({ ...r, x: r.x + off.x, z: r.z + off.z, ring: r.ring.map((v, i) => v + (i % 2 ? off.z : off.x)) }));
       scene.add(eruptView.group);
     }
     const s = pompeii.stats, m = pompeii.model.stats;
@@ -2315,7 +2316,7 @@ async function main() {
     // building it names as soon as you are lower than the roof.
     labels.update(
       camera,
-      labelTargets,
+      escape?.running ? escapeLabelTargets(escape.objective, terrain.heightAt) : labelTargets,
       ac.position,
       transit.tags ? [...airTraffic.tags.rects, ...transit.tags.rects] : airTraffic.tags.rects,
     );

@@ -141,11 +141,67 @@ function inRing(r: number[], x: number, z: number): boolean {
   return inside;
 }
 
+/** Shoulder room a walker keeps, metres from centre; a cart and its mule take more. */
+export const PERSON_R_M = 0.32;
+export const CART_R_M = 1.3;
+
+/**
+ * Push apart any two bodies closer than the sum of their radii, half the
+ * overlap each, a few passes. Binned on a grid of the largest diameter so it
+ * stays linear in the crowd. `ok` vetoes a push that would leave the streets;
+ * bodies at x > 5e4 are parked and skipped.
+ */
+export function separate(xs: Float64Array, zs: Float64Array, rs: Float64Array, n: number, passes = 3, ok: (x: number, z: number, k: number) => boolean = () => true): void {
+  let rMax = 0;
+  for (let i = 0; i < n; i++) rMax = Math.max(rMax, rs[i]);
+  const cell = Math.max(0.1, 2 * rMax);
+  const bins = new Map<number, number[]>();
+  const key = (i: number, j: number) => (i + 32768) * 65536 + (j + 32768);
+  for (let pass = 0; pass < passes; pass++) {
+    bins.clear();
+    for (let k = 0; k < n; k++) {
+      if (xs[k] > 5e4) continue;
+      const kk = key(Math.floor(xs[k] / cell), Math.floor(zs[k] / cell));
+      const b = bins.get(kk);
+      if (b) b.push(k); else bins.set(kk, [k]);
+    }
+    for (let a = 0; a < n; a++) {
+      if (xs[a] > 5e4) continue;
+      const ci = Math.floor(xs[a] / cell), cj = Math.floor(zs[a] / cell);
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const b = bins.get(key(ci + di, cj + dj));
+        if (!b) continue;
+        for (const o of b) {
+          if (o <= a) continue;
+          let dx = xs[o] - xs[a], dz = zs[o] - zs[a];
+          let d = Math.hypot(dx, dz);
+          const want = rs[a] + rs[o];
+          if (d >= want) continue;
+          // Exactly on top of each other: split along a fixed per-pair direction.
+          if (d < 1e-6) { const t = (a * 7919 + o * 104729) % 628 / 100; dx = Math.cos(t); dz = Math.sin(t); d = 1; }
+          const push = (want - d) / 2 / d;
+          const ax = xs[a] - dx * push, az = zs[a] - dz * push, ox = xs[o] + dx * push, oz = zs[o] + dz * push;
+          if (ok(ax, az, a)) { xs[a] = ax; zs[a] = az; }
+          if (ok(ox, oz, o)) { xs[o] = ox; zs[o] = oz; }
+        }
+      }
+    }
+  }
+}
+
 /** Per-agent state the life sim does not have: where in the stream, what is carried. */
 interface Flight { side: number; out: number; gate: number; bundle: boolean; active: boolean }
 
 const PLACE_MIN_M = 25;
 const PLACE_MAX_M = 220;
+/** Near a gate, this share of the people are put on its approaches: that is where the crowd was. */
+const GATE_SHARE = 0.75;
+/** How near the camera a gate must be for its approaches to draw the crowd. */
+const GATE_DRAW_M = 160;
+/** The approach: open cells this far from the gate. */
+const APPROACH_M = 70;
+/** When the flight takes someone over, nearer than this they are in view and keep their place. */
+const ADOPT_KEEP_M = 40;
 /** Past the gate, people walk on this far before they are recycled. */
 const OUT_M = 40;
 
@@ -156,6 +212,12 @@ const OUT_M = 40;
 export class Flee {
   private readonly flights = new Map<LifeAgent, Flight>();
   private seed = 1979;
+  private readonly approaches = new Map<number, number[]>();
+  private sx = new Float64Array(0);
+  private sz = new Float64Array(0);
+  private sr = new Float64Array(0);
+  /** Off only for the gate's vacuity probe. */
+  separation = true;
 
   constructor(readonly field: FleeField) {}
 
@@ -164,15 +226,31 @@ export class Flee {
     return this.seed / 2147483647;
   }
 
+  /** Open cells on the way into gate gi, its last APPROACH_M. */
+  private approach(gi: number): number[] {
+    let cells = this.approaches.get(gi);
+    if (!cells) {
+      const g = this.field.gates[gi];
+      cells = this.field.open.filter((c) => { const [x, z] = this.field.centre(c); return Math.hypot(x - g.x, z - g.z) < APPROACH_M; });
+      this.approaches.set(gi, cells);
+    }
+    return cells;
+  }
+
   /** Put an agent somewhere on the streets near (cx, cz), and on its way. */
   private place(a: LifeAgent, f: Flight, cx: number, cz: number): void {
-    const open = this.field.open;
+    let open = this.field.open;
+    let gi = -1, gd = GATE_DRAW_M;
+    this.field.gates.forEach((g, i) => { const d = Math.hypot(g.x - cx, g.z - cz); if (d < gd) { gd = d; gi = i; } });
+    if (gi >= 0 && this.rand() < GATE_SHARE && this.approach(gi).length) open = this.approach(gi);
+    // At the gate itself the approach is all within PLACE_MIN_M: keep only clear of the lens.
+    const minM = open === this.field.open ? PLACE_MIN_M : 8;
     for (let tries = 0; tries < 24; tries++) {
       const [x, z] = this.field.centre(open[Math.floor(this.rand() * open.length)]);
       const d = Math.hypot(x - cx, z - cz);
-      if (d < PLACE_MIN_M || d > PLACE_MAX_M) continue;
-      a.x = x + (this.rand() - 0.5) * 2;
-      a.z = z + (this.rand() - 0.5) * 2;
+      if (d < minM || d > PLACE_MAX_M) continue;
+      a.x = x + (this.rand() - 0.5) * 3.2;
+      a.z = z + (this.rand() - 0.5) * 3.2;
       f.out = -1;
       return;
     }
@@ -192,7 +270,9 @@ export class Flee {
       if (!f) {
         f = { side: (this.rand() - 0.5) * 2.4, out: -1, gate: -1, bundle: this.rand() < 0.7, active: true };
         this.flights.set(a, f);
-        if (this.field.distanceAt(a.x, a.z) === Infinity || Math.hypot(a.x - cx, a.z - cz) > PLACE_MAX_M) this.place(a, f, cx, cz);
+        // Out of sight, they are already on their way: on the gate's
+        // approaches when one is near. Those in view stay where they are.
+        if (this.field.distanceAt(a.x, a.z) === Infinity || Math.hypot(a.x - cx, a.z - cz) > ADOPT_KEEP_M) this.place(a, f, cx, cz);
       }
       // Fewer people later: an agent whose turn it is not stays parked.
       f.active = isCart ? share > 0.3 : (k + 0.5) / people.length < share;
@@ -234,7 +314,27 @@ export class Flee {
       a.phase += (speed / 1.4) * Math.PI * 2 * dt;
       walking++;
     });
+    if (this.separation) this.separateAll(people, carts);
     return walking;
+  }
+
+  /** Nobody walks through anybody: a few passes of separate() over everyone walking. */
+  private separateAll(people: LifeAgent[], carts: LifeAgent[]): void {
+    const n = people.length + carts.length;
+    if (this.sx.length < n) { this.sx = new Float64Array(n); this.sz = new Float64Array(n); this.sr = new Float64Array(n); }
+    for (let k = 0; k < n; k++) {
+      const a = k < people.length ? people[k] : carts[k - people.length];
+      this.sx[k] = a.x; this.sz[k] = a.z; this.sr[k] = k < people.length ? PERSON_R_M : CART_R_M;
+    }
+    // A push may not take anyone off the streets into a house; someone
+    // already off them (out past the gate, on the road) can go anywhere.
+    const free = new Uint8Array(n);
+    for (let k = 0; k < n; k++) free[k] = this.field.distanceAt(this.sx[k], this.sz[k]) === Infinity ? 1 : 0;
+    separate(this.sx, this.sz, this.sr, n, 3, (x, z, k) => free[k] === 1 || this.field.distanceAt(x, z) !== Infinity);
+    for (let k = 0; k < n; k++) {
+      const a = k < people.length ? people[k] : carts[k - people.length];
+      a.x = this.sx[k]; a.z = this.sz[k];
+    }
   }
 
   /** Who is carrying a bundle, and where: for the renderer. */

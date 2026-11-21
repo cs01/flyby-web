@@ -32,6 +32,7 @@ import { ORDERS, Order, TOP_DIAMETER, cube, figure, lathe, mill, oven } from "./
 import { HORSE_BONES, buildHorse, poseHorse } from "./horse";
 import { buildSuburbs, type SuburbStats } from "./pompeiisuburbs";
 import type { LampSites } from "../data/pompeiilamps";
+import { roofFailDepthM, roofTag } from "../sim/eruption";
 import type { WaterSites } from "../data/pompeiiwater";
 import { hasBathPlan } from "../data/pompeiibaths";
 import { townDef } from "../data/towns";
@@ -98,6 +99,12 @@ export class Store {
   wall = new Float32Array(this.cap * 4);
   idx: Uint32Array = new Uint32Array(8192);
   ni = 0;
+  /**
+   * Written to surf.w of every vertex emitted while set: the roof-failure byte
+   * (sim/eruption.ts roofTag) of the building being built, 0 elsewhere. Only
+   * tile and timber faces act on it in the shader, so walls stay standing.
+   */
+  tag = 0;
 
   grow(): void {
     this.cap *= 2;
@@ -118,6 +125,7 @@ export class Store {
     this.col[i * 4] = Math.round(Math.min(1, c[0]) * 255); this.col[i * 4 + 1] = Math.round(Math.min(1, c[1]) * 255);
     this.col[i * 4 + 2] = Math.round(Math.min(1, c[2]) * 255); this.col[i * 4 + 3] = Math.round(seed * 255);
     this.surf[i * 4] = s; this.surf[i * 4 + 1] = Math.round(Math.max(0, Math.min(255, p1))); this.surf[i * 4 + 2] = Math.round(Math.max(0, Math.min(255, p2)));
+    this.surf[i * 4 + 3] = this.tag;
     this.wall.set(w, i * 4);
     return i;
   }
@@ -161,6 +169,18 @@ export interface LotInfo {
   inferred: boolean;
 }
 
+/** One building's roof, for the collapse (sim/eruption.ts roofFailDepthM). */
+export interface RoofInfo {
+  /** Centre of the footprint and the roof's top, world metres. */
+  x: number; z: number; y: number;
+  /** Clear span the beams carry, metres. */
+  spanM: number;
+  /** Depth of pumice that brings it down, metres; its vertices carry roofTag(failM). */
+  failM: number;
+  /** The footprint, x,z pairs: the escape asks whether you stand under it. */
+  ring: number[];
+}
+
 /** A column standing in the town: the detailed order is drawn over its plain prism near the camera. */
 export interface ColumnInstance {
   x: number; y0: number; z: number;
@@ -197,6 +217,8 @@ export interface PompeiiModel {
   lots: LotInfo[];
   /** Where the lamps can go: render/pompeiilamps.ts. */
   lampSites: LampSites;
+  /** Every roof that can fall in under the pumice, with the depth that brings it down. */
+  roofs: RoofInfo[];
   /** Fountains, impluvia and the planned baths, built by render/pompeiiwater.ts. */
   waterSites: WaterSites;
   /** Counts the gate reads. */
@@ -263,6 +285,19 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const solids: Solid[] = [];
   const lots: LotInfo[] = [];
   const lampSites: LampSites = { openings: [], courts: [] };
+  const roofs: RoofInfo[] = [];
+  /**
+   * Tag everything the building emits from here with its roof's failure
+   * byte. The caller clears the tag after the building, so an early return
+   * cannot leak it onto whatever is built next.
+   */
+  const roofBegin = (ring: number[], y: number, spanM: number, seed: number): void => {
+    if (grey) return;
+    const failM = roofFailDepthM(spanM, hash(seed * 1e6, 97));
+    const [x, z] = ringCentroid(ring);
+    roofs.push({ x, z, y, spanM, failM, ring: [...ring] });
+    S.tag = roofTag(failM);
+  };
   const waterSites: WaterSites = { fountains: [], impluvia: [], baths: [] };
   /** Record an atrium pool for its rim; returns the town shader's p1, p2 for the sky in it. */
   function impluvium(pool: V3[], cx: number, cz: number, floor: number, openY: number, openR: number): [number, number] {
@@ -745,6 +780,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
   for (const h of houses) {
     if (h.kind === "bakery") buildBakery(h); else buildHouse(h);
+    S.tag = 0;
   }
 
   function buildHouse(hs: House): void {
@@ -849,6 +885,12 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     stats.lots++;
     if (kind === "domus") { stats.domus++; stats.compluvia++; stats.surveyedHouses++; }
     lots.push({ kind, width: F.L, depth: Math.sqrt(area), storeys: 1, main: F.main, compluvium: courts.length > 0, inferred: false });
+    {
+      // The clear span: about twice the room depth, which is what 4 x area / perimeter gives a range of rooms.
+      let per = 0;
+      for (let i = 0; i < n; i++) per += Math.hypot(ring[((i + 1) % n) * 2] - ring[i * 2], ring[((i + 1) % n) * 2 + 1] - ring[i * 2 + 1]);
+      roofBegin(ring, top + Math.min(ROOF_RANGE_M + 1, 4) * TAN_PITCH, Math.min(2 * ROOF_RANGE_M, (4 * area) / Math.max(per, 1)), seed);
+    }
 
     // --- the rooms the camera can see into ---
     // Gaps cut in the court walls, by court and edge, for the fauces and the
@@ -1286,6 +1328,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const H = 4.6;
     const col: RGB = [0.8, 0.74, 0.62];
     const P = (a: number, b: number): [number, number] => [fax + fx * a + vx * b, faz + fz * a + vz * b];
+    roofBegin([...r], g + H, 11, hs.seed);
     // Street front with a wide door; sides and back. Plaster both faces on the outside walls.
     const [cx, cz] = ringCentroid(r);
     const out = (p: [number, number], q: [number, number]): [number, number] => {
@@ -1455,6 +1498,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
           const ca: [number, number] = [lerp(fa[0], ba[0], free), lerp(fa[1], ba[1], free)];
           buildLot(fa, fb, cb, ca, e.nx, e.nz, kind, e.main, ins.inferred, hash(ii, i * 31 + li, 5), e.d * free);
         } else buildLot(fa, fb, bb, ba, e.nx, e.nz, kind, e.main, ins.inferred, hash(ii, i * 31 + li, 5), e.d);
+        S.tag = 0;
         lotIx++;
       }
     }
@@ -1482,6 +1526,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         if (publicRings.some((pr) => c.some(([x, z]) => pointInRing(pr, x, z)))) continue;
         // Front on the u0 side, facing a lane between the houses.
         buildLot([c[0][0], c[0][1]], [c[1][0], c[1][1]], [c[2][0], c[2][1]], [c[3][0], c[3][1]], nx, nz, "domus", false, true, hash(ii, k++, 41), D);
+        S.tag = 0;
       }
     }
   }
@@ -1553,6 +1598,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     ];
     const info: LotInfo = { kind, width, depth: d, storeys: twoStorey ? 2 : 1, main, compluvium: false, inferred };
     lots.push(info);
+    // A band's beams run front to back across the shorter of frontage and depth.
+    roofBegin([fa[0], fa[1], fb[0], fb[1], bb[0], bb[1], ba[0], ba[1]], g + Hf + 1.5, Math.min(width, d, kind === "domus" ? 11 : 14), seed);
     if (kind === "taberna") stats.tabernae++;
     if (kind === "domus") stats.domus++;
     const p1 = Math.round(bandTop * 40);
@@ -1888,7 +1935,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   // =====================================================================================
   const forum = data.publics.find((p) => p.kind === "forum");
   const forumC = forum ? ringCentroid(forum.ring) : null;
-  for (let pi = 0; pi < data.publics.length; pi++) buildPublic(data.publics[pi], pi);
+  for (let pi = 0; pi < data.publics.length; pi++) { buildPublic(data.publics[pi], pi); S.tag = 0; }
 
   function buildPublic(p: PompeiiPublic, pi: number): void {
     const r = cleanRing(p.ring) ?? p.ring;
@@ -2162,6 +2209,9 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const o = obb(r);
     const q = obbCorners(o, o.hu - 0.5, o.hv - 0.5);
     box(q, g - 0.5, g + H, [0.87, 0.84, 0.76], seed, Surf.Stucco);
+    // After the walls: only the roof and its timber carry the tag. The
+    // basilica's 24 m span is the widest in the town and goes first.
+    roofBegin(q, g + H + Math.min(5, o.hv * TAN_PITCH), 2 * o.hv, seed);
     const rise = Math.min(5, o.hv * TAN_PITCH);
     const vx = -o.uz, vz = o.ux;
     const top = g + H;
@@ -2200,6 +2250,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const ic = [inner.slice(0, 2), inner.slice(2, 4), inner.slice(4, 6), inner.slice(6, 8)] as [number, number][];
     const col: RGB = [0.86, 0.8, 0.66];
     const tileC: RGB = [0.62, 0.3, 0.2];
+    roofBegin(c, g + H + 2, D, seed);
     for (let e = 0; e < 4; e++) {
       let a = cc[e], b = cc[(e + 1) % 4];
       const bi = ic[(e + 1) % 4], ai = ic[e];
@@ -2616,6 +2667,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     solids,
     lots,
     lampSites,
+    roofs,
     waterSites,
     stats,
     suburbs,

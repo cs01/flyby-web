@@ -17,7 +17,9 @@
 import * as THREE from "three";
 import type { Weather } from "../data/weather";
 import type { SceneLighting } from "./lighting";
-import { eruptionAt, type EruptionState } from "../sim/eruption";
+import { ROOF_FAIL_END_M, ROOF_FAIL_START_M, ROOF_FALL_M, eruptionAt, hourAtDepth, type EruptionState } from "../sim/eruption";
+import { pointInRing } from "../data/pompeii";
+import type { RoofInfo } from "./pompeiimesh";
 
 // --- what the town's own shader reads --------------------------------------
 
@@ -30,6 +32,8 @@ export interface EruptionSurfaceUniforms {
   uLamp: THREE.IUniform<THREE.Vector4>;
   /** Torches carried by the townsfolk near the camera. */
   uTorch: THREE.IUniform<THREE.Vector4[]>;
+  /** For the terrain: x share of the camera outside the fall, y daylight under the plume, z eruption on, w column grown 0..1. */
+  uAshView: THREE.IUniform<THREE.Vector4>;
 }
 
 export const TORCH_SLOTS = 6;
@@ -40,6 +44,7 @@ export const eruptionSurfaceUniforms: EruptionSurfaceUniforms = {
   uAshFan: { value: new THREE.Vector4(0, 0, 0, 1) },
   uLamp: { value: new THREE.Vector4(0, 0, 0, 0) },
   uTorch: { value: Array.from({ length: TORCH_SLOTS }, () => new THREE.Vector4(0, 0, 0, 0)) },
+  uAshView: { value: new THREE.Vector4(0, 1, 0, 0) },
 };
 
 /** Downwind: the plume's axis ran south-east over Pompeii (bearing toward, radians). */
@@ -67,6 +72,27 @@ export function ashLiftAt(fan: THREE.Vector4, x: number, z: number, groundY: num
   return fan.z * ashFanAt(fan.x, fan.y, x, z) * shore * shore * (3 - 2 * shore);
 }
 
+/**
+ * What the fall looks like lying on the ground. The white phase's pumice is a
+ * pale buff, the grey phase's a mid grey; the fine ash dusting the mountain
+ * under the column is darker than either. Albedos, never brighter than old
+ * plaster: at snow's 0.9 the afternoon sun on the fan read as a snowfield.
+ */
+export const PUMICE_WHITE: readonly [number, number, number] = [0.58, 0.53, 0.45];
+export const PUMICE_GREY: readonly [number, number, number] = [0.34, 0.33, 0.31];
+export const VENT_ASH: readonly [number, number, number] = [0.13, 0.12, 0.11];
+
+/** The pumice's albedo at the top of the deposit: whiteness 1 white phase, 0 grey. Mirrored in PUMICE_GLSL. */
+export function pumiceAlbedo(whiteness: number): [number, number, number] {
+  const w = Math.min(1, Math.max(0, whiteness));
+  return [0, 1, 2].map((i) => PUMICE_GREY[i] + (PUMICE_WHITE[i] - PUMICE_GREY[i]) * w) as [number, number, number];
+}
+
+const v3 = (c: readonly number[]) => `vec3(${c.map((x) => x.toFixed(4)).join(", ")})`;
+export const PUMICE_GLSL = /* glsl */ `
+vec3 pumiceColour(float white) { return mix(${v3(PUMICE_GREY)}, ${v3(PUMICE_WHITE)}, clamp(white, 0.0, 1.0)); }
+`;
+
 const ASH_FAN_GLSL = /* glsl */ `
 uniform vec4 uAshFan;
 float ashFan(vec2 xz) {
@@ -80,13 +106,48 @@ float ashLift(vec3 p) {
   if (uAshFan.z <= 0.0) return 0.0;
   return uAshFan.z * ashFan(p.xz) * smoothstep(0.3, 1.5, p.y);
 }
-// Grey-white pumice on open ground outside the town, as deep as the fan says.
-vec3 ashGround(vec3 albedo, vec3 n, vec3 p) {
-  if (uAshFan.z <= 0.0) return albedo;
-  float cover = smoothstep(0.0, 0.05, uAshFan.z * ashFan(p.xz)) * smoothstep(0.45, 0.85, n.y) * smoothstep(0.3, 1.5, p.y);
-  float g = fract(sin(dot(floor(p.xz * 0.7), vec2(12.9898, 78.233))) * 43758.5453);
-  vec3 pum = mix(vec3(0.2, 0.19, 0.18), vec3(0.3, 0.285, 0.26), uAshFan.w) * (0.88 + 0.2 * g);
-  return mix(albedo, pum, cover);
+`;
+
+/**
+ * The town's roofs falling in (sim/eruption.ts roofCollapse, from the byte
+ * render/pompeiimesh.ts stores in surf.w). Vertex stage: the share fallen,
+ * -1 for anything that is not roof, and the frame slumping as it goes.
+ * Timber counts only facing down (eave and portico soffits): doors and
+ * counters are timber too and stay put.
+ */
+export const ROOF_COLLAPSE_VERT_GLSL = /* glsl */ `
+out float vRoof;
+float roofFallen(vec4 surf, float ny) {
+  float st = floor(surf.x + 0.5);
+  if (surf.w < 0.5 || !(st == 1.0 || (st == 7.0 && ny < -0.3))) return -1.0;
+  float failM = ${ROOF_FAIL_START_M.toFixed(6)} + ${(ROOF_FAIL_END_M - ROOF_FAIL_START_M).toFixed(6)} * (surf.w - 1.0) / 254.0;
+  return clamp((uAsh.x - failM) / ${ROOF_FALL_M.toFixed(6)}, 0.0, 1.0);
+}
+`;
+
+/**
+ * Fragment stage: patches of tiles a metre across drop in a random order,
+ * each darkening as it cracks; the rafters under them stay a while longer
+ * and then break one by one. Returns -1 for a fragment that has fallen
+ * (the caller discards), 1 for a bare rafter, 0 for tiles still in place,
+ * and between for a cracking patch.
+ */
+export const ROOF_COLLAPSE_FRAG_GLSL = /* glsl */ `
+in float vRoof;
+float roofRuin(vec3 p, vec3 gn, float seed, float k) {
+  if (k <= 0.0) return 0.0;
+  // Rafters run down the slope, so they are spaced across it.
+  vec2 sd = length(gn.xz) > 0.05 ? normalize(gn.xz) : vec2(1.0, 0.0);
+  float across = dot(p.xz, vec2(-sd.y, sd.x)) / 0.8;
+  float rid = floor(across);
+  bool rafter = fract(across) < 0.2;
+  vec2 cell = floor(p.xz / 1.1);
+  float fallAt = 0.04 + 0.8 * fract(sin(dot(cell + seed * 31.0, vec2(12.9898, 78.233))) * 43758.5453);
+  if (k < fallAt) return k > fallAt - 0.1 ? 0.5 : 0.0;
+  if (!rafter) return -1.0;
+  // About half the rafters snap; the rest are left standing over the room.
+  float breakAt = 0.7 + 0.6 * fract(sin(rid * 91.7 + seed * 47.0) * 43758.5453);
+  return k > breakAt ? -1.0 : 1.0;
 }
 `;
 
@@ -98,9 +159,43 @@ ${ASH_FAN_GLSL}
 
 /** For the terrain: its lift and its pumice colour. */
 export const ERUPTION_TERRAIN_VERT_GLSL = ASH_FAN_GLSL;
-export const ERUPTION_TERRAIN_FRAG_GLSL = ASH_FAN_GLSL;
+export const ERUPTION_TERRAIN_FRAG_GLSL = /* glsl */ `
+${ASH_FAN_GLSL}
+${PUMICE_GLSL}
+uniform vec4 uAshView;
+float ashCone(vec2 xz) { return (1.0 - smoothstep(2000.0, 5500.0, distance(xz, uAshFan.xy))) * uAshView.w; }
+// Under the umbrella's shadow: the fan, whose thin near edge it covers as
+// fully as the middle, and the cone under the column.
+float ashUnder(vec2 xz) { return max(clamp(ashFan(xz) * 4.0, 0.0, 1.0), ashCone(xz)); }
+// Pumice on open ground, as deep as the fan says; the mountain under the
+// column dusted dark from the first hour.
+vec3 ashGround(vec3 albedo, vec3 n, vec3 p) {
+  if (uAshView.z <= 0.0) return albedo;
+  float cover = smoothstep(0.0, 0.05, uAshFan.z * ashFan(p.xz)) * smoothstep(0.45, 0.85, n.y) * smoothstep(0.3, 1.5, p.y);
+  float g = fract(sin(dot(floor(p.xz * 0.7), vec2(12.9898, 78.233))) * 43758.5453);
+  albedo = mix(albedo, pumiceColour(uAshFan.w) * (0.88 + 0.2 * g), cover);
+  albedo = mix(albedo, ${v3(VENT_ASH)} * (0.85 + 0.3 * g), ashCone(p.xz));
+  // Seen from outside the fall (the bay), the ground under the umbrella is
+  // in its shadow while the camera's own sky is open. The global light is the
+  // camera's, so the shadow goes on here; inside the fall uAshView.x is 0 and
+  // the global light has already been dimmed.
+  albedo *= mix(1.0, max(uAshView.y, 0.03), uAshView.x * ashUnder(p.xz));
+  return albedo;
+}
+// The air in front of that ground: its far kilometres are in the same
+// shadow and scatter no sun, or the dark slope wears a sunlit blue veil
+// and reads as snow from across the bay.
+// What light that air does carry is the plume's grey-brown, not sky blue.
+vec3 ashAir(vec3 inscatter, vec3 p) {
+  if (uAshView.z <= 0.0) return inscatter;
+  float k = uAshView.x * ashUnder(p.xz);
+  float lum = dot(inscatter, vec3(0.3, 0.45, 0.25));
+  return mix(inscatter, vec3(lum) * vec3(1.0, 0.9, 0.78) * 0.3, k);
+}
+`;
 
 export const ERUPTION_SURFACE_GLSL = /* glsl */ `
+${PUMICE_GLSL}
 uniform vec4 uAsh;
 uniform vec4 uLamp;
 uniform vec4 uTorch[${TORCH_SLOTS}];
@@ -123,7 +218,7 @@ vec3 ashCover(vec3 albedo, vec3 n, vec3 p, float covered) {
   float h00 = fract(sin(dot(i, vec2(12.9898, 78.233))) * 43758.5453), h10 = fract(sin(dot(i + vec2(1, 0), vec2(12.9898, 78.233))) * 43758.5453);
   float h01 = fract(sin(dot(i + vec2(0, 1), vec2(12.9898, 78.233))) * 43758.5453), h11 = fract(sin(dot(i + vec2(1, 1), vec2(12.9898, 78.233))) * 43758.5453);
   float g = mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
-  vec3 pum = mix(vec3(0.30, 0.29, 0.28), vec3(0.56, 0.53, 0.49), uAsh.y) * (0.8 + 0.34 * g);
+  vec3 pum = pumiceColour(uAsh.y) * (0.8 + 0.34 * g);
   return mix(albedo, pum, up * uAsh.z);
 }
 
@@ -543,9 +638,14 @@ export interface EruptionViewOpts {
 
 interface Collapse { x: number; y: number; z: number; startH: number; seed: number }
 
-/** Downwind: the plume's axis ran south-east over Pompeii (bearing toward, radians). */
+/** Roof dust is drawn this far out; the lamps light the nearest of it. */
+const DUST_RANGE_M = 160;
+/** A falling roof within this range raises the debris event. */
+const HEAR_M = 80;
+/** How far from a roof sheltering under it still counts. */
+const SHELTER_M = 14;
+
 const _grey = new THREE.Color();
-const _fwd = new THREE.Vector3();
 
 export class EruptionView {
   readonly group = new THREE.Group();
@@ -580,7 +680,12 @@ export class EruptionView {
   private readonly boltPos: Float32Array;
   private readonly order: number[] = [];
   private readonly scratch: { x: number; y: number; z: number; r: number; seed: number; alb: number; a: number; dark: number; d: number }[] = [];
-  private readonly collapses = new Map<number, Collapse>();
+  /** The town's roofs, set by main.ts from the built model; empty away from Pompeii. */
+  roofs: RoofInfo[] = [];
+  /** Roofs whose fall has already raised the debris event. */
+  private readonly heard = new Set<number>();
+  private lastDepth = 0;
+  private lastCollapse: Collapse | null = null;
   /** Per-billow random numbers for the column: a sin hash of consecutive
    *  integers is correlated enough to wind the column into a spiral. */
   private readonly colRand = new Float32Array(512).map(rng(1979));
@@ -830,6 +935,7 @@ export class EruptionView {
     su.uAsh.value.set(on ? s.pumiceM : 0, s.whiteness, on ? Math.min(1, s.pumiceM / 0.04) : 0, 0);
     su.uAshFan.value.set(this.opts.vent.x, this.opts.vent.z, on ? s.pumiceM : 0, s.whiteness);
     this.updateLamps(t, camera);
+    su.uAshView.value.set(0, 1, on ? 1 : 0, on ? Math.min(1, s.columnKm / 15) : 0);
     if (!on) {
       this.billows.visible = this.canopy.visible = this.pumice.visible = this.bolt.visible = this.dome.visible = this.bundleMesh.visible = false;
       this.glow.visible = this.pickup !== null;
@@ -839,6 +945,8 @@ export class EruptionView {
     const cam = camera.position;
     (c.uCamPos.value as THREE.Vector3).copy(cam);
     this.locate(cam);
+    su.uAshView.value.x = 1 - this.fallHere;
+    su.uAshView.value.y = s.light;
     (c.uSunDir.value as THREE.Vector3).copy(this.sunDir);
     (c.uSunE.value as THREE.Color).copy(this.sunColor).multiplyScalar(this.rawSun * 0.105);
     (c.uAmb.value as THREE.Color).copy(this.rawAmb);
@@ -858,7 +966,7 @@ export class EruptionView {
     const sg = s.surge?.moving ? s.surge : null;
     const strike = hash(slot) < (sg ? 0.5 : 0.22) ? Math.max(0, 1 - ph * 6) * (ph < 0.05 || (ph > 0.09 && ph < 0.13) ? 1 : 0.35) : 0;
     this.flash = strike;
-    su.uAsh.value.w = strike * 0.03;
+    su.uAsh.value.w = strike * 0.12;
     const fv = c.uFlash.value as THREE.Vector4;
     const vent = this.opts.vent;
     const hk = hash(slot + 0.5), hk2 = hash(slot + 0.25);
@@ -874,7 +982,7 @@ export class EruptionView {
 
     this.updateCanopy();
     this.updateBundles();
-    this.updateBillows(cam, t, frozen, camera);
+    this.updateBillows(cam, t, frozen);
     this.updatePumice(t);
   }
 
@@ -915,7 +1023,7 @@ export class EruptionView {
     this.scratch.push({ x, y, z, r, seed, alb, a, dark, d: (x - cam.x) ** 2 + (y - cam.y) ** 2 + (z - cam.z) ** 2 });
   }
 
-  private updateBillows(cam: THREE.Vector3, t: number, frozen: boolean, camera: THREE.PerspectiveCamera): void {
+  private updateBillows(cam: THREE.Vector3, t: number, frozen: boolean): void {
     const s = this.state, v = this.opts.vent, red = this.opts.reduced;
     this.scratch.length = 0;
     const fx = Math.sin(WIND_TOWARD), fz = -Math.cos(WIND_TOWARD);
@@ -925,6 +1033,12 @@ export class EruptionView {
     // Ash, not steam: a grey-brown cloud, darker still once the grey pumice
     // phase starts. The sunlit tops come from the shader, not the albedo.
     const alb = 0.5 - 0.16 * grey;
+    // Pliny's column was "now white, now dark and mottled": the white
+    // phase's sunlit top a pale cream, the base dark with the stones and
+    // ash it is carrying up. The grey phase darkens both. Over 1 because the
+    // billow shader's sun is a tenth of the ground's (uSunE): at 0.9 the top
+    // came out the same mid grey as the rest, measured from the Forum at 13:05.
+    const albTop = 2.4 - 1.7 * grey, albBase = 0.3 - 0.08 * grey;
     // The column: a straight trunk kilometres wide at the vent, widening as
     // it entrains air, bent downwind near the top. Billows keep their place
     // on the trunk and swell and roll slowly; the motion is the convection,
@@ -942,9 +1056,10 @@ export class EruptionView {
       // Fade in at the vent and as the top of the trunk folds into the umbrella.
       const a = Math.min(1, k * 30) * (z > umb ? 0.8 : 0.97);
       // Darker toward the vent, where the cloud is densest and in its own shade.
-      const shade = 0.6 + 0.4 * Math.min(1, z / Math.max(umb, 1));
+      const up = z / Math.max(H, 1);
+      const t = up * up * (3 - 2 * up);
       this.push(v.x + Math.cos(ang) * rad + fx * lean, v.y + z, v.z + Math.sin(ang) * rad + fz * lean,
-        R * (0.75 + 0.55 * R4[(i * 4 + 3) % 512]), sd, alb * shade, a, 0.35, cam);
+        R * (0.75 + 0.55 * R4[(i * 4 + 3) % 512]), sd, albBase + (albTop - albBase) * t, a, 0.35 - 0.2 * t, cam);
     }
     // The branches of Pliny's pine: the cloud spreading out on every side
     // from the top of the trunk before the wind carries it off.
@@ -956,7 +1071,7 @@ export class EruptionView {
         const r = spread * (0.35 + 0.65 * hash(i * 1.9));
         const y = umb + 600 + hash(i * 2.3) * 2200 - (r / spread) * 1200;
         this.push(v.x + Math.cos(ang) * r + fx * r * 0.3, y, v.z + Math.sin(ang) * r + fz * r * 0.3,
-          2200 + hash(i * 4.4) * 1800, hash(i * 8.8), alb * 1.05, 0.9, 0.7, cam);
+          2200 + hash(i * 4.4) * 1800, hash(i * 8.8), alb + (albTop - alb) * 0.3, 0.9, 0.6, cam);
       }
       // The plume sheet drifting south-east, sagging as it drops its stones.
       const nRim = red ? 22 : 44;
@@ -972,11 +1087,11 @@ export class EruptionView {
       // The overshooting top, above the trunk: the brightest thing in the sky.
       for (let i = 0; i < (red ? 5 : 10); i++) {
         this.push(v.x + fx * 2500 + (hash(i + 0.3) - 0.5) * 5000, H - 2000 + hash(i + 0.6) * 1800, v.z + fz * 2500 + (hash(i + 0.9) - 0.5) * 5000,
-          3200 + hash(i + 0.1) * 1500, hash(i), alb * 1.15, 0.92, 0.4, cam);
+          3200 + hash(i + 0.1) * 1500, hash(i), albTop, 0.92, 0.25, cam);
       }
     }
     this.pushSurge(cam);
-    this.pushCollapses(cam, camera);
+    this.pushCollapses(cam);
 
     // Back to front, so the alpha blend composes.
     const n = this.scratch.length;
@@ -1021,42 +1136,67 @@ export class EruptionView {
   }
 
   /**
-   * Roofs failing: each eruption-minute is a slot that may hold a collapse
-   * near the camera, at a rate set by how readily roofs are failing. A slot's
-   * place is fixed the first time it is seen, so walking on does not drag
-   * the dust along.
+   * Dust from the roofs coming down near the camera: the town's own roofs
+   * (render/pompeiimesh.ts), each at the depth its shader collapse runs at,
+   * so the dust rises out of the house whose tiles are dropping. The dust
+   * outlasts the fall by half again. A roof seen starting to go within
+   * earshot raises the debris event once.
    */
-  private pushCollapses(cam: THREE.Vector3, camera: THREE.PerspectiveCamera): void {
+  private pushCollapses(cam: THREE.Vector3): void {
     const s = this.state;
-    const life = 0.35;
-    if (s.roofFailure <= 0) { this.collapses.clear(); return; }
-    const now = Math.floor(s.h * 60);
-    for (const [k, c] of this.collapses) if (s.h - c.startH > life) this.collapses.delete(k);
-    for (let k = now - Math.ceil(life * 60); k <= now; k++) {
-      if (this.collapses.has(k) || hash(k * 0.37) > s.roofFailure * 0.6) continue;
-      // Close enough to hear and, with a lamp, to see: the lamp reaches 18 m.
-      // Mostly ahead, where a lamp held forward would show the dust.
-      camera.getWorldDirection(_fwd);
-      const ahead = Math.atan2(_fwd.z, _fwd.x);
-      const a = hash(k * 4.1) < 0.6 ? ahead + (hash(k * 1.91) - 0.5) * 1.4 : hash(k * 1.91) * Math.PI * 2, d = 9 + hash(k * 2.3) * 26;
-      const x = cam.x + Math.cos(a) * d, z = cam.z + Math.sin(a) * d;
-      this.collapses.set(k, { x, y: this.opts.heightAt(x, z), z, startH: k / 60, seed: hash(k) });
+    const depth = s.pumiceM;
+    if (depth < this.lastDepth) this.heard.clear();
+    this.lastDepth = depth;
+    if (s.roofFailure <= 0 || !this.roofs.length) return;
+    const near: { r: RoofInfo; i: number; age: number; d2: number }[] = [];
+    for (let i = 0; i < this.roofs.length; i++) {
+      const r = this.roofs[i];
+      const age = (depth - r.failM) / ROOF_FALL_M;
+      if (age <= 0 || age > 1.5) continue;
+      const d2 = (r.x - cam.x) ** 2 + (r.z - cam.z) ** 2;
+      if (d2 > DUST_RANGE_M * DUST_RANGE_M) continue;
+      near.push({ r, i, age, d2 });
+      if (!this.heard.has(i) && age < 0.4 && d2 < HEAR_M * HEAR_M) {
+        this.heard.add(i);
+        const c: Collapse = { x: r.x, y: r.y, z: r.z, startH: hourAtDepth(r.failM), seed: hash(i) };
+        this.lastCollapse = c;
+        // The sound cue's hook: nothing plays yet; an audio layer listens here.
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("flyby:debris", { detail: { x: r.x, z: r.z, distM: Math.sqrt(d2), spanM: r.spanM } }));
+        }
+      }
     }
-    for (const c of this.collapses.values()) {
-      const age = (s.h - c.startH) / life;
-      if (age < 0 || age > 1) continue;
-      for (let i = 0; i < 4; i++) {
-        const sp = 3 + age * 12;
-        const ang = c.seed * 20 + i * 1.6;
-        this.push(c.x + Math.cos(ang) * sp * 0.6, c.y + 4 + age * 9 + i * 1.5, c.z + Math.sin(ang) * sp * 0.6, 3 + age * 7 + i, c.seed + i * 0.1, 0.5, (1 - age) * 0.8, 0.95, cam);
+    near.sort((a, b) => a.d2 - b.d2);
+    for (const { r, i, age } of near.slice(0, this.opts.reduced ? 3 : 6)) {
+      const a = age / 1.5, seed = hash(i * 1.7);
+      // A burst up out of the house as the tiles go, spreading and thinning.
+      for (let k = 0; k < 4; k++) {
+        const sp = 2 + a * 10 + Math.min(r.spanM, 12) * 0.25;
+        const ang = seed * 20 + k * 1.6;
+        this.push(r.x + Math.cos(ang) * sp * 0.6, r.y - 1 + a * 8 + k * 1.2, r.z + Math.sin(ang) * sp * 0.6,
+          2.5 + a * 7 + k + r.spanM * 0.15, seed + k * 0.1, 0.5, Math.min(1, age * 4) * (1 - a) * 0.85, 0.95, cam);
       }
     }
   }
 
-  /** A roof that has just failed near the camera, for the escape to report; null when none. */
+  /** The roof that most recently started to fall within earshot, for the escape to report; null when none. */
   newestCollapse(): Collapse | null {
-    let best: Collapse | null = null;
-    for (const c of this.collapses.values()) if (!best || c.startH > best.startH) best = c;
+    return this.lastCollapse;
+  }
+
+  /**
+   * The roof over (x, z) that is still standing, or the nearest standing one
+   * within a few metres: where sheltering indoors puts you. Null when none.
+   */
+  shelterRoof(x: number, z: number): RoofInfo | null {
+    const depth = this.state.pumiceM;
+    let best: RoofInfo | null = null, bd = SHELTER_M * SHELTER_M;
+    for (const r of this.roofs) {
+      if (r.failM + ROOF_FALL_M <= depth) continue;
+      if (pointInRing(r.ring, x, z)) return r;
+      const d2 = (r.x - x) ** 2 + (r.z - z) ** 2;
+      if (d2 < bd) { bd = d2; best = r; }
+    }
     return best;
   }
 

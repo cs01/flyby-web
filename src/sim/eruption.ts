@@ -188,7 +188,67 @@ export function surgeReachM(h: number): number {
 
 /** 0..1: how readily roofs are failing at this depth of pumice. */
 export function roofFailure(depthM: number): number {
-  return smooth(ROOF_FAIL_START_M, 1.2, depthM);
+  return smooth(ROOF_FAIL_START_M, ROOF_FAIL_END_M, depthM);
+}
+
+// --- Each roof's own failure ------------------------------------------------
+//
+// roofFailure is the town's share; each building has its own depth, set when
+// the town is built and baked into its roof vertices as one byte, so the
+// shader that drops the tiles, the dust the eruption view throws up and the
+// escape's "shelter indoors" death all read the same number.
+
+/** Every roof is down by this depth: where roofFailure reaches 1. */
+export const ROOF_FAIL_END_M = 1.2;
+/** Pumice that falls while one roof comes down, start to last rafter: about ten minutes. */
+export const ROOF_FALL_M = 0.025;
+
+/**
+ * Depth of pumice that brings this roof down, metres. The widest spans go
+ * first (a long beam sags under a load that a short one carries), the rest
+ * spread by the house's own seed so the town does not fall in one minute.
+ * Quantised to the byte the mesh stores (roofTag), so CPU and GPU agree exactly.
+ */
+export function roofFailDepthM(spanM: number, seed01: number): number {
+  const wide = clamp01((spanM - 3) / 9);
+  const u = clamp01(0.55 * (1 - wide) + 0.45 * seed01);
+  return roofTagDepthM(roofTag(ROOF_FAIL_START_M + (ROOF_FAIL_END_M - ROOF_FAIL_START_M) * u * u));
+}
+
+/** The byte a roof vertex carries: 1..255 over [ROOF_FAIL_START_M, ROOF_FAIL_END_M]; 0 is "not a roof". */
+export function roofTag(failM: number): number {
+  return 1 + Math.round(254 * clamp01((failM - ROOF_FAIL_START_M) / (ROOF_FAIL_END_M - ROOF_FAIL_START_M)));
+}
+
+export function roofTagDepthM(tag: number): number {
+  return ROOF_FAIL_START_M + ((ROOF_FAIL_END_M - ROOF_FAIL_START_M) * (tag - 1)) / 254;
+}
+
+/** 0 standing .. 1 fallen in, for a roof that fails at failM under depthM of pumice. Mirrored in the town shader. */
+export function roofCollapse(failM: number, depthM: number): number {
+  return clamp01((depthM - failM) / ROOF_FALL_M);
+}
+
+/** Hour the pumice at Pompeii first reaches depthM (the inverse of pumiceDepthM); Infinity if it never does. */
+export function hourAtDepth(depthM: number): number {
+  if (depthM <= 0) return FALL_START_H;
+  if (depthM > pumiceDepthM(S4.atH)) return Infinity;
+  let lo = FALL_START_H, hi = S4.atH;
+  for (let i = 0; i < 50; i++) {
+    const mid = (lo + hi) / 2;
+    if (pumiceDepthM(mid) < depthM) lo = mid; else hi = mid;
+  }
+  return hi;
+}
+
+/**
+ * When sheltering indoors from hour shelterH ends under the roof: the hour
+ * that roof has finished coming down. With no standing roof to shelter
+ * under (failM null) it is the old rule, the depth no roof survives.
+ */
+export function shelterDeathH(failM: number | null, shelterH: number): number {
+  if (failM === null) return Math.max(hourAtDepth(ROOF_LETHAL_M), shelterH + 0.15);
+  return Math.max(hourAtDepth(failM + ROOF_FALL_M), shelterH);
 }
 
 export type EruptionPhase = "before" | "white" | "grey" | "surges" | "after";

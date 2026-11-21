@@ -11,12 +11,13 @@
 
 import * as THREE from "three";
 import {
-  clockRate, localHours, resolveEscape, ROOF_LETHAL_M, S4, SURGES_END_H, pumiceDepthM,
+  clockRate, localHours, resolveEscape, S4, SURGES_END_H, pumiceDepthM, shelterDeathH,
   type ClockMode, type EscapeRun, type Outcome, type Route,
 } from "../sim/eruption";
 import { ENDINGS, GATE_ROUTES, HISTORY_NOTE, STARTS, VENT, clockText, fill, routeFor, type StartId } from "../data/escape";
 import type { PompeiiData } from "../data/pompeii";
 import type { EruptionView } from "../render/eruption";
+import type { RoofInfo } from "../render/pompeiimesh";
 import { EscapeRoom, planRoom } from "../render/escaperoom";
 import type { Origin } from "../geo";
 
@@ -68,6 +69,15 @@ export class EscapeUi {
   private gate: { name: string; x: number; z: number } | null = null;
   private declined: string | null = null;
   private shelterH = 0;
+  /** The roof sheltered under; null when there was none standing nearby. */
+  private shelterRoof: RoofInfo | null = null;
+  private readonly lastCam = new THREE.Vector3();
+  /**
+   * What the run is making for this frame (the lamp, the nearest gate), or
+   * null: main.ts names only this while the escape runs, so the town's other
+   * place names do not show through the bakery door.
+   */
+  objective: { name: string; x: number; z: number } | null = null;
   private lastCollapse = -1;
   private warnedRoofs = false;
   private readonly vent: { x: number; z: number };
@@ -236,6 +246,7 @@ export class EscapeUi {
 
   stop(): void {
     this.mode = "off";
+    this.objective = null;
     this.host.ui.classList.remove("escaping");
     this.pickup = null;
     this.host.view.pickup = null;
@@ -249,6 +260,7 @@ export class EscapeUi {
     const h = this.hour();
     const clock: ClockMode = mode ?? (this.realBox.checked ? "real" : "story");
     const cam = camera.position;
+    this.lastCam.copy(cam);
     // The flame in your right hand, low and a little ahead.
     camera.getWorldDirection(this.fwd);
     this.right.set(1, 0, 0).applyQuaternion(camera.quaternion);
@@ -284,8 +296,9 @@ export class EscapeUi {
 
     const s = v.state;
     if (this.mode === "shelter") {
-      const lethalH = this.lethalRoofH();
-      if (h >= Math.max(lethalH, this.shelterH + 0.15)) {
+      // The end comes when the roof overhead has finished coming down: the
+      // same depth its tiles drop at in the town shader.
+      if (h >= shelterDeathH(this.shelterRoof?.failM ?? null, this.shelterH)) {
         this.run.roofH = h;
         this.finish(resolveEscape(this.run));
         return;
@@ -329,13 +342,6 @@ export class EscapeUi {
     this.paint(h, cam, yawRad, near, hasLamp);
   }
 
-  /** The hour the pumice on a roof reaches the depth that brings it down. */
-  private lethalRoofH(): number {
-    let h = 13;
-    while (h < S4.atH && pumiceDepthM(h) < ROOF_LETHAL_M) h += 1 / 60;
-    return h;
-  }
-
   private gateRoute(name: string, coast = false): Route | null {
     const g = this.host.data.gates.find((q) => q.name === name);
     if (!g) return null;
@@ -353,6 +359,7 @@ export class EscapeUi {
   private shelter(): void {
     this.mode = "shelter";
     this.shelterH = this.hour();
+    this.shelterRoof = this.host.view.shelterRoof(this.lastCam.x, this.lastCam.z);
     this.indoors.style.display = "";
   }
 
@@ -361,6 +368,7 @@ export class EscapeUi {
     const q = (sel: string) => this.card.querySelector(sel) as HTMLElement;
     let goal = "";
     let target: { x: number; z: number } | null = null;
+    let targetName = "";
     const acts: [string, () => void][] = [];
     if (this.mode === "shelter") {
       goal = "You are sheltering indoors";
@@ -379,15 +387,19 @@ export class EscapeUi {
     } else if (!hasLamp && this.pickup) {
       goal = "Take the oil lamp by the door";
       target = this.pickup;
+      targetName = "Oil lamp";
     } else if (h < 13) {
       goal = "Finish your errand. The ground has been shaking for days";
       target = near;
+      targetName = near?.name ?? "";
     } else {
       goal = near ? `Get out of the town: nearest gate ${near.name}` : "Get out of the town";
       target = near;
+      targetName = near?.name ?? "";
       acts.push(["Shelter indoors", () => this.shelter()]);
     }
     if (q(".e-goal").textContent !== goal) q(".e-goal").textContent = goal;
+    this.objective = target && targetName ? { name: targetName, x: target.x, z: target.z } : null;
     const arrow = q(".e-arrow");
     if (target) {
       const bearing = Math.atan2(target.x - cam.x, -(target.z - cam.z));
@@ -419,6 +431,7 @@ export class EscapeUi {
   /** The ending card. Also used by tools/phoneshots.ts to show one directly. */
   finish(o: Outcome): void {
     this.mode = "ending";
+    this.objective = null;
     this.card.style.display = "none";
     this.indoors.style.display = "none";
     this.host.view.pickup = null;

@@ -1226,6 +1226,48 @@ export const POSES: Pose[] = [
     query: "eruption=1&fov=70",
   },
   {
+    // The escape's opening: the column five minutes old over the Forum,
+    // its top in the sun and its base dark, the town still in daylight.
+    name: "eruption-forum-1305",
+    city: "pompeii",
+    lat: 40.74888, lon: 14.48514, altM: 36.2, hdgDeg: 338, pitchDeg: 13,
+    t: D("0079-08-22T12:15:04Z"),
+    wx: POMPEII_WX,
+    what: "The column rising over the Forum at 13:05",
+    query: "eruption=1&fov=85",
+  },
+  {
+    // Inside the Porta di Stabia at 14:30: the crowd making for the gate in the fall.
+    name: "eruption-gate-1430",
+    city: "pompeii",
+    lat: 40.748388, lon: 14.489898, altM: 6, hdgDeg: 345, pitchDeg: -12,
+    t: D("0079-08-22T13:40:04Z"),
+    wx: POMPEII_WX,
+    what: "People crowding to the Porta di Stabia at 14:30",
+    query: "eruption=1&agl&fov=70",
+  },
+  {
+    // The same gate at 16:30, dark: the torches in the crowd.
+    name: "eruption-gate-1630",
+    city: "pompeii",
+    lat: 40.748388, lon: 14.489898, altM: 6, hdgDeg: 345, pitchDeg: -12,
+    t: D("0079-08-22T15:40:04Z"),
+    wx: POMPEII_WX,
+    what: "Torches in the crowd at the Porta di Stabia at 16:30",
+    query: "eruption=1&agl&fov=70",
+  },
+  {
+    // From the north wall at 15:00, toward the mountain under the column:
+    // the pumice on the countryside, the ash on the cone.
+    name: "eruption-walls-1500",
+    city: "pompeii",
+    lat: 40.75323, lon: 14.48409, altM: 60, hdgDeg: 330, pitchDeg: 4,
+    t: D("0079-08-22T14:10:04Z"),
+    wx: POMPEII_WX,
+    what: "Vesuvius from the north wall at 15:00",
+    query: "eruption=1&fov=70",
+  },
+  {
     // From the bay, 12 km west of the town at 15:00: outside the fall, where
     // the sky stays open and the whole column and the umbrella drifting
     // south-east over Pompeii stand in view, as Pliny saw it from Misenum.
@@ -1256,6 +1298,16 @@ export const POSES: Pose[] = [
     wx: POMPEII_WX,
     what: "Roofs giving way at 18:00",
     query: "eruption=1",
+  },
+  {
+    // Over the same houses at 18:36, the roofs half down: holes, bare rafters, dust.
+    name: "eruption-roofs-air-1836",
+    city: "pompeii",
+    lat: 40.75075, lon: 14.49005, altM: 22, hdgDeg: 58, pitchDeg: -38,
+    t: D("0079-08-22T17:46:29Z"), // a lightning flash, read off the eruption hour
+    wx: POMPEII_WX,
+    what: "Roofs fallen in under the pumice at 18:36, from above",
+    query: "eruption=1&agl&fov=70",
   },
   {
     // From the north wall by the Porta Vesuvio at dawn, the first surge 500 m off.
