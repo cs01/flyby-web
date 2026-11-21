@@ -537,6 +537,8 @@ export interface EruptionViewOpts {
   town: { x: number; z: number };
   heightAt: (x: number, z: number) => number;
   reduced: boolean;
+  /** The town's share of Pompeii's pumice fall (data/towns.ts); 1 when left out. */
+  fall?: number;
 }
 
 interface Collapse { x: number; y: number; z: number; startH: number; seed: number }
@@ -730,6 +732,9 @@ export class EruptionView {
   /** The state at local hour h, or the untouched eve when switched off. */
   setTime(h: number): EruptionState {
     this.state = eruptionAt(this.enabled ? h : 0);
+    // Herculaneum lay upwind of the plume: a dusting where Pompeii got metres.
+    const fall = this.opts.fall ?? 1;
+    if (fall !== 1) this.state = { ...this.state, pumiceM: this.state.pumiceM * fall };
     return this.state;
   }
 

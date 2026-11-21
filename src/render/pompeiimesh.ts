@@ -34,6 +34,8 @@ import { buildSuburbs, type SuburbStats } from "./pompeiisuburbs";
 import type { LampSites } from "../data/pompeiilamps";
 import type { WaterSites } from "../data/pompeiiwater";
 import { hasBathPlan } from "../data/pompeiibaths";
+import { townDef } from "../data/towns";
+import { buildHerculaneum, type HercStats } from "./herculaneummesh";
 
 /** What the fragment shader draws on a surface. */
 export const enum Surf {
@@ -56,6 +58,14 @@ export const enum Surf {
   Column = 15,
   /** A tile of the art atlas (data/pompeiiart.ts): p1 the tile, p2 bit 0 repeat along the wall, bit 1 indoors. */
   Art = 16,
+  // 17 bronze (render/pompeiilamps.ts) and 20 baths (render/pompeiiwater.ts) are drawn by other builders.
+  /**
+   * Glass-paste wall mosaic (Herculaneum's Neptune and Amphitrite): drawn
+   * in the shader from u, v on the panel (vWall.zw its size); p1 the design.
+   */
+  Mosaic = 21,
+  /** Opus craticium: a timber frame with rubble and plaster between the posts and braces. */
+  Craticium = 22,
 }
 
 export const ROOF_PITCH_DEG = 22;
@@ -196,7 +206,13 @@ export interface PompeiiModel {
     plasterTriangles: number; buildMs: number;
     /** Named houses built on their OSM outline with courts. */
     surveyedHouses: number;
+    /** Upper floors with their timber (Herculaneum's; 0 in Pompeii). */
+    timberFloors: number;
   };
+  /** Surveyed houses given an upper storey, by name (Herculaneum's). */
+  upperHouses: { name: string; storeys: number; craticium: boolean; y0: number; y1: number; x: number; z: number }[];
+  /** The sea front, sheds, Sacred Area and villa (render/herculaneummesh.ts), null for Pompeii. */
+  herc: HercStats | null;
   /** What was built outside the walls (render/pompeiisuburbs.ts), null for a pack without suburbs. */
   suburbs: SuburbStats | null;
   /** Where the amphitheatre was put, for the gate. */
@@ -238,6 +254,7 @@ const GREY: RGB = [0.55, 0.55, 0.55];
 export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const t0 = performance.now();
   const { data, groundAt } = opts;
+  const town = townDef(data.town);
   const lean = !!opts.lean;
   const grey = !!opts.greyBoxes;
   const S = new Store();
@@ -255,8 +272,9 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
   const stats = {
     lots: 0, domus: 0, tabernae: 0, compluvia: 0, fountains: 0, steppingStones: 0, columns: 0,
-    towers: 0, roofTriangles: 0, flatRoofs: 0, plasterTriangles: 0, buildMs: 0, surveyedHouses: 0,
+    towers: 0, roofTriangles: 0, flatRoofs: 0, plasterTriangles: 0, buildMs: 0, surveyedHouses: 0, timberFloors: 0,
   };
+  const upperHouses: PompeiiModel["upperHouses"] = [];
   const art = opts.art !== false && !grey;
   let statueHorse: { h: ReturnType<typeof buildHorse>; pos: Float32Array } | null = null;
   const orders: ColumnInstance[] = [];
@@ -366,7 +384,9 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   // kerbed pavements as the raised outline of each insula.
   // =====================================================================================
   const wallRing = data.wall;
-  const amph = data.amphitheatre;
+  // A town without an amphitheatre gets one far off the map, so every test
+  // against its ellipse is simply false.
+  const amph = data.amphitheatre ?? { cx: 1e7, cz: 1e7, a: 1, b: 1, rot: 0 };
   const inAmph = (x: number, z: number, pad: number): boolean => {
     const dx = x - amph.cx, dz = z - amph.cz;
     const u = dx * Math.cos(amph.rot) + dz * Math.sin(amph.rot), v = -dx * Math.sin(amph.rot) + dz * Math.cos(amph.rot);
@@ -1026,6 +1046,30 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       if (openings.length) facade([e.ax, e.az], [e.bx, e.bz], g, yBot, top, e.ox, e.oz, col, seed, p1, 0, openings, 5);
       else wall(e.ax, e.az, e.bx, e.bz, yBot, yBot, top, top, e.ox, e.oz, col, seed, Surf.Plaster, p1, 0, 0, e.L, g, top - g);
     }
+    // Herculaneum's houses kept their upper floors: a range of rooms over the
+    // street front, reached by a stair from the shop or the atrium. The
+    // Trellis House is the type: its whole upper storey timber framed and
+    // jettied over Cardo IV.
+    if (town.style.timber && !grey && hs.kind === "domus") {
+      const trellis = hs.name === data.herc?.trellis;
+      let added = 0;
+      for (let i = 0; i < n; i++) {
+        const e = edges[i];
+        if (!e.street || e.L < 4 || (!trellis && hash(seed * 1e6, 40 + i) > 0.8)) continue;
+        const mx = (e.ax + e.bx) / 2 - e.ox * 0.5, mz = (e.az + e.bz) / 2 - e.oz * 0.5;
+        let D = 4.4;
+        for (const c of courts) D = Math.min(D, distToRing(c, mx, mz) - 0.4);
+        if (D < 2.5) continue;
+        const ex = (e.bx - e.ax) / e.L, ez = (e.bz - e.az) / e.L;
+        // In from each end, so two edges' storeys do not run through each other at a corner.
+        const ax = e.ax + ex * 0.3, az = e.az + ez * 0.3, bx = e.bx - ex * 0.3, bz = e.bz - ez * 0.3;
+        const craticium = trellis || hash(seed * 1e6, 60 + i) < 0.2;
+        upperFloor(ax, az, bx, bz, ex, ez, e.ox, e.oz, top, top + 3.3, col, seed, { jetty: trellis || hash(seed * 1e6, 80 + i) < 0.35, craticium, roofed: true, p1, g, depth: D, jettyM: trellis ? 1.3 : undefined, posts: trellis });
+        added++;
+        if (added === 1) upperHouses.push({ name: hs.name, storeys: 2, craticium, y0: top, y1: top + 3.3, x: (ax + bx) / 2, z: (az + bz) / 2 });
+      }
+      if (added) lots[lots.length - 1].storeys = 2;
+    }
 
     // --- the courts: walls round each looking in, the floor, pool or garden ---
     courts.forEach((c, k) => {
@@ -1085,6 +1129,35 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], seed, Surf.Water, op[0], op[1], pool.map((p) => [p[0], p[2], ccx, ccz]));
       }
     });
+    // Herculaneum: the glass mosaic of Neptune and Amphitrite on the court
+    // wall it is mapped on, and the nymphaeum's hunting scene round the corner.
+    if (data.herc && hs.name === "Casa di Nettuno e Anfitrite" && courts.length && !grey) {
+      const { x: nx0, z: nz0 } = data.herc.neptune;
+      let best: { k: number; e: number; d: number } | null = null;
+      courts.forEach((_, k) => {
+        for (let e = 0; e < 4; e++) {
+          const E = cedge(k, e);
+          const d = distSeg(nx0, nz0, E.ax, E.az, E.bx, E.bz);
+          if (!best || d < best.d) best = { k, e, d };
+        }
+      });
+      const pick = best as { k: number; e: number; d: number } | null;
+      if (pick) {
+        const panel = (e: number, design: number, w: number): void => {
+          const E = cedge(pick.k, e);
+          const t = Math.max(w / 2 + 0.2, Math.min(E.L - w / 2 - 0.2, (nx0 - E.ax) * E.tx + (nz0 - E.az) * E.tz));
+          const half = Math.min(w / 2, E.L / 2 - 0.2);
+          const pa = [E.ax + E.tx * (t - half) + E.ix * 0.04, E.az + E.tz * (t - half) + E.iz * 0.04];
+          const pb = [E.ax + E.tx * (t + half) + E.ix * 0.04, E.az + E.tz * (t + half) + E.iz * 0.04];
+          const y0 = fl(nx0, nz0) + 0.45, y1 = Math.min(top - 0.3, y0 + 3.2);
+          wall(pa[0], pa[1], pb[0], pb[1], y0, y0, y1, y1, E.ix, E.iz, [0.12, 0.25, 0.5], seed, Surf.Mosaic, design, 0, 0, half * 2, y0, y1 - y0);
+          artPlaced.push({ id: design === 0 ? "neptune-amphitrite" : "nymphaeum-hunt", house: hs.name, x: (pa[0] + pb[0]) / 2, y: (y0 + y1) / 2, z: (pa[1] + pb[1]) / 2,
+            view: [(pa[0] + pb[0]) / 2 + E.ix * 3.5, (pa[1] + pb[1]) / 2 + E.iz * 3.5] });
+        };
+        panel(pick.e, 0, 2.6);
+        panel((pick.e + 1) % 4, 1, 3.4);
+      }
+    }
 
 
     // --- the roof: one hipped heightfield over the house ---
@@ -1464,7 +1537,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     if (width < 2.5 || d < 2.5) return;
     stats.lots++;
     if (kind === "domus" && (d < 13 || width < 9)) kind = "house";
-    const twoStorey = hash(seed * 1e6, 2) < (main ? 0.5 : kind === "taberna" ? 0.4 : 0.28);
+    const twoStorey = hash(seed * 1e6, 2) < (main ? 0.5 : kind === "taberna" ? 0.4 : 0.28) + town.style.upperStorey;
     const storeyH = 4.8 + hash(seed * 1e6, 3) * 0.8;
     const Hf = twoStorey ? storeyH + 3.4 : storeyH;
     const col = LOWER[Math.floor(hash(seed * 1e6, 4) * LOWER.length)];
@@ -1523,6 +1596,78 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     }
   }
 
+  /**
+   * An upper floor's timber at a street front, a to b (unit e along it, o
+   * out to the street), from the floor at y0 to the eaves at y1: the floor
+   * beam and joist ends along the facade, and optionally the floor jettied
+   * out over the pavement on those joists, or its wall in opus craticium.
+   * `roofed` builds the whole storey (walls, back and roof) as a strip over a
+   * surveyed house, whose own walls stop at the ground floor's eaves.
+   * Herculaneum keeps these in carbonised wood; Pompeii's burnt or rotted.
+   */
+  function upperFloor(ax: number, az: number, bx: number, bz: number, ex: number, ez: number, ox: number, oz: number, y0: number, y1: number,
+    col: RGB, seed: number, o: { jetty: boolean; craticium: boolean; roofed: boolean; p1?: number; g?: number; depth?: number; jettyM?: number; posts?: boolean }): void {
+    const L = Math.hypot(bx - ax, bz - az);
+    if (L < 2) return;
+    const WOOD: RGB = [0.24, 0.16, 0.1];
+    const J = o.jetty ? (o.jettyM ?? 0.65) : 0;
+    // A deep jetty stands on posts at the kerb (the Trellis House's on brick piers).
+    if (o.posts && J > 0.9) {
+      const gp = o.g ?? y0 - 4.8;
+      const np = Math.max(2, Math.round(L / 3));
+      for (let k = 0; k <= np; k++) {
+        const u = 0.25 + ((L - 0.5) * k) / np;
+        const cx = ax + ex * u + ox * (J - 0.2), cz = az + ez * u + oz * (J - 0.2);
+        box([cx - 0.22, cz - 0.22, cx + 0.22, cz - 0.22, cx + 0.22, cz + 0.22, cx - 0.22, cz + 0.22], gp - 0.3, y0 - 0.05, [0.6, 0.32, 0.22], seed, Surf.Masonry, Surf.Masonry);
+      }
+    }
+    const g = o.g ?? y0 - 4.8;
+    const p1 = o.p1 ?? 100;
+    const a: [number, number] = [ax + ox * J, az + oz * J], b: [number, number] = [bx + ox * J, bz + oz * J];
+    const H = y1 - g;
+    stats.timberFloors++;
+    // The upper wall: plaster with the upstairs windows, or the timber frame.
+    if (o.craticium) wall(a[0] + ox * 0.03, a[1] + oz * 0.03, b[0] + ox * 0.03, b[1] + oz * 0.03, y0 + 0.25, y0 + 0.25, y1, y1, ox, oz, [0.8, 0.74, 0.62], seed, Surf.Craticium, 0, 0, 0, L, y0 + 0.25, y1 - y0 - 0.25);
+    else if (o.jetty || o.roofed) wall(a[0], a[1], b[0], b[1], y0, y0, y1, y1, ox, oz, col, seed, Surf.Plaster, p1, 0, 0, L, g, H);
+    // The floor beam across the front, a little proud.
+    const k = 0.08;
+    wall(a[0] + ox * k, a[1] + oz * k, b[0] + ox * k, b[1] + oz * k, y0 - 0.05, y0 - 0.05, y0 + 0.25, y0 + 0.25, ox, oz, WOOD, seed, Surf.Wood, 0, 0, 0, L, y0, 0.3);
+    if (o.jetty) {
+      // The soffit under the jetty and the cheeks closing its ends.
+      poly(S, [[ax, y0 - 0.05, az], [bx, y0 - 0.05, bz], [b[0], y0 - 0.05, b[1]], [a[0], y0 - 0.05, a[1]]], [0, -1, 0], WOOD, seed, Surf.Wood, 0, 0, uv4());
+      wall(ax, az, a[0], a[1], y0 - 0.05, y0 - 0.05, y1, y1, -ex, -ez, WOOD, seed, Surf.Wood, 0, 0, 0, J, y0, y1 - y0);
+      wall(b[0], b[1], bx, bz, y0 - 0.05, y0 - 0.05, y1, y1, ex, ez, WOOD, seed, Surf.Wood, 0, 0, 0, J, y0, y1 - y0);
+    }
+    // Joist ends under the floor beam, every 0.7 m.
+    if (!lean) {
+      for (let u = 0.35; u < L - 0.2; u += 0.7) {
+        const cx = ax + ex * u + ox * (J + 0.08), cz = az + ez * u + oz * (J + 0.08);
+        const q = [cx - ex * 0.08, cz - ez * 0.08, cx + ex * 0.08, cz + ez * 0.08, cx + ex * 0.08 + ox * 0.22, cz + ez * 0.08 + oz * 0.22, cx - ex * 0.08 + ox * 0.22, cz - ez * 0.08 + oz * 0.22];
+        box(q, y0 - 0.3, y0 - 0.05, WOOD, seed, Surf.Wood);
+      }
+    }
+    if (!o.roofed) return;
+    // The storey as a strip over the house: back wall, ends, and a tiled roof
+    // falling to the street and to the court behind.
+    const D = o.depth ?? 4.4;
+    const c: [number, number] = [bx - ox * D, bz - oz * D], d: [number, number] = [ax - ox * D, az - oz * D];
+    const sideC: RGB = [col[0] * 0.5 + 0.43, col[1] * 0.5 + 0.4, col[2] * 0.5 + 0.34];
+    wall(c[0], c[1], d[0], d[1], y0 - 1.2, y0 - 1.2, y1, y1, -ox, -oz, sideC, seed, Surf.Plaster, p1, 255, 0, L, g, H);
+    wall(b[0], b[1], c[0], c[1], y0 - 1.2, y0 - 1.2, y1, y1, ex, ez, sideC, seed, Surf.Plaster, p1, 255, 0, D + J, g, H);
+    wall(d[0], d[1], a[0], a[1], y0 - 1.2, y0 - 1.2, y1, y1, -ex, -ez, sideC, seed, Surf.Plaster, p1, 255, 0, D + J, g, H);
+    const rise = ((D + J) / 2) * TAN_PITCH, OH = 0.4;
+    const tileC: RGB = [0.6 + hash(seed * 1e6, 7) * 0.12, 0.29 + hash(seed * 1e6, 8) * 0.06, 0.18 + hash(seed * 1e6, 9) * 0.05];
+    const r0: V3 = [(a[0] + d[0]) / 2, y1 + rise, (a[1] + d[1]) / 2], r1: V3 = [(b[0] + c[0]) / 2, y1 + rise, (b[1] + c[1]) / 2];
+    const ea: V3 = [a[0] + ox * OH, y1 - OH * TAN_PITCH, a[1] + oz * OH], eb: V3 = [b[0] + ox * OH, y1 - OH * TAN_PITCH, b[1] + oz * OH];
+    const ec: V3 = [c[0] - ox * OH, y1 - OH * TAN_PITCH, c[1] - oz * OH], ed: V3 = [d[0] - ox * OH, y1 - OH * TAN_PITCH, d[1] - oz * OH];
+    const half = (D + J) / 2 + OH;
+    poly(S, [ea, eb, r1, r0], [ox, 1, oz], tileC, seed, Surf.Tile, 0, 0, [[0, 0, L, half], [L, 0, L, half], [L, half, L, half], [0, half, L, half]]);
+    poly(S, [ec, ed, r0, r1], [-ox, 1, -oz], tileC, seed, Surf.Tile, 0, 0, [[0, 0, L, half], [L, 0, L, half], [L, half, L, half], [0, half, L, half]]);
+    poly(S, [[b[0], y1, b[1]], [c[0], y1, c[1]], r1], [ex, 0, ez], sideC, seed, Surf.Plaster, p1, 255, uv4());
+    poly(S, [[d[0], y1, d[1]], [a[0], y1, a[1]], r0], [-ex, 0, -ez], sideC, seed, Surf.Plaster, p1, 255, uv4());
+    poly(S, [ea, eb, [b[0], y1, b[1]], [a[0], y1, a[1]]], [ox * 0.3, -1, oz * 0.3], WOOD, seed, Surf.Wood, 0, 0, uv4());
+  }
+
   /** "open": a doorway onto a fauces passage built by the house, no door in it. */
   interface Opening { u0: number; u1: number; h: number; kind: "shop" | "door" | "open" }
 
@@ -1549,7 +1694,13 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     // An upper floor on the street often had a timber balcony (maenianum)
     // over the pavement, under its own pent roof: the Casa del Balcone
     // Pensile is named for one.
-    if (street && !grey && !lean && H > 7 && fl > 5 && hash(s * 1e6, 33) < 0.4) {
+    const balcony = street && !grey && !lean && H > 7 && fl > 5 && hash(s * 1e6, 33) < town.style.balcony;
+    // Herculaneum's upper floors: timber, often jettied out over the street.
+    if (street && !grey && H > 7 && fl > 3 && town.style.timber) {
+      const fx = (b[0] - a[0]) / fl, fz = (b[1] - a[1]) / fl;
+      upperFloor(a[0], a[1], b[0], b[1], fx, fz, ox, oz, g + H - 3.4, top, col, s, { jetty: !balcony && hash(s * 1e6, 34) < 0.5, craticium: hash(s * 1e6, 35) < 0.25, roofed: false, p1, g });
+    }
+    if (balcony) {
       const fx = (b[0] - a[0]) / fl, fz = (b[1] - a[1]) / fl;
       const y0 = g + H - 3.3, P = 1.05;
       const e0: [number, number] = [a[0] + fx * 0.5, a[1] + fz * 0.5], e1: [number, number] = [b[0] - fx * 0.5, b[1] - fz * 0.5];
@@ -2151,7 +2302,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
 
   let amphY = { floor: 0, rim: 0 };
   // --- the amphitheatre ----------------------------------------------------------------
-  {
+  if (data.amphitheatre) {
     const a = amph;
     const ux = Math.cos(a.rot), uz = Math.sin(a.rot), vx = -uz, vz = ux;
     const E = (ka: number, kb: number, t: number): [number, number] => [a.cx + ux * Math.cos(t) * ka + vx * Math.sin(t) * kb, a.cz + uz * Math.cos(t) * ka + vz * Math.sin(t) * kb];
@@ -2266,7 +2417,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   // =====================================================================================
   // The walls, their towers and gates.
   // =====================================================================================
-  {
+  if (town.walled) {
     const r = wallRing;
     const n = r.length / 2;
     const [wcx, wcz] = ringCentroid(r);
@@ -2440,6 +2591,10 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const suburbs = data.suburbs && opts.suburbs !== false
     ? buildSuburbs({ S, F, R, poly, wall, box, column, ground, solids, lean }, data.suburbs)
     : null;
+  // Herculaneum's sea front, sheds and villa pool, and its Neptune mosaic.
+  const herc = data.herc && !grey
+    ? buildHerculaneum({ S, F, R, poly, wall, box, column, ground, solids, lean }, data.herc, { art, artPlaced, orders: (x, z, y0, h) => column(x, z, y0, h, 0.2, [0.88, 0.85, 0.78], 0.4, 8, false, Order.Ionic) })
+    : null;
 
   const pack = (st: Store): PompeiiMeshData => ({
     position: st.pos.slice(0, st.n * 3),
@@ -2464,6 +2619,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     waterSites,
     stats,
     suburbs,
+    upperHouses,
+    herc,
     amphitheatre: { cx: amph.cx, cz: amph.cz, a: AMPHI.a, b: AMPHI.b, rot: amph.rot, floorY: amphY.floor, rimY: amphY.rim },
   };
 }

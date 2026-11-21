@@ -29,6 +29,7 @@ import { Land, LandGrid, type PompeiiSuburbs } from "../data/pompeiisuburbs";
 import { PompeiiLife } from "../data/pompeiilife";
 import { BuildingKind, RoofShape, type Building, type CityPack } from "../data/citypack";
 import { Heightfield } from "../data/dem";
+import { HerculaneumField } from "../data/herculaneumfield";
 import type { StitchedImage } from "../data/imagery";
 import { metresPerDegLat, metresPerDegLon, type Origin } from "../geo";
 
@@ -218,6 +219,33 @@ vec3 voronoi(vec2 p) {
 
 const vec3 CREAM = vec3(0.86, 0.82, 0.72);
 ${DIPINTI_GLSL}
+
+float sdCap(vec2 p, vec2 a, vec2 b, float r) {
+  vec2 pa = p - a, ba = b - a;
+  return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)) - r;
+}
+// A standing figure a unit tall, feet at the origin, for the wall mosaic
+// (style 21). x: the skin (or the robe's fill when robed); y: a mantle over
+// one shoulder; returns the figure's distance in .z. armUp raises the right
+// arm (Neptune's, holding the trident).
+vec3 mosaicFigure(vec2 p, bool robed, bool armUp) {
+  float head = length(p - vec2(0.0, 0.91)) - 0.062;
+  float neck = sdCap(p, vec2(0.0, 0.8), vec2(0.0, 0.86), 0.03);
+  float torso = sdCap(p, vec2(0.0, 0.57), vec2(0.0, 0.74), 0.085);
+  float hips = sdCap(p, vec2(-0.03, 0.5), vec2(0.03, 0.5), 0.075);
+  float armR = armUp ? min(sdCap(p, vec2(0.09, 0.76), vec2(0.17, 0.86), 0.028), sdCap(p, vec2(0.17, 0.86), vec2(0.19, 0.99), 0.024))
+                     : min(sdCap(p, vec2(0.09, 0.76), vec2(0.13, 0.6), 0.028), sdCap(p, vec2(0.13, 0.6), vec2(0.15, 0.46), 0.024));
+  float armL = min(sdCap(p, vec2(-0.09, 0.76), vec2(-0.13, 0.6), 0.028), sdCap(p, vec2(-0.13, 0.6), vec2(-0.1, 0.47), 0.024));
+  float legs = min(min(sdCap(p, vec2(-0.045, 0.47), vec2(-0.055, 0.25), 0.038), sdCap(p, vec2(-0.055, 0.25), vec2(-0.06, 0.03), 0.03)),
+                   min(sdCap(p, vec2(0.045, 0.47), vec2(0.07, 0.25), 0.038), sdCap(p, vec2(0.07, 0.25), vec2(0.08, 0.03), 0.03)));
+  float body = min(min(min(head, neck), min(torso, hips)), min(min(armR, armL), legs));
+  // A robe falls from the shoulders to the ankles, flaring.
+  float robe = max(abs(p.x) - (0.085 + (0.76 - p.y) * 0.12), max(p.y - 0.76, 0.02 - p.y));
+  // The mantle: over the left shoulder and round the hips, a band of cloth.
+  float mantle = max(sdCap(p, vec2(-0.1, 0.78), vec2(0.06, 0.42), 0.06), -head);
+  float d = robed ? min(body, robe) : body;
+  return vec3(step(robe, 0.0), step(mantle, 0.0), d);
+}
 
 void main() {
   vec3 n = normalize(vNormal);
@@ -630,6 +658,122 @@ void main() {
       if (inNiche) c = vec3(0.16, 0.1, 0.07) * (0.6 + 0.6 * (h - y0));
       albedo = c * (0.92 + 0.1 * fbm(vec2(u, h) * 0.9 + seed * 7.0));
     }
+  } else if (style > 20.5 && style < 21.5) {
+    // Glass-paste wall mosaic (Herculaneum, render/herculaneummesh.ts): p1 0
+    // Neptune and Amphitrite in their shell-topped aedicula, p1 1 the
+    // nymphaeum's hunting scene. A stylised reading of the two panels, not a
+    // copy: the blue ground, the gold and red frames, the scallop lunette and
+    // the figures' places are theirs. q runs 0..1 across and up the panel.
+    vec2 q = vec2(u / max(0.1, len), h / max(0.1, H));
+    vec3 BLUE = vec3(0.05, 0.16, 0.42), DEEP = vec3(0.03, 0.08, 0.22), GOLD = vec3(0.78, 0.6, 0.22), RED = vec3(0.55, 0.12, 0.08), WHITE = vec3(0.86, 0.84, 0.78), GREEN = vec3(0.12, 0.38, 0.22);
+    vec3 c = BLUE;
+    float edge = min(min(q.x, 1.0 - q.x), min(q.y, 1.0 - q.y));
+    // Shell-and-scroll borders: a red band, a gold fillet, white beads.
+    if (edge < 0.035) c = RED;
+    else if (edge < 0.05) c = GOLD;
+    else if (edge < 0.07) c = mix(BLUE, WHITE, step(0.5, fract((q.x + q.y) * len * 2.2)));
+    if (p1 < 0.5) {
+      // The aedicula: a lunette with a scallop shell over the two figures.
+      vec2 lc = vec2(0.5, 0.78);
+      vec2 d = (q - lc) * vec2(len / H, 1.0);
+      float r = length(d);
+      if (q.y > lc.y && r < 0.17 && edge >= 0.07) {
+        float ang = atan(d.y, d.x);
+        c = mix(WHITE, GOLD, step(0.5, fract(ang * 4.5)));
+        if (r < 0.04) c = RED;
+      } else if (q.y > lc.y && r < 0.19 && edge >= 0.07) c = RED;
+      // Columns of the aedicula either side, garlanded.
+      if (abs(abs(q.x - 0.5) - 0.37) < 0.025 && q.y > 0.12 && q.y < 0.78) c = mix(GOLD, GREEN, step(0.5, fract(q.y * 14.0)));
+      // Neptune (left, nude, his mantle dark blue, the trident in his raised
+      // right hand) and Amphitrite (right, robed in white with a rose mantle),
+      // on a little green ground line. Figures 0.6 of the panel tall.
+      float FH = 0.6;
+      vec3 skin = vec3(0.74, 0.48, 0.32);
+      for (int k = 0; k < 2; k++) {
+        float fx = k == 0 ? 0.37 : 0.63;
+        vec2 p = (q - vec2(fx, 0.13)) * vec2(len / H, 1.0) / FH;
+        if (k == 0) p.x = -p.x;
+        vec3 f = mosaicFigure(p, k == 1, k == 0);
+        if (f.z < 0.0) {
+          if (k == 0) c = f.y > 0.5 ? DEEP * 1.4 : skin * (0.85 + 0.25 * step(0.0, p.x));
+          else c = f.y > 0.5 ? vec3(0.72, 0.34, 0.32) : (length(p - vec2(0.0, 0.91)) < 0.062 || p.y > 0.76 ? skin : WHITE * (0.92 + 0.08 * step(0.5, fract(p.x * 30.0))));
+          // Dark hair and the line of the eyes.
+          if (length(p - vec2(0.0, 0.94)) < 0.055 && p.y > 0.93) c = vec3(0.12, 0.08, 0.06);
+        } else if (f.z < 0.012) c = DEEP * 0.5;
+      }
+      // The trident, in Neptune's raised hand (his figure is mirrored: right hand at screen left).
+      vec2 tp = (q - vec2(0.37, 0.13)) * vec2(len / H, 1.0) / FH + vec2(0.19, 0.0);
+      bool shaft = abs(tp.x) < 0.012 && tp.y > 0.02 && tp.y < 1.18;
+      bool prongs = tp.y > 1.08 && tp.y < 1.2 && (abs(tp.x) < 0.012 || abs(abs(tp.x) - 0.05) < 0.011);
+      bool bar = abs(tp.y - 1.08) < 0.012 && abs(tp.x) < 0.06;
+      if (shaft || prongs || bar) c = GOLD;
+      if (q.y > 0.11 && q.y < 0.135 && abs(q.x - 0.5) < 0.3) c = GREEN;
+      // A green dado of acanthus below.
+      if (q.y < 0.11 && edge >= 0.07) c = mix(GREEN, GREEN * 1.6, step(0.55, vnoise(vec2(u, h) * 9.0)));
+    } else {
+      // The nymphaeum wall: a central apse, vine scrolls on blue, and the
+      // deer the hounds chase along the frieze over it.
+      vec2 d = (q - vec2(0.5, 0.55)) * vec2(len / H, 1.0);
+      bool apse = abs(d.x) < 0.13 && (d.y < 0.0 ? d.y > -0.42 : length(d) < 0.13);
+      if (apse && edge >= 0.07) {
+        c = mix(DEEP, BLUE, smoothstep(-0.42, 0.13, d.y));
+        // Its scallop head.
+        if (d.y > 0.0) c = mix(WHITE, GOLD, step(0.5, fract(atan(d.y, d.x) * 3.2)));
+      } else if (edge >= 0.07) {
+        // Garlands and vine scrolls: thin gold stems curling on the blue, green leaves along them.
+        vec2 s = vec2(u, h) / 0.45;
+        float stem = abs(fract(s.y + 0.25 * sin(s.x * 3.1416)) - 0.5);
+        c = BLUE;
+        if (stem < 0.05) c = GOLD;
+        else if (stem < 0.16 && h21(floor(s * 4.0)) > 0.45) c = GREEN;
+      }
+      // The frieze: deer chased by hounds, on white.
+      if (q.y > 0.8 && q.y < 0.9 && edge >= 0.07) {
+        c = WHITE;
+        float cell = 0.9;
+        float x = fract(u / cell);
+        bool hound = mod(floor(u / cell), 2.0) > 0.5;
+        vec2 a = vec2((x - 0.5) * cell, h - 0.8 * H - 0.02);
+        float s = hound ? 0.8 : 1.0;
+        a /= s;
+        float body = sdCap(a, vec2(-0.16, 0.14), vec2(0.14, 0.15), 0.05);
+        float leg = min(min(sdCap(a, vec2(-0.13, 0.12), vec2(-0.2, 0.0), 0.014), sdCap(a, vec2(-0.1, 0.12), vec2(-0.05, 0.0), 0.014)),
+                        min(sdCap(a, vec2(0.1, 0.12), vec2(0.05, 0.0), 0.014), sdCap(a, vec2(0.13, 0.12), vec2(0.21, 0.02), 0.014)));
+        float head = sdCap(a, vec2(0.15, 0.17), vec2(0.23, hound ? 0.17 : 0.24), 0.028);
+        float antler = hound ? 9.0 : min(sdCap(a, vec2(0.21, 0.26), vec2(0.18, 0.33), 0.008), sdCap(a, vec2(0.2, 0.28), vec2(0.25, 0.32), 0.008));
+        if (min(min(body, leg), min(head, antler)) < 0.0) c = hound ? vec3(0.3, 0.28, 0.26) : vec3(0.52, 0.3, 0.14);
+      }
+    }
+    // The tesserae: glass a centimetre across in dark grout, each its own
+    // shade. Faded with distance before the grid would only alias.
+    vec2 tc = vec2(u, h) / 0.012;
+    vec2 tf = fract(tc);
+    float grout = smoothstep(0.0, 0.12, min(min(tf.x, 1.0 - tf.x), min(tf.y, 1.0 - tf.y)));
+    // Fade by the tesserae's size on screen, not distance alone: a joint a
+    // pixel wide only draws a moire grid over the picture.
+    float px = length(fwidth(tc));
+    float near = 1.0 - smoothstep(0.15, 0.45, px);
+    c *= mix(1.0, (0.85 + 0.25 * h21(floor(tc) + seed)) * mix(0.7, 1.0, grout), near);
+    albedo = c;
+    gloss = 0.55;
+  } else if (style > 21.5 && style < 22.5) {
+    // Opus craticium: square timber posts about 0.9 m apart, a sill and a
+    // head beam, braces across alternate bays, rubble and lime packed
+    // between and plastered over, the plaster gone in patches.
+    float bay = 0.92;
+    float bx = fract(u / bay);
+    float bi = floor(u / bay);
+    float post = step(bx, 0.13 / bay);
+    float beam = step(h, 0.16) + step(H - 0.16, h) + step(abs(h - H * 0.5), 0.07);
+    float brace = step(abs(bx - (mod(bi, 2.0) > 0.5 ? h / H : 1.0 - h / H)), 0.07) * step(0.5, h21(vec2(bi, seed * 7.0)));
+    float timber = clamp(post + beam + brace, 0.0, 1.0);
+    vec3 plaster = albedo * (0.9 + 0.12 * fbm(vec2(u, h) * 1.4 + seed * 5.0));
+    vec3 vo = voronoi(vec2(u, h) / 0.09);
+    vec3 rubble = vec3(0.42, 0.38, 0.33) * (0.75 + 0.4 * h21(vo.yz)) * (0.6 + 0.4 * smoothstep(0.02, 0.06, vo.x));
+    float flaked = smoothstep(0.62, 0.7, fbm(vec2(u, h) * 0.9 + seed * 13.0));
+    vec3 infill = mix(plaster, rubble, flaked);
+    vec3 wood = vec3(0.2, 0.13, 0.08) * (0.8 + 0.3 * vnoise(vec2(u * 3.0, h * 30.0)));
+    albedo = mix(infill, wood, timber);
   }
 
   n = ashFlatten(n, normalize(vNormal));
@@ -657,7 +801,7 @@ void main() {
   vec3 hh = normalize(uSunDir + v);
   lit += sunE * pow(max(0.0, dot(n, hh)), mix(8.0, 60.0, gloss)) * gloss * 0.25 * ndl * sunVis;
   lit += albedo * (eruptionLamps(vWorld, n) + townLamps(vWorld, n));
-  if (style > 16.5) lit += townLampSpec(vWorld, n, v);
+  if (style > 16.5 && style < 21.5) lit += townLampSpec(vWorld, n, v);
 
   vec3 ro = atmoOrigin(uCamAltitude);
   vec3 rd = normalize(vWorld - uCameraPos);
@@ -958,9 +1102,10 @@ export function pompeiiCityPack(model: PompeiiModel, heightAt: (x: number, z: nu
   return { lat0, lon0, radiusM: 1500, buildings };
 }
 
-export async function loadPompeii(base: string): Promise<PompeiiData | null> {
+/** An ancient town's pack (data/towns.ts names it): Pompeii's unless told otherwise. */
+export async function loadPompeii(base: string, pack = "pompeii.json"): Promise<PompeiiData | null> {
   try {
-    const r = await fetch(`${base}/pompeii.json`);
+    const r = await fetch(`${base}/${pack}`);
     if (!r.ok) return null;
     const { parsePompeii } = await import("../data/pompeii");
     return parsePompeii(await r.text());
@@ -1039,7 +1184,7 @@ export class AmphitheatreField extends Heightfield {
 
   constructor(private readonly town: PompeiiData, fields: Heightfield[]) {
     const data = town;
-    const a = data.amphitheatre;
+    const a = data.amphitheatre!;
     const mLat = metresPerDegLat(data.lat0), mLon = metresPerDegLon(data.lat0);
     const R = AMPHI.a + 2;
     super({ west: data.lon0 + (a.cx - R) / mLon, east: data.lon0 + (a.cx + R) / mLon, south: data.lat0 - (a.cz + R) / mLat, north: data.lat0 - (a.cz - R) / mLat }, 1, 1);
@@ -1061,14 +1206,14 @@ export class AmphitheatreField extends Heightfield {
   }
 
   private ellipse(ka: number, kb: number, t: number): [number, number] {
-    const a = this.town.amphitheatre, c = Math.cos(a.rot), s = Math.sin(a.rot);
+    const a = this.town.amphitheatre!, c = Math.cos(a.rot), s = Math.sin(a.rot);
     const u = Math.cos(t) * ka, v = Math.sin(t) * kb;
     return [a.cx + c * u - s * v, a.cz + s * u + c * v];
   }
 
   /** 0 outside the wall, 1 over the bowl. */
   depth(x: number, z: number): number {
-    const a = this.town.amphitheatre, c = Math.cos(a.rot), s = Math.sin(a.rot);
+    const a = this.town.amphitheatre!, c = Math.cos(a.rot), s = Math.sin(a.rot);
     const dx = x - a.cx, dz = z - a.cz;
     const rho = Math.hypot((dx * c + dz * s) / AMPHI.a, (-dx * s + dz * c) / AMPHI.b);
     const inner = (AMPHI.a - 12) / AMPHI.a;
@@ -1088,8 +1233,13 @@ export class AmphitheatreField extends Heightfield {
   }
 }
 
-/** The terrain's field list with the amphitheatre's bowl at its head. */
+/**
+ * The terrain's field list with the town's own ground at its head: Pompeii's
+ * amphitheatre bowl, or Herculaneum's 79 AD shore, terrace and town.
+ */
 export function pompeiiRingFields(fields: Heightfield[], data: PompeiiData): Heightfield[] {
+  if (data.herc) return [new HerculaneumField(data.herc, data.suburbs?.river ?? null, data.lat0, data.lon0, fields), ...fields];
+  if (!data.amphitheatre) return fields;
   return [new AmphitheatreField(data, fields), ...fields];
 }
 
