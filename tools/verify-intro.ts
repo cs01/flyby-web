@@ -63,7 +63,8 @@ const cdp = await Cdp.launch({ port: debugPort, width: 411, height: 748, profile
 const simTime = (tr: Sample[]) => tr.reduce((s, p) => s + p.dt, 0);
 
 async function load(city: string): Promise<void> {
-  await cdp.goto(`${base}/?city=${city}&shot&intro=1`);
+  // safe=0: pages closed inside safe mode's settle window count as crashes.
+  await cdp.goto(`${base}/?city=${city}&shot&intro=1&safe=0`);
   await cdp.waitFor("window.flybyShot && window.flybyShot.intro.trace.length > 0", 240_000, `${city} to load`);
 }
 

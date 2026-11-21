@@ -97,25 +97,20 @@ for (let i = 0; i < 100; i++) {
   await Bun.sleep(100);
 }
 
-// A fresh browser per scene. One long-lived headless Chrome started handing
-// back all-black WebGL frames after a dozen page loads (the DOM still drew),
-// which a layout audit cannot see and a reviewer would.
-let cdp = await Cdp.launch({ port: debugPort, width: 800, height: 800, profileDir });
+const cdp = await Cdp.launch({ port: debugPort, width: 800, height: 800, profileDir });
 const report: Record<string, unknown> = {};
 try {
   for (const s of scenes) {
-    if (s !== scenes[0]) {
-      cdp.close();
-      await Bun.sleep(500);
-      cdp = await Cdp.launch({ port: debugPort, width: 800, height: 800, profileDir });
-    }
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: s.w, height: s.h, deviceScaleFactor: s.dpr, mobile: !s.desktop });
     await cdp.send("Emulation.setTouchEmulationEnabled", s.desktop ? { enabled: false } : { enabled: true, maxTouchPoints: 5 });
     cdp.problems.length = 0;
     // Marked so the waits below cannot be satisfied by the PREVIOUS scene's
     // page before the navigation has replaced it.
     await cdp.eval("window.__stale = 1").catch(() => {});
-    await cdp.goto(`${base}/?${s.query}${extra ? `&${extra}` : ""}`);
+    // `safe=0`: this harness closes every page inside safe mode's 20 s settle
+    // window, which app/safemode.ts counts as a crash, and three of those
+    // walked the stored rung to 3, where the whole canvas renders black.
+    await cdp.goto(`${base}/?${s.query}&safe=0${extra ? `&${extra}` : ""}`);
     // A stalled load (a tile server that never answers) fails this scene,
     // loudly, and the run goes on to the next.
     try {
@@ -158,8 +153,8 @@ try {
       if (caught === 0) failures.push(`${s.name}: probe: an injected overlap was NOT reported`);
       else console.log(`probe: injected overlap reported (${caught})`);
     }
-    const shot = (await cdp.send("Page.captureScreenshot", { format: "png" })) as { data: string };
-    const file = `${outDir}/${s.name}.png`;
+    const shot = (await cdp.send("Page.captureScreenshot", { format: "jpeg", quality: 85 })) as { data: string };
+    const file = `${outDir}/${s.name}.jpg`;
     writeFileSync(file, Buffer.from(shot.data, "base64"));
     report[s.name] = { coarse, audit, problems: cdp.problems.slice(0, 5) };
     console.log(`${file.padEnd(48)} coarse=${coarse} overlaps=${JSON.stringify(audit)}`);
