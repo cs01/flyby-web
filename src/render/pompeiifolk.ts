@@ -17,8 +17,13 @@ import {
 
 /** Inside this a figure is drawn in full; past it, the far figure. */
 const NEAR_M = 32;
-/** The phone draws the full figure only for the closest few. */
-const LEAN_NEAR_M = 12, LEAN_NEAR_CAP = 3;
+/**
+ * The phone draws the full figure only for the closest two, and casts no
+ * shadows of people: 2 x 981 + 22 x 78 triangles stays under the 24 x 181
+ * the box figures cost there, with no culling at all.
+ */
+const LEAN_NEAR_M = 12;
+export const LEAN_NEAR_CAP = 2;
 
 /** The skinning, shared by the picture and the shadow passes. */
 const SKIN_GLSL = /* glsl */ `
@@ -299,7 +304,7 @@ export class Townsfolk {
       caster.frustumCulled = false;
       caster.layers.enable(SHADOW_CASTER_LAYER);
       this.group.add(mesh);
-      this.depthScene.add(caster);
+      if (!lean) this.depthScene.add(caster);
       this.buckets.push({ mesh, caster, geo, data, buf, n: 0, triangles: m.triangles });
     });
     for (let i = 0; i < n; i++) {

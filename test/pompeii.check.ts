@@ -21,7 +21,7 @@ import { Heightfield } from "../src/data/dem";
 import { CITIES } from "../src/cities";
 import { HORSE_BONES, buildHorse, hoofPoints, poseHorse } from "../src/render/horse";
 import { Arms, FOLK_SCALE, FOLK_STRIDE_M, Gait, buildFolk, buildFolkFar, clipPose, skinned, solePoints, solvePose, type FolkMesh, type FolkOpts, type PoseSpec } from "../src/render/folk";
-import { folkFragment } from "../src/render/pompeiifolk";
+import { LEAN_NEAR_CAP, folkFragment } from "../src/render/pompeiifolk";
 import { ART_WORKS } from "../src/data/pompeiiart";
 import { ORDERS, Order, columnTemplate, shaftRadius } from "../src/render/pompeiiorders";
 import { statSync } from "node:fs";
@@ -387,6 +387,10 @@ let built: PompeiiModel;
   const nearOk = (t: number[]): boolean => t.every((v) => v >= 400 && v <= 1000);
   check("near figure 400..1000 tris for every dress, far under 80", nearOk(tris) && far < 80, `${tris.join("/")} far ${far}`);
   check("probe: two figures in one mesh are over the bound", !nearOk([tris[0] * 2]), `${tris[0] * 2}`);
+  // The phone's 24 walkers, none culled, against the 181-triangle box figures they replaced.
+  const phone = (cap: number): number => cap * Math.max(...tris) + (24 - cap) * far;
+  check("phone: people cost no more than the box figures (24 x 181)", phone(LEAN_NEAR_CAP) <= 24 * 181, `${phone(LEAN_NEAR_CAP)} <= ${24 * 181}`);
+  check("probe: three full figures on the phone are over it", phone(LEAN_NEAR_CAP + 1) > 24 * 181, `${phone(LEAN_NEAR_CAP + 1)}`);
   const rest = meshes.map((m) => low(m.position));
   check("rest pose: soles on y 0 within 2 cm", rest.every((v) => Math.abs(v) < 0.02), rest.map((v) => v.toFixed(3)).join(" "));
   // The lowest point of the posed figure: on the ground, nothing under it.
