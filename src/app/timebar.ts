@@ -227,7 +227,11 @@ export class Timebar {
       this.setOffset(LO + Math.max(0, Math.min(1, frac)) * SPAN);
     };
     this.band.addEventListener("pointerdown", (e) => {
-      this.band.setPointerCapture(e.pointerId);
+      // Throws InvalidStateError when the pointer already lifted (a quick tap
+      // on Android); the gesture still works uncaptured, so never let it escape.
+      try {
+        this.band.setPointerCapture(e.pointerId);
+      } catch {}
       seek(e.clientX);
       e.preventDefault();
     });

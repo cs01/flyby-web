@@ -173,7 +173,11 @@ export class TouchControls {
       if (side === "right" && this.right) return;
       // Capture on the surface, not on the ring: the ring is drawn under the
       // finger and moving off it must not end the gesture.
-      surface.setPointerCapture(e.pointerId);
+      // Throws InvalidStateError when the pointer already lifted (a quick tap
+      // on Android); the gesture still works uncaptured, so never let it escape.
+      try {
+        surface.setPointerCapture(e.pointerId);
+      } catch {}
       const stick = this.spawn(e.pointerId, e.clientX, e.clientY, side);
       if (side === "left") this.left = stick;
       else this.right = stick;

@@ -187,7 +187,11 @@ export class Input {
         return;
       }
       this.dragging = true;
-      target.setPointerCapture(e.pointerId);
+      // Throws InvalidStateError when the pointer already lifted (a quick tap
+      // on Android); the gesture still works uncaptured, so never let it escape.
+      try {
+        target.setPointerCapture(e.pointerId);
+      } catch {}
       this.updateDrag(e);
     });
     target.addEventListener("pointermove", (e) => {
