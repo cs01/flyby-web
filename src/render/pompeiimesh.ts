@@ -2638,7 +2638,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         doorFrame(F, o, g, leftFree, rightFree, pave, dress, r);
         S.tag = tag;
       }
-      if (o.kind === "open") return;
+      if (o.kind === "open") {
+        // An open fauces still had its lamp hung inside the door, as a closed door's recess does.
+        if (dress.grand) lampSites.openings.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, g, ox, oz, ex, ez, w: o.u1 - o.u0, h: o.h, depth: 0.55, kind: "door", counter: false });
+        return;
+      }
       // The room behind, measured at both jambs: a skewed lot is shallower
       // at one end than its mean depth, and a recess cut to the mean came
       // out through the back wall onto the next street.
