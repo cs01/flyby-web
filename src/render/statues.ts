@@ -1170,7 +1170,8 @@ export function placeTownStatues(st: Sink, data: { publics: { name: string; ring
     // Out in the court in front of the portico on the two long sides, a
     // third of the way from the front, in the sun, facing each other across.
     for (const [kind, side] of [["apollo", 1], ["diana", -1]] as [StatueKind, number][]) {
-      const u = o.hu * 0.35, v = side * (o.hv - 7.5);
+      // Between the temple's flank (render/pompeiimesh.ts puts it at 0.38 of the half width) and the portico, 4 m deep.
+      const u = o.hu * 0.35, v = side * (Math.min(o.hv * 0.38, 9) + o.hv - 4) / 2;
       const x = o.cx + o.ux * u - o.uz * v, z = o.cz + o.uz * u + o.ux * v;
       const yaw = Math.atan2(o.uz * side, -o.ux * side);
       tris += kind === "diana"
