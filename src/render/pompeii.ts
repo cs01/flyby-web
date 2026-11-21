@@ -430,7 +430,8 @@ export function vesuviusCone(lat: number, lon: number): number {
   const th = Math.atan2(dy, dx);
   const f = r / VESUVIUS.radiusM;
   const gully = 0.5 + 0.5 * Math.sin(th * 23 + 2.1 * Math.sin(th * 5 + f * 6) + f * 9);
-  const cone = VESUVIUS.summitM * Math.pow(1 - f, VESUVIUS.power) * (1 - 0.09 * gully * Math.min(1, f * 3));
+  const fine = 0.5 + 0.5 * Math.sin(th * 61 + 3.0 * Math.sin(th * 13 + f * 11));
+  const cone = VESUVIUS.summitM * Math.pow(1 - f, VESUVIUS.power) * (1 - (0.11 * gully + 0.05 * fine) * Math.min(1, f * 3));
   return Math.min(VESUVIUS.flatTopM, cone);
 }
 
@@ -510,21 +511,13 @@ export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, 
         if (B > R + 15 && B > G && lum > 45 && lum < 170) continue;
         const elev = heightAt(lat, lon);
         let c: [number, number, number];
-        // Grid coordinates on the tilted centuriation: 710 m squares, each in
-        // strips, each strip in parcels, each parcel its own crop.
-        const gu = x * ct - y * st, gv = x * st + y * ct;
-        const fu = Math.floor(gu / 710), fv = Math.floor(gv / 710);
-        const sw = 90 + 80 * hash2(fu, fv);
-        const lv = gv - fv * 710, lu = gu - fu * 710;
-        const strip = Math.floor(lv / sw);
-        const pl = 140 + 160 * hash2(fu + strip, fv);
-        const parcel = Math.floor(lu / pl);
-        const ph = hash2(fu * 7 + strip * 13 + parcel, fv * 3 - strip + parcel * 5);
-        const kind = Math.floor(ph * crops.length);
-        const tone = 0.86 + 0.24 * hash2(parcel + 3, strip * 7 + fu);
+        // The centuriation grid: 710 m squares, each in strips, each strip in
+        // parcels, each parcel its own crop (cropAt, shared with the trees).
+        const { kind, tone, lu, lv, sw, pl, fu, strip } = cropAt(x, y);
         c = [crops[kind][0] * tone, crops[kind][1] * tone, crops[kind][2] * tone];
         if (kind === 0 || kind === 4 || kind === 2) {
           // Rows in vineyards, orchards and olive groves.
+          const gu = x * ct - y * st;
           const row = ((gu * (kind === 0 ? 0.45 : 0.16)) % 1 + 1) % 1;
           if (row < 0.4) c = [c[0] * 0.75, c[1] * 0.8, c[2] * 0.7];
         }
@@ -545,6 +538,77 @@ export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, 
     }
     ctx.putImageData(img, i0, j0);
   }
+}
+
+/** Crop index at a point, metres east (x) and north (y) of the town: the same parcels the drape paints. */
+function cropAt(x: number, y: number): { kind: number; tone: number; lu: number; lv: number; sw: number; pl: number; fu: number; strip: number } {
+  const tilt = (-24 * Math.PI) / 180;
+  const ct = Math.cos(tilt), st = Math.sin(tilt);
+  const gu = x * ct - y * st, gv = x * st + y * ct;
+  const fu = Math.floor(gu / 710), fv = Math.floor(gv / 710);
+  const sw = 90 + 80 * hash2(fu, fv);
+  const lv = gv - fv * 710, lu = gu - fu * 710;
+  const strip = Math.floor(lv / sw);
+  const pl = 140 + 160 * hash2(fu + strip, fv);
+  const parcel = Math.floor(lu / pl);
+  const ph = hash2(fu * 7 + strip * 13 + parcel, fv * 3 - strip + parcel * 5);
+  return { kind: Math.floor(ph * 6), tone: 0.86 + 0.24 * hash2(parcel + 3, strip * 7 + fu), lu, lv, sw, pl, fu, strip };
+}
+
+/**
+ * Tree cover for the town and its farmland, packed as the landcover mask the
+ * tree renderer reads (B = tree; see data/landmask.ts). Olive groves and
+ * orchards in the fields, the plane trees of the Palestra Grande, and a light
+ * cover over the insulae so the gardens and peristyles get a few trees (the
+ * renderer keeps them off the roofs by footprint).
+ */
+export function pompeiiVegetation(data: PompeiiData, extentM = 6000, cellM = 20): { rgba: Uint8Array; n: number; extentM: number } {
+  const n = Math.ceil((extentM * 2) / cellM);
+  const rgba = new Uint8Array(n * n * 4);
+  const palestra = data.publics.find((p) => p.kind === "palestra")?.ring ?? null;
+  let wx0 = Infinity, wx1 = -Infinity, wz0 = Infinity, wz1 = -Infinity;
+  for (let i = 0; i < data.wall.length; i += 2) {
+    wx0 = Math.min(wx0, data.wall[i]); wx1 = Math.max(wx1, data.wall[i]);
+    wz0 = Math.min(wz0, data.wall[i + 1]); wz1 = Math.max(wz1, data.wall[i + 1]);
+  }
+  const nearWallBox = (x: number, z: number, pad: number): boolean => x > wx0 - pad && x < wx1 + pad && z > wz0 - pad && z < wz1 + pad;
+  for (let r = 0; r < n; r++) {
+    const z = -extentM + (r + 0.5) * cellM;
+    for (let c = 0; c < n; c++) {
+      const x = -extentM + (c + 0.5) * cellM;
+      const o = (r * n + c) * 4;
+      let tree = 0;
+      if (nearWallBox(x, z, 0) && pointInRing(data.wall, x, z)) {
+        if (palestra && pointInRing(palestra, x, z)) tree = 0.75;
+        else if (data.insulae.some((i) => pointInRing(i.ring, x, z))) tree = 0.22;
+      } else {
+        const crop = cropAt(x, -z);
+        // Olive groves (2) and orchards (4) are trees; the hedges between
+        // fields carry a few.
+        if (crop.kind === 2) tree = 0.55;
+        else if (crop.kind === 4) tree = 0.7;
+        else if (crop.lu < 8 || crop.lv % crop.sw < 6) tree = 0.35;
+        // A clear ring round the walls: the tombs and gardens along the roads
+        // out of the gates, not woodland.
+        if (nearWallBox(x, z, 60) && distToWall(data.wall, x, z) < 60) tree *= 0.3;
+      }
+      rgba[o + 2] = Math.round(tree * 255);
+      rgba[o + 3] = Math.round((1 - tree) * 200);
+    }
+  }
+  return { rgba, n, extentM };
+}
+
+function distToWall(r: number[], x: number, z: number): number {
+  let best = Infinity;
+  const n = r.length / 2;
+  for (let i = 0; i < n; i++) {
+    const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
+    const dx = bx - ax, dz = bz - az;
+    const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+    best = Math.min(best, Math.hypot(x - ax - t * dx, z - az - t * dz));
+  }
+  return best;
 }
 
 function hash2(a: number, b: number): number {

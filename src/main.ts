@@ -37,7 +37,7 @@ import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./si
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
-import { Pompeii, Cart, antiquateDrape, loadPompeii, pompeiiCityPack, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
+import { Pompeii, Cart, antiquateDrape, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
@@ -1065,12 +1065,16 @@ async function main() {
   // the carriageway, and the .city rings keep them off the roofs. A city with
   // no road or building pack still gets trees, just with the landcover's built
   // class as the only guard.
-  if (landPack) {
+  // Pompeii has no .land pack (its modern landcover is the wrong century):
+  // its trees come from the town's gardens and the farmland's olive groves
+  // and orchards, through the same renderer.
+  const pompeiiVeg = pompeiiData && !landPack ? pompeiiVegetation(pompeiiData) : null;
+  if (landPack || pompeiiVeg) {
     const t0 = performance.now();
-    const level = landPack.levels[0];
+    const level = landPack?.levels[0];
     foliage = new Foliage(
       {
-        mask: { rgba: buildLandMaskRGBA(level), n: level.n, extentM: level.extentM },
+        mask: level ? { rgba: buildLandMaskRGBA(level), n: level.n, extentM: level.extentM } : pompeiiVeg!,
         heightAt: terrain.heightAt,
         roads: treeRoads,
         footprints: treeFootprints,

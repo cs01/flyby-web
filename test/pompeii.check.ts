@@ -140,7 +140,7 @@ function rules(m: PompeiiModel): Rules {
     tabernae: m.stats.tabernae, compluvia: m.stats.compluvia, fountains: m.stats.fountains, steppingStones: m.stats.steppingStones,
   };
   if (stats.tileFrac < 0.06) failed.push("terracotta roofs");
-  if (stats.pitchedFrac < 0.9) failed.push("roofs pitched 12-35 deg");
+  if (stats.pitchedFrac < 0.95) failed.push("roofs pitched 12-35 deg");
   if (stats.plasterFrac < 0.15) failed.push("plastered walls");
   if (stats.plasterColours < 6) failed.push("plaster palette");
   if (stats.flatRoofs > 0) failed.push("no flat roofs");
@@ -157,7 +157,7 @@ let built: PompeiiModel;
   const r = rules(built);
   const s = r.stats;
   check("town passes every reconstruction rule", r.failed.length === 0, r.failed.join(", ") || "all");
-  check(`roofs pitched ${ROOF_PITCH_DEG} deg (12-35 window), terracotta`, s.pitchedFrac >= 0.9 && s.tileFrac >= 0.06, `${(s.pitchedFrac * 100).toFixed(0)}% pitched, ${(s.tileFrac * 100).toFixed(1)}% of tris`);
+  check(`roofs pitched ${ROOF_PITCH_DEG} deg (12-35 window), terracotta`, s.pitchedFrac >= 0.95 && s.tileFrac >= 0.06, `${(s.pitchedFrac * 100).toFixed(0)}% pitched, ${(s.tileFrac * 100).toFixed(1)}% of tris`);
   check("plaster: 6+ palette colours over 15%+ of the triangles", s.plasterColours >= 6 && s.plasterFrac >= 0.15, `${s.plasterColours} colours, ${(s.plasterFrac * 100).toFixed(1)}%`);
   check("domus with compluvium, tabernae, fountains, stepping stones", s.domus >= 400 && s.tabernae >= 300 && s.fountains >= 10 && s.steppingStones >= 100,
     `${s.domus} domus, ${s.tabernae} tabernae, ${s.fountains} fountains, ${s.steppingStones} stones`);

@@ -750,6 +750,30 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const wallTop = roof === "compluvium" ? top + rise : top;
     // Front facade.
     if (street && openings.length && !grey) facade(a, b, g, yBot, wallTop, ox, oz, col, s, p1, p2, openings, depth);
+    // An upper floor on the street often had a timber balcony (maenianum)
+    // over the pavement, under its own pent roof: the Casa del Balcone
+    // Pensile is named for one.
+    if (street && !grey && !lean && H > 7 && fl > 5 && hash(s * 1e6, 33) < 0.4) {
+      const fx = (b[0] - a[0]) / fl, fz = (b[1] - a[1]) / fl;
+      const y0 = g + H - 3.3, P = 1.05;
+      const e0: [number, number] = [a[0] + fx * 0.5, a[1] + fz * 0.5], e1: [number, number] = [b[0] - fx * 0.5, b[1] - fz * 0.5];
+      const q = [e0[0], e0[1], e1[0], e1[1], e1[0] + ox * P, e1[1] + oz * P, e0[0] + ox * P, e0[1] + oz * P];
+      box(q, y0 - 0.2, y0, [0.4, 0.27, 0.15], s, Surf.Wood);
+      // Parapet, plastered like the wall behind it.
+      wall(e0[0] + ox * P, e0[1] + oz * P, e1[0] + ox * P, e1[1] + oz * P, y0, y0, y0 + 1.0, y0 + 1.0, ox, oz, col, s, Surf.Plaster, 0, 255, 0, fl, y0, 1.0);
+      wall(e1[0] + ox * P, e1[1] + oz * P, e0[0] + ox * P, e0[1] + oz * P, y0, y0, y0 + 1.0, y0 + 1.0, -ox, -oz, col, s, Surf.Plaster, 0, 255, 0, fl, y0, 1.0);
+      // Posts and the pent roof.
+      const L = fl - 1;
+      for (let k = 0; k <= Math.max(1, Math.round(L / 2.5)); k++) {
+        const t = (L * k) / Math.max(1, Math.round(L / 2.5));
+        column(e0[0] + fx * t + ox * (P - 0.08), e0[1] + fz * t + oz * (P - 0.08), y0 + 1.0, 1.9, 0.07, [0.36, 0.24, 0.13], s, 4);
+      }
+      const ry0 = y0 + 3.0, ry1 = y0 + 2.55;
+      poly(S, [[e0[0], ry0, e0[1]], [e1[0], ry0, e1[1]], [e1[0] + ox * (P + 0.3), ry1, e1[1] + oz * (P + 0.3)], [e0[0] + ox * (P + 0.3), ry1, e0[1] + oz * (P + 0.3)]],
+        [ox, 1, oz], [0.62, 0.31, 0.2], s, Surf.Tile, 0, 0, [[0, P, L, P], [L, P, L, P], [L, 0, L, P], [0, 0, L, P]]);
+      poly(S, [[e0[0], ry0, e0[1]], [e1[0], ry0, e1[1]], [e1[0] + ox * (P + 0.3), ry1, e1[1] + oz * (P + 0.3)], [e0[0] + ox * (P + 0.3), ry1, e0[1] + oz * (P + 0.3)]],
+        [ox * 0.2, -1, oz * 0.2], [0.38, 0.26, 0.15], s, Surf.Wood, 0, 0, uv4());
+    }
     else wall(a[0], a[1], b[0], b[1], yBot, yBot, wallTop, wallTop, ox, oz, col, s, Surf.Plaster, p1, p2, 0, fl, g, wallTop - g);
     // Back and sides, all plastered (seen across gardens and over lower roofs).
     const sideC: RGB = [col[0] * 0.5 + 0.43, col[1] * 0.5 + 0.4, col[2] * 0.5 + 0.34];
@@ -780,6 +804,13 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const halfD = depth / 2 + OH;
       poly(S, [ea, eb, r1, r0], [ox, 1, oz], tileC, s, Surf.Tile, 0, 0, [[0, 0, fl, halfD], [fl, 0, fl, halfD], [fl, halfD, fl, halfD], [0, halfD, fl, halfD]]);
       poly(S, [ec, ed, r0, r1], [-ox, 1, -oz], tileC, s, Surf.Tile, 0, 0, [[0, 0, fl, halfD], [fl, 0, fl, halfD], [fl, halfD, fl, halfD], [0, halfD, fl, halfD]]);
+      // The underside of the street eave: from the pavement the roof is a
+      // dark timber overhang along the top of the wall, not a sharp edge.
+      if (street && !lean) {
+        poly(S, [ea, eb, [b[0], top, b[1]], [a[0], top, a[1]]], [ox * 0.3, -1, oz * 0.3], [0.32, 0.22, 0.14], s, Surf.Wood, 0, 0, uv4());
+        // The tile ends along the eave, as a thin fascia.
+        poly(S, [ea, eb, [eb[0], eb[1] - 0.12, eb[2]], [ea[0], ea[1] - 0.12, ea[2]]], [ox, 0, oz], [0.5, 0.27, 0.17], s, Surf.Wood, 0, 0, uv4());
+      }
       // Gable ends, plastered.
       poly(S, [[b[0], top, b[1]], [c[0], top, c[1]], r1], [s1x, 0, s1z], sideC, s, Surf.Plaster, p1, 255, [[0, H, depth, H + rise], [depth, H, depth, H + rise], [depth / 2, H + rise, depth, H + rise]]);
       poly(S, [[d[0], top, d[1]], [a[0], top, a[1]], r0], [s2x, 0, s2z], sideC, s, Surf.Plaster, p1, 255, [[0, H, depth, H + rise], [depth, H, depth, H + rise], [depth / 2, H + rise, depth, H + rise]]);
@@ -795,11 +826,17 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     } else {
       // Compluviate: four tiled slopes falling inward to an open rectangle,
       // the impluvium on the floor below it.
-      const k = 0.36;
-      const inner = [a, b, c, d].map((p): [number, number] => [mx + (p[0] - mx) * k, mz + (p[1] - mz) * k]);
-      const inset = depth * (1 - k) / 2;
-      const hi = wallTop, lo = wallTop - Math.min(rise, inset * TAN_PITCH);
+      // Inset the same distance on every side, so the four slopes share one
+      // pitch and meet on true hips; a scaled-down copy of the quad gave the
+      // long sides of a wide atrium a slope of a few degrees.
       const outer = [a, b, c, d];
+      const inset = Math.min(depth, fl) * 0.32;
+      const inner = outer.map((p, i): [number, number] => {
+        const nx1 = outer[(i + 1) % 4], pv = outer[(i + 3) % 4];
+        const l1 = Math.hypot(nx1[0] - p[0], nx1[1] - p[1]) || 1, l2 = Math.hypot(pv[0] - p[0], pv[1] - p[1]) || 1;
+        return [p[0] + ((nx1[0] - p[0]) / l1 + (pv[0] - p[0]) / l2) * inset, p[1] + ((nx1[1] - p[1]) / l1 + (pv[1] - p[1]) / l2) * inset];
+      });
+      const hi = wallTop, lo = wallTop - inset * TAN_PITCH;
       for (let e = 0; e < 4; e++) {
         const p = outer[e], q = outer[(e + 1) % 4], pi = inner[e], qi = inner[(e + 1) % 4];
         const L = Math.hypot(q[0] - p[0], q[1] - p[1]);
@@ -994,7 +1031,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const ins = 5.5;
       const x0 = ax + nx * ins + tx * ins, z0 = az + nz * ins + tz * ins, x1 = bx + nx * ins - tx * ins, z1 = bz + nz * ins - tz * ins;
       colonnade(x0, z0, x1, z1, g, 6.2, 0.42, 3.2, -nx, -nz, ins, g + 9.5, seed, [0.9, 0.87, 0.8], inTemple);
-      if (!lean) colonnade(x0, z0, x1, z1, g + 6.95, 4.4, 0.3, 3.2, -nx, -nz, ins, g + 13.2, seed, [0.9, 0.87, 0.8], inTemple);
+      if (!lean) colonnade(x0, z0, x1, z1, g + 6.95, 4.4, 0.3, 3.2, -nx, -nz, ins, g + 13.4, seed, [0.9, 0.87, 0.8], inTemple);
       // The back wall the portico roofs lean on.
       wall(ax, az, bx, bz, g - 0.4, g - 0.4, g + 13.4, g + 13.4, nx, nz, [0.88, 0.84, 0.74], seed, Surf.Stucco, 0, 0, 0, L, g, 13.4);
     }
@@ -1369,13 +1406,13 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         box(q, gt - 4, gt + 14, [0.72, 0.66, 0.54], 0.6, Surf.Masonry, Surf.Kerb, [0.6, 0.56, 0.48]);
         // A tiled pyramid cap.
         const top = gt + 14;
-        const apex: V3 = [x + ox * 1, top + 3, z + oz * 1];
+        const apex: V3 = [x + ox * 1, top + 2.4, z + oz * 1];
         for (let e = 0; e < 4; e++) {
           const p = [q[e * 2], q[e * 2 + 1]], qq = [q[((e + 1) % 4) * 2], q[((e + 1) % 4) * 2 + 1]];
           const mx = (p[0] + qq[0]) / 2 - apex[0], mz = (p[1] + qq[1]) / 2 - apex[2];
           poly(S, [[p[0], top, p[1]], [qq[0], top, qq[1]], apex], [mx, 2, mz], [0.6, 0.3, 0.19], 0.6, Surf.Tile, 0, 0, [[0, 0, 8, 4], [8, 0, 8, 4], [4, 4, 8, 4]]);
         }
-        solids.push({ ring: q, baseY: gt - 4, topY: top + 3 });
+        solids.push({ ring: q, baseY: gt - 4, topY: top + 2.4 });
         stats.towers++;
       }
       acc += L;
