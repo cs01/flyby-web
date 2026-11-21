@@ -14,7 +14,9 @@ import { AMPHI, ROOF_PITCH_DEG, Surf, buildPompeii, type PompeiiModel } from "..
 import { pompeiiRoadPack, pompeiiHeightAt } from "../src/data/pompeiiroads";
 import { buildRoadGraph, componentLengths, connectedComponents } from "../src/data/roadgraph";
 import { budgetForTier, pompeiiBytes, type DeviceDescriptor } from "../src/render/budget";
-import { VESUVIUS, restoreVesuvius, vesuviusCone } from "../src/render/pompeii";
+import { AmphitheatreField, DIPINTI, POMPEII_SHADOW_SPLITS, VESUVIUS, dipintiTables, restoreVesuvius, vesuviusCone } from "../src/render/pompeii";
+import { LocalClock, zoneLabel } from "../src/app/timebar";
+import { LIFE_RADIUS_M, PompeiiLife } from "../src/data/pompeiilife";
 import { Heightfield } from "../src/data/dem";
 import { CITIES } from "../src/cities";
 
@@ -227,6 +229,89 @@ let built: PompeiiModel;
   const at = city?.era ? new Date(city.era.at) : null;
   check("era clock is a real instant in 79 AD", !!at && at.getUTCFullYear() === 79 && Number.isFinite(at.getTime()), at?.toISOString() ?? "");
   check("pack origin is the city's", !!city && Math.abs(city.lat - data.lat0) < 1e-6 && Math.abs(city.lon - data.lon0) < 1e-6, "");
+}
+
+// --- 9. second pass: real houses, the sunken arena, towers, fountains, clock, life ----
+{
+  // Surveyed houses stand on their OSM outlines: Casa del Fauno's footprint
+  // is a building solid within 12% of its mapped area (it is pulled out
+  // onto the street frontage, which is all the difference).
+  const fauno = data.domus.find((d) => d.name === "Casa del Fauno")!;
+  const hasFootprint = (m: PompeiiModel, ring: number[]): boolean => {
+    const [cx, cz] = ringCentroid(ring), A = Math.abs(ringArea(ring));
+    return m.solids.some((s) => { const [sx, sz] = ringCentroid(s.ring); return Math.hypot(sx - cx, sz - cz) < 15 && Math.abs(Math.abs(ringArea(s.ring)) / A - 1) < 0.12; });
+  };
+  check("Casa del Fauno built on its surveyed footprint", !!fauno && hasFootprint(built, fauno.ring), "");
+  check("40+ named houses built on their outlines with courts", built.stats.surveyedHouses >= 40, `${built.stats.surveyedHouses}`);
+  const courts = data.domus.filter((d) => (d.courts ?? []).length).length;
+  check("courts found in the room walls of 30+ houses", courts >= 30, `${courts}`);
+  const noDomus = buildPompeii({ data: { ...data, domus: [] }, groundAt: flat });
+  check("probe: without the outlines no house stands on Fauno's footprint", !hasFootprint(noDomus, fauno.ring) && noDomus.stats.surveyedHouses === 0, "");
+
+  // The arena dug into the ground.
+  const a = built.amphitheatre;
+  const sunk = (m: { floorY: number; rimY: number }): boolean => m.rimY - m.floorY >= 5 && m.rimY - m.floorY <= 7.5;
+  check("arena floor 5-7.5 m below the ground round the amphitheatre", sunk(a), `${(a.rimY - a.floorY).toFixed(1)} m`);
+  check("probe: an arena at ground level fails", !sunk({ floorY: a.rimY, rimY: a.rimY }), "");
+  const dem = new Heightfield({ west: data.lon0 - 0.02, east: data.lon0 + 0.02, south: data.lat0 - 0.02, north: data.lat0 + 0.02 }, 160, 160);
+  dem.data.fill(30);
+  dem.loaded = true;
+  const bowl = new AmphitheatreField(data, [dem]);
+  const ll = (x: number, z: number): [number, number] => [data.lat0 - z / 111000, data.lon0 + x / (111000 * Math.cos((data.lat0 * Math.PI) / 180))];
+  const inArena = bowl.sample(...ll(data.amphitheatre.cx, data.amphitheatre.cz));
+  const ux = Math.cos(data.amphitheatre.rot), uz = Math.sin(data.amphitheatre.rot);
+  const outside = bowl.sample(...ll(data.amphitheatre.cx + ux * (AMPHI.a + 8), data.amphitheatre.cz + uz * (AMPHI.a + 8)));
+  check("terrain dug under the arena, untouched outside the wall", inArena < 30 - 5 && outside === 30, `${inArena.toFixed(1)} / ${outside.toFixed(1)}`);
+  check("probe: the bare DEM is not dug", dem.sample(...ll(data.amphitheatre.cx, data.amphitheatre.cz)) === 30, "");
+
+  // Towers: the twelve the survey numbers.
+  check("12 wall towers", built.stats.towers === 12, `${built.stats.towers}`);
+  const eleven = buildPompeii({ data: { ...data, towers: (data.towers ?? []).slice(1) }, groundAt: flat, lean: true });
+  check("probe: one tower dropped from the survey fails", eleven.stats.towers !== 12, `${eleven.stats.towers}`);
+
+  // The wall: no spur round the Villa Imperiale south of Porta Marina.
+  const spurFree = (w: number[]): boolean => { for (let i = 0; i < w.length; i += 2) if (w[i] < -310 && w[i + 1] > 80) return false; return true; };
+  check("wall clipped to the circuit at Porta Marina", spurFree(data.wall) && !pointInRing(data.wall, -380, 110), "");
+  check("probe: a spur vertex is caught", !spurFree([...data.wall, -405, 123]), "");
+
+  // Fountains: about forty, the mapped ones among them.
+  check("35..45 public fountains, 10+ from the survey", built.stats.fountains >= 35 && built.stats.fountains <= 45 && (data.fountains ?? []).length >= 10, `${built.stats.fountains} (${(data.fountains ?? []).length} mapped)`);
+
+  // The HUD clock in 79: Rome's zone then is local mean time.
+  const rome = new LocalClock("Europe/Rome").abbrev(new Date("0079-08-22T07:30:00Z"));
+  check("HUD zone label in 79 AD reads 'local time'", rome === "local time", rome);
+  check("probe: a real zone name passes through", zoneLabel("CEST") === "CEST" && zoneLabel("GMT+8") === "GMT+8" && zoneLabel("GMT+0:49:56") === "local time", "");
+
+  // Painted notices: every glyph 5x5, every notice spelled from the font.
+  const t = dipintiTables();
+  check("dipinti: 6 notices, all letters in the font", DIPINTI.length >= 4 && t.chars.every((c) => c >= -1 && c < t.glyphs.length) && t.glyphs.every((g) => g > 0), `${t.chars.length} chars`);
+
+  // Street shadows: the first cascade fitted to 150 m, not 350.
+  const texel = (far: number): number => {
+    const tanV = Math.tan((31 * Math.PI) / 180), k2 = tanV * tanV * (1 + (16 / 9) ** 2);
+    return (2 * far * Math.sqrt(k2)) / 2048;
+  };
+  check("first shadow cascade under 0.25 m a texel at street level", texel(POMPEII_SHADOW_SPLITS[0]) < 0.25, `${texel(POMPEII_SHADOW_SPLITS[0]).toFixed(2)} m`);
+  check("probe: the default 350 m split is not", texel(350) >= 0.25, `${texel(350).toFixed(2)} m`);
+
+  // Life: people on the pavements and in the forum near the camera, walking.
+  const forum = data.publics.find((p) => p.kind === "forum")!;
+  const [fx, fz] = ringCentroid(forum.ring);
+  const life = new PompeiiLife(data, { people: 48, carts: 2 });
+  life.update(0, fx, fz);
+  const h = pompeiiHeightAt(data, () => 10);
+  const placed = life.people.filter((p) => pointInRing(data.wall, p.x, p.z) && Math.hypot(p.x - fx, p.z - fz) <= LIFE_RADIUS_M);
+  const onFoot = life.people.filter((p) => h(p.x, p.z) > 10.3 || pointInRing(forum.ring, p.x, p.z));
+  check("48 people placed near the camera, inside the walls", placed.length === 48, `${placed.length}`);
+  check("people on the pavements or the forum, not the carriageway", onFoot.length >= 44, `${onFoot.length} of 48`);
+  check("two carts on the main streets", life.carts.length === 2 && life.carts.every((c) => pointInRing(data.wall, c.x, c.z)), "");
+  const before = life.people.map((p) => [p.x, p.z]);
+  life.update(0, fx, fz);
+  const still = life.people.every((p, i) => p.x === before[i][0] && p.z === before[i][1]);
+  for (let k = 0; k < 50; k++) life.update(0.2, fx, fz);
+  const moved = life.people.filter((p, i) => Math.hypot(p.x - before[i][0], p.z - before[i][1]) > 3).length;
+  check("people walk: most move 3 m+ in 10 s", moved >= 36, `${moved} of 48`);
+  check("probe: a held clock (dt 0) moves nobody", still, "");
 }
 
 console.log(failures ? `\n${failures} pompeii check(s) FAILED` : "\nall pompeii checks ok");

@@ -37,7 +37,7 @@ import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./si
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
 import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M } from "./sim/drone";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
-import { Pompeii, Cart, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
+import { Pompeii, Cart, Townsfolk, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { buildRoadGraph, laneOffsetM, type RoadGraph } from "./data/roadgraph";
 import { buildBridgeDecks } from "./data/bridgedeck";
@@ -531,6 +531,7 @@ async function main() {
   // then stand on its pavements: heightAt is wrapped AFTER the build, so the
   // build itself reads the bare ground it lays the kerbs on.
   let pompeii: Pompeii | null = null;
+  let townsfolk: Townsfolk | null = null;
   let cart: Cart | null = null;
   if (pompeiiData) {
     const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
@@ -544,6 +545,10 @@ async function main() {
     terrain.heightAt = pompeiiHeightAt(pompeiiData, terrain.heightAt, off.x, off.z);
     cart = new Cart(pompeii.uniforms);
     cart.group.visible = false;
+    if (!perfOff.has("pompeiilife")) {
+      townsfolk = new Townsfolk(pompeiiData, pompeii.uniforms, terrain.heightAt, off.x, off.z, budget.pompeii.lean);
+      scene.add(townsfolk.group);
+    }
     scene.add(cart.group);
     const s = pompeii.stats, m = pompeii.model.stats;
     console.log(
@@ -1925,6 +1930,9 @@ async function main() {
     if (cart) {
       cart.group.visible = carActive && !!car;
       if (carActive && car) cart.update(car.position.x, car.position.y, car.position.z, car.headingDeg, car.speed, input.paused ? 0 : dt);
+    }
+    if (townsfolk) {
+      townsfolk.update(shotMode || input.paused ? 0 : dt, camera.position.x, camera.position.z);
     }
 
     hud.setLayers(layers.weather);

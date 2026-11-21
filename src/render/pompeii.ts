@@ -20,6 +20,7 @@ import { AO_GLSL } from "./ao";
 import { makeStreetLampUniforms, type StreetLampUniforms } from "./streetlamps";
 import { AMPHI, buildPompeii, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
+import { PompeiiLife } from "../data/pompeiilife";
 import { BuildingKind, RoofShape, type Building, type CityPack } from "../data/citypack";
 import { Heightfield } from "../data/dem";
 import type { StitchedImage } from "../data/imagery";
@@ -160,6 +161,30 @@ float vnoise(vec2 p) {
   return mix(mix(h21(i), h21(i + vec2(1, 0)), f.x), mix(h21(i + vec2(0, 1)), h21(i + vec2(1, 1)), f.x), f.y);
 }
 float fbm(vec2 p) { return 0.5 * vnoise(p) + 0.3 * vnoise(p * 2.1) + 0.2 * vnoise(p * 4.3); }
+// The basalt paving's cell: x the distance to the nearest edge (true
+// bisector distance, so the joints keep their width), yz the offset from
+// the block's centre to the point, w the block's id hash.
+vec4 paveCell(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 mg = vec2(0), mr = vec2(8.0);
+  float md = 8.0;
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 g = vec2(float(x), float(y));
+    vec2 r = g + 0.1 + 0.8 * h22(i + g) - f;
+    float d = dot(r, r);
+    if (d < md) { md = d; mr = r; mg = g; }
+  }
+  float ed = 8.0;
+  // 3x3 round the nearest centre, not the exact 5x5: a rare joint is a
+  // little off, at a third of the cost on a street that fills the screen.
+  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) {
+    vec2 g = mg + vec2(float(x), float(y));
+    vec2 r = g + 0.1 + 0.8 * h22(i + g) - f;
+    if (dot(mr - r, mr - r) > 1e-5) ed = min(ed, dot(0.5 * (mr + r), normalize(r - mr)));
+  }
+  return vec4(ed, -mr, h21(i + mg));
+}
+
 // Distance to the nearest cell edge and the cell's id: polygonal paving.
 vec3 voronoi(vec2 p) {
   vec2 i = floor(p), f = fract(p);
@@ -266,17 +291,42 @@ void main() {
     n = normalize(n + tng.x * 0.0 + vec3(0.0, 0.0, 0.0));
     gloss = 0.15;
   } else if (style < 2.5) {
-    // Basalt paving: big polygonal lava blocks, grey-brown where wheels and
-    // feet have worn them, each block its own tone, the joints dark and
-    // packed with grit. Cool blue-black stone read as asphalt in shade.
-    vec3 vo = voronoi(vWorld.xz / 0.7);
-    float tone = h21(vo.yz);
-    albedo = mix(vec3(0.27, 0.255, 0.235), vec3(0.4, 0.37, 0.33), tone) * (0.88 + 0.24 * vnoise(vWorld.xz * 1.5));
-    // Each block's top is worn smooth in the middle and darker at its rim.
-    albedo *= 0.9 + 0.12 * smoothstep(0.04, 0.3, vo.x);
-    albedo = mix(vec3(0.15, 0.135, 0.12), albedo, smoothstep(0.012, 0.045, vo.x));
-    albedo *= 0.92 + 0.16 * vnoise(vWorld.xz * 3.0);
-    gloss = 0.3 * smoothstep(0.03, 0.12, vo.x);
+    // Basalt paving: big irregular lava blocks, 40-80 cm, each one domed
+    // ("pillowed") by two thousand years of wheels and feet, dark gaps
+    // between them, grey with paler worn crowns and a slight polish. The
+    // dome is lighting only: the normal tilts toward each block's rim.
+    float S = 0.58;
+    // A little warp so the blocks are rounded polygons, not a lattice.
+    vec2 q = vWorld.xz / S + 0.35 * vec2(vnoise(vWorld.xz * 1.3), vnoise(vWorld.xz * 1.3 + 17.0)) ;
+    vec4 pc = paveCell(q);
+    float edge = pc.x;
+    float tone = pc.w;
+    // Gaps: open joints a few centimetres wide, rounded shoulders into them.
+    float gap = smoothstep(0.025, 0.06, edge);
+    float crown = smoothstep(0.06, 0.42, edge);
+    albedo = mix(vec3(0.25, 0.25, 0.255), vec3(0.37, 0.36, 0.35), tone) * (0.9 + 0.2 * vnoise(vWorld.xz * 2.0));
+    albedo *= mix(0.78, 1.08, crown);
+    // Vesicles: the lava's small pits, on some blocks.
+    albedo *= 1.0 - 0.35 * step(0.6, tone) * step(0.93, vnoise(vWorld.xz * 26.0));
+    albedo = mix(vec3(0.07, 0.065, 0.06), albedo, gap);
+    // Cart ruts: two grooves a Roman axle apart down each lane, worn into
+    // the blocks (vWall.z: metres from the street's centreline).
+    float lat = vWall.z, half_ = vWall.w;
+    float rut = 0.0;
+    if (half_ > 1.6) {
+      for (int k = -1; k <= 1; k += 2) {
+        float c = float(k) * 0.72;
+        rut = max(rut, 1.0 - smoothstep(0.03, 0.09, abs(lat - c)));
+      }
+      albedo *= 1.0 - 0.3 * rut;
+    }
+    // The dome's slope, from the point's offset to the block's centre;
+    // flat on a broad worn crown, steep at the shoulders.
+    vec2 off = pc.yz * S;
+    float slope = (1.0 - crown) * 0.9 + 0.15;
+    vec3 tilt = vec3(off.x, 0.0, off.y) * slope * 1.6;
+    n = normalize(n + tilt * gap);
+    gloss = 0.4 * gap * crown;
   } else if (style < 3.5) {
     // Kerbstones and slab edges: cut blocks.
     vec2 b = vec2(wp.x / 1.1, wp.y / 0.45);
@@ -923,6 +973,157 @@ export class Cart {
     this.legs.forEach((l, i) => { l.rotation.x = Math.sin(this.phase + ph[i]) * amp; });
     this.horse.position.y = Math.abs(Math.sin(this.phase)) * 0.06 * (amp > 0.01 ? 1 : 0);
     for (const w of this.wheels) w.rotation.x += (speed / 0.47) * dt;
+  }
+}
+
+// =====================================================================================
+// The townsfolk.
+// =====================================================================================
+
+// The town's own vertex shader with instancing and a walk cycle: each limb
+// vertex carries its limb in aSurf.w, and swings about its hip or shoulder
+// by the instance's phase. Tunic vertices take the instance's colour.
+const LIFE_VERT = /* glsl */ `
+precision highp float;
+in vec3 position;
+in vec4 aNormal;
+in vec4 aColour;
+in vec4 aSurf;
+in vec4 aWall;
+in mat4 instanceMatrix;
+in vec4 aInst;
+uniform mat4 modelMatrix;
+uniform mat4 viewMatrix;
+uniform mat4 projectionMatrix;
+uniform vec3 uCameraPos;
+out vec3 vNormal;
+out vec3 vWorld;
+out vec4 vColour;
+out vec4 vSurf;
+out vec4 vWall;
+out float vViewDist;
+void main() {
+  vec3 p = position;
+  vec3 n = aNormal.xyz;
+  float limb = aSurf.w;
+  float sw = sin(aInst.w);
+  float ang = 0.0;
+  float pivot = 0.0;
+  if (limb > 0.5 && limb < 2.5) { ang = (limb < 1.5 ? 1.0 : -1.0) * sw * 0.45; pivot = 0.88; }
+  else if (limb > 2.5 && limb < 4.5) { ang = (limb < 3.5 ? -1.0 : 1.0) * sw * 0.35; pivot = 1.42; }
+  if (ang != 0.0) {
+    float c = cos(ang), s = sin(ang);
+    vec2 yz = vec2(p.y - pivot, p.z);
+    p.y = pivot + yz.x * c - yz.y * s;
+    p.z = yz.x * s + yz.y * c;
+    n = vec3(n.x, n.y * c - n.z * s, n.y * s + n.z * c);
+  }
+  vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+  vNormal = mat3(modelMatrix) * mat3(instanceMatrix) * n;
+  vWorld = w.xyz;
+  vColour = limb > 4.5 ? vec4(aInst.rgb, aColour.a) : aColour;
+  vSurf = aSurf;
+  vWall = aWall;
+  vViewDist = distance(w.xyz, uCameraPos);
+  gl_Position = projectionMatrix * viewMatrix * w;
+}
+`;
+
+/** Tunic colours: undyed wool, madder red, saffron, woad blue, brown, white. */
+const TUNICS: [number, number, number][] = [
+  [0.78, 0.72, 0.6], [0.62, 0.2, 0.14], [0.8, 0.6, 0.26], [0.32, 0.4, 0.55],
+  [0.5, 0.36, 0.24], [0.88, 0.86, 0.8], [0.66, 0.56, 0.42], [0.45, 0.3, 0.32],
+];
+
+/** One walker: legs, a tunic over the body, arms, a head. +z forward, 1.65 m tall. */
+function personGeometry(): THREE.BufferGeometry {
+  const parts: { g: THREE.BufferGeometry; rgb: [number, number, number]; limb: number; at: [number, number, number] }[] = [];
+  const skin: [number, number, number] = [0.62, 0.44, 0.32];
+  for (const s of [-1, 1]) parts.push({ g: new THREE.BoxGeometry(0.12, 0.86, 0.13), rgb: skin, limb: s < 0 ? 1 : 2, at: [s * 0.085, 0.45, 0] });
+  parts.push({ g: new THREE.CylinderGeometry(0.17, 0.27, 0.82, 7), rgb: [1, 1, 1], limb: 5, at: [0, 1.06, 0] });
+  for (const s of [-1, 1]) parts.push({ g: new THREE.BoxGeometry(0.08, 0.58, 0.09), rgb: skin, limb: s < 0 ? 3 : 4, at: [s * 0.25, 1.15, 0] });
+  parts.push({ g: new THREE.SphereGeometry(0.11, 7, 5), rgb: skin, limb: 0, at: [0, 1.56, 0.01] });
+  parts.push({ g: new THREE.SphereGeometry(0.115, 7, 4, 0, Math.PI * 2, 0, Math.PI * 0.55), rgb: [0.12, 0.09, 0.07], limb: 0, at: [0, 1.575, -0.01] });
+  const pos: number[] = [], an: number[] = [], ac: number[] = [], as: number[] = [];
+  for (const p of parts) {
+    p.g.translate(...p.at);
+    const ng = p.g.index ? p.g.toNonIndexed() : p.g;
+    ng.computeVertexNormals();
+    const P = ng.getAttribute("position").array as Float32Array, N = ng.getAttribute("normal").array as Float32Array;
+    for (let i = 0; i < P.length / 3; i++) {
+      pos.push(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]);
+      an.push(Math.round(N[i * 3] * 127), Math.round(N[i * 3 + 1] * 127), Math.round(N[i * 3 + 2] * 127), 0);
+      ac.push(p.rgb[0] * 255, p.rgb[1] * 255, p.rgb[2] * 255, 128);
+      as.push(14, 0, 0, p.limb);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pos), 3));
+  g.setAttribute("aNormal", new THREE.BufferAttribute(new Int8Array(an), 4, true));
+  g.setAttribute("aColour", new THREE.BufferAttribute(new Uint8Array(ac), 4, true));
+  g.setAttribute("aSurf", new THREE.BufferAttribute(new Uint8Array(as), 4, false));
+  g.setAttribute("aWall", new THREE.BufferAttribute(new Float32Array((pos.length / 3) * 4), 4));
+  return g;
+}
+
+/**
+ * The people and carts of PompeiiLife, drawn: one instanced draw for the
+ * people, Cart models for the carts. Kill switch `?off=pompeiilife`.
+ */
+export class Townsfolk {
+  readonly group = new THREE.Group();
+  readonly sim: PompeiiLife;
+  private readonly mesh: THREE.InstancedMesh;
+  private readonly inst: THREE.InstancedBufferAttribute;
+  private readonly carts: Cart[] = [];
+  private readonly m = new THREE.Matrix4();
+  private readonly q = new THREE.Quaternion();
+  private readonly up = new THREE.Vector3(0, 1, 0);
+  private readonly one = new THREE.Vector3(1, 1, 1);
+  private readonly v = new THREE.Vector3();
+
+  constructor(data: PompeiiData, uniforms: PompeiiUniforms, private readonly heightAt: (x: number, z: number) => number,
+    private readonly offX: number, private readonly offZ: number, lean: boolean) {
+    this.sim = new PompeiiLife(data, { people: lean ? 20 : 48, carts: lean ? 1 : 2 });
+    const geo = personGeometry();
+    const n = this.sim.people.length;
+    this.inst = new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4);
+    this.inst.setUsage(THREE.DynamicDrawUsage);
+    geo.setAttribute("aInst", this.inst);
+    const mat = new THREE.RawShaderMaterial({ vertexShader: LIFE_VERT, fragmentShader: FRAG, uniforms, glslVersion: THREE.GLSL3 });
+    this.mesh = new THREE.InstancedMesh(geo, mat, n);
+    this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    // Moves every frame across the whole town; bounds would only cull wrongly.
+    this.mesh.frustumCulled = false;
+    this.mesh.name = "pompeii-people";
+    this.group.add(this.mesh);
+    for (let i = 0; i < this.sim.carts.length; i++) {
+      const c = new Cart(uniforms);
+      this.carts.push(c);
+      this.group.add(c.group);
+    }
+    this.group.name = "pompeii-life";
+  }
+
+  /** dt 0 holds everyone still (shot mode) but still places them round the camera. */
+  update(dt: number, camX: number, camZ: number): void {
+    this.sim.update(dt, camX - this.offX, camZ - this.offZ);
+    const a = this.inst.array as Float32Array;
+    this.sim.people.forEach((p, i) => {
+      const x = p.x + this.offX, z = p.z + this.offZ;
+      this.q.setFromAxisAngle(this.up, Math.PI - p.heading);
+      this.v.set(x, this.heightAt(x, z), z);
+      this.m.compose(this.v, this.q, this.one);
+      this.mesh.setMatrixAt(i, this.m);
+      const t = TUNICS[p.tint];
+      a[i * 4] = t[0]; a[i * 4 + 1] = t[1]; a[i * 4 + 2] = t[2]; a[i * 4 + 3] = p.phase;
+    });
+    this.mesh.instanceMatrix.needsUpdate = true;
+    this.inst.needsUpdate = true;
+    this.sim.carts.forEach((c, i) => {
+      const x = c.x + this.offX, z = c.z + this.offZ;
+      this.carts[i].update(x, this.heightAt(x, z), z, (c.heading * 180) / Math.PI, c.speed, dt);
+    });
   }
 }
 
