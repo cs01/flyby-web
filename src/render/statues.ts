@@ -122,7 +122,7 @@ function bodyPrims(b: Build): Prim[] {
   out.push(C(CHEST, [0, 1.36, -0.02], [0, 1.52, 0.0], 0.05 * m, 0.045 * m, Lab.Skin, BH | Reg.Head, 0.03));
   for (const s of [1, -1]) {
     if (w) out.push(E(CHEST, [0.068 * s, 1.25, 0.072], [0.058, 0.058, 0.05], Lab.Skin, BH, 0.03));
-    else out.push(E(CHEST, [0.068 * s, 1.285, 0.062], [0.072 * m, 0.05, 0.04 * m], Lab.Skin, BH, 0.025));
+    else out.push(E(CHEST, [0.068 * s, 1.285, 0.058], [0.072 * m, 0.048, 0.034 * m], Lab.Skin, BH, 0.03));
     out.push(E(CHEST, [0.105 * s, 1.03, 0.01], [0.05 * m, 0.075, 0.065 * m], Lab.Skin, BH, 0.03));
     out.push(E(CHEST, [0.12 * s, 1.22, -0.02], [0.04 * m, 0.09, 0.07 * m], Lab.Skin, BH, 0.03));
     out.push(C(CHEST, [0.15 * s, 1.405, -0.035], [0.03 * s, 1.45, -0.035], 0.04 * m, 0.05 * m, Lab.Skin, BH, 0.035));
@@ -334,7 +334,7 @@ function togaPrims(bones: Float32Array, freeRight: boolean): Prim[] {
     let v = 0;
     for (const [y0, a] of [[0.86, 0.22], [0.7, 0.28], [0.53, 0.34]] as [number, number][]) {
       const g = y - (y0 + a * (Math.cosh((x - 0.03) / a) - 1));
-      v += 0.024 * Math.exp(-(g * g) / (0.025 * 0.025));
+      v += 0.016 * Math.exp(-(g * g) / (0.035 * 0.035));
     }
     return v * smooth(0.02, 0.1, z);
   };
@@ -344,7 +344,7 @@ function togaPrims(bones: Float32Array, freeRight: boolean): Prim[] {
   out.push(C(th, mir(HIP, s), mir(KNEE, s), 0.1, 0.075, Lab.Cloth, B, 0.06));
   out.push(C(sh, mir(KNEE, s), lerp3(mir(KNEE, s), mir(ANKLE, s), 0.55), 0.075, 0.07, Lab.Cloth, B, 0.06));
   // The wrap: folds run down diagonally from the left shoulder.
-  const wrap = ellipsoid([0, 1.21, -0.002], [0.178, 0.215, 0.135]);
+  const wrap = ellipsoid([0, 1.21, -0.004], [0.17, 0.21, 0.125]);
   const clip = (x: number, y: number): number => (x + 0.15) * -0.75 + (y - 1.22) * 0.66;
   out.push(P(CHEST, (x, y, z) => Math.max(wrap(x, y, z) - 0.016 * ridge((x * 0.6 - y * 0.8) * 85), clip(x, y)), [0, 1.2, 0], 0.25, Lab.Cloth, B, 0.03));
   // The tunic under it, seen on the right shoulder, with its short sleeve.
@@ -856,8 +856,8 @@ function thinness(p: V3, n: V3, F: Field, e: number): number {
 function bronzePaint(p: V3, n: V3, F: Field): RGB {
   const open = openness(p, n, F, 0.03), thin = thinness(p, n, F, 0.025);
   let c = mix3(BRONZE, DARK, smooth(0.85, 0.35, open));
-  c = mix3(c, PATINA, smooth(0.3, 0.08, open) * 0.85);
-  return mix3(c, WORN, smooth(0.35, 0.8, thin) * 0.5);
+  c = mix3(c, PATINA, smooth(0.18, 0.04, open) * 0.8);
+  return mix3(c, WORN, smooth(0.45, 0.85, thin) * 0.3);
 }
 
 /**
@@ -869,8 +869,8 @@ function marblePaint(lab: number, n: V3, cloak: RGB): RGB {
   const CLOTH: RGB = [0.86, 0.83, 0.76], PURPLE: RGB = [0.42, 0.11, 0.22];
   switch (lab) {
     case Lab.Hair: return [0.32, 0.2, 0.11];
-    case Lab.Eye: return [0.4, 0.31, 0.25];
-    case Lab.Lip: return [0.78, 0.58, 0.52];
+    case Lab.Eye: return [0.62, 0.52, 0.44];
+    case Lab.Lip: return [0.84, 0.68, 0.62];
     case Lab.Border: return PURPLE;
     case Lab.Sinus: return n[1] < -0.25 ? PURPLE : CLOTH;
     case Lab.Balteus: return n[1] > 0.35 ? PURPLE : CLOTH;
@@ -1185,15 +1185,15 @@ export function placeTownStatues(st: Sink, data: { publics: { name: string; ring
     if (c) { at = c; stabia = s; abb = a; }
   }
   if (at && stabia && abb) {
-    // On the north pavement of Via dell'Abbondanza a few metres west of the
-    // junction, clear of the corner, facing the street.
+    // On the tip of the pavement at the crossroads' north-west corner, out
+    // by the kerbs and clear of the house corner behind, facing the junction.
     const dir = (p: number[]): [number, number] => { const dx = p[p.length - 2] - p[0], dz = p[p.length - 1] - p[1], L = Math.hypot(dx, dz) || 1; return [dx / L, dz / L]; };
-    let [ax, az] = dir(abb.pts);
-    if (ax > 0) { ax = -ax; az = -az; }
-    let nx = -az, nz = ax; if (nz > 0) { nx = -nx; nz = -nz; }
-    const along = stabia.carriageM / 2 + stabia.sidewalkM + 3.2, across = abb.carriageM / 2 + abb.sidewalkM * 0.5;
-    const x = at[0] + ax * along + nx * across, z = at[1] + az * along + nz * across;
-    const yaw = Math.atan2(-nx, -nz);
+    const [sx, sz] = dir(stabia.pts), [ax, az] = dir(abb.pts);
+    let nx = -sz, nz = sx; if (nz > 0) { nx = -nx; nz = -nz; }
+    let wx = -az, wz = ax; if (wx > 0) { wx = -wx; wz = -wz; }
+    const dn = abb.carriageM / 2 + 0.5, dw = stabia.carriageM / 2 + 0.5;
+    const x = at[0] + nx * dn + wx * dw, z = at[1] + nz * dn + wz * dw;
+    const yaw = Math.atan2(at[0] - x, at[1] - z);
     tris += standing(st, "cuirassed", lean, x, ground(x, z) + kerb, z, yaw, 1.85, { hx: 0.42, hz: 0.42, h: 1.6, lines: ["M.HOLCONIO.M.F", "RVFO.TRIB.MIL"] }, seed);
     placed.push("holconius");
   }

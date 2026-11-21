@@ -1734,6 +1734,21 @@ export const POSES: Pose[] = [
     what: "Apollo on the reduced tier",
     query: "agl&near=0.05&fov=40&statuecam=apollo,20,3.2,0.5,1.0&tier=reduced",
   },
+  // Each hero statue at eye level from 3 m (the camera level with its head,
+  // as from a ladder) and in profile: name-eye, name-side. `h` the statue's
+  // head over the top of its base, `d` how far back for its size.
+  ...([
+    ["togate", 40.74888, 14.48514, 1.75, 3.2], ["cuirassed", 40.7499, 14.48808, 1.7, 3.0], ["rider", 40.74888, 14.48514, 2.4, 5.0],
+    ["apollo", 40.749276, 14.484473, 1.6, 3.0], ["doryphoros", 40.74897, 14.488, 1.75, 3.2], ["faun", 40.7510725, 14.4846052, 0.5, 1.3],
+  ] as const).flatMap(([kind, lat, lon, h, d]) => [["eye", 10], ["side", 90]].map(([tag, bearing]) => ({
+    name: `pompeii-statue-${kind}-${tag}`,
+    city: "pompeii",
+    lat, lon, altM: 1.6, hdgDeg: 0, pitchDeg: 0,
+    t: D("0079-08-22T09:30:00Z"),
+    wx: POMPEII_WX,
+    what: `The ${kind} statue ${tag === "eye" ? "at eye level" : "in profile"}`,
+    query: `agl&near=0.05&fov=40&statuecam=${kind},${bearing},${d},${tag === "eye" ? h : h * 0.55},${h * 0.55}`,
+  }))),
   // Inside the houses (render/pompeiiinterior.ts): rooms off the atria, read
   // off PompeiiModel.interiors.
   {
