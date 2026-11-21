@@ -1590,7 +1590,7 @@ void main() {
   vec3 ro = atmoOrigin(uCamAltitude);
   vec3 rd = normalize(vWorld - uCameraPos);
   vec3 trans;
-  vec3 inscatter = atmosphere(ro, rd, vViewDist, trans);
+  vec3 inscatter = ashAir(atmosphere(ro, rd, vViewDist, trans), vWorld);
   vec3 col = lit * trans + inscatter;
 
   // Term isolation. Chasing a too-bright image by arithmetic is slow and easy
@@ -1679,6 +1679,7 @@ export interface TerrainUniforms
   uWetness: THREE.IUniform<number>;
   uSnow: THREE.IUniform<number>;
   uAshFan: THREE.IUniform<THREE.Vector4>;
+  uAshView: THREE.IUniform<THREE.Vector4>;
   uNight: THREE.IUniform<number>;
   uNightGlow: THREE.IUniform<THREE.Color>;
   uMoonDir: THREE.IUniform<THREE.Vector3>;
@@ -1736,6 +1737,7 @@ export function makeTerrainUniforms(shadow: SunShadowUniforms): TerrainUniforms 
     uSnow: { value: 0 },
     // Shared by reference: one eruption, one footprint.
     uAshFan: eruptionSurfaceUniforms.uAshFan,
+    uAshView: eruptionSurfaceUniforms.uAshView,
     uNight: { value: 0 },
     uNightGlow: { value: new THREE.Color(0, 0, 0) },
     uMoonDir: { value: new THREE.Vector3(0, -1, 0) },

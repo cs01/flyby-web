@@ -18,7 +18,7 @@ import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./
 import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeStreetLampUniforms, type StreetLampUniforms } from "./streetlamps";
-import { ERUPTION_SURFACE_GLSL, ERUPTION_VERT_GLSL, eruptionSurfaceUniforms, type EruptionSurfaceUniforms } from "./eruption";
+import { ERUPTION_SURFACE_GLSL, ERUPTION_VERT_GLSL, ROOF_COLLAPSE_FRAG_GLSL, ROOF_COLLAPSE_VERT_GLSL, eruptionSurfaceUniforms, type EruptionSurfaceUniforms } from "./eruption";
 import { TOWN_LAMPS_GLSL, townLampUniforms, type TownLampUniforms } from "./oillight";
 import { AMPHI, Store, buildPompeii, type ColumnInstance, type PompeiiMeshData, type PompeiiModel } from "./pompeiimesh";
 import { Order, columnTemplate } from "./pompeiiorders";
@@ -118,6 +118,9 @@ uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec3 uCameraPos;
 ${ERUPTION_VERT_GLSL}
+#ifdef ROOF_COLLAPSE
+${ROOF_COLLAPSE_VERT_GLSL}
+#endif
 out vec3 vNormal;
 out vec3 vWorld;
 out vec4 vColour;
@@ -129,6 +132,11 @@ void main() {
 #ifdef ASH_RISE
   // The ground and streets rise on the pumice (render/eruption.ts).
   w.y += uAsh.x;
+#endif
+#ifdef ROOF_COLLAPSE
+  vRoof = roofFallen(aSurf, aNormal.y);
+  // The frame slumps into the house as the tiles go.
+  w.y -= 0.7 * max(vRoof, 0.0) * max(vRoof, 0.0);
 #endif
   vNormal = mat3(modelMatrix) * aNormal.xyz;
   vWorld = w.xyz;
@@ -158,6 +166,9 @@ ${SH_GLSL}
 ${AO_GLSL}
 ${ERUPTION_SURFACE_GLSL}
 ${TOWN_LAMPS_GLSL}
+#ifdef ROOF_COLLAPSE
+${ROOF_COLLAPSE_FRAG_GLSL}
+#endif
 
 uniform vec3  uCameraPos;
 uniform float uSunSurface;
@@ -551,8 +562,19 @@ void main() {
     gloss = 0.6;
   }
 
+#ifdef ROOF_COLLAPSE
+  float ruin = roofRuin(vWorld, normalize(vNormal), seed, vRoof);
+  if (ruin < 0.0) discard;
+  // A cracking patch goes dark with the dust coming up through it.
+  if (ruin > 0.0 && ruin < 0.99) albedo *= 0.55;
+#endif
   n = ashFlatten(n, normalize(vNormal));
   albedo = ashCover(albedo, n, vWorld, covered);
+#ifdef ROOF_COLLAPSE
+  // A bare rafter is old timber; a beam a hand wide holds no pumice, so it
+  // is drawn after the cover and reads dark against the grey round it.
+  if (ruin > 0.99) { albedo = vec3(0.2, 0.14, 0.09) * (0.8 + 0.4 * seed); gloss = 0.0; }
+#endif
   float ndl = max(0.0, dot(n, uSunDir));
   vec3 sunT = sunTransmittance(atmoOrigin(max(0.0, vWorld.y)), uSunDir, uTurbidity);
   vec3 sunE = uSunColor * uSunIntensity * uSunSurface * sunT;
@@ -772,14 +794,18 @@ function geometry(m: PompeiiMeshData): THREE.BufferGeometry {
   return g;
 }
 
-export function pompeiiMaterial(uniforms: PompeiiUniforms, opts: { bias?: number; doubleSided?: boolean } = {}): THREE.RawShaderMaterial {
+export function pompeiiMaterial(uniforms: PompeiiUniforms, opts: { bias?: number; doubleSided?: boolean; roofs?: boolean } = {}): THREE.RawShaderMaterial {
   const bias = opts.bias ?? 0;
+  const defines: Record<string, number> = {};
+  if (bias !== 0) defines.ASH_RISE = 1;
+  // Only the town mesh tags its roofs (surf.w); the cart and the rest leave it 0.
+  if (opts.roofs) defines.ROOF_COLLAPSE = 1;
   return new THREE.RawShaderMaterial({
     vertexShader: VERT,
     fragmentShader: FRAG,
     uniforms,
     // The biased meshes are the ground and the streets: the ones the pumice buries.
-    defines: bias !== 0 ? { ASH_RISE: 1 } : {},
+    defines,
     glslVersion: THREE.GLSL3,
     side: opts.doubleSided ? THREE.DoubleSide : THREE.FrontSide,
     // The ground inside the walls lies on the terrain: a bias wins it the
@@ -824,7 +850,7 @@ export class Pompeii {
     this.columns = new DetailColumns(this.model.orders, this.uniforms, opts.lean ? COLUMN_LOD.phone : COLUMN_LOD.desktop);
     this.columns.group.position.set(opts.offsetX, 0, opts.offsetZ);
     this.group.add(this.columns.group);
-    const town = new THREE.Mesh(geometry(this.model.mesh), pompeiiMaterial(this.uniforms));
+    const town = new THREE.Mesh(geometry(this.model.mesh), pompeiiMaterial(this.uniforms, { roofs: true }));
     town.name = "pompeii-town";
     town.layers.enable(SHADOW_CASTER_LAYER);
     const floor = new THREE.Mesh(geometry(this.model.floor), pompeiiMaterial(this.uniforms, { bias: 4 }));
@@ -1597,7 +1623,8 @@ export class Townsfolk {
 
   constructor(data: PompeiiData, uniforms: PompeiiUniforms, private readonly heightAt: (x: number, z: number) => number,
     private readonly offX: number, private readonly offZ: number, lean: boolean) {
-    this.sim = new PompeiiLife(data, { people: lean ? 20 : 48, carts: lean ? 1 : 2 });
+    // Enough that the eruption's gates fill (sim/flee.ts puts most of them there).
+    this.sim = new PompeiiLife(data, { people: lean ? 24 : 64, carts: lean ? 1 : 2 });
     const geo = personGeometry();
     const n = this.sim.people.length;
     this.inst = new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4);
