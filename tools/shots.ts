@@ -1416,6 +1416,16 @@ export const POSES: Pose[] = [
     what: "The surge front approaching the north wall, from 200 m up",
     query: "eruption=1&fov=70",
   },
+  {
+    // The phone tier's path on a desktop: billows and the canopy mesh.
+    name: "eruption-column-bay-billows",
+    city: "pompeii",
+    lat: 40.7470, lon: 14.3460, altM: 250, hdgDeg: 62, pitchDeg: 14,
+    t: D("0079-08-22T14:10:04Z"),
+    wx: POMPEII_WX,
+    what: "The column and umbrella from the bay at 15:00, drawn as billows",
+    query: "eruption=1&fov=75&plume=billows",
+  },
   // The motion check: the 15:00 bay pose at six points of the animation clock.
   ...[0, 5, 10, 15, 20, 25].map((s): Pose => ({
     name: `eruption-motion-${String(s).padStart(2, "0")}`,

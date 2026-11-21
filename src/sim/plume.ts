@@ -34,8 +34,12 @@ export const UMBRELLA_C = 50;
 export const WIND_UMBRELLA_MS = 25;
 /** Exit speed of the jet at the vent, m/s (Plinian vents run 150 to 400). */
 export const EXIT_SPEED_MS = 260;
-/** Rise speed scale of the buoyant column at GAS_THRUST_M, m/s. */
-const BUOYANT_W_MS = 125;
+/** Rise speed scale of the buoyant column at the top of the gas-thrust region, m/s. */
+export const BUOYANT_W_MS = 125;
+/** The widest the umbrella spreads either side of its axis, m. */
+export const UMBRELLA_MAX_HALF_M = 45000;
+/** Downwind lean of the column top, as a share of its height (a strong column bends little in a 25 m/s wind). */
+export const LEAN = 0.1;
 /** Top of the gas-thrust region above the vent, as a share of the column height. */
 export const GAS_THRUST_FRACTION = 0.1;
 
@@ -115,7 +119,7 @@ export function upwindStallM(q: number, windMs = WIND_UMBRELLA_MS): number {
  */
 export function umbrellaHalfWidthM(xM: number, s: PlumeShape): number {
   const tau = Math.max(0, xM + s.upwindM) / WIND_UMBRELLA_MS;
-  return Math.min(s.spreadM, s.c * Math.pow(tau, 2 / 3), 45000) + 0.5 * columnRadiusM(s.nblM, s);
+  return Math.min(s.spreadM, s.c * Math.pow(tau, 2 / 3), UMBRELLA_MAX_HALF_M) + 0.5 * columnRadiusM(s.nblM, s);
 }
 
 /** Radius of the column at height z above the vent, m: entrainment from the vent up. */

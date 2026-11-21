@@ -22,7 +22,7 @@
 
 import * as THREE from "three";
 import {
-  ENTRAIN_ALPHA, EXIT_SPEED_MS, NBL_FRACTION, SPREAD, WIND_UMBRELLA_MS, ashAlbedo, columnRadiusM, plumeShape,
+  BUOYANT_W_MS, EXIT_SPEED_MS, LEAN, SPREAD, UMBRELLA_MAX_HALF_M, WIND_UMBRELLA_MS, ashAlbedo, columnRadiusM, plumeShape,
   umbrellaHalfWidthM, type PlumeShape,
 } from "../sim/plume";
 import { COLUMN_H, SURGE_SPEED_MS, type EruptionState } from "../sim/eruption";
@@ -39,9 +39,6 @@ const PLUME_SIGMA = 0.006;
 /** Ground map for the surge: metres either side of the vent. */
 const SURGE_MAP_HALF_M = 15000;
 const SURGE_MAP_N = 256;
-
-void ENTRAIN_ALPHA;
-void NBL_FRACTION;
 
 /**
  * GLSL, included in the cloud march under PLUME. Needs CLOUD_GLSL (the noise
@@ -77,6 +74,9 @@ const float P_WIND = ${f6(WIND_UMBRELLA_MS)};
 const float P_SIGMA = ${f6(PLUME_SIGMA)};
 const float P_COLN = ${f6(COLUMN_NOISE)};
 const float P_UMBN = ${f6(1 / UMBRELLA_NOISE_M)};
+const float P_BUOY = ${f6(BUOYANT_W_MS)};
+const float P_HALFMAX = ${f6(UMBRELLA_MAX_HALF_M)};
+const float P_LEAN = ${f6(LEAN)};
 
 float plumeR(float z) { return uPlumeA.z + P_SPREAD * max(z, 0.0); }
 
@@ -86,14 +86,14 @@ float plumeRise(float z) {
   if (z >= top || top <= 0.0) return 0.0;
   float zz = max(0.0, z);
   float jet = P_EXIT * uPlumeA.z / plumeR(zz);
-  float buoy = 125.0 * pow(max(zz, uPlumeA.w) / max(uPlumeA.w, 1.0), -1.0 / 3.0);
+  float buoy = P_BUOY * pow(max(zz, uPlumeA.w) / max(uPlumeA.w, 1.0), -1.0 / 3.0);
   return max(jet, buoy) * sqrt(1.0 - (zz / top) * (zz / top));
 }
 
 // Mirrors sim/plume.ts umbrellaHalfWidthM.
 float plumeHalfWidth(float along) {
   float tau = max(0.0, along + uPlumeB.x) / P_WIND;
-  return min(min(uPlumeB.z, uPlumeC.x * pow(tau, 2.0 / 3.0)), 45000.0) + 0.5 * plumeR(uPlumeA.y);
+  return min(min(uPlumeB.z, uPlumeC.x * pow(tau, 2.0 / 3.0)), P_HALFMAX) + 0.5 * plumeR(uPlumeA.y);
 }
 
 vec3 pHash3(float k) {
@@ -144,7 +144,7 @@ float plumeS(vec3 q, out float umb, out float depth) {
   if (top <= 0.0) return 9.0;
   float zc = clamp(z, 0.0, top);
   // Bent over by the wind toward the top: a strong column leans little.
-  float lean = 0.1 * zc * zc / top;
+  float lean = P_LEAN * zc * zc / top;
   float bN = plumeR(nbl);
   // Above the neutral level the column decelerates and domes over.
   float k = (z - nbl) / max(top - nbl, 1.0);
@@ -219,7 +219,7 @@ float plumeDensity(vec3 p, bool cheap, out float hf, out float env, out float de
     // radius per unit), moving at the local rise speed over the local radius.
     float zz = min(z, uPlumeA.x);
     float bS = plumeR(zz);
-    float lean = 0.1 * zz * zz / max(uPlumeA.x, 1.0);
+    float lean = P_LEAN * zz * zz / max(uPlumeA.x, 1.0);
     vec2 xc = vec2(along - lean, cross) / bS;
     float zeta = log(bS / 100.0) / P_SPREAD;
     nC = vec3(xc.x, zeta, xc.y) * P_COLN;
@@ -624,7 +624,11 @@ export class EruptionVolume {
     u.uPlumeD.value.y = fr.outside;
     u.uPlumeD.value.z = fr.visibilityM;
     u.uPlumeSun.value.copy(fr.sun);
-    u.uPlumeAmb.value.copy(fr.amb);
+    // Half the sky light's blue: much of what reaches a shaded flank has
+    // bounced off the rest of the cloud first, and ash is grey-brown. At full
+    // sky blue the column read lavender from across the bay.
+    const al = fr.amb.r * 0.3 + fr.amb.g * 0.45 + fr.amb.b * 0.25;
+    u.uPlumeAmb.value.copy(fr.amb).lerp(_c.setRGB(al, al * 0.95, al * 0.88), 0.5);
     // Light from below: the landscape round the umbrella's shadow, albedo about
     // 0.12 in the sun, and the sky it reflects. What lights the underside.
     u.uPlumeGround.value.copy(fr.sun).multiplyScalar(0.12 * Math.max(0, fr.sunY)).add(_c.copy(fr.amb).multiplyScalar(0.25));

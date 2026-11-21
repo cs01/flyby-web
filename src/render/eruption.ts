@@ -18,7 +18,7 @@ import * as THREE from "three";
 import type { Weather } from "../data/weather";
 import type { SceneLighting } from "./lighting";
 import { COLUMN_H, ROOF_FAIL_END_M, ROOF_FAIL_START_M, ROOF_FALL_M, eruptionAt, hourAtDepth, type EruptionState } from "../sim/eruption";
-import { columnRadiusM, plumeShape } from "../sim/plume";
+import { LEAN, columnRadiusM, plumeShape } from "../sim/plume";
 import { pointInRing } from "../data/pompeii";
 import type { RoofInfo } from "./pompeiimesh";
 import { EruptionVolume } from "./eruptionvolume";
@@ -1015,7 +1015,7 @@ export class EruptionView {
       const z = (0.12 + 0.5 * hk2) * sh.topM;
       const b = columnRadiusM(z, sh);
       const a = Math.atan2(cam.x - vent.x, cam.z - vent.z) + (hk - 0.5) * 1.4;
-      const lean = (0.1 * z * z) / Math.max(sh.topM, 1);
+      const lean = (LEAN * z * z) / Math.max(sh.topM, 1);
       fv.set(vent.x + Math.sin(a) * b * (0.85 + 0.25 * hash(slot + 0.75)) + Math.sin(WIND_TOWARD) * lean, vent.y + z,
         vent.z + Math.cos(a) * b * (0.85 + 0.25 * hash(slot + 0.75)) - Math.cos(WIND_TOWARD) * lean, strike * 5);
       boltSpan = Math.max(80, b * 0.3);

@@ -398,10 +398,8 @@ void main() {
     vec3 airT;
     vec3 air = atmosphere(atmoOrigin(uCameraPos.y), rd, dMean, airT);
 #ifdef PLUME
-    // Only outside the fall: inside it the sun has already been dimmed by the light factor.
-    air *= mix(1.0, mix(0.15, 1.0, plumeAirLit(rd, dMean)), uPlumeD.y);
-#endif
-#ifdef PLUME
+    // The air in the umbrella's shadow scatters no sun (plumeAirLit).
+    air *= mix(0.15, 1.0, plumeAirLit(rd, dMean));
     // Inside the fall the volume carries its own haze (the fall's visibility,
     // render/eruptionvolume.ts), which is what the town's haze is too; the
     // aerosol this integral would add for that visibility left nothing at all.
