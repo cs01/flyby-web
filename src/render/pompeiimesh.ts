@@ -2474,6 +2474,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const q = [ax - roofOutX * half - tx * half, az - roofOutZ * half - tz * half, bx - roofOutX * half + tx * half, bz - roofOutZ * half + tz * half,
         bx + roofOutX * half + tx * half, bz + roofOutZ * half + tz * half, ax + roofOutX * half - tx * half, az + roofOutZ * half - tz * half];
       box(q, y0b, y1b, col, seed, s);
+      // box() has sides and a top only. Under a portico the entablature is
+      // seen from below, where an open box showed the sky and the backs of
+      // the frieze plates through the beam the capitals should carry.
+      poly(S, [[q[0], y0b, q[1]], [q[2], y0b, q[3]], [q[4], y0b, q[5]], [q[6], y0b, q[7]]], [0, -1, 0], col, seed, s, 0, 0,
+        [[0, 0, L, 2 * half], [L, 0, L, 2 * half], [L, 2 * half, L, 2 * half], [0, 2 * half, L, 2 * half]]);
     };
     band(D * 0.45, e0, e1, [0.9, 0.87, 0.8]);
     band(D * 0.42, e1, e2, [0.86, 0.83, 0.76]);
@@ -2492,8 +2497,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     if (roofW > 0) {
       const e1 = e1r;
       const p0: V3 = [ax, e1, az], p1: V3 = [bx, e1, bz];
+      const flat = Number.isNaN(backY);
+      if (flat) backY = e1;
       const p2: V3 = [bx + roofOutX * roofW, backY, bz + roofOutZ * roofW], p3: V3 = [ax + roofOutX * roofW, backY, az + roofOutZ * roofW];
-      poly(S, [p0, p1, p2, p3], [-roofOutX, 1, -roofOutZ], [0.62, 0.31, 0.2], seed, Surf.Tile, 0, 0, [[0, 0, L, roofW], [L, 0, L, roofW], [L, roofW, L, roofW], [0, roofW, L, roofW]]);
+      if (flat) poly(S, [p0, p1, p2, p3], [0, 1, 0], [0.5, 0.4, 0.3], seed, Surf.Wood, 0, 0, uv4());
+      else poly(S, [p0, p1, p2, p3], [-roofOutX, 1, -roofOutZ], [0.62, 0.31, 0.2], seed, Surf.Tile, 0, 0, [[0, 0, L, roofW], [L, 0, L, roofW], [L, roofW, L, roofW], [0, roofW, L, roofW]]);
       poly(S, [p0, p1, p2, p3], [roofOutX * 0.2, -1, roofOutZ * 0.2], [0.45, 0.36, 0.28], seed, Surf.Wood, 0, 0, uv4());
     }
     return e3;
@@ -2554,7 +2562,10 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const g = Math.min(ground(x0, z0), ground(x1, z1)) + KERB_M;
       // The portico of Popidius: Doric below, a lighter Ionic gallery over
       // it, the upper columns standing on the lower entablature.
-      const top0 = colonnade(x0, z0, x1, z1, g, 6.2, 0, 3.2, -nx, -nz, ins, g + 9.5, seed, [0.9, 0.87, 0.8], inTemple, Order.Doric);
+      // With the gallery over it the lower storey carries a flat timber
+      // floor back to the wall (backY NaN), not a lean-to roof: the upper
+      // columns stood in front of a slope of tiles with nothing to stand on.
+      const top0 = colonnade(x0, z0, x1, z1, g, 6.2, 0, 3.2, -nx, -nz, ins, lean ? g + 9.5 : NaN, seed, [0.9, 0.87, 0.8], inTemple, Order.Doric);
       if (!lean) colonnade(x0, z0, x1, z1, top0 + 0.5, 4.4, 0, 3.2, -nx, -nz, ins, g + 13.4, seed, [0.9, 0.87, 0.8], inTemple, Order.Ionic);
       // The back wall the portico roofs lean on.
       wall(ax, az, bx, bz, g - 0.4, g - 0.4, g + 13.4, g + 13.4, nx, nz, [0.88, 0.84, 0.74], seed, Surf.Stucco, 0, 0, 0, L, g, 13.4);
