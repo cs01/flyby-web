@@ -38,7 +38,7 @@ import type { Budget } from "./budget";
 export const SHADOW_CASTER_LAYER = 2;
 
 /** View distance, in metres, where each cascade ends. */
-const CASCADE_FAR = [350, 1400, 6000] as const;
+const CASCADE_FAR: readonly [number, number, number] = [350, 1400, 6000];
 
 /**
  * How far up-sun of the slice the light camera sits, in metres. This is the
@@ -438,6 +438,8 @@ export class SunShadow {
   cityOnly = false;
 
   private cascades: Cascade[] = [];
+  /** The split distances in use: CASCADE_FAR unless a place set its own. */
+  private far: [number, number, number] = [...CASCADE_FAR];
   private city: CityShadow | null = null;
   private depthMaterial: THREE.RawShaderMaterial;
   /** The same depth-only shader drawing back faces only; see CITY_SHADOW_BIAS_M in the GLSL. */
@@ -667,7 +669,7 @@ export class SunShadow {
     // depth pass (3.3M triangles every other frame) that only made the
     // shadows past 1.4 km coarser. Wherever the city map is at least as fine,
     // it takes over from the second cascade's far edge instead.
-    if (count > 2 && this.cityTexelWorld() <= (2 * sliceRadius(camera, 2)) / this.size) count = 2;
+    if (count > 2 && this.cityTexelWorld() <= (2 * sliceRadius(camera, 2, this.far)) / this.size) count = 2;
 
     // The outer cascades take turns: cascade 0 every frame, then 1 and 2 on
     // alternate frames (1 every other frame when there are only two). Each
@@ -728,9 +730,9 @@ export class SunShadow {
     // A skipped cascade gets its far collapsed onto the previous one's, which
     // both stops it being sampled and moves the outer fade in to meet it.
     u.uCascadeFar.value.set(
-      CASCADE_FAR[0],
-      count > 1 ? CASCADE_FAR[1] : CASCADE_FAR[0],
-      count > 2 ? CASCADE_FAR[2] : count > 1 ? CASCADE_FAR[1] : CASCADE_FAR[0],
+      this.far[0],
+      count > 1 ? this.far[1] : this.far[0],
+      count > 2 ? this.far[2] : count > 1 ? this.far[1] : this.far[0],
     );
     u.uShadowTexel.value = 1 / this.size;
     u.uShadowStrength.value = strength;
@@ -747,7 +749,7 @@ export class SunShadow {
    * constant radius is the precondition for the texel snapping below.
    */
   private fit(c: Cascade, camera: THREE.PerspectiveCamera, sunDir: THREE.Vector3, index: number): void {
-    const { zCentre, radius } = sliceSphere(camera, index);
+    const { zCentre, radius } = sliceSphere(camera, index, this.far);
     _centre.set(0, 0, zCentre).applyMatrix4(camera.matrixWorld);
 
     // The light's ORIENTATION, built about the world origin rather than about
@@ -801,6 +803,19 @@ export class SunShadow {
     c.depthRange = cam.far - cam.near;
   }
 
+  /**
+   * Pull the first two splits in for a place seen from the street among low
+   * buildings. The default 350 m first cascade is sized for skylines; from
+   * Pompeii's pavements nearly everything that matters is within 150 m, and
+   * at 350 m a texel is 0.46 m, which a morning sun stretches to a metre of
+   * staircase along every shadow edge. Splits only move inward from the
+   * defaults, so the outer cascade and the city map hand-off are untouched.
+   */
+  setSplits(near: number, mid: number): void {
+    this.far = [Math.min(near, CASCADE_FAR[0]), Math.min(mid, CASCADE_FAR[1]), CASCADE_FAR[2]];
+    for (const c of this.cascades) c.drawn = false;
+  }
+
   private setSize(size: number): void {
     if (size === this.size) return;
     this.size = size;
@@ -822,9 +837,9 @@ export class SunShadow {
 }
 
 /** A cascade slice's bounding sphere: view-space z of its centre, and its radius. */
-function sliceSphere(camera: THREE.PerspectiveCamera, index: number): { zCentre: number; radius: number } {
-  const near = index === 0 ? camera.near : CASCADE_FAR[index - 1];
-  const far = CASCADE_FAR[index];
+function sliceSphere(camera: THREE.PerspectiveCamera, index: number, splits: readonly number[]): { zCentre: number; radius: number } {
+  const near = index === 0 ? camera.near : splits[index - 1];
+  const far = splits[index];
 
   const tanV = Math.tan(THREE.MathUtils.degToRad(camera.fov * 0.5));
   const tanH = tanV * camera.aspect;
@@ -845,8 +860,8 @@ function sliceSphere(camera: THREE.PerspectiveCamera, index: number): { zCentre:
   };
 }
 
-function sliceRadius(camera: THREE.PerspectiveCamera, index: number): number {
-  return sliceSphere(camera, index).radius;
+function sliceRadius(camera: THREE.PerspectiveCamera, index: number, splits: readonly number[]): number {
+  return sliceSphere(camera, index, splits).radius;
 }
 
 /**

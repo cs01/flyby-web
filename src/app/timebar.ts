@@ -87,8 +87,17 @@ export class LocalClock {
 
   /** "EDT", "CEST", "GMT+8". Whatever the zone is actually called. */
   abbrev(when: Date): string {
-    return this.zoneFmt.formatToParts(when).find((x) => x.type === "timeZoneName")?.value ?? "UTC";
+    return zoneLabel(this.zoneFmt.formatToParts(when).find((x) => x.type === "timeZoneName")?.value ?? "UTC");
   }
+}
+
+/**
+ * Before standard time a zone is its local mean time, which Intl spells as
+ * an offset to the second ("GMT+0:49:56" for Rome, so for Pompeii in 79).
+ * That is the town's own solar clock, so it is labelled as such.
+ */
+export function zoneLabel(name: string): string {
+  return /^GMT[+-]\d+:\d\d:\d\d$/.test(name) ? "local time" : name;
 }
 
 /** "+3h 30m", "-45m", or "now". */
