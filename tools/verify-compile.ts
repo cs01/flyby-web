@@ -15,7 +15,7 @@
 // the shot's own query).
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { lstatSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -30,17 +30,27 @@ const POSES = [
 const out = mkdtempSync(join(tmpdir(), "flyby-compile-"));
 // Ports and a Chrome profile of its own: the defaults are shared with every
 // other shots run, and a second Chrome on the same debug port or profile made
-// this time out while parallel work was rendering. The profile is fixed (not
-// per run) so its tile cache stays warm between builds.
+// this time out while parallel work was rendering. The profile slots below are
+// fixed (not per run) so their tile caches stay warm between builds.
 const port = String(5600 + Math.floor(Math.random() * 300));
+// Chrome holds a profile while it runs (SingletonLock) and refuses a second
+// instance on it, which made a build right after another build fail to launch.
+// A few fixed slots keep the tile cache warm without sharing a live profile.
+// The lock is a symlink to a host-pid name that dangles, so only lstat sees it.
+const locked = (dir: string): boolean => !!lstatSync(`${dir}/SingletonLock`, { throwIfNoEntry: false });
+const slot = [0, 1, 2, 3].map((i) => `/tmp/flyby-compile-profile-${i}`).find((d) => !locked(d));
+if (!slot) {
+  console.error("verify-compile: all four Chrome profile slots are in use; is another build running?");
+  process.exit(1);
+}
 const debugPort = String(9500 + Math.floor(Math.random() * 300));
 const t0 = Date.now();
-const r = spawnSync("bun", ["tools/shots.ts", "--port", port, "--debug-port", debugPort, "--profile", "/tmp/flyby-compile-profile", "--out", out, "--only", POSES.join(",")], {
+const r = spawnSync("bun", ["tools/shots.ts", "--port", port, "--debug-port", debugPort, "--profile", slot, "--out", out, "--only", POSES.join(",")], {
   stdio: ["ignore", "inherit", "inherit"],
 });
 const secs = ((Date.now() - t0) / 1000).toFixed(0);
 if (r.status !== 0) {
-  console.error(`verify-compile: a shader path failed to render (${secs} s); rerun with SHOTS_DUMP=1 for the compiler log`);
+  console.error(`verify-compile: a pose failed to render (${secs} s): a shader error, or the harness itself (see above); SHOTS_DUMP=1 prints the page log`);
   process.exit(1);
 }
 console.log(`verify-compile: ${POSES.length} shader paths rendered clean in ${secs} s`);
