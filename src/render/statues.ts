@@ -1185,16 +1185,18 @@ export function placeTownStatues(st: Sink, data: { publics: { name: string; ring
     if (c) { at = c; stabia = s; abb = a; }
   }
   if (at && stabia && abb) {
-    // On the tip of the pavement at the crossroads' north-west corner, out
-    // by the kerbs and clear of the house corner behind, facing the junction.
+    // On the pavement at the crossroads' north-west corner, facing the junction:
+    // the rounded corner is the only part of it the walkers' line does not cross.
     const dir = (p: number[]): [number, number] => { const dx = p[p.length - 2] - p[0], dz = p[p.length - 1] - p[1], L = Math.hypot(dx, dz) || 1; return [dx / L, dz / L]; };
     const [sx, sz] = dir(stabia.pts), [ax, az] = dir(abb.pts);
     let nx = -sz, nz = sx; if (nz > 0) { nx = -nx; nz = -nz; }
     let wx = -az, wz = ax; if (wx > 0) { wx = -wx; wz = -wz; }
-    const dn = abb.carriageM / 2 + 0.5, dw = stabia.carriageM / 2 + 0.5;
+    // A base smaller than the forum's, to stand clear of the house corner behind.
+    const hb = 0.3;
+    const dn = abb.carriageM / 2 + abb.sidewalkM * 0.55, dw = stabia.carriageM / 2 + stabia.sidewalkM * 0.55;
     const x = at[0] + nx * dn + wx * dw, z = at[1] + nz * dn + wz * dw;
     const yaw = Math.atan2(at[0] - x, at[1] - z);
-    tris += standing(st, "cuirassed", lean, x, ground(x, z) + kerb, z, yaw, 1.85, { hx: 0.42, hz: 0.42, h: 1.6, lines: ["M.HOLCONIO.M.F", "RVFO.TRIB.MIL"] }, seed);
+    tris += standing(st, "cuirassed", lean, x, ground(x, z) + kerb, z, yaw, 1.85, { hx: hb, hz: hb, h: 1.6, lines: ["M.HOLCONIO", "RVFO"] }, seed);
     placed.push("holconius");
   }
   const pal = data.publics.find((p) => /Palestra Sannitica/.test(p.name));

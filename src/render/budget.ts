@@ -382,7 +382,7 @@ export interface PompeiiPlan {
 // (counters, sills, beams, shutters, door leaves and the eave soffits only);
 // the house interiors about 9 MB and the sculpted statues (render/statues.ts)
 // about 4.5 MB of the full build.
-export const POMPEII_FULL_BYTES = Math.round(78 * 1048576);
+export const POMPEII_FULL_BYTES = Math.round(72 * 1048576);
 export const POMPEII_LEAN_BYTES = Math.round(26 * 1048576);
 
 /** The art atlas on the GPU: RGBA8 with its mip chain. */
