@@ -35,7 +35,8 @@ import { Hud, LoadingScreen } from "./app/hud";
 import { showMenu } from "./app/menu";
 import { Aircraft, DEFAULT_CONFIG, EASY_CONFIG, chooseStartAltitude } from "./sim/aircraft";
 import { ChaseCam, CAMERA_MODES } from "./sim/chasecam";
-import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M } from "./sim/drone";
+import { Drone, DRONE_RADIUS, WALK_RADIUS, WALK_NEAR_M, WALK_EYE_M } from "./sim/drone";
+import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, Townsfolk, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
@@ -106,6 +107,8 @@ import { SkyProbe } from "./render/skyprobe";
 import { Skyline } from "./sim/skyline";
 import { reverseGeocode, placeLabel } from "./data/place";
 import { Labels } from "./app/labels";
+import { PhoneShell } from "./app/phoneui";
+import { isTouchDevice } from "./sim/touch";
 import { StreetSignHud } from "./app/streetsign";
 import { streetSign } from "./data/streetsign";
 import { Layers } from "./app/layers";
@@ -1224,6 +1227,14 @@ async function main() {
   hud.setWeather(wx, 0);
   const throttleSlider = new ThrottleSlider(ui);
   const modeBar = new ModeBar(ui, era ? { car: "cart" } : undefined);
+  // The phone layout (app/phoneui.ts). Coarse pointer, not width: a phone on
+  // its side is wide and still has no keyboard.
+  const phone = isTouchDevice() ? new PhoneShell(ui, city.name) : null;
+  let labelBand = { top: 0, bottom: Infinity };
+  if (phone) Object.assign(window as unknown as Record<string, unknown>, { flybyUi: { overlaps: () => phone.overlaps() } });
+  const walkHint = phone
+    ? "On foot: left thumb walks · drag to look"
+    : "On foot: WASD walk · mouse looks · Shift runs · N to get back in the Cessna";
 
   /**
    * What the panel says about where the city came from.
@@ -1355,7 +1366,7 @@ async function main() {
   const minimap = new Minimap(ui);
   // A city with no building pack still gets the compass and the landmarks.
   if (pack) minimap.setCity(pack);
-  const layers = new Layers(ui);
+  const layers = new Layers(ui, phone !== null);
   const airTraffic = new AirTrafficLayer({ scene, ui, model, origin, groundAt: terrain.heightAt, shotMode });
   // Trains and boats; see app/transit.ts.
   const transit = new TransitLayer({ scene, ui, model, origin, cityId: city.id, groundAt: terrain.heightAt, waterY: waterLevel, landmarks, shotMode, onGo: (x, y, z, name) => {
@@ -1525,6 +1536,7 @@ async function main() {
     autopilot.disengage();
     places.setActive(p.name);
     places.setNote("");
+    phone?.close();
     hud.toast(`${p.name} \u00b7 half a mile out`);
   };
 
@@ -1577,13 +1589,17 @@ async function main() {
   }
   let nearby: PlaceRow[] = [...curated];
   const sortedAt = { x: 0, z: 0 };
+  /** Whoever the player is right now: the walker or the car, not the parked
+   *  aeroplane, which starts 5 km out. */
+  const mePos = () => (carActive && car ? car.position : droneActive ? drone.position : ac.position);
   const sortByRange = () => {
-    sortedAt.x = ac.position.x;
-    sortedAt.z = ac.position.z;
+    const me = mePos();
+    sortedAt.x = me.x;
+    sortedAt.z = me.z;
     nearby.sort(
       (a, b) =>
-        Math.hypot(a.x - ac.position.x, a.z - ac.position.z) -
-        Math.hypot(b.x - ac.position.x, b.z - ac.position.z),
+        Math.hypot(a.x - me.x, a.z - me.z) -
+        Math.hypot(b.x - me.x, b.z - me.z),
     );
     places.setPlaces(nearby);
     minimap.setPlaces(nearby);
@@ -1618,6 +1634,8 @@ async function main() {
       input.timelapse = on;
     },
   });
+  // Every panel exists now; the phone moves the secondary ones into its sheets.
+  phone?.adopt();
   input.onTimelapse = (on) => {
     timelapse = on;
     timebar.setTimelapse(on);
@@ -1630,6 +1648,132 @@ async function main() {
     const spot = new URLSearchParams(location.search).get("spot");
     if (spot) spotAt(spot);
   }
+
+  // --- Start on foot ------------------------------------------------------
+  // Every city begins with the walker standing somewhere worth standing, and
+  // an aerial sweep that comes down to their eye (sim/intro.ts). Shot mode
+  // keeps the old aeroplane start unless asked, because walking changes the
+  // lens (FOV, near plane) every fixed-pose screenshot was taken through.
+  /** Why a point is no place to stand, or null when it is fine. */
+  const _probe = new THREE.Vector3();
+  const _still = new THREE.Vector3();
+  const unstandable = (x: number, z: number): string | null => {
+    const g = terrain.heightAt(x, z);
+    if (!(g > waterLevel + 0.6)) return "water";
+    if (carriageways.blocked(x, z)) return "carriageway";
+    if (collision) {
+      // A small push-out means the eye is inside or against a building. The
+      // radius is padded so the spawn is not touching a wall either.
+      _probe.set(x, g + WALK_EYE_M, z);
+      _still.set(0, 0, 0);
+      collision.resolve(_probe, _still, WALK_RADIUS * 2);
+      if ((_probe.x - x) ** 2 + (_probe.z - z) ** 2 > 1e-6) return "building";
+    }
+    return null;
+  };
+  /** The nearest standable point to a wish, spiralling out; pavement first. */
+  const findSpawn = (wx0: number, wz0: number, pavementFirst: boolean): { x: number; z: number } | null => {
+    // Pavement is ground within a few metres of a carriageway; on a road-less
+    // place every point fails it and the second pass takes plain ground. A
+    // hand-picked start (a forum, a promenade) skips the first pass.
+    const besideRoad = (x: number, z: number) =>
+      carriagewayIds.length === 0 ||
+      [[6, 0], [-6, 0], [0, 6], [0, -6]].some(([dx, dz]) => carriageways.blocked(x + dx, z + dz));
+    for (const needRoad of [true, false]) {
+      if (needRoad && (carriagewayIds.length === 0 || !pavementFirst)) continue;
+      if (!unstandable(wx0, wz0) && (!needRoad || besideRoad(wx0, wz0))) return { x: wx0, z: wz0 };
+      for (let r = 2; r <= 400; r += 2) {
+        const n = Math.max(8, Math.round((2 * Math.PI * r) / 2));
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * 2 * Math.PI;
+          const x = wx0 + Math.cos(a) * r, z = wz0 + Math.sin(a) * r;
+          if (!unstandable(x, z) && (!needRoad || besideRoad(x, z))) return { x, z };
+        }
+      }
+    }
+    return null;
+  };
+  const startQ = new URLSearchParams(location.search);
+  const startWant = startQ.get("start");
+  const startOnFoot =
+    startWant !== "plane" &&
+    !startQ.get("spot") && !driveFromShot &&
+    (!shotMode || startQ.get("intro") === "1" || startWant === "walk");
+  let spawn: { x: number; z: number; headingDeg: number; reason: string | null } | null = null;
+  if (startOnFoot) {
+    let wish: { x: number; z: number };
+    let face: { x: number; z: number } | null = null;
+    if (city.start) {
+      wish = origin.toWorld(city.start.lat, city.start.lon);
+      face = origin.toWorld(city.start.faceLat, city.start.faceLon);
+    } else if (city.landmarks.length) {
+      // Stand back from the first landmark toward the town, so it is in view
+      // rather than underfoot.
+      const l = origin.toWorld(city.landmarks[0].lat, city.landmarks[0].lon);
+      const d = Math.hypot(l.x, l.z);
+      // A landmark at the origin (Chicago's) has no "toward the town"; step
+      // back south instead, still 80 m.
+      const back = d > 1 ? Math.min(80, d) : 80;
+      wish = d > 1 ? { x: l.x - (l.x / d) * back, z: l.z - (l.z / d) * back } : { x: l.x, z: l.z + back };
+      face = l;
+    } else {
+      wish = { x: 0, z: 0 };
+    }
+    const at = findSpawn(wish.x, wish.z, !city.start);
+    if (at) {
+      const far = face && Math.hypot(face.x - at.x, face.z - at.z) > 10;
+      const hdg = far ? (Math.atan2(face!.x - at.x, -(face!.z - at.z)) * 180) / Math.PI : city.approach;
+      spawn = { x: at.x, z: at.z, headingDeg: (hdg + 360) % 360, reason: unstandable(at.x, at.z) };
+      carActive = false;
+      droneActive = true;
+      drone.blocked = (x, z) => terrain.heightAt(x, z) < waterLevel + 0.4;
+      drone.enterWalk(at.x, at.z, terrain.heightAt(at.x, at.z), spawn.headingDeg);
+      sortByRange();
+    }
+  }
+  // The sweep plays when the city starts on foot, never in shot mode unless
+  // asked, and `?intro=0` turns it off for anyone who has seen it.
+  const introWanted = spawn !== null && startQ.get("intro") !== "0" && (!shotMode || startQ.get("intro") === "1");
+  let intro: IntroRun | null = introWanted
+    ? new IntroRun(new IntroPath({
+        eye: drone.position.clone(),
+        headingDeg: spawn!.headingDeg,
+        groundY: terrain.heightAt(drone.position.x, drone.position.z),
+        clearAt: (x, z) => Math.max(terrain.heightAt(x, z), skyline.topAt(x, z)),
+      }))
+    : null;
+  /** Every intro frame's camera pose, then 30 frames of walking after it, for
+   *  tools/verify-intro.ts. 750 small records; kept for the session. */
+  const introTrace: (PoseSample & { phase: "intro" | "skip" | "walk" })[] = [];
+  let introAfter = 0;
+  let introHold = 0.9;
+  const skipIntro = () => intro?.skip();
+  if (intro) {
+    ui.classList.add("intro");
+    const chip = document.createElement("button");
+    chip.className = "intro-skip";
+    chip.textContent = "skip";
+    chip.addEventListener("click", (e) => {
+      e.stopPropagation();
+      skipIntro();
+    });
+    ui.append(chip);
+    // Any hand on the controls ends the sweep: capture phase, so the press
+    // still reaches whatever it was aimed at once the walker has landed.
+    addEventListener("pointerdown", skipIntro, { capture: true });
+    addEventListener("keydown", skipIntro, { capture: true });
+  }
+  const endIntro = () => {
+    removeEventListener("pointerdown", skipIntro, { capture: true });
+    removeEventListener("keydown", skipIntro, { capture: true });
+    ui.querySelector(".intro-skip")?.remove();
+    // Fade the controls in now the walker is on the ground.
+    ui.classList.add("intro-out");
+    ui.classList.remove("intro");
+    setTimeout(() => ui.classList.remove("intro-out"), 1200);
+    hud.toast(walkHint);
+  };
+  if (spawn && !intro) hud.toast(walkHint);
 
   // Compile every program the scene has now, behind the loading screen, with
   // KHR_parallel_shader_compile where the browser has it. Otherwise each is
@@ -1810,7 +1954,7 @@ async function main() {
           drone.blocked = (x, z) => terrain.heightAt(x, z) < waterLevel + 0.4;
           drone.enterWalk(spot.x, spot.z, terrain.heightAt(spot.x, spot.z), facing);
           input.setPointerLock(true);
-          hud.toast("On foot: WASD walk \u00b7 mouse looks \u00b7 Shift runs \u00b7 N to get back in the Cessna");
+          hud.toast(walkHint);
         }
       }
     }
@@ -1909,7 +2053,7 @@ async function main() {
       // Riding: the step is taken inside the vehicle by ride.update below.
       if (ride.riding) {
         if (!input.paused) ride.take(di);
-      } else if (!input.paused) {
+      } else if (!input.paused && !intro) {
         drone.update(di, dt, groundUnderDrone);
         // After the integrate and after the terrain clamp, so the push-out is
         // the last word on where the drone ended up this frame.
@@ -1943,7 +2087,7 @@ async function main() {
     // not going to reach at 20 knots down a one-way street. The list stays --
     // it is off to the side and it is how you leave -- but the world stops
     // being annotated.
-    labels.visible = layers.landmarks && !carActive;
+    labels.visible = layers.landmarks && !carActive && !intro;
     places.setVisible(layers.landmarks);
 
     // What road is this, and what am I coming to. Only the car has an answer:
@@ -1953,17 +2097,38 @@ async function main() {
         ? streetSign(roadGraph, car.track.half, car.track.s)
         : null,
     );
+    // On foot on a phone every name is close, and a dozen of them stacked
+    // across the view was most of the owner's screenshot: the three nearest,
+    // plus wherever the mission is going.
+    const onFoot = carActive || (droneActive && drone.walk);
+    labels.limit = phone && onFoot ? 3 : phone ? 6 : 9;
+    if (phone) {
+      labels.bandTop = labelBand.top;
+      labels.bandBottom = labelBand.bottom;
+    }
+    const goal = missions.destination;
+    const me = mePos();
+    const labelTargets = nearby
+      // On foot, the place you are standing in ("Forum 0.0 mi") is not news,
+      // and nor is anything near enough to read as 0.0.
+      .filter((p) => p.name !== goal?.name && !(onFoot && Math.hypot(p.x - me.x, p.z - me.z) < 80))
+      .map((p) => ({
+        name: p.name,
+        x: p.x,
+        // topY is a height to fly over (the roof plus 60 m or 120 m); seen
+        // from the street that puts every name high in the sky over the
+        // wrong building. On foot the tag sits a storey or two up instead.
+        y: onFoot ? terrain.heightAt(p.x, p.z) + 12 : p.topY,
+        z: p.z,
+        done: autopilot.target?.name === p.name,
+        pin: false,
+      }));
+    if (goal) labelTargets.unshift({ name: goal.name, x: goal.x, y: terrain.heightAt(goal.x, goal.z) + 12, z: goal.z, done: false, pin: true });
     // Above the thing, not on it: a label at ground level is behind the
     // building it names as soon as you are lower than the roof.
     labels.update(
       camera,
-      nearby.map((p) => ({
-        name: p.name,
-        x: p.x,
-        y: p.topY,
-        z: p.z,
-        done: autopilot.target?.name === p.name,
-      })),
+      labelTargets,
       ac.position,
       transit.tags ? [...airTraffic.tags.rects, ...transit.tags.rects] : airTraffic.tags.rects,
     );
@@ -2025,6 +2190,28 @@ async function main() {
       camera.up.set(0, 1, 0);
     }
 
+    // The opening sweep owns the lens until it lands. After the other rigs, so
+    // its last frame and the walker's first are written by the same code path
+    // (drone.orientation), and the trace sees both.
+    if (intro) {
+      const phase = intro.skipping ? "skip" : "intro";
+      // Held on its first pose while the loading screen fades (0.9 s, see
+      // LoadingScreen.done), so the sweep is not half over when it is seen.
+      const idt = introHold > 0 && !intro.skipping ? 0 : dt;
+      introHold -= dt;
+      if (!intro.update(idt, camera.position, camera.quaternion)) {
+        intro = null;
+        endIntro();
+      }
+      camera.up.set(0, 1, 0);
+      const p = camera.position, q = camera.quaternion;
+      introTrace.push({ phase, dt: idt, x: p.x, y: p.y, z: p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w });
+    } else if (introTrace.length && introAfter < 30) {
+      introAfter++;
+      const p = camera.position, q = camera.quaternion;
+      introTrace.push({ phase: "walk", dt, x: p.x, y: p.y, z: p.z, qx: q.x, qy: q.y, qz: q.z, qw: q.w });
+    }
+
     // Keep the sharp ground under anything that is nearly ON the ground.
     //
     // Driven off the CAMERA rather than off whichever machine is active, and
@@ -2056,7 +2243,9 @@ async function main() {
     // it is the tarmac under the windscreen; see CAR_NEAR_PLANE_M. Stepped
     // rather than eased, because a moving near plane moves every depth in the
     // buffer and the shadow cascades are fitted against it.
-    const wantNear = carActive ? CAR_NEAR_PLANE_M : droneActive && drone.walk ? WALK_NEAR_M : PLANE_NEAR;
+    // The sweep starts 700 m up, where the walker's 5 cm near plane would cost
+    // most of the depth buffer; it steps to that only on landing.
+    const wantNear = intro ? PLANE_NEAR : carActive ? CAR_NEAR_PLANE_M : droneActive && drone.walk ? WALK_NEAR_M : PLANE_NEAR;
     if (camera.near !== wantNear) {
       camera.near = wantNear;
       camera.updateProjectionMatrix();
@@ -2566,7 +2755,13 @@ async function main() {
         !shotMode,
         ground,
       );
-      modeBar.update(carActive ? "car" : droneActive ? (drone.walk ? "walk" : "drone") : "plane", !shotMode);
+      const machine = carActive ? "car" : droneActive ? (drone.walk ? "walk" : "drone") : "plane";
+      modeBar.update(machine, !shotMode);
+      // A phone flies the plane with the one-thumb stick and the slider, and
+      // everything else with a move stick and a look drag.
+      input.setTouchMode(machine);
+      phone?.setMode(ride.riding ? "ride" : machine);
+      if (phone) ui.classList.toggle("no-map", !layers.map);
     }
     {
       const leg = ride.riding ? "ride" : carActive ? "car" : droneActive ? (drone.walk ? "walk" : "drone") : "plane";
@@ -2704,13 +2899,26 @@ async function main() {
       }
       hud.setWeather(wx, clockOffset);
       hud.setPlace(city, wallClock.parts(now).time, wallClock.abbrev(now), dataSource());
-      places.update(ac.position.x, ac.position.z);
+      const me = mePos();
+      places.update(me.x, me.z);
       // Re-sorted only after a kilometre of travel. Sorting every tick would
       // reorder the rows under the cursor while you were reaching for one.
-      if (Math.hypot(ac.position.x - sortedAt.x, ac.position.z - sortedAt.z) > 1000) {
+      if (Math.hypot(me.x - sortedAt.x, me.z - sortedAt.z) > 1000) {
         sortByRange();
       }
       timebar.update(now, solar.sun.altitude);
+      // Switches for what this place has: no aircraft, trains or boats in
+      // 79 AD, and no trains or boats where no transit pack loaded.
+      const transitHere = !era && transit.pack !== null;
+      layers.setApplicable({ traffic: !era, trains: transitHere, boats: transitHere });
+      if (phone) {
+        phone.setTime(wallClock.parts(now).time);
+        phone.setCity(city.name);
+        // The band labels may use: below the bar, above the highest bottom
+        // control. Measured here, at 2.5 Hz, because reading layout every
+        // frame would force a reflow per frame.
+        labelBand = phone.labelBand();
+      }
     }
   };
 
@@ -2758,6 +2966,52 @@ async function main() {
   Object.assign(window as unknown as Record<string, unknown>, {
     flybyShot: {
       get frames() { return shotFrames; },
+      /** The opening sweep, for tools/verify-intro.ts. */
+      get intro() {
+        return {
+          active: intro !== null,
+          spawn,
+          spawnLatLon: spawn ? origin.toLatLon(spawn.x, spawn.z) : null,
+          wish: city.start ? { ...origin.toWorld(city.start.lat, city.start.lon), reason: unstandable(origin.toWorld(city.start.lat, city.start.lon).x, origin.toWorld(city.start.lat, city.start.lon).z) } : null,
+          eye: { x: drone.position.x, y: drone.position.y, z: drone.position.z },
+          trace: introTrace,
+        };
+      },
+      skipIntro: () => skipIntro(),
+      /** Why a point is no place to stand, or null. */
+      spawnCheck: (x: number, z: number) => unstandable(x, z),
+      /**
+       * Points that MUST fail spawnCheck, nearest the spawn: a carriageway
+       * vertex, a building centroid, open water. The verifier asserts each
+       * is refused for the reason named, so a check that stops refusing
+       * cannot pass silently. Null where the city has no such thing in reach.
+       */
+      spawnProbes: () => {
+        const s = spawn ?? { x: 0, z: 0 };
+        const near = <T>(xs: readonly T[], at: (t: T) => [number, number]): [number, number] | null => {
+          let best: [number, number] | null = null, bd = Infinity;
+          for (const t of xs) {
+            const [x, z] = at(t);
+            const d = (x - s.x) ** 2 + (z - s.z) ** 2;
+            if (d < bd) { bd = d; best = [x, z]; }
+          }
+          return best;
+        };
+        const road = near(carriagewayIds.map((i) => packRoads[i]), (r) => [r.pts[0], r.pts[1]]);
+        // Tall enough that the eye is inside it, and the centroid inside the
+        // ring for a convex-ish footprint; the biggest few near the spawn.
+        const bld = near((pack?.buildings ?? []).filter((b) => b.topM - b.baseM > 4 && b.ring.length <= 12), (b) => [b.cx, b.cz]);
+        let water: [number, number] | null = null;
+        for (let r = 200; r <= 20000 && !water; r += 200) {
+          for (let i = 0; i < 64 && !water; i++) {
+            const a = (i / 64) * 2 * Math.PI;
+            const x = s.x + Math.cos(a) * r, z = s.z + Math.sin(a) * r;
+            if (terrain.heightAt(x, z) < waterLevel - 1) water = [x, z];
+          }
+        }
+        const probe = (p: [number, number] | null) => (p ? { x: p[0], z: p[1], reason: unstandable(p[0], p[1]) } : null);
+        return { carriageway: probe(road), building: probe(bld), water: probe(water) };
+      },
       /**
        * The lane gate's measurement, from the SIM rather than from pixels:
        * step the street traffic `seconds` at a fixed 1/30 s (the shot clock is

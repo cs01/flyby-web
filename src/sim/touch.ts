@@ -36,6 +36,10 @@ import { EASY_RADIUS, type Finger } from "./easystick";
  */
 export const STICK_RADIUS = 96;
 export const THROTTLE_RADIUS = 64;
+/** The ground move stick's full travel. Shorter than the flight stick: a
+ *  walk is either on or off at a glance, and a thumb resting low on a phone
+ *  has less room below it than above. */
+export const MOVE_RADIUS = 72;
 
 /**
  * How much of the roll and rudder travel is spent on small inputs.
@@ -83,6 +87,19 @@ const TOP_DEAD_BAND = 0.26;
 
 export type TouchScheme = "easy" | "sticks";
 
+/** The machine the thumbs drive; sim/input.ts reads axes per machine. */
+export type TouchMode = "plane" | "drone" | "car" | "walk";
+
+/** Which buttons each machine draws. Anything else is the mode switch's job
+ *  or a key nobody on a phone has. */
+const BUTTON_MODES: Record<string, readonly TouchMode[]> = {
+  cam: ["plane", "drone"],
+  boost: ["plane", "walk", "car", "drone"],
+  look: ["plane"],
+  up: ["drone"],
+  down: ["drone"],
+};
+
 /** `?sticks=2` keeps the two-thumb scheme for anyone who learned it. */
 export function touchSchemeFromUrl(search: string): TouchScheme {
   return new URLSearchParams(search).get("sticks") === "2" ? "sticks" : "easy";
@@ -129,8 +146,17 @@ export class TouchControls {
   private left: Stick | null = null;
   private right: Stick | null = null;
   private cameraPresses = 0;
-  private carPresses = 0;
   private lookBackHeld = false;
+  private mode: TouchMode = "plane";
+  /** The look drag: which finger, where it was last, and the travel since
+   *  the last drain, CSS px. */
+  private lookId: number | null = null;
+  private lookAt = { x: 0, y: 0 };
+  private lookTravel = { x: 0, y: 0 };
+  private liftUp = false;
+  private liftDown = false;
+  private btns = new Map<string, HTMLButtonElement>();
+  private homeMove!: HTMLElement;
 
   constructor(surface: HTMLElement, ui: HTMLElement, scheme: TouchScheme = "easy") {
     this.easy = scheme === "easy";
@@ -139,6 +165,12 @@ export class TouchControls {
     ui.append(this.root);
 
     this.root.append(this.buttons());
+    // Where the move stick lives on the ground: a faint ring bottom-left, so
+    // the split (left thumb moves, the rest of the screen looks) can be found
+    // without a tutorial. Shown by CSS only on a phone, on the ground.
+    this.homeMove = this.home("move");
+    this.root.append(this.homeMove);
+    this.setMode("plane");
 
     // Persistent HOME rings, one per zone.
     //
@@ -165,6 +197,27 @@ export class TouchControls {
     surface.addEventListener("pointerdown", (e) => {
       if (e.pointerType !== "touch") return;
       const r = surface.getBoundingClientRect();
+      if (this.mode !== "plane") {
+        // On the ground (and in the drone) the left half is the move stick
+        // and anywhere else is a look drag. No dead band: the bar and the
+        // sheets are siblings of the canvas and take their own taps.
+        try {
+          surface.setPointerCapture(e.pointerId);
+        } catch {}
+        if (e.clientX < r.left + r.width / 2) {
+          if (this.left) return;
+          this.left = this.spawn(e.pointerId, e.clientX, e.clientY, "left");
+          this.homeMove.classList.add("busy");
+        } else {
+          if (this.lookId !== null) return;
+          this.lookId = e.pointerId;
+          this.lookAt.x = e.clientX;
+          this.lookAt.y = e.clientY;
+        }
+        this.recompute();
+        e.preventDefault();
+        return;
+      }
       if (e.clientY < r.top + r.height * TOP_DEAD_BAND) return;
       // One thumb: everything is the left (flight) stick, whichever side it
       // landed on.
@@ -187,11 +240,20 @@ export class TouchControls {
 
     surface.addEventListener("pointermove", (e) => {
       if (e.pointerType !== "touch") return;
+      if (e.pointerId === this.lookId) {
+        this.lookTravel.x += e.clientX - this.lookAt.x;
+        this.lookTravel.y += e.clientY - this.lookAt.y;
+        this.lookAt.x = e.clientX;
+        this.lookAt.y = e.clientY;
+        return;
+      }
       this.drag(e);
     });
 
     const end = (e: PointerEvent) => {
       if (e.pointerType !== "touch") return;
+      if (e.pointerId === this.lookId) this.lookId = null;
+      if (this.left && this.left.pointerId === e.pointerId) this.homeMove.classList.remove("busy");
       if (this.left && this.left.pointerId === e.pointerId) {
         this.despawn(this.left);
         this.left = null;
@@ -212,22 +274,59 @@ export class TouchControls {
       // reported up it eases back to centre on its own.
       this.left = null;
       this.right = null;
+      this.lookId = null;
+      this.homeMove.classList.remove("busy");
       this.recompute();
     });
+  }
+
+  /**
+   * Which machine the thumbs are driving. The plane keeps the scheme it had;
+   * everything else is a move stick on the left and a look drag elsewhere,
+   * and only that machine's buttons are drawn.
+   */
+  setMode(mode: TouchMode): void {
+    if (mode === this.mode && this.root.dataset.mode === mode) return;
+    const was = this.mode;
+    this.mode = mode;
+    this.root.dataset.mode = mode;
+    // A stick held across the switch would keep meaning the old thing.
+    if (was !== mode) {
+      for (const s of [this.left, this.right]) if (s) this.despawn(s);
+      this.left = null;
+      this.right = null;
+      this.lookId = null;
+      this.homeMove.classList.remove("busy");
+      // A latched boost must not carry from a run into the aeroplane.
+      this.boost = false;
+      this.btns.get("boost")?.classList.remove("on");
+    }
+    for (const [id, b] of this.btns) {
+      const show = BUTTON_MODES[id].includes(mode);
+      b.style.display = show ? "" : "none";
+    }
+    const boost = this.btns.get("boost");
+    if (boost) boost.textContent = mode === "walk" ? "RUN" : mode === "car" ? "FAST" : "BST";
+    this.recompute();
+  }
+
+  /** Look-drag travel since the last call, CSS px. Clears it. */
+  drainLook(): { x: number; y: number } {
+    const t = { x: this.lookTravel.x, y: this.lookTravel.y };
+    this.lookTravel.x = 0;
+    this.lookTravel.y = 0;
+    return t;
+  }
+
+  /** True when the thumbs are on the ground scheme rather than the plane's. */
+  get ground(): boolean {
+    return this.mode !== "plane";
   }
 
   /** Camera-cycle taps since the last call. Clears them. */
   drainCameraPresses(): number {
     const n = this.cameraPresses;
     this.cameraPresses = 0;
-    return n;
-  }
-
-  /** Get-in-the-car taps since the last call. Clears them. A phone has no G
-   *  key, and a mode nobody on a touch device can reach does not exist. */
-  drainCarPresses(): number {
-    const n = this.carPresses;
-    this.carPresses = 0;
     return n;
   }
 
@@ -239,10 +338,11 @@ export class TouchControls {
     const col = document.createElement("div");
     col.className = "touch-btns";
 
-    const add = (label: string, onDown: () => void, onUp?: () => void): HTMLElement => {
+    const add = (id: string, label: string, onDown: () => void, onUp?: () => void): HTMLButtonElement => {
       const b = document.createElement("button");
-      b.className = "touch-btn";
+      b.className = `touch-btn b-${id}`;
       b.textContent = label;
+      this.btns.set(id, b);
       // pointerdown, not click: a click waits for the finger to lift, and a
       // camera change or a look-back wants to happen when the thumb arrives.
       b.addEventListener("pointerdown", (e) => {
@@ -259,22 +359,31 @@ export class TouchControls {
       return b;
     };
 
-    add("CAM", () => this.cameraPresses++);
-    const boost = add("BST", () => {
+    add("cam", "CAM", () => this.cameraPresses++);
+    const boost = add("boost", "BST", () => {
       this.boost = !this.boost;
       boost.classList.toggle("on", this.boost);
     });
-    add("CAR", () => this.carPresses++);
     add(
+      "look",
       "LOOK",
       () => (this.lookBackHeld = true),
       () => (this.lookBackHeld = false),
     );
+    // The drone's climb and sink. The one-thumb scheme put them on the stick's
+    // up/down, which on the ground scheme is forward and back.
+    const lift = (up: boolean, on: boolean) => {
+      if (up) this.liftUp = on;
+      else this.liftDown = on;
+      this.recompute();
+    };
+    add("up", "UP", () => lift(true, true), () => lift(true, false));
+    add("down", "DN", () => lift(false, true), () => lift(false, false));
     return col;
   }
 
   /** The faint always-there ring that says "put your thumb about here". */
-  private home(side: "left" | "right"): HTMLElement {
+  private home(side: "left" | "right" | "move"): HTMLElement {
     const el = document.createElement("div");
     el.className = `touch-home ${side}`;
     const knob = document.createElement("div");
@@ -285,7 +394,8 @@ export class TouchControls {
 
   private spawn(pointerId: number, x: number, y: number, side: "left" | "right"): Stick {
     const ring = document.createElement("div");
-    ring.className = `touch-ring ${this.easy ? "easy" : side}`;
+    const ground = this.mode !== "plane";
+    ring.className = `touch-ring ${this.easy || ground ? "easy" : side}`;
     ring.style.left = `${x}px`;
     ring.style.top = `${y}px`;
     const knob = document.createElement("div");
@@ -296,7 +406,7 @@ export class TouchControls {
     // it look like it was there before the finger was.
     requestAnimationFrame(() => ring.classList.add("in"));
     (side === "left" ? this.homeLeft : this.homeRight)?.classList.add("busy");
-    const radius = this.easy ? EASY_RADIUS : side === "left" ? STICK_RADIUS : THROTTLE_RADIUS;
+    const radius = ground ? MOVE_RADIUS : this.easy ? EASY_RADIUS : side === "left" ? STICK_RADIUS : THROTTLE_RADIUS;
     return { pointerId, originX: x, originY: y, x: 0, y: 0, radius, ring, knob };
   }
 
@@ -327,6 +437,17 @@ export class TouchControls {
     const l = this.left ?? { x: 0, y: 0 };
     const r = this.right ?? { x: 0, y: 0 };
     this.active = this.left !== null || this.right !== null;
+    if (this.mode !== "plane") {
+      // x strafes on foot and steers a car; y is forward and back. Linear on
+      // purpose: walking speed wants to follow the thumb, not a curve.
+      this.finger.held = false;
+      a.roll = l.x;
+      a.throttle = -l.y;
+      a.lift = (this.liftUp ? 1 : 0) - (this.liftDown ? 1 : 0);
+      a.yaw = 0;
+      this.active = this.active || a.lift !== 0;
+      return;
+    }
     if (this.easy) {
       this.finger.held = this.left !== null;
       this.finger.x = l.x;

@@ -44,10 +44,14 @@ export class MissionUi {
     this.card = document.createElement("div");
     this.card.className = "hud mission-card";
     this.card.style.display = "none";
+    // One line: which way, where, how far, how long. The card replaces the
+    // MISSION chip while it runs, and its x is the way out.
     this.card.innerHTML =
-      `<div class="m-to"><span class="m-arrow">↑</span><b></b></div>` +
-      `<div class="m-row"><span class="m-dist"></span><span class="m-clock"></span></div>` +
+      `<div class="m-to"><span class="m-arrow">↑</span><b></b>` +
+      `<span class="m-dist"></span><span class="m-clock"></span>` +
+      `<button class="m-x" aria-label="End mission">×</button></div>` +
       `<div class="m-legs"></div>`;
+    (this.card.querySelector(".m-x") as HTMLElement).addEventListener("click", () => this.cancel());
     host.ui.appendChild(this.card);
 
     // Additive and depth-tested but not depth-writing, so it glows over the
@@ -82,6 +86,7 @@ export class MissionUi {
     this.beam.position.set(d.x, this.host.groundAt(d.x, d.z) + BEAM_H / 2, d.z);
     this.beam.visible = true;
     this.card.style.display = "";
+    this.button.style.display = "none";
     (this.card.querySelector(".m-to b") as HTMLElement).textContent = d.name;
     const best = this.best(d.name);
     this.host.toast(
@@ -95,6 +100,12 @@ export class MissionUi {
     this.mission = null;
     this.beam.visible = false;
     this.card.style.display = "none";
+    this.button.style.display = "";
+  }
+
+  /** Where the running mission is going, for the pinned label; else null. */
+  get destination(): Dest | null {
+    return this.mission?.state === "running" ? this.mission.spec.dest : null;
   }
 
   /** Per frame. `yawRad` is the camera's heading, so the arrow points relative to the view. */

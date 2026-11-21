@@ -63,6 +63,16 @@ export interface City {
     at: string;
     vehicle: "cart";
   };
+  /**
+   * Where the walker lands after the opening sweep, and what they face.
+   *
+   * Every city starts on foot. Without this the spawn is the pavement nearest
+   * the first landmark, facing it; a city sets it when there is a better first
+   * view than that. The point is a wish, not a promise: main.ts moves it to
+   * the nearest spot that is dry, outside every building and off the
+   * carriageway.
+   */
+  start?: { lat: number; lon: number; faceLat: number; faceLon: number };
 }
 
 export const CITIES: City[] = [
@@ -303,6 +313,9 @@ export const CITIES: City[] = [
     id: "pompeii", name: "Pompeii, 79 AD", country: "Italy", continent: "Europe",
     lat: 40.7490, lon: 14.4880, radius: 1500, approach: 60, startAlt: 350,
     era: { at: "0079-08-22T07:30:00Z", vehicle: "cart" },
+    // The south end of the Forum, looking up its length at the Temple of
+    // Jupiter with Vesuvius behind it: the view the Forum was laid out for.
+    start: { lat: 40.74906, lon: 14.48500, faceLat: 40.74997, faceLon: 14.48450 },
     landmarks: [
       { name: "Forum", lat: 40.74933, lon: 14.48485, height: 14 },
       { name: "Temple of Jupiter", lat: 40.74997, lon: 14.48450, height: 20 },
@@ -410,6 +423,10 @@ export const CITIES: City[] = [
   {
     id: "sf", name: "San Francisco", country: "USA", continent: "North America",
     lat: 37.8085, lon: -122.4098, radius: 7000, approach: 300, startAlt: 700,
+    // The waterfront promenade just south of the Ferry Building, looking out
+    // across the water at the Bay Bridge. Picked by scanning the pack for a
+    // dry spot whose line of sight to the bridge clears every pier shed.
+    start: { lat: 37.79481, lon: -122.39231, faceLat: 37.7860, faceLon: -122.3790 },
     landmarks: [
       { name: "Golden Gate Bridge", lat: 37.8199, lon: -122.4783, height: 227 },
       { name: "Transamerica Pyramid", lat: 37.7952, lon: -122.4028, height: 260 },

@@ -10,7 +10,7 @@
 // known time (0.14 s here) and releases faster than it engages, which is what
 // makes the aircraft feel bolted to the stick.
 
-import { TouchControls, hasTouch, expo, rateLimit, touchSchemeFromUrl } from "./touch";
+import { TouchControls, hasTouch, expo, rateLimit, touchSchemeFromUrl, type TouchMode } from "./touch";
 import type { Finger } from "./easystick";
 import type { DroneInput } from "./drone";
 import type { CarInput } from "./car";
@@ -40,6 +40,13 @@ const RELEASE = 0.08;
  * of mat before you have looked behind you.
  */
 const LOOK_DEG_PER_PX = 0.11;
+
+/**
+ * Degrees of look per CSS pixel of finger drag. A phone is ~400 px across, so
+ * 0.3 turns ~120 degrees per full-width swipe: a look round without lifting,
+ * and a short drag still lands on a doorway.
+ */
+const TOUCH_LOOK_DEG_PER_PX = 0.3;
 
 function ramp(current: number, target: number, dt: number): number {
   const toward = Math.abs(target) > Math.abs(current) && target * current >= 0;
@@ -368,7 +375,6 @@ export class Input {
       }
       if (touch.boost) t.boost = 1;
       this.cameraCycled += touch.drainCameraPresses();
-      this.carToggled += touch.drainCarPresses();
     }
 
     this.lookBack = this.keys.has("KeyB") || (touch?.lookBack ?? false);
@@ -445,7 +451,17 @@ export class Input {
     t.boost = this.held("ShiftLeft", "ShiftRight", "Space");
 
     const touch = this.touch;
-    if (touch?.active) {
+    if (touch?.ground) {
+      // Move stick on the left, look drag elsewhere, climb on the buttons.
+      // No cruise: on foot the thumb is the speed, and letting go stops.
+      if (touch.active) {
+        t.forward = touch.axes.throttle;
+        t.strafe = touch.axes.roll;
+        t.lift = touch.axes.lift;
+      }
+      if (touch.boost) t.boost = 1;
+      this.drainTouchLook(touch);
+    } else if (touch?.active) {
       // The virtual stick means the same things it does in the aeroplane:
       // move with the left thumb, turn and climb with the right.
       t.forward = touch.axes.throttle;
@@ -455,7 +471,7 @@ export class Input {
       t.yaw = touch.easy ? touch.axes.roll : touch.axes.yaw;
       t.lift = touch.axes.lift;
     }
-    if (touch?.easy) {
+    if (touch?.easy && !touch.ground) {
       // The slider flies it forward; the thumb turns it and, up or down,
       // climbs or sinks.
       const [fwd, boost] = splitLever(this.groundLever);
@@ -490,6 +506,18 @@ export class Input {
    * treacle. One smoother, and it lives with the machine that has an opinion
    * about how quickly a wheel turns.
    */
+  /** Fold the touch look drag into the same look accumulator the mouse uses. */
+  private drainTouchLook(touch: TouchControls): void {
+    const d = touch.drainLook();
+    this.lookX += d.x * TOUCH_LOOK_DEG_PER_PX;
+    this.lookY += d.y * TOUCH_LOOK_DEG_PER_PX;
+  }
+
+  /** Which machine the touch controls drive; see TouchControls.setMode. */
+  setTouchMode(mode: TouchMode): void {
+    this.touch?.setMode(mode);
+  }
+
   carAxes(): CarInput {
     const t = this.carTarget;
     t.throttle = this.held("KeyW", "ArrowUp") - this.held("KeyS", "ArrowDown");
@@ -499,11 +527,12 @@ export class Input {
     const touch = this.touch;
     if (touch?.active) {
       // The same two thumbs as everywhere else: the left one steers, the right
-      // one is the pedals.
+      // one is the pedals. On the ground scheme the one stick does both.
       t.steer = touch.axes.roll;
       t.throttle = touch.axes.throttle;
     }
-    if (touch?.easy) {
+    if (touch?.ground) this.drainTouchLook(touch);
+    else if (touch?.easy) {
       // Cruise control from the slider; a thumb pulled well down still brakes
       // and backs up, because a dead end needs a way out.
       const [fwd, boost] = splitLever(this.groundLever);

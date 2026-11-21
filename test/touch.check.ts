@@ -25,6 +25,7 @@ class FakeClassList {
 class FakeElement {
   children: FakeElement[] = [];
   style: Record<string, string> = {};
+  dataset: Record<string, string> = {};
   textContent = "";
   classList = new FakeClassList("");
   private listeners = new Map<string, ((e: any) => void)[]>();
@@ -62,7 +63,7 @@ g.requestAnimationFrame = (fn: () => void) => { fn(); return 0; };
 g.matchMedia = () => ({ matches: false });
 g.navigator = g.navigator ?? { maxTouchPoints: 0 };
 
-const { TouchControls, STICK_RADIUS, THROTTLE_RADIUS, expo, rateLimit, STICK_PUSH_S } = await import("../src/sim/touch");
+const { TouchControls, STICK_RADIUS, THROTTLE_RADIUS, MOVE_RADIUS, expo, rateLimit, STICK_PUSH_S } = await import("../src/sim/touch");
 const { EasyStick, EASY_RADIUS } = await import("../src/sim/easystick");
 const { Aircraft } = await import("../src/sim/aircraft");
 type EasyStick = InstanceType<typeof EasyStick>;
@@ -199,22 +200,19 @@ function button(label: string): FakeElement {
 // is added for a good reason, which teaches whoever added it to change the
 // number rather than to think; the names are what a thumb is actually looking
 // for, and a missing one is the failure worth having.
-const BUTTONS = ["CAM", "BST", "CAR", "LOOK"];
+// The car button is gone: the mode switch does that job on every device.
+const BUTTONS = ["CAM", "BST", "LOOK", "UP", "DN"];
 const btnLabels = ui.children[0].children[0].children.map((c) => c.textContent);
 check("every button exists, and nothing else does",
   BUTTONS.every((b) => btnLabels.includes(b)) && btnLabels.length === BUTTONS.length,
   btnLabels.join(" "));
+const shown = () => ui.children[0].children[0].children.filter((c) => c.style.display !== "none").map((c) => c.textContent).join(" ");
+check("plane draws cam, boost, look only", shown() === "CAM BST LOOK", shown());
 near("camera presses start at zero", tc.drainCameraPresses(), 0);
 button("CAM").fire("pointerdown", ev(9, 0, 0));
 button("CAM").fire("pointerdown", ev(9, 0, 0));
 near("camera presses accumulate", tc.drainCameraPresses(), 2);
 near("draining clears them", tc.drainCameraPresses(), 0);
-
-near("car presses start at zero", tc.drainCarPresses(), 0);
-button("CAR").fire("pointerdown", ev(9, 0, 0));
-button("CAR").fire("pointerdown", ev(9, 0, 0));
-near("car presses accumulate", tc.drainCarPresses(), 2);
-near("draining clears the car presses too", tc.drainCarPresses(), 0);
 
 check("boost starts off", !tc.boost, `${tc.boost}`);
 button("BST").fire("pointerdown", ev(9, 0, 0));
@@ -227,6 +225,71 @@ button("LOOK").fire("pointerdown", ev(9, 0, 0));
 check("look back holds", tc.lookBack, `${tc.lookBack}`);
 button("LOOK").fire("pointerup", ev(9, 0, 0));
 check("look back releases", !tc.lookBack, `${tc.lookBack}`);
+
+// --- The ground scheme (walk, car, drone) -----------------------------------
+// Left half is a move stick, anywhere else is a look drag, and each machine
+// draws only its own buttons.
+{
+  button("BST").fire("pointerdown", ev(9, 0, 0));
+  tc.setMode("walk");
+  check("walk draws only the run button", shown() === "RUN", shown());
+  check("a latched boost does not carry into a new machine", !tc.boost, `${tc.boost}`);
+  check("the ground scheme says so", tc.ground, `${tc.ground}`);
+  // Forward: thumb down in the left half, pushed up by its full travel.
+  down(40, 100, 600);
+  move(40, 100, 600 - MOVE_RADIUS);
+  near("walk: stick up is full forward", tc.axes.throttle, 1);
+  near("walk: no sideways from a straight push", tc.axes.roll, 0);
+  move(40, 100 + MOVE_RADIUS / 2, 600);
+  near("walk: stick right strafes right", tc.axes.roll, 0.5);
+  // The look finger, right half, at the same time.
+  down(41, 300, 400);
+  move(41, 350, 380);
+  const lk = tc.drainLook();
+  check("walk: right-half drag is look travel", lk.x === 50 && lk.y === -20, `${lk.x},${lk.y}`);
+  near("walk: the look finger leaves the stick alone", tc.axes.roll, 0.5);
+  const again = tc.drainLook();
+  check("walk: draining clears the look", again.x === 0 && again.y === 0, `${again.x},${again.y}`);
+  up(41, 350, 380);
+  up(40, 100, 600);
+  near("walk: letting go stops", tc.axes.throttle, 0);
+  // No dead band on the ground: a drag high on the screen still looks.
+  down(42, 300, 40);
+  move(42, 310, 40);
+  check("walk: a drag in the top band still looks", tc.drainLook().x === 10, "");
+  up(42, 310, 40);
+
+  tc.setMode("drone");
+  check("drone draws cam, boost, up, down", shown() === "CAM BST UP DN", shown());
+  button("UP").fire("pointerdown", ev(9, 0, 0));
+  near("drone: UP climbs", tc.axes.lift, 1);
+  button("UP").fire("pointerup", ev(9, 0, 0));
+  near("drone: releasing UP stops the climb", tc.axes.lift, 0);
+  tc.setMode("car");
+  check("car draws the boost as FAST", shown() === "FAST", shown());
+  tc.setMode("plane");
+  check("plane draws its buttons again", shown() === "CAM BST LOOK", shown());
+  check("plane is not the ground scheme", !tc.ground, `${tc.ground}`);
+}
+
+// --- Layout audit (app/layoutaudit.ts) -------------------------------------
+// The measure tools/phoneshots.ts runs on the real page. Its own probe: two
+// boxes that DO overlap must be reported, and a box past the safe area too.
+{
+  const { auditBoxes } = await import("../src/app/layoutaudit");
+  const walk411 = [
+    { name: "topbar", x: 8, y: 8, w: 395, h: 44 },
+    { name: "modebar", x: 8, y: 684, w: 395, h: 56 },
+    { name: "mission", x: 160, y: 636, w: 92, h: 40 },
+    { name: "run", x: 355, y: 628, w: 48, h: 48 },
+  ];
+  const ok = auditBoxes(walk411, 411, 748);
+  check("audit: a clean layout reports nothing", ok.length === 0, ok.join("; "));
+  const bad = auditBoxes([...walk411, { name: "minimap", x: 300, y: 600, w: 104, h: 104 }], 411, 748);
+  check("probe: an overlapping box IS reported", bad.some((s) => s.includes("minimap")), bad.join("; "));
+  const off = auditBoxes(walk411, 411, 748, 1, { top: 0, right: 0, bottom: 20, left: 0 });
+  check("probe: a box in the bottom safe area IS reported", off.some((s) => s.includes("modebar leaves")), off.join("; "));
+}
 
 // --- Report ----------------------------------------------------------------
 
@@ -300,8 +363,10 @@ check("look back releases", !tc.lookBack, `${tc.lookBack}`);
   const m = (id: number, x: number, y: number) => s2.fire("pointermove", ev(id, x, y));
   const u = (id: number, x: number, y: number) => s2.fire("pointerup", ev(id, x, y));
   const root = ui2.children[0];
-  check("easy draws no permanent home rings",
-    !root.children.some((c) => c.className.startsWith("touch-home")),
+  // The ground scheme's move ring is the one exception, and style.css draws
+  // it only on a phone, on the ground; the flight sticks have none.
+  check("easy draws no permanent flight home rings",
+    !root.children.some((c) => c.className.startsWith("touch-home") && c.className !== "touch-home move"),
     root.children.map((c) => c.className).join(" "));
   d(1, 100, 100);
   check("easy: the top band is still the clock's", !ez.finger.held, `held=${ez.finger.held}`);
