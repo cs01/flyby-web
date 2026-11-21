@@ -1014,6 +1014,82 @@ export const POSES: Pose[] = [
     wx: POMPEII_WX,
     what: "Roofs, atria and peristyles from 100 m",
   },
+  // The town by lamplight (render/pompeiilamps.ts) at 21:30 local on a clear
+  // night: 20:40:04Z, the town clock being UTC + 0:49:56.
+  {
+    name: "pompeii-lamps-abbondanza",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 33.6, hdgDeg: 58, pitchDeg: 1,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "Via dell'Abbondanza at 21:30 by its shop lamps",
+  },
+  {
+    // A rich house's atrium off Via dell'Abbondanza, its bronze stand by the impluvium.
+    name: "pompeii-lamps-atrium",
+    city: "pompeii",
+    lat: 40.750683, lon: 14.49004, altM: 33.91, hdgDeg: 21, pitchDeg: -8,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "A rich atrium at 21:30, lit by its bronze candelabrum",
+  },
+  {
+    // Down the Forum's east side from its south end, past the stands in the colonnade.
+    name: "pompeii-lamps-forum",
+    city: "pompeii",
+    lat: 40.749060, lon: 14.485220, altM: 36.8, hdgDeg: 337, pitchDeg: 0,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "The Forum colonnade at 21:30, a few lamps in the dark square",
+  },
+  {
+    // From the street into a tavern's front: the lamp on the counter, one hung inside the door.
+    name: "pompeii-lamps-thermopolium",
+    city: "pompeii",
+    lat: 40.750882, lon: 14.490213, altM: 33.84, hdgDeg: 150, pitchDeg: -13,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "A thermopolium counter at 21:30",
+  },
+  {
+    // A metre and a half from the atrium's candelabrum: paws, fluted shaft, the lamp on its disc.
+    name: "pompeii-lamps-candelabrum",
+    city: "pompeii",
+    lat: 40.750703, lon: 14.490048, altM: 33.51, hdgDeg: 24, pitchDeg: -8,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "Close on a bronze candelabrum",
+    query: "fov=32",
+  },
+  {
+    // Under the tavern's hanging lamp, looking up at it on its chains.
+    name: "pompeii-lamps-hanging",
+    city: "pompeii",
+    lat: 40.750884, lon: 14.490235, altM: 33.69, hdgDeg: 167, pitchDeg: 25,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "Close on a bronze hanging lamp in a tavern door",
+    query: "fov=45",
+  },
+  {
+    // The bronze lampbearer in the atrium by the House of Julius Polybius.
+    name: "pompeii-lamps-lampbearer",
+    city: "pompeii",
+    lat: 40.751011, lon: 14.490183, altM: 34.31, hdgDeg: 239, pitchDeg: -5,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "The statue lampbearer holding up his two lamps",
+    query: "fov=50",
+  },
+  {
+    // The town from 120 m at 21:30: a scatter of lamps, the streets dark between.
+    name: "pompeii-lamps-air",
+    city: "pompeii",
+    lat: 40.7478, lon: 14.4868, altM: 120, hdgDeg: 20, pitchDeg: -30,
+    t: D("0079-08-22T20:40:04Z"),
+    wx: POMPEII_WX,
+    what: "Pompeii from the air at 21:30",
+  },
   // The eruption (sim/eruption.ts, render/eruption.ts), on its own clock:
   // the town clock the app shows is UTC + 0:49:56, so 13:10Z is 14:00 there.
   {

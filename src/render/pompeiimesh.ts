@@ -30,6 +30,7 @@ import { KERB_M, pointInRing, ringArea, ringCentroid, villaFloorPoint } from "..
 import { ART_INDEX, ART_WORKS, ATRIUM_SCHEMES, GARDEN_SCHEMES } from "../data/pompeiiart";
 import { ORDERS, Order, TOP_DIAMETER, cube, figure, lathe, mill, oven } from "./pompeiiorders";
 import { HORSE_BONES, buildHorse, poseHorse } from "./horse";
+import type { LampSites } from "../data/pompeiilamps";
 
 /** What the fragment shader draws on a surface. */
 export const enum Surf {
@@ -181,6 +182,8 @@ export interface PompeiiModel {
   streets: PompeiiMeshData;
   solids: Solid[];
   lots: LotInfo[];
+  /** Where the lamps can go: render/pompeiilamps.ts. */
+  lampSites: LampSites;
   /** Counts the gate reads. */
   stats: {
     lots: number; domus: number; tabernae: number; compluvia: number; fountains: number;
@@ -233,6 +236,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const R = new Store();
   const solids: Solid[] = [];
   const lots: LotInfo[] = [];
+  const lampSites: LampSites = { openings: [], courts: [] };
   const stats = {
     lots: 0, domus: 0, tabernae: 0, compluvia: 0, fountains: 0, steppingStones: 0, columns: 0,
     towers: 0, roofTriangles: 0, flatRoofs: 0, plasterTriangles: 0, buildMs: 0, surveyedHouses: 0,
@@ -1047,6 +1051,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         }
       }
       const fp: V3[] = [0, 1, 2, 3].map((q): V3 => [c[q * 2], fl(c[q * 2], c[q * 2 + 1]) + 0.02, c[q * 2 + 1]]);
+      lampSites.courts.push({ ring: c.slice(0, 8), g, garden });
       poly(S, fp, [0, 1, 0], garden ? [0.3, 0.4, 0.18] : [0.55, 0.38, 0.3], seed, garden ? Surf.Garden : Surf.Pavement, 0, 0, fp.map((p) => [p[0], p[2], 0, 0]));
       if (garden && !lean && !grey) {
         // The portico roof inside the colonnade: a lean-to from the court walls.
@@ -1553,7 +1558,9 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       poly(S, [[e0[0], ry0, e0[1]], [e1[0], ry0, e1[1]], [e1[0] + ox * (P + 0.3), ry1, e1[1] + oz * (P + 0.3)], [e0[0] + ox * (P + 0.3), ry1, e0[1] + oz * (P + 0.3)]],
         [ox * 0.2, -1, oz * 0.2], [0.38, 0.26, 0.15], s, Surf.Wood, 0, 0, uv4());
     }
-    else wall(a[0], a[1], b[0], b[1], yBot, yBot, wallTop, wallTop, ox, oz, col, s, Surf.Plaster, p1, p2, 0, fl, g, wallTop - g);
+    // The plain front only where facade() did not draw one: chained as an else
+    // to the balcony it also walled over every shop and door without a balcony.
+    if (!(street && openings.length && !grey)) wall(a[0], a[1], b[0], b[1], yBot, yBot, wallTop, wallTop, ox, oz, col, s, Surf.Plaster, p1, p2, 0, fl, g, wallTop - g);
     // Back and sides, all plastered (seen across gardens and over lower roofs).
     const sideC: RGB = [col[0] * 0.5 + 0.43, col[1] * 0.5 + 0.4, col[2] * 0.5 + 0.34];
     const bl = Math.hypot(c[0] - d[0], c[1] - d[1]);
@@ -1633,6 +1640,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         } else wall(pi[0], pi[1], qi[0], qi[1], g, g, lo, lo, -inx / il, -inz / il, [0.55, 0.12, 0.08], s, Surf.Fresco, 0, 0, 0, wl, g, lo - g);
       }
       poly(S, inner.map((p): V3 => [p[0], g + 0.02, p[1]]), [0, 1, 0], [0.55, 0.38, 0.3], s, Surf.Pavement, 0, 0, inner.map((p) => [p[0], p[1], 0, 0]));
+      lampSites.courts.push({ ring: inner.flat(), g, garden: false });
       const pool = inner.map((p): V3 => [mx + (p[0] - mx) * 0.6, g + 0.06, mz + (p[1] - mz) * 0.6]);
       poly(S, pool, [0, 1, 0], [0.2, 0.32, 0.34], s, Surf.Water, 0, 0, pool.map((p) => [p[0], p[2], 0, 0]));
     }
@@ -1686,6 +1694,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const ix = -ox * rd, iz = -oz * rd;
       const w = o.u1 - o.u0;
       const inC: RGB = o.kind === "shop" ? [0.62, 0.52, 0.4] : [0.6, 0.5, 0.42];
+      lampSites.openings.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, g, ox, oz, ex, ez, w, h: o.h, depth: rd, kind: o.kind, counter: o.kind === "shop" && !lean });
       // Reveals, back, ceiling, floor.
       wall(x0, z0, x0 + ix, z0 + iz, g, g, g + o.h, g + o.h, ex, ez, inC, seed, Surf.Interior, 0, 0, 0, rd, g, o.h);
       wall(x1 + ix, z1 + iz, x1, z1, g, g, g + o.h, g + o.h, -ex, -ez, inC, seed, Surf.Interior, 0, 0, 0, rd, g, o.h);
@@ -2428,6 +2437,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     streets: pack(R),
     solids,
     lots,
+    lampSites,
     stats,
     amphitheatre: { cx: amph.cx, cz: amph.cz, a: AMPHI.a, b: AMPHI.b, rot: amph.rot, floorY: amphY.floor, rimY: amphY.rim },
   };
