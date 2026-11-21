@@ -995,6 +995,26 @@ export const POSES: Pose[] = [
     what: "A house front at arm's length: plaster, panels, notices",
   },
   {
+    // From the Abbondanza pose, turned to the south side's shop fronts and
+    // the upper storey: window reveals, notices, shop interiors.
+    name: "pompeii-facade-windows",
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 33.6, hdgDeg: 125, pitchDeg: 10,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "Shop fronts and upper windows across Via dell'Abbondanza",
+  },
+  {
+    // From the cart-side pose, turned to the west side of Via di Stabia:
+    // house doors, windows and the kerb at a few metres.
+    name: "pompeii-stabia-doors",
+    city: "pompeii",
+    lat: 40.74990, lon: 14.48808, altM: 33, hdgDeg: 285, pitchDeg: 4,
+    t: D("0079-08-22T07:30:00Z"),
+    wx: POMPEII_WX,
+    what: "House doors and windows on Via di Stabia",
+  },
+  {
     // Down Via di Mercurio from its south end at dusk, a metre off the
     // paving, Vesuvius at the far end: the viewpoint of the owner's
     // reference photograph of the basalt paving, kerbs and stepping stones.
