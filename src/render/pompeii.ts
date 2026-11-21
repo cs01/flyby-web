@@ -990,6 +990,10 @@ void main() {
     albedo = paintedWall(u, h, len, H, seed, p1, vViewDist, pao);
     ao *= pao;
     gloss = 0.12;
+    // A painted wall stands in a roofed room: most of the sky is kept off
+    // it, the sun is left to the shadow map (the compluvium's pool of light).
+    // Without this the rooms were lit as brightly as the street outside.
+    shut = mix(0.55, 0.92, uNight);
   } else if (style < 13.5) {
     // Opus signinum and beaten earth: warm, packed with crushed tile, lava
     // chips and limestone pebbles, white tesserae here and there.
@@ -1257,6 +1261,8 @@ void main() {
     float fg;
     albedo = floorPaint(vWall.xy, vWall.zw, p1, seed, vViewDist, fg);
     gloss = fg;
+    // At night the moon has no shadow map: a roofed floor must not take it.
+    shut = mix(0.5, 0.95, uNight);
   }
 
 #ifdef ROOF_COLLAPSE
