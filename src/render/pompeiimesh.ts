@@ -1448,7 +1448,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const s = EAVE_M / Math.cos(Math.atan(TAN_PITCH));
       poly(S, [ea, eb, [e.bx, top, e.bz], [e.ax, top, e.az]], [e.ox, 1, e.oz], tileC, seed, Surf.Tile, 0, 1, [[0, -s, 0, 0], [0, -s, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]]);
       stats.roofTriangles += 2;
-      if (!lean) eaveTrim([e.ax, e.az], [e.bx, e.bz], ea, eb, top, e.ox, e.oz, tileC, seed, e.main || (hs.surveyed && !!hs.name));
+      eaveTrim([e.ax, e.az], [e.bx, e.bz], ea, eb, top, e.ox, e.oz, tileC, seed, e.main || (hs.surveyed && !!hs.name));
     }
     solids.push({ ring: [...ring], baseY: yBot, topY: top + Math.min(CAP, 4) * TAN_PITCH });
     if (hs.kind === "villa" && art) {
@@ -1980,7 +1980,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       poly(S, [ec, ed, r0, r1], [-ox, 1, -oz], tileC, s, Surf.Tile, 0, 0, [[0, 0, fl, halfD], [fl, 0, fl, halfD], [fl, halfD, fl, halfD], [0, halfD, fl, halfD]]);
       // The underside of the street eave: from the pavement the roof is a
       // dark timber overhang along the top of the wall, not a sharp edge.
-      if (street && !lean) eaveTrim(a, b, ea, eb, top, ox, oz, tileC, s, !!dress.main);
+      if (street) eaveTrim(a, b, ea, eb, top, ox, oz, tileC, s, !!dress.main);
       // Gable ends, plastered.
       poly(S, [[b[0], top, b[1]], [c[0], top, c[1]], r1], [s1x, 0, s1z], sideC, s, Surf.Plaster, p1, 255, [[0, H, depth, H + rise], [depth, H, depth, H + rise], [depth / 2, H + rise, depth, H + rise]]);
       poly(S, [[d[0], top, d[1]], [a[0], top, a[1]], r0], [s2x, 0, s2z], sideC, s, Surf.Plaster, p1, 255, [[0, H, depth, H + rise], [depth, H, depth, H + rise], [depth / 2, H + rise, depth, H + rise]]);
@@ -1990,7 +1990,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const hb = top + Math.min(2.2, depth * TAN_PITCH * 0.6);
       const ea = eave(a, 1), eb = eave(b, 1);
       poly(S, [ea, eb, [c[0], hb, c[1]], [d[0], hb, d[1]]], [ox, 1, oz], tileC, s, Surf.Tile, 0, 0, [[0, 0, fl, depth], [fl, 0, fl, depth], [fl, depth, fl, depth], [0, depth, fl, depth]]);
-      if (street && !lean) eaveTrim(a, b, ea, eb, top, ox, oz, tileC, s, !!dress.main);
+      if (street) eaveTrim(a, b, ea, eb, top, ox, oz, tileC, s, !!dress.main);
       wall(c[0], c[1], d[0], d[1], top, top, hb, hb, -ox, -oz, sideC, s, Surf.Plaster, p1, 255, 0, bl, g, hb - g);
       poly(S, [[b[0], top, b[1]], [c[0], top, c[1]], [c[0], hb, c[1]]], [s1x, 0, s1z], sideC, s, Surf.Plaster, p1, 255, uv4());
       poly(S, [[d[0], top, d[1]], [a[0], top, a[1]], [d[0], hb, d[1]]], [s2x, 0, s2z], sideC, s, Surf.Plaster, p1, 255, uv4());
@@ -2045,6 +2045,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const T = 0.12;
     poly(S, [ea, eb, [eb[0], eb[1] - T, eb[2]], [ea[0], ea[1] - T, ea[2]]], [ox, 0, oz], tileC, seed, Surf.Tile, 0, 0,
       [[0, T, L, T], [L, T, L, T], [L, 0, L, T], [0, 0, L, T]]);
+    // The phone build stops at the soffit and the tile ends.
+    if (lean) return;
     const F: Frame = { ax: a[0], az: a[1], ex: (b[0] - a[0]) / L, ez: (b[1] - a[1]) / L, ox, oz };
     const OH = (ea[0] - a[0]) * ox + (ea[2] - a[1]) * oz, slope = (top - ea[1]) / OH;
     const rafter: RGB = [0.3, 0.2, 0.12], ante: RGB = [tileC[0] * 1.08, tileC[1] * 1.1, tileC[2] * 1.1];
@@ -2122,7 +2124,10 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const P = (u: number): [number, number] => [a[0] + ex * u, a[1] + ez * u];
     const H = top - g;
     const sorted = [...openings].sort((p, q) => p.u0 - q.u0);
-    const dressed = !lean && !grey;
+    // The phone (lean) build keeps what reads from the street per triangle: door
+    // leaves, beams, sills, counters, shutters and shop roofs; the jars,
+    // stock, benches, pilasters and open doors are the full build's.
+    const dressed = !grey, full = dressed && !lean;
     // Props are not roof: the collapse (surf.w) is only for the pent roofs.
     const tag = S.tag;
     let u = 0;
@@ -2138,7 +2143,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const r = (k: number): number => hash(seed * 1e6, 40 + oi * 7, k);
       const leftFree = o.u0 - (oi > 0 ? sorted[oi - 1].u1 : 0), rightFree = (oi + 1 < sorted.length ? sorted[oi + 1].u0 : fl) - o.u1;
       const pave = pavementAt((x0 + x1) / 2, (z0 + z1) / 2, ox, oz);
-      if (dressed && o.kind !== "shop") {
+      if (full && o.kind !== "shop") {
         S.tag = 0;
         doorFrame(F, o, g, leftFree, rightFree, pave, dress, r);
         S.tag = tag;
@@ -2154,22 +2159,22 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const w = o.u1 - o.u0;
       const inC: RGB = o.kind === "shop" ? [0.62, 0.52, 0.4] : [0.6, 0.5, 0.42];
       // An open door shows a passage behind it; there has to be room for one.
-      const vd = o.kind === "door" && dressed && r(1) < 0.3 ? Math.min(3, deep - rd - 0.8) : 0;
+      const vd = o.kind === "door" && full && r(1) < 0.3 ? Math.min(3, deep - rd - 0.8) : 0;
       const reach = rd + Math.max(0, vd);
       const gf = floorOver(g, [[x0, z0], [x1, z1], [x1 - ox * reach, z1 - oz * reach], [x0 - ox * reach, z0 - oz * reach]]);
-      lampSites.openings.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, g: gf, ox, oz, ex, ez, w, h: g + o.h - gf, depth: rd, kind: o.kind, counter: o.kind === "shop" && !lean });
+      lampSites.openings.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, g: gf, ox, oz, ex, ez, w, h: g + o.h - gf, depth: rd, kind: o.kind, counter: o.kind === "shop" && !grey });
       // Reveals, back, ceiling, floor.
       wall(x0, z0, x0 + ix, z0 + iz, g, g, g + o.h, g + o.h, ex, ez, inC, seed, Surf.Interior, 0, 0, 0, rd, g, o.h);
       wall(x1 + ix, z1 + iz, x1, z1, g, g, g + o.h, g + o.h, -ex, -ez, inC, seed, Surf.Interior, 0, 0, 0, rd, g, o.h);
       if (o.kind === "shop") {
         wall(x0 + ix, z0 + iz, x1 + ix, z1 + iz, g, g, g + o.h, g + o.h, ox, oz, inC, seed, Surf.Interior, 1, 0, 0, rd, g, o.h);
         poly(S, [[x0, g + o.h, z0], [x1, g + o.h, z1], [x1 + ix, g + o.h, z1 + iz], [x0 + ix, g + o.h, z0 + iz]], [0, -1, 0], [0.4, 0.3, 0.22], seed, Surf.Wood, 0, 0, uv4());
-        if (!lean) counters.push({ F, u0: o.u0, w, g: gf, seed: r(0) });
+        if (!grey) counters.push({ F, u0: o.u0, w, g: gf, seed: r(0) });
         if (dressed) {
           S.tag = 0;
           shopDress(F, o, g, gf, rd, leftFree, rightFree, pave, !!dress.main, r);
           S.tag = tag;
-          if (dress.main && !dress.balcony) shopRoof(F, o, g, fl, pave, r);
+          if (dress.main && !dress.balcony && !lean) shopRoof(F, o, g, fl, pave, r);
         }
       } else if (!dressed) {
         wall(x0 + ix, z0 + iz, x1 + ix, z1 + iz, g, g, g + o.h, g + o.h, ox, oz, [0.42, 0.27, 0.15], seed, Surf.Wood, 0, 0, 0, w, g, o.h);
@@ -2250,7 +2255,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const cov = (w - gap) * (0.35 + 0.6 * r(3));
       fbox(F, u0 + 0.04, u0 + 0.04 + cov, -0.1, -0.065, gy, g + o.h - 0.02, [0.42, 0.29, 0.17], seed, Surf.Wood, { skip: FB.End0 | FB.Top });
     }
-    if (r(4) < 0.55) {
+    if (!lean && r(4) < 0.55) {
       // Shelves on the back wall with jars on them, at the heights the
       // shop-interior shader paints its shelves (render/pompeii.ts), so the
       // modelled ones stand on the painted ones.
@@ -2274,7 +2279,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       if (rd > 3) fbox(F, u1 - 0.4, u1, -rd, -2.2, gf, gf + 0.45, [0.6, 0.55, 0.47], seed, Surf.Masonry, { skip: FB.Back | FB.End1, topS: Surf.Wood, topC: [0.4, 0.28, 0.17] });
     }
     // Stock out on the pavement against a pier: amphorae or baskets.
-    if (pave >= WIDE_PAVEMENT_M && r(8) < (main ? 0.35 : 0.12)) {
+    if (!lean && pave >= WIDE_PAVEMENT_M && r(8) < (main ? 0.35 : 0.12)) {
       const room = rightFree > 1.2 ? 1 : leftFree > 1.2 ? -1 : 0;
       const at = (k: number): number => (room > 0 ? u1 + 0.3 + k * 0.32 : u0 - 0.3 - k * 0.32);
       if (room !== 0 && clearAt(F, [[at(0), 0.55], [at(1.4), 0.55]], 0.25)) {
@@ -3136,7 +3141,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       }
       for (let mu = ua + 0.95; mu < ub - 0.35; mu += 0.75) if (Math.abs(mu - lampU) > 0.35) mouths.push([mu, (vb + vf) / 2]);
       if (retV < vb - 0.6) mouths.push([ub - retU / 2, (retV + vb) / 2]);
-    } else if (r(3) < 0.3) {
+    } else if (!lean && r(3) < 0.3) {
       const mu = ub - 0.4;
       if (mu > ua + 0.3 && Math.abs(mu - lampU) > 0.35) mouths.push([mu, (vb + vf) / 2]);
     }
@@ -3157,24 +3162,28 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   // one through the other all down the street. There the kerb face is
   // left out and the front's own foot is what shows.
   {
-    const rings: { r: number[]; x0: number; x1: number; z0: number; z1: number }[] = [...solids.map((s) => s.ring), ...data.insulae.map((i) => i.ring), ...data.publics.map((p) => p.ring), ...data.domus.map((d) => d.ring)].map((r) => {
-      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-      for (let i = 0; i < r.length; i += 2) { x0 = Math.min(x0, r[i]); x1 = Math.max(x1, r[i]); z0 = Math.min(z0, r[i + 1]); z1 = Math.max(z1, r[i + 1]); }
-      return { r, x0, x1, z0, z1 };
-    });
+    // Every front's edges, in 2 m cells: the kerb pass asks only what is within centimetres.
+    const edges: number[] = [];
     const grid = new Map<number, number[]>();
-    rings.forEach((q, k) => {
-      for (let i = Math.floor(q.x0 / 16); i <= Math.floor(q.x1 / 16); i++) for (let j = Math.floor(q.z0 / 16); j <= Math.floor(q.z1 / 16); j++) {
-        const key = i * 100003 + j;
-        (grid.get(key) ?? grid.set(key, []).get(key)!).push(k);
+    for (const r of [...solids.map((s) => s.ring), ...data.insulae.map((i) => i.ring), ...data.publics.map((p) => p.ring), ...data.domus.map((d) => d.ring)]) {
+      const n = r.length / 2;
+      for (let i = 0; i < n; i++) {
+        const ax = r[i * 2], az = r[i * 2 + 1], bx = r[((i + 1) % n) * 2], bz = r[((i + 1) % n) * 2 + 1];
+        const k = edges.length;
+        edges.push(ax, az, bx, bz);
+        for (let gi = Math.floor((Math.min(ax, bx) - 0.1) / 2); gi <= Math.floor((Math.max(ax, bx) + 0.1) / 2); gi++) for (let gj = Math.floor((Math.min(az, bz) - 0.1) / 2); gj <= Math.floor((Math.max(az, bz) + 0.1) / 2); gj++) {
+          const key = gi * 100003 + gj;
+          (grid.get(key) ?? grid.set(key, []).get(key)!).push(k);
+        }
       }
-    });
+    }
     // How far out along (ox, oz) the fronts within 8 cm of (x, z) stand: every one found, signed.
     const fronts = (x: number, z: number, ox: number, oz: number, out: number[]): void => {
-      for (const k of grid.get(Math.floor(x / 16) * 100003 + Math.floor(z / 16)) ?? []) {
-        const q = rings[k];
-        if (x < q.x0 - 0.1 || x > q.x1 + 0.1 || z < q.z0 - 0.1 || z > q.z1 + 0.1) continue;
-        const [nx, nz] = nearestOnRing(q.r, x, z);
+      for (const k of grid.get(Math.floor(x / 2) * 100003 + Math.floor(z / 2)) ?? []) {
+        const ax = edges[k], az = edges[k + 1], bx = edges[k + 2], bz = edges[k + 3];
+        const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz || 1;
+        const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / L2));
+        const nx = ax + dx * t, nz = az + dz * t;
         if (Math.hypot(nx - x, nz - z) < 0.08) out.push((nx - x) * ox + (nz - z) * oz);
       }
     };
