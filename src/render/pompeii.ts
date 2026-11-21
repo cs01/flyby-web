@@ -1128,7 +1128,8 @@ function suburbColour(lc: Land, x: number, y: number, under: [number, number, nu
       // so the whole does not read as one grid.
       const tilt = (-24 * Math.PI) / 180;
       const gu = x * Math.cos(tilt) - y * Math.sin(tilt), gv = x * Math.sin(tilt) + y * Math.cos(tilt);
-      const pu = Math.floor(gu / 38), pv = Math.floor(gv / 52);
+      const pv = Math.floor(gv / 52), su = gu + 38 * hash2(pv, 5);
+      const pu = Math.floor(su / 38);
       const plot = hash2(pu * 11 + 3, pv * 17 - 5);
       const bw = 4 + 5 * hash2(pu, pv * 3);
       const a = plot < 0.5 ? gu : gv;
@@ -1137,7 +1138,7 @@ function suburbColour(lc: Land, x: number, y: number, under: [number, number, nu
       const tone = 0.9 + 0.2 * hash2(pu + 1, pv);
       let c: [number, number, number] = plot < 0.1 ? [128, 116, 82] : h < 0.75 ? mixC([86, 106, 54], [108, 120, 62], h / 0.75) : h < 0.9 ? [118, 110, 76] : [108, 112, 64];
       if (((a % bw) + bw) % bw < 0.7) c = [128, 112, 82];
-      if (((gu % 38) + 38) % 38 < 1 || ((gv % 52) + 52) % 52 < 1) c = [104, 110, 66];
+      if (((su % 38) + 38) % 38 < 1 || ((gv % 52) + 52) % 52 < 1) c = [104, 110, 66];
       return [c[0] * tone, c[1] * tone, c[2] * tone];
     }
     case Land.Beach: return mixC([222, 208, 172], [176, 164, 132], n * 0.3);

@@ -643,6 +643,20 @@ export class LandGrid {
   /** Metres to the river's centreline: the exact (slow) river test runs only near it. */
   readonly dRiver: Uint16Array;
   readonly inside: Uint8Array;
+  static readonly SHORE_HALF = 16000;
+  static readonly SHORE_N = 801;
+  readonly shoreS: Float32Array;
+  readonly shoreW: Float32Array;
+
+  /** shoreAt, read off the lattice (exact past its edge). */
+  shore(x: number, z: number): { s: number; w: number } {
+    const m = LandGrid.SHORE_N, H = LandGrid.SHORE_HALF, c = (H * 2) / (m - 1);
+    const fx = (x + H) / c, fz = (z + H) / c;
+    if (fx < 0 || fz < 0 || fx >= m - 1 || fz >= m - 1) return shoreAt(this.sub.shore, x, z);
+    const i = Math.floor(fx), j = Math.floor(fz), tx = fx - i, tz = fz - j, k = j * m + i;
+    const bl = (a: Float32Array): number => (a[k] * (1 - tx) + a[k + 1] * tx) * (1 - tz) + (a[k + m] * (1 - tx) + a[k + m + 1] * tx) * tz;
+    return { s: bl(this.shoreS), w: bl(this.shoreW) };
+  }
 
   constructor(readonly sub: PompeiiSuburbs, readonly wall: Ring, readonly gradient = true) {
     const n = this.n, C = LandGrid.CELL, H = LandGrid.HALF;
@@ -670,6 +684,18 @@ export class LandGrid {
     this.dWall = seedPoints(ringPts);
     this.dFarm = seedPoints(sub.buildings.filter((b) => b.kind === "farm").map((b) => [b.x, b.z]));
     this.dRiver = seedPoints(polyPts(sub.river.pts, C / 2));
+    // The shore's signed distance on a 40 m lattice over the drape's reach,
+    // read bilinearly: a distance field interpolates almost exactly, and the
+    // drape asks for millions of pixels, most of them outside the 8 km grid.
+    {
+      const m = LandGrid.SHORE_N, c = (LandGrid.SHORE_HALF * 2) / (m - 1);
+      this.shoreS = new Float32Array(m * m);
+      this.shoreW = new Float32Array(m * m);
+      for (let j = 0; j < m; j++) for (let i = 0; i < m; i++) {
+        const r = shoreAt(sub.shore, -LandGrid.SHORE_HALF + i * c, -LandGrid.SHORE_HALF + j * c);
+        this.shoreS[j * m + i] = r.s; this.shoreW[j * m + i] = r.w;
+      }
+    }
     this.inside = new Uint8Array(N);
     let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
     for (let i = 0; i < wall.length; i += 2) { x0 = Math.min(x0, wall[i]); x1 = Math.max(x1, wall[i]); z0 = Math.min(z0, wall[i + 1]); z1 = Math.max(z1, wall[i + 1]); }
@@ -687,7 +713,7 @@ export class LandGrid {
    */
   at(x: number, z: number, parcel = -1): Land {
     const crop = (): Land => Land.Fields;
-    const sh = shoreAt(this.sub.shore, x, z);
+    const sh = this.shore(x, z);
     if (sh.w > 0.5) {
       if (sh.s < 0) return Land.Sea;
       if (sh.s < 40) return Land.Beach;
