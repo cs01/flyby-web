@@ -226,18 +226,27 @@ export class Timebar {
       const frac = (clientX - r.left) / Math.max(r.width, 1);
       this.setOffset(LO + Math.max(0, Math.min(1, frac)) * SPAN);
     };
+    // The drag is tracked by pointer id on the window, not by pointer capture:
+    // capture can fail on Android (InvalidStateError on a fast tap, refused in
+    // some browsers), and when it did the band only ever took the first touch.
+    let dragId: number | null = null;
     this.band.addEventListener("pointerdown", (e) => {
-      // Throws InvalidStateError when the pointer already lifted (a quick tap
-      // on Android); the gesture still works uncaptured, so never let it escape.
+      dragId = e.pointerId;
       try {
         this.band.setPointerCapture(e.pointerId);
       } catch {}
       seek(e.clientX);
       e.preventDefault();
+      e.stopPropagation();
     });
-    this.band.addEventListener("pointermove", (e) => {
-      if (this.band.hasPointerCapture(e.pointerId)) seek(e.clientX);
+    addEventListener("pointermove", (e) => {
+      if (e.pointerId === dragId) seek(e.clientX);
     });
+    const end = (e: PointerEvent) => {
+      if (e.pointerId === dragId) dragId = null;
+    };
+    addEventListener("pointerup", end);
+    addEventListener("pointercancel", end);
   }
 
   /** Clamped to the scrubber's range, then pushed out to the scene. */
