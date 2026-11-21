@@ -86,10 +86,11 @@ import { junctionCaps } from "./data/junctioncaps";
 import { medianPieces } from "./data/medians";
 import { buildLandMask, emptyLandMask, type LandMask } from "./render/landmask";
 import { WaterHistory } from "./render/waterssr";
-import { Foliage, SHRUB_FOLIAGE, TREE_LOD_TRIANGLES } from "./render/trees";
+import { Foliage, SHRUB_FOLIAGE, TREE_LOD_TRIANGLES, type FoliageSource } from "./render/trees";
+import { withIslandTrees } from "./data/alcatrazveg";
 import { buildLandMaskRGBA, waterLevelM } from "./data/landmask";
 import { buildShrubMaskRGBA, placeShrubs, shrubFieldExtentM, type ShrubField } from "./data/shrubs";
-import { CompositeRoadIndex, FootprintMask, RoadIndex, treeRoadClearanceM } from "./data/trees";
+import { CompositeRoadIndex, FootprintMask, RoadIndex, placeTrees, treeRoadClearanceM } from "./data/trees";
 import { LiveVegetation } from "./data/osmveg";
 import { bakedCityCoverage, LiveWorld, LIVE_EXTENT_M } from "./app/live";
 import { Overpass } from "./data/overpass";
@@ -553,11 +554,13 @@ async function main() {
   if (pack && import.meta.env.DEV && new URLSearchParams(location.search).get("flatparts") === "1") {
     pack.buildings = flattenParts(pack.buildings);
   }
+  // The lidar island's world box: the pack's boxes and the generic trees
+  // inside it are replaced by render/alcatraz.ts and data/alcatrazveg.ts.
+  const islandBox = alcatrazAsset ? alcatrazIslandBox(alcatrazAsset.patch, origin) : null;
   if (pack && !buildingsOff) {
     // The island's OSM boxes go from the renderer only: render/alcatraz.ts
     // draws its own models on the same footprints, and the collider and the
     // tree mask keep the originals.
-    const islandBox = alcatrazAsset ? alcatrazIslandBox(alcatrazAsset.patch, origin) : null;
     const drawn = islandBox ? { ...pack, buildings: pack.buildings.filter((b) => !replacesPackBuilding(islandBox, b)) } : pack;
     buildings = new Buildings(drawn, terrain.heightAt, sunShadow.uniforms, budget);
     buildings.group.name = "buildings";
@@ -1027,13 +1030,18 @@ async function main() {
   if (landPack) {
     const t0 = performance.now();
     const level = landPack.levels[0];
+    const treeField = {
+      mask: { rgba: buildLandMaskRGBA(level), n: level.n, extentM: level.extentM },
+      heightAt: terrain.heightAt,
+      roads: treeRoads,
+      footprints: treeFootprints,
+    };
+    const treeSource: FoliageSource = {
+      extentM: level.extentM,
+      place: (x0, z0, x1, z1) => placeTrees(treeField, x0, z0, x1, z1),
+    };
     foliage = new Foliage(
-      {
-        mask: { rgba: buildLandMaskRGBA(level), n: level.n, extentM: level.extentM },
-        heightAt: terrain.heightAt,
-        roads: treeRoads,
-        footprints: treeFootprints,
-      },
+      islandBox && alcatraz ? withIslandTrees(treeSource, islandBox, alcatraz.islandTrees()) : treeSource,
       sunShadow.uniforms,
       budget.tier === "reduced",
     );
@@ -1243,6 +1251,13 @@ async function main() {
   // Field of view, eased. An FPV camera is wide -- most of the reason a drone
   // shot looks like a drone shot is the lens, not the flying -- but a cut from
   // 62 to 78 degrees reads as the world lurching, so it is a move, not a cut.
+  // `?fov=` (shot mode only): a pose matched against a real photograph needs
+  // that photograph's lens, and most are far narrower than the 62 degree view.
+  const shotFov = shotMode ? Number(new URLSearchParams(location.search).get("fov") ?? NaN) : NaN;
+  if (shotFov > 5 && shotFov < 120) {
+    camera.fov = shotFov;
+    camera.updateProjectionMatrix();
+  }
   const PLANE_FOV = camera.fov;
   const DRONE_FOV = 78;
   // Wider than the aeroplane's and narrower than the drone's. A street is a

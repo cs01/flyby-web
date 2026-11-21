@@ -792,6 +792,113 @@ export const POSES: Pose[] = [
     wx: CLEAR,
     what: "Standing by the cellhouse on Alcatraz, eye height",
   },
+  // Alcatraz against real photographs. Each pose copies one Wikimedia Commons
+  // photo's viewpoint, lens (`fov=`, vertical degrees, from the photo's
+  // horizontal field at 16:9), date and rough weather, so a render and its
+  // photo can be laid side by side. Positions come from the photo's geotag
+  // where it is plausible, else from triangulating the lighthouse, water
+  // tower and stack against the OSM outlines. The photos are not in the repo
+  // (licences differ); each pose names its source file.
+  {
+    // Straight down on the cellhouse and the yard, north up: the map the
+    // eye-level poses are aimed by.
+    name: "alcatraz-plan",
+    city: "sf",
+    lat: 37.82680, lon: -122.42300, altM: 260, hdgDeg: 0, pitchDeg: -89.5,
+    t: D("2025-06-21T20:00:00Z"),
+    wx: CLEAR,
+    what: "Alcatraz from straight above, north up",
+  },
+  {
+    // File:Approaching Alcatraz - View from the Ferry (4409974144).jpg
+    name: "alcatraz-ref-ferry",
+    city: "sf",
+    lat: 37.820531, lon: -122.419538, altM: 6, hdgDeg: 337.9, pitchDeg: 2,
+    t: D("2010-02-03T21:23:00Z"),
+    wx: CLEAR,
+    query: "fov=15.4",
+    what: "Alcatraz from the ferry approach, 700 m south-east, early afternoon",
+  },
+  {
+    // File:San Francisco (California, USA), Alcatraz -- 2012 -- 4530.jpg
+    name: "alcatraz-ref-b64",
+    city: "sf",
+    lat: 37.82918, lon: -122.42097, altM: 4, hdgDeg: 195, pitchDeg: 6,
+    t: D("2012-07-13T21:41:00Z"),
+    wx: "low:0.95:450:900,mid:0.5:3000:4200,high:0:8500:9400,precip:0",
+    query: "fov=11.7",
+    what: "Building 64, the dock and the guard tower from the water, overcast",
+  },
+  {
+    // File:San Francisco (CA, USA), Alcatraz, Barracks -- 2022 -- 3087.jpg
+    name: "alcatraz-ref-sign",
+    city: "sf",
+    lat: 37.826878, lon: -122.421275, altM: 3.6, hdgDeg: 216, pitchDeg: 12,
+    t: D("2022-07-03T17:24:00Z"),
+    wx: "low:0.95:450:900,mid:0.5:3000:4200,high:0:8500:9400,precip:0",
+    query: "fov=30",
+    what: "The painted wall of Building 64 from the dock",
+  },
+  {
+    // File:View of Alcatraz Prison from Pier 52, Fisherman's Wharf - 2018 - 4.jpg
+    name: "alcatraz-ref-wharf",
+    city: "sf",
+    lat: 37.809206, lon: -122.414715, altM: 3, hdgDeg: 348.6, pitchDeg: -9,
+    t: D("2018-03-12T02:32:00Z"),
+    wx: "low:0:600:1400,mid:0.35:3000:4200,high:0.3:8500:9400,precip:0",
+    query: "fov=44.1",
+    what: "Alcatraz from the Embarcadero piers at dusk, phone lens",
+  },
+  {
+    // File:San Francisco (CA, USA), Alcatraz -- 2022 -- 3012.jpg
+    name: "alcatraz-ref-sunset",
+    city: "sf",
+    lat: 37.8112, lon: -122.4180, altM: 5, hdgDeg: 345.6, pitchDeg: 2.3,
+    t: D("2022-07-01T03:21:00Z"),
+    wx: "low:0:600:1400,mid:0.6:2500:3600,high:0:8500:9400,precip:0",
+    query: "fov=13.9",
+    what: "Alcatraz from Fisherman's Wharf at sunset, long lens",
+  },
+  {
+    // File:Alcatraz 2020 01.jpg
+    name: "alcatraz-ref-drone",
+    city: "sf",
+    lat: 37.830145, lon: -122.424718, altM: 88, hdgDeg: 170, pitchDeg: -12.3,
+    t: D("2020-08-11T19:46:00Z"),
+    wx: "low:0.95:450:900,mid:0.5:3000:4200,high:0:8500:9400,precip:0",
+    query: "fov=41.6",
+    what: "Alcatraz from a drone 350 m north, city behind, overcast",
+  },
+  {
+    // File:Alcatraz - Main Cellhouse (4409210917).jpg
+    name: "alcatraz-ref-cellhouse",
+    city: "sf",
+    lat: 37.827078, lon: -122.423983, altM: 34.3, hdgDeg: 111, pitchDeg: 10,
+    t: D("2010-02-03T22:35:00Z"),
+    wx: CLEAR,
+    query: "fov=36",
+    what: "The dining-hall end of the cellhouse from the recreation yard",
+  },
+  {
+    // File:Alcatraz recreation yard, NW view.jpg
+    name: "alcatraz-ref-yard",
+    city: "sf",
+    lat: 37.827132, lon: -122.424028, altM: 34.0, hdgDeg: 113, pitchDeg: 5,
+    t: D("2019-08-27T22:29:00Z"),
+    wx: CLEAR,
+    query: "fov=50.5",
+    what: "The recreation yard and its steps, low wide lens",
+  },
+  {
+    // File:San Francisco (CA, USA), Alcatraz, Water Tower -- 2022 -- 3136.jpg
+    name: "alcatraz-ref-tower",
+    city: "sf",
+    lat: 37.827510, lon: -122.423551, altM: 31.7, hdgDeg: 282, pitchDeg: 28,
+    t: D("2022-07-03T18:13:00Z"),
+    wx: "low:0.95:450:900,mid:0.5:3000:4200,high:0:8500:9400,precip:0",
+    query: "fov=40",
+    what: "The water tower's tank and lettering from below",
+  },
   {
     // The same water from 300 m: the FFT sea seen as a texture rather than as
     // geometry, and the range where its tiling, its rim and its foam coverage

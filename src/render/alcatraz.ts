@@ -25,7 +25,10 @@ import { SUN_SHADOW_GLSL, SHADOW_CASTER_LAYER, type SunShadowUniforms } from "./
 import { SH_GLSL } from "./sh";
 import { AO_GLSL } from "./ao";
 import { makeStreetLampUniforms, type StreetLampUniforms } from "./streetlamps";
-import { buildAlcatrazModel, type AlcatrazModel } from "./alcatrazmesh";
+import { buildAlcatrazModel, pointInRing, DECAL_TEXT, type AlcatrazModel } from "./alcatrazmesh";
+import { DECAL_ATLAS_W, DECAL_ATLAS_ROW_H } from "./budget";
+import { alcatrazTrees } from "../data/alcatrazveg";
+import type { TreeInstance } from "../data/trees";
 import { patchedHeight, ringHeight, type AlcatrazMeta, type AlcatrazPatch } from "../data/alcatraz";
 import { Heightfield } from "../data/dem";
 import type { Origin } from "../geo";
@@ -147,6 +150,56 @@ void main() {
 }
 `;
 
+/**
+ * The terrain shader with the island's cliff colour put back.
+ *
+ * The z19 drape is a vertical photograph, so on the sheer faces every texel
+ * is stretched down tens of metres from the cliff-top pixel, which is mostly
+ * pale: surf, guano, the white seawall. Against the ferry photographs the
+ * cliffs read as tan sandstone, grey where shaded, patched with dark
+ * scrub and ice plant. Both places the terrain shader reads the drape for
+ * colour are wrapped so the steep faces swap the stretched photo for that.
+ */
+const CLIFF_GLSL = /* glsl */ `
+float cliffHash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 15731.743); }
+float cliffNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(cliffHash(i), cliffHash(i + vec2(1, 0)), f.x), mix(cliffHash(i + vec2(0, 1)), cliffHash(i + vec2(1, 1)), f.x), f.y);
+}
+vec3 islandCliff(vec3 photo) {
+  vec3 nn = normalize(vNormal);
+  float steep = 1.0 - smoothstep(0.45, 0.8, nn.y);
+  // Low ground at the waterline stays the photograph's: the seawall and the
+  // dock aprons are steep in the lidar too.
+  steep *= smoothstep(1.5, 4.0, vWorld.y);
+  if (steep <= 0.0) return photo;
+  vec2 q = vec2(vWorld.x + vWorld.z, vWorld.y * 1.6);
+  float big = cliffNoise(q * 0.06) * 0.6 + cliffNoise(q * 0.21) * 0.4;
+  float fine = cliffNoise(q * 1.3);
+  vec3 sand = mix(vec3(0.36, 0.26, 0.15), vec3(0.24, 0.21, 0.17), cliffNoise(q * 0.11 + 4.0));
+  sand *= 0.8 + 0.4 * fine;
+  // Scrub holds on wherever the face eases, and in patches across it.
+  float veg = smoothstep(0.5, 0.7, big + 0.35 * nn.y);
+  vec3 scrub = mix(vec3(0.035, 0.05, 0.03), vec3(0.08, 0.1, 0.06), fine);
+  vec3 cliff = mix(sand, scrub, veg);
+  return mix(photo, cliff, steep * 0.85);
+}
+`;
+
+function islandPatchFrag(): string {
+  const a = "srgbToLinear(texture(uDrape, vUv).rgb)";
+  const b = "srgbToLinear(textureLod(uDrape, vUv, lodR).rgb)";
+  // Fail loudly if the terrain shader is refactored under these hooks, rather
+  // than silently drawing the stretched cliffs again.
+  if (TERRAIN_FRAG.split(a).length !== 2 || TERRAIN_FRAG.split(b).length !== 2 || TERRAIN_FRAG.split("void main() {").length !== 2) {
+    throw new Error("alcatraz: terrain shader no longer has the drape reads the island cliff hook wraps");
+  }
+  return TERRAIN_FRAG.replace("void main() {", `${CLIFF_GLSL}\nvoid main() {`)
+    .replace(a, `islandCliff(${a})`)
+    .replace(b, `islandCliff(${b})`);
+}
+
 const VERT = /* glsl */ `
 precision highp float;
 in vec3 position;
@@ -154,6 +207,7 @@ in vec3 normal;
 in vec3 aColour;
 in vec3 aSurf;
 in vec4 aWall;
+in float aDecal;
 uniform mat4 modelViewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec3 uCameraPos;
@@ -163,7 +217,9 @@ out vec3 vColour;
 out vec3 vSurf;
 out vec4 vWall;
 out float vViewDist;
+out float vDecal;
 void main() {
+  vDecal = aDecal;
   vNormal = normal;
   vWorld = position;
   vColour = aColour;
@@ -182,7 +238,13 @@ in vec3 vColour;
 in vec3 vSurf;
 in vec4 vWall;
 in float vViewDist;
+in float vDecal;
 out vec4 fragColor;
+
+#define DECALS ${DECAL_TEXT.length}
+uniform sampler2D uDecalAtlas;
+uniform vec4 uDecalRect[DECALS];
+uniform float uDecalGroup[DECALS];
 
 #define ATMO_STEPS 3
 #define ATMO_SUN_STEPS 1
@@ -222,7 +284,7 @@ Win windows(float style, vec4 w) {
   else if (style < 3.5) { bay = 3.0; ww = 1.1; sill = 0.9; wh = 1.6; pitch = 3.3; rows = 9.0; paneX = 0.55; paneY = 0.8; }
   else if (style < 4.5) { bay = 3.6; ww = 2.8; sill = 1.3; wh = 2.2; pitch = 3.6; rows = 3.0; paneX = 0.46; paneY = 0.44; }
   else if (style < 5.5) { bay = len; ww = 0.5; sill = 3.0; wh = 0.9; pitch = 5.0; rows = 4.0; paneX = 0.5; paneY = 0.45; }
-  else if (style > 8.5) {
+  else if (style > 8.5 && style < 9.5) {
     // Guard tower: a continuous glazed band under the roof.
     float b0 = H - 2.6, b1 = H - 0.5;
     if (v > b0 && v < b1) {
@@ -282,15 +344,49 @@ void main() {
   // weathers continuously; the rust is in facade metres, tied to its window.
   vec2 tng = normalize(vec2(-n.z, n.x) + vec2(1e-4, 0.0));
   vec2 wp = vec2(dot(vWorld.xz, tng), vWorld.y);
-  bool isWall = style < 6.5 || style > 8.5;
+  bool isWall = style < 6.5 || (style > 8.5 && style < 9.5);
+  // Perturbs the lighting normal: board-form ridges and spalled hollows have
+  // to catch the sun, or at eye level the wall is still a flat colour.
+  vec2 bump = vec2(0.0);
   if (isWall && abs(n.y) < 0.6) {
     float blot = fbm(vec2(wp.x * 0.18, wp.y * 0.25));
-    albedo *= 0.8 + 0.38 * blot;
+    albedo *= 0.86 + 0.26 * blot;
     float runs = vnoise(vec2(wp.x * 2.3, wp.y * 0.07)) * vnoise(vec2(wp.x * 0.7, wp.y * 0.2 + 3.0));
     // Fine grain and the faint lift lines of poured concrete.
     albedo *= 0.9 + 0.16 * vnoise(wp * 7.0);
     albedo *= 1.0 - 0.06 * smoothstep(0.03, 0.0, abs(fract(wp.y / 1.2) - 0.5) - 0.47);
     albedo *= 1.0 - 0.28 * smoothstep(0.25, 0.7, runs);
+    // Eye-level detail, faded out by 60 m where it would only alias: the
+    // 15 cm boards of the formwork, the tie-rod holes on a 60 cm grid, and
+    // patches where the paint and skin have spalled to the darker aggregate.
+    // Orange lichen, low on the walls and in the yard where spray reaches:
+    // the warm stain every eye-level photograph of the yard walls shows.
+    float lichen = smoothstep(0.62, 0.75, fbm(wp * 0.45 + 11.0)) * (1.0 - smoothstep(1.0, 6.0, vWall.y));
+    albedo = mix(albedo, vec3(0.5, 0.3, 0.11), lichen * 0.4);
+    // The cellhouse's rusticated base: channelled block joints up its first
+    // three metres under the windows.
+    if (style > 0.5 && style < 1.5 && vWall.y < 3.0) {
+      float course = fract(vWall.y / 0.6);
+      float block = fract(vWall.x / 1.5 + 0.5 * floor(vWall.y / 0.6));
+      float joint = max(smoothstep(0.06, 0.0, course), smoothstep(0.03, 0.0, block));
+      albedo *= 1.0 - 0.35 * joint;
+      bump.y += (smoothstep(0.0, 0.08, course) - 1.0) * 0.4 * (1.0 - smoothstep(40.0, 120.0, vViewDist));
+    }
+    float near = 1.0 - smoothstep(25.0, 60.0, vViewDist);
+    if (near > 0.0) {
+      float board = fract(wp.y / 0.15 + 0.15 * vnoise(vec2(wp.x * 0.3, floor(wp.y / 0.15))));
+      float seam = smoothstep(0.08, 0.0, board) + smoothstep(0.92, 1.0, board);
+      albedo *= 1.0 - 0.07 * seam * near;
+      bump.y += (smoothstep(0.0, 0.1, board) - smoothstep(0.9, 1.0, board) - 0.5) * 0.12 * near;
+      vec2 tie = abs(fract(wp / vec2(0.6, 0.6) + vec2(0.5, 0.25)) - 0.5) * 0.6;
+      albedo *= 1.0 - 0.35 * smoothstep(0.022, 0.012, length(tie)) * near;
+      float sp = fbm(wp * 0.9 + 7.3) + 0.25 * vnoise(wp * 9.0);
+      float spall = smoothstep(0.71, 0.74, sp);
+      albedo = mix(albedo, albedo * vec3(0.84, 0.82, 0.78) + vec3(0.015), spall * near);
+      bump += vec2(vnoise(wp * 9.0) - 0.5, vnoise(wp * 9.0 + 3.1) - 0.5) * (0.12 + 0.5 * spall) * near;
+      // Pale salt bloom along the top of each spalled patch.
+      albedo = mix(albedo, vec3(0.86, 0.85, 0.8), smoothstep(0.66, 0.71, sp) * (1.0 - spall) * 0.3 * near);
+    }
     if (w.below > 0.0) {
       float streak = vnoise(vec2(vWall.x * 6.0, vWall.y * 0.4)) * exp(-w.below * 0.7);
       albedo = mix(albedo, vec3(0.32, 0.17, 0.09), clamp(streak * 0.9, 0.0, 0.6));
@@ -304,9 +400,34 @@ void main() {
     float rust = smoothstep(0.55, 0.75, rp) + 0.6 * smoothstep(0.5, 0.85, runs);
     albedo = mix(albedo, vec3(0.3, 0.14, 0.07), clamp(rust, 0.0, 0.85));
   }
+  if (style > 9.5) {
+    // Kept-up paint: a faint mottle, rust in specks, and short runs below
+    // the rivet seams, heaviest low on the tank where water sits.
+    albedo *= 0.94 + 0.08 * fbm(vWorld.xz * 0.7 + vWorld.y * 0.9);
+    float specks = smoothstep(0.86, 0.93, vnoise(vec2(vWall.x * 6.0, vWall.y * 6.0)));
+    float runs = vnoise(vec2(vWall.x * 5.0, vWall.y * 0.25)) * smoothstep(0.7, 0.9, vnoise(vec2(vWall.x * 1.3, 1.7)));
+    albedo = mix(albedo, vec3(0.32, 0.16, 0.08), clamp(specks * 0.7 + runs * 0.45, 0.0, 0.7));
+  }
   if (style > 6.5 && style < 7.5) {
     float t = fbm(vWorld.xz * 0.35);
     albedo *= 0.75 + 0.45 * t;
+  }
+
+  // Painted lettering, crisp from the atlas, the brush paint faded unevenly.
+  if (vDecal > 0.5) {
+    for (int i = 0; i < DECALS; i++) {
+      if (abs(uDecalGroup[i] - vDecal) > 0.5) continue;
+      vec4 r = uDecalRect[i];
+      vec2 st = vec2((vWall.x - r.x) / r.z + 0.5, (vWall.y - r.y) / r.w + 0.5);
+      if (st.x < 0.0 || st.x > 1.0 || st.y < 0.0 || st.y > 1.0) continue;
+      float a = texture(uDecalAtlas, vec2(st.x, (float(i) + 1.0 - st.y) / float(DECALS))).r;
+      float fade = 0.75 + 0.25 * vnoise(vWall.xy * 3.0);
+      albedo = mix(albedo, vec3(0.43, 0.06, 0.04), a * fade);
+    }
+  }
+  if (bump != vec2(0.0)) {
+    vec3 t = normalize(vec3(-n.z, 0.0, n.x) + vec3(1e-4, 0.0, 0.0));
+    n = normalize(n + t * bump.x + vec3(0.0, 1.0, 0.0) * bump.y);
   }
 
   float ndl = max(0.0, dot(n, uSunDir));
@@ -389,6 +510,66 @@ void main() {
 
 export interface AlcatrazUniforms extends StreetLampUniforms {
   uBeamDir: THREE.IUniform<THREE.Vector3>;
+  uDecalAtlas: THREE.IUniform<THREE.Texture>;
+  uDecalRect: THREE.IUniform<THREE.Vector4[]>;
+  uDecalGroup: THREE.IUniform<number[]>;
+}
+
+/**
+ * The painted lettering as one single-channel atlas, a row per DECAL_TEXT
+ * entry, drawn at startup rather than shipped: the text is a few dozen
+ * characters and a canvas draws them crisper than any JPEG would keep them.
+ * Each letter is set a little askew and off the line, because these were
+ * brushed by hand and a typeset line reads as a modern sign.
+ */
+export function makeDecalAtlas(): THREE.DataTexture {
+  const W = DECAL_ATLAS_W, RH = DECAL_ATLAS_ROW_H, rows = DECAL_TEXT.length;
+  const data = new Uint8Array(W * RH * rows);
+  const canvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(W, RH * rows) : null;
+  const ctx = canvas ? canvas.getContext("2d") : null;
+  if (ctx) {
+    let seed = 7;
+    const rnd = (): number => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    ctx.fillStyle = "#fff";
+    ctx.strokeStyle = "#fff";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    for (let r = 0; r < rows; r++) {
+      const d = DECAL_TEXT[r];
+      // Atlas pixels per metre differ across and up a row; squeeze the
+      // drawing so the letters come out the right shape on the wall.
+      const sx = (W / d.w) / (RH / d.h);
+      let px = RH * 0.78;
+      ctx.font = `${px}px "Arial Narrow", Arial, sans-serif`;
+      const natural = ctx.measureText(d.text).width * sx;
+      if (natural > W * 0.96) px *= (W * 0.96) / natural;
+      ctx.font = `${px}px "Arial Narrow", Arial, sans-serif`;
+      ctx.lineWidth = px * 0.05;
+      const total = ctx.measureText(d.text).width * sx;
+      let x = (W - total) / 2;
+      for (const ch of d.text) {
+        const cw = ctx.measureText(ch).width * sx;
+        ctx.save();
+        ctx.translate(x + cw / 2, r * RH + RH / 2 + (rnd() - 0.5) * RH * 0.08);
+        ctx.rotate((rnd() - 0.5) * 0.14);
+        ctx.scale(sx * (0.94 + rnd() * 0.12), 0.94 + rnd() * 0.12);
+        ctx.textAlign = "center";
+        ctx.fillText(ch, 0, 0);
+        ctx.strokeText(ch, 0, 0);
+        ctx.restore();
+        x += cw;
+      }
+    }
+    const img = ctx.getImageData(0, 0, W, RH * rows).data;
+    for (let i = 0; i < data.length; i++) data[i] = img[i * 4 + 3];
+  }
+  const t = new THREE.DataTexture(data, W, RH * rows, THREE.RedFormat, THREE.UnsignedByteType);
+  t.generateMipmaps = true;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.magFilter = THREE.LinearFilter;
+  t.anisotropy = 8;
+  t.needsUpdate = true;
+  return t;
 }
 
 export interface AlcatrazStats {
@@ -414,6 +595,8 @@ export class Alcatraz {
   private readonly beam: THREE.Mesh | null = null;
   private readonly beamUniforms = { uNight: { value: 0 } };
   private readonly patchMat: THREE.RawShaderMaterial;
+  private readonly origin: Origin;
+  private readonly heightAt: (x: number, z: number) => number;
 
   constructor(opts: {
     meta: AlcatrazMeta;
@@ -427,6 +610,8 @@ export class Alcatraz {
   }) {
     const t0 = performance.now();
     const { meta, patch, origin, heightAt, plan } = opts;
+    this.origin = origin;
+    this.heightAt = heightAt;
     this.group.name = "alcatraz";
 
     // --- the ground ---------------------------------------------------------
@@ -503,7 +688,7 @@ export class Alcatraz {
     const land = dryLand();
     this.patchMat = new THREE.RawShaderMaterial({
       vertexShader: PATCH_VERT,
-      fragmentShader: TERRAIN_FRAG,
+      fragmentShader: islandPatchFrag(),
       // By reference: every value main.ts writes into the terrain's uniforms
       // each frame lands here too. Only the drape and landcover are ours.
       uniforms: {
@@ -529,7 +714,19 @@ export class Alcatraz {
       toWorld: (lat, lon) => origin.toWorld(lat, lon),
       groundAt: heightAt,
     });
-    this.uniforms = { ...makeStreetLampUniforms(opts.shadow), uBeamDir: { value: new THREE.Vector3(1, 0, 0) } };
+    const decalRect = DECAL_TEXT.map(() => new THREE.Vector4(0, 0, 1, 1));
+    const decalGroup = DECAL_TEXT.map(() => 0);
+    for (const d of this.model.decals) {
+      decalRect[d.row].set(...d.rect);
+      decalGroup[d.row] = d.group;
+    }
+    this.uniforms = {
+      ...makeStreetLampUniforms(opts.shadow),
+      uBeamDir: { value: new THREE.Vector3(1, 0, 0) },
+      uDecalAtlas: { value: makeDecalAtlas() },
+      uDecalRect: { value: decalRect },
+      uDecalGroup: { value: decalGroup },
+    };
     const m = this.model.mesh;
     const bg = new THREE.BufferGeometry();
     bg.setAttribute("position", new THREE.BufferAttribute(m.position, 3));
@@ -537,6 +734,7 @@ export class Alcatraz {
     bg.setAttribute("aColour", new THREE.BufferAttribute(m.colour, 3));
     bg.setAttribute("aSurf", new THREE.BufferAttribute(m.surf, 3));
     bg.setAttribute("aWall", new THREE.BufferAttribute(m.wall, 4));
+    bg.setAttribute("aDecal", new THREE.BufferAttribute(m.decal, 1));
     bg.setIndex(new THREE.BufferAttribute(m.index, 1));
     bg.computeBoundingSphere();
     const mat = new THREE.RawShaderMaterial({
@@ -591,8 +789,17 @@ export class Alcatraz {
       return s + (g.index ? g.index.count * 4 : 0);
     };
     const [dw, dh] = plan.drapePx >= 1024 ? meta.drape.size : meta.drape.small;
-    this.stats.gpuBytes = geoBytes(geo) + geoBytes(bg) + (drapeTex ? Math.round(dw * dh * 4 * (4 / 3)) : 0);
+    const atlasBytes = Math.round(DECAL_ATLAS_W * DECAL_ATLAS_ROW_H * DECAL_TEXT.length * (4 / 3));
+    this.stats.gpuBytes = geoBytes(geo) + geoBytes(bg) + (drapeTex ? Math.round(dw * dh * 4 * (4 / 3)) : 0) + atlasBytes;
     this.stats.buildMs = performance.now() - t0;
+  }
+
+  /** The island's groves (data/alcatrazveg.ts), kept off every roof and out of the yard. */
+  islandTrees(): TreeInstance[] {
+    const { footprints, yard } = this.model;
+    const blocked = (x: number, z: number): boolean =>
+      (yard !== null && pointInRing(x, z, yard)) || footprints.some((r) => pointInRing(x, z, r));
+    return alcatrazTrees((lat, lon) => this.origin.toWorld(lat, lon), this.heightAt, blocked);
   }
 
   /**

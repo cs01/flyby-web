@@ -17,7 +17,10 @@ import {
   ringAreaM2,
   type AlcatrazMeta,
 } from "../src/data/alcatraz";
-import { buildAlcatrazModel } from "../src/render/alcatrazmesh";
+import { buildAlcatrazModel, pointInRing, DECAL_TEXT } from "../src/render/alcatrazmesh";
+import { ALCATRAZ_STRUCTURE_TRIS, ALCATRAZ_STRUCTURE_VERTS, DECAL_ATLAS_ROWS } from "../src/render/budget";
+import { alcatrazTrees, inIslandBox, withIslandTrees } from "../src/data/alcatrazveg";
+import type { TreeInstance } from "../src/data/trees";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail: string): void {
@@ -132,6 +135,87 @@ const isIsland = (s: ReturnType<typeof shape>): boolean =>
   // Vacuity: with the outlines taken away the same checks come back empty.
   const none = buildAlcatrazModel({ features: [], toWorld, groundAt });
   check("probe: no outlines, no lighthouse and no cellhouse", !none.lantern && none.modelled.length === 0, "");
+
+  // Building 64 against the dock photographs: eaves ~24 m over the water,
+  // so from the dock to the roof it must stand well over 18 m.
+  const b64 = find("Building 64");
+  check("Building 64 rises 18+ m from the dock", !!b64 && b64.topY - b64.groundY > 18 && b64.groundY < 6, b64 ? `${b64.groundY.toFixed(1)} -> ${b64.topY.toFixed(1)} m` : "missing");
+  const gt = find("Guard Tower");
+  check("dock guard tower 13-18 m", !!gt && gt.topY - gt.groundY > 13 && gt.topY - gt.groundY < 18, gt ? `${(gt.topY - gt.groundY).toFixed(1)} m` : "missing");
+
+  // The budget's literal structure counts must cover the real model, or the
+  // phone tier's memory line under-counts it.
+  const verts = model.mesh.position.length / 3;
+  check("structure mesh within the budget's literals", verts <= ALCATRAZ_STRUCTURE_VERTS && model.mesh.triangles <= ALCATRAZ_STRUCTURE_TRIS,
+    `${verts}/${ALCATRAZ_STRUCTURE_VERTS} verts, ${model.mesh.triangles}/${ALCATRAZ_STRUCTURE_TRIS} tris`);
+
+  // --- 5. the painted lettering ---------------------------------------------
+  check("every atlas row is placed once", model.decals.length === DECAL_TEXT.length && DECAL_TEXT.length === DECAL_ATLAS_ROWS
+    && new Set(model.decals.map((d) => d.row)).size === DECAL_TEXT.length, `${model.decals.length} placed, ${DECAL_TEXT.length} rows`);
+  // Each rect must land on vertices of its own group, inside their u/v span:
+  // a rect off its surface paints nothing and fails nowhere else.
+  const inSpan = (d: (typeof model.decals)[number], mesh: typeof model.mesh): boolean => {
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+    for (let i = 0; i < mesh.decal.length; i++) {
+      if (mesh.decal[i] !== d.group) continue;
+      u0 = Math.min(u0, mesh.wall[i * 4]); u1 = Math.max(u1, mesh.wall[i * 4]);
+      v0 = Math.min(v0, mesh.wall[i * 4 + 1]); v1 = Math.max(v1, mesh.wall[i * 4 + 1]);
+    }
+    const [u, v, w, h] = d.rect;
+    return u - Math.abs(w) / 2 >= u0 && u + Math.abs(w) / 2 <= u1 && v - h / 2 >= v0 && v + h / 2 <= v1;
+  };
+  const off = model.decals.filter((d) => !inSpan(d, model.mesh));
+  check("every lettering rect lies on its painted surface", off.length === 0, off.map((d) => DECAL_TEXT[d.row].text).join(", "));
+  const shifted = { ...model.decals[0], rect: [model.decals[0].rect[0] + 200, ...model.decals[0].rect.slice(1)] as [number, number, number, number] };
+  check("probe: a rect moved 200 m along its facade is caught", !inSpan(shifted, model.mesh), "");
+
+  // --- 6. the island's trees --------------------------------------------------
+  const blocked = (x: number, z: number): boolean =>
+    (model.yard !== null && pointInRing(x, z, model.yard)) || model.footprints.some((r) => pointInRing(x, z, r));
+  const groves = alcatrazTrees(toWorld, groundAt, blocked);
+  const wet = groves.filter((t) => t.y < 2).length;
+  const roofed = groves.filter((t) => blocked(t.x, t.z)).length;
+  check("groves planted: 30+ trees, none in the sea, on a roof or in the yard", groves.length >= 30 && wet === 0 && roofed === 0,
+    `${groves.length} trees, ${wet} wet, ${roofed} roofed`);
+  check("probe: with everywhere blocked no grove tree stands", alcatrazTrees(toWorld, groundAt, () => true).length === 0, "");
+
+  // The island's box in this test's frame, from the lidar's dry cells.
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let j = 0; j < meta.h; j += 4) for (let i = 0; i < meta.w; i += 4) {
+    if (heights[j * meta.w + i] <= 0.3) continue;
+    const p = toWorld(meta.bbox.north - ((j + 0.5) / meta.h) * (meta.bbox.north - meta.bbox.south), meta.bbox.west + ((i + 0.5) / meta.w) * (meta.bbox.east - meta.bbox.west));
+    minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x); minZ = Math.min(minZ, p.z); maxZ = Math.max(maxZ, p.z);
+  }
+  const box = { minX, maxX, minZ, maxZ };
+  // A stand-in for the generic canopy: a conifer every 8 m, everywhere.
+  const blanket = {
+    extentM: 1e6,
+    place(x0: number, z0: number, x1: number, z1: number) {
+      const out: TreeInstance[] = [];
+      for (let z = Math.ceil(z0 / 8) * 8; z < z1; z += 8) for (let x = Math.ceil(x0 / 8) * 8; x < x1; x += 8) {
+        out.push({ x, y: 0, z, heightM: 20, radiusM: 4, yaw: 0, species: 2, tint: 0.5 });
+      }
+      return out;
+    },
+  };
+  const wrapped = withIslandTrees(blanket, box, groves);
+  // Tiles of 256 m over the box and a margin, the way the renderer asks.
+  const tiles = (src: typeof blanket): TreeInstance[] => {
+    const all: TreeInstance[] = [];
+    for (let z = Math.floor((minZ - 300) / 256) * 256; z < maxZ + 300; z += 256) {
+      for (let x = Math.floor((minX - 300) / 256) * 256; x < maxX + 300; x += 256) all.push(...src.place(x, z, x + 256, z + 256));
+    }
+    return all;
+  };
+  const got = tiles(wrapped);
+  const genericInBox = got.filter((t) => t.species === 2 && inIslandBox(box, t.x, t.z)).length;
+  const groveSeen = got.filter((t) => groves.includes(t)).length;
+  const outside = got.filter((t) => !inIslandBox(box, t.x, t.z)).length;
+  check("no generic trees inside the island box", genericInBox === 0, `${genericInBox} inside`);
+  check("each grove tree lands in exactly one tile", groveSeen === groves.length, `${groveSeen}/${groves.length}`);
+  check("generic trees outside the box are kept", outside > 1000, `${outside} kept`);
+  const raw = tiles(blanket).filter((t) => inIslandBox(box, t.x, t.z)).length;
+  check("probe: unwrapped, the generic canopy does cover the island", raw > 500, `${raw} inside`);
 }
 
 console.log(failures ? `alcatraz: ${failures} FAILED` : "alcatraz: all checks pass");

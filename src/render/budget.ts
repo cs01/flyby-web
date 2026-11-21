@@ -374,22 +374,28 @@ export interface AlcatrazPlan {
 // with any corner above the sea, and the structures' vertex and triangle
 // counts. Literals rather than read from the asset, so this module stays pure.
 const ALCATRAZ_LAND_QUADS = 91_500;
-const ALCATRAZ_STRUCTURE_VERTS = 8_400;
-const ALCATRAZ_STRUCTURE_TRIS = 4_450;
+export const ALCATRAZ_STRUCTURE_VERTS = 10_800;
+export const ALCATRAZ_STRUCTURE_TRIS = 6_700;
 /** Drape height over width. */
 const ALCATRAZ_DRAPE_ASPECT = 1725 / 2048;
+/** The painted-lettering atlas (render/alcatraz.ts makeDecalAtlas): one byte a texel. */
+export const DECAL_ATLAS_W = 1024;
+export const DECAL_ATLAS_ROW_H = 96;
+export const DECAL_ATLAS_ROWS = 5;
 
 /**
  * Patch vertices are position, normal, uv (32 bytes) and about one per quad;
  * each quad is two 32-bit triangles. Structure vertices carry position,
- * normal, colour, surface (12 each) and the facade vec4 (16).
+ * normal, colour, surface (12 each), the facade vec4 (16) and the decal
+ * group (4).
  */
 export function alcatrazBytes(a: AlcatrazPlan): number {
   const quads = ALCATRAZ_LAND_QUADS / (a.gridStep * a.gridStep);
   const ground = quads * (32 + 6 * 4);
-  const structures = ALCATRAZ_STRUCTURE_VERTS * 64 + ALCATRAZ_STRUCTURE_TRIS * 12;
+  const structures = ALCATRAZ_STRUCTURE_VERTS * 68 + ALCATRAZ_STRUCTURE_TRIS * 12;
   const drape = a.drapePx * Math.round(a.drapePx * ALCATRAZ_DRAPE_ASPECT) * DRAPE_BYTES_PER_TEXEL * MIPMAP_FACTOR;
-  return Math.round(ground + structures + drape);
+  const atlas = DECAL_ATLAS_W * DECAL_ATLAS_ROW_H * DECAL_ATLAS_ROWS * MIPMAP_FACTOR;
+  return Math.round(ground + structures + drape + atlas);
 }
 
 export function oceanBytes(o: OceanPlan): number {
