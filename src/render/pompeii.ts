@@ -183,6 +183,12 @@ void main() {
     // Kerbstones and slab edges: cut blocks.
     vec2 b = vec2(wp.x / 1.1, wp.y / 0.45);
     if (abs(n.y) > 0.6) b = vWorld.xz / 0.9;
+    // A tier of seats: blocks along the ring, the dark line under the step
+    // in front, and the seam where the seat meets the riser behind.
+    if (abs(n.y) > 0.6 && H > 0.0) {
+      b = vec2(u / 1.3, 0.5);
+      albedo *= mix(0.55, 1.0, smoothstep(0.0, 0.16, h / H)) * (1.0 - 0.18 * smoothstep(0.86, 1.0, h / H));
+    }
     float id = h21(floor(b) + seed * 7.0);
     albedo *= 0.8 + 0.35 * id;
     vec2 f = fract(b);

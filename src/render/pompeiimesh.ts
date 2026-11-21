@@ -1295,7 +1295,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const shade = k % 8 === 7 ? 0.82 : 1;
         const aisle = s % 9 === 0;
         const top: RGB = aisle ? [0.84, 0.8, 0.7] : [0.76 * shade, 0.68 * shade, 0.55 * shade];
-        poly(S, [[ax0, yt, az0], [ax1, yt, az1], [bx1, yt, bz1], [bx0, yt, bz0]], [0, 1, 0], top, seed, Surf.Kerb, 0, 0, uv4());
+        // Tread coordinates (u round the ring, v back from the nosing) so the
+        // shader can draw the shadow line under each step edge.
+        const tl = Math.hypot(ax1 - ax0, az1 - az0), td = Math.hypot(bx0 - ax0, bz0 - az0);
+        poly(S, [[ax0, yt, az0], [ax1, yt, az1], [bx1, yt, bz1], [bx0, yt, bz0]], [0, 1, 0], top, seed, Surf.Kerb, 0, 0,
+          [[s * tl, 0, tl, td], [(s + 1) * tl, 0, tl, td], [(s + 1) * tl, td, tl, td], [s * tl, td, tl, td]]);
         const tm = (t0 + t1) / 2;
         const [mx, mz] = E(ka0, kb0, tm);
         const inx = a.cx - mx, inz = a.cz - mz, il = Math.hypot(inx, inz);

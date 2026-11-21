@@ -2947,7 +2947,7 @@ async function main() {
     },
     flyby: {
       scene, camera, renderer, terrain, sky, city, tune, buildings, roads, composite, ac, chase,
-      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean,
+      sunShadow, drone, skyProbe, ao, car, detailRing, bridgeDecks, roadPack, roadGraph, ocean, pompeii,
       get droneActive() { return droneActive; },
       get carActive() { return carActive; },
       get wx() { return wx; },

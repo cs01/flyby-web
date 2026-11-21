@@ -831,7 +831,7 @@ export const POSES: Pose[] = [
     // the arena.
     name: "pompeii-amphitheatre",
     city: "pompeii",
-    lat: 40.75110, lon: 14.49477, altM: 33, hdgDeg: 60, pitchDeg: -14,
+    lat: 40.75110, lon: 14.49477, altM: 36.5, hdgDeg: 60, pitchDeg: -20,
     t: D("0079-08-22T07:30:00Z"),
     wx: POMPEII_WX,
     what: "Inside the amphitheatre from the upper cavea",
