@@ -42,7 +42,7 @@ import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, Townsfolk, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
-import { restoreCoast79 } from "./data/pompeiisuburbs";
+import { LandGrid, restoreCoast79 } from "./data/pompeiisuburbs";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
 import { PompeiiLamps } from "./render/pompeiilamps";
 import { PompeiiWater } from "./render/pompeiiwater";
@@ -398,9 +398,14 @@ async function main() {
     drapes.push(await stitchImagery(bboxAround(city.lat, city.lon, ring.extent * 1.05), ring.imageryZoom));
     loading.set(0.44 + 0.4 * (++imgDone / rings.length), "loading imagery");
   }
+  // Herculaneum keeps its land grid: the detail ring's restitched drapes are
+  // repainted with it too (its beach is 200 m from the origin, past the ring's trigger).
+  const hercLand = pompeiiData?.herc && pompeiiData.suburbs ? new LandGrid(pompeiiData.suburbs, pompeiiData.wall) : undefined;
+  const antiquate = (ds: StitchedImage[]): void =>
+    antiquateDrape(ds, fieldHeight, { ring: pompeiiData?.wall ?? [], origin: new Origin(city.lat, city.lon), suburbs: pompeiiData?.suburbs, land: hercLand });
   if (ancient) {
     const t0 = performance.now();
-    antiquateDrape(drapes, fieldHeight, { ring: pompeiiData?.wall ?? [], origin: new Origin(city.lat, city.lon), suburbs: pompeiiData?.suburbs });
+    antiquate(drapes);
     console.log(`[flyby] pompeii: drapes repainted as 79 AD farmland in ${(performance.now() - t0).toFixed(0)} ms`);
   }
 
@@ -810,6 +815,9 @@ async function main() {
   // The detail ring follows whatever is on the ground. It starts where the
   // terrain built it, so nothing changes until something asks it to move.
   const detailRing = new DetailRing(origin, terrain, budget.rings[0]);
+  // Only Herculaneum for now: Pompeii's street shots are held pixel for pixel
+  // to their old frames, which drew the restitched photograph.
+  if (hercLand) detailRing.repaint = (d) => antiquate([d]);
 
   // The canopy. Declared here so setAo below can reach it; it cannot be BUILT
   // until the landcover pack has arrived, which happens after the road pack.

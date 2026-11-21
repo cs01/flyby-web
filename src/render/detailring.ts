@@ -32,7 +32,7 @@
 import type { Origin } from "../geo";
 import type { Terrain } from "./terrain";
 import type { TerrainRing } from "./budget";
-import { stitchImagery } from "../data/imagery";
+import { stitchImagery, type StitchedImage } from "../data/imagery";
 import { bboxAround } from "../data/dem";
 
 /**
@@ -100,6 +100,12 @@ export class DetailRing {
   private readonly terrain: Terrain;
   private readonly ring: TerrainRing;
   private inFlight = false;
+  /**
+   * Applied to each new drape before it goes up: a place shown as it was
+   * (Pompeii, Herculaneum) repaints today's photograph as its countryside,
+   * or walking 140 m out of the town brings modern streets back under it.
+   */
+  repaint: ((drape: StitchedImage) => void) | null = null;
 
   constructor(origin: Origin, terrain: Terrain, ring: TerrainRing) {
     this.origin = origin;
@@ -140,6 +146,7 @@ export class DetailRing {
       this.stats.lastStitchMs = performance.now() - t0;
       this.stats.lastMissing = drape.missing;
       this.stats.lastCoarse = drape.coarse;
+      this.repaint?.(drape);
 
       const t1 = performance.now();
       this.terrain.recentreDetail(x, z, drape);

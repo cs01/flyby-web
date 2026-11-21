@@ -697,8 +697,8 @@ void main() {
         if (f.z < 0.0) {
           if (k == 0) c = f.y > 0.5 ? DEEP * 1.4 : skin * (0.85 + 0.25 * step(0.0, p.x));
           else c = f.y > 0.5 ? vec3(0.72, 0.34, 0.32) : (length(p - vec2(0.0, 0.91)) < 0.062 || p.y > 0.76 ? skin : WHITE * (0.92 + 0.08 * step(0.5, fract(p.x * 30.0))));
-          // Dark hair and the line of the eyes.
-          if (length(p - vec2(0.0, 0.94)) < 0.055 && p.y > 0.93) c = vec3(0.12, 0.08, 0.06);
+          // Dark hair.
+          if (length(p - vec2(0.0, 0.93)) < 0.064 && p.y > 0.945) c = vec3(0.12, 0.08, 0.06);
         } else if (f.z < 0.012) c = DEEP * 0.5;
       }
       // The trident, in Neptune's raised hand (his figure is mirrored: right hand at screen left).
@@ -1249,9 +1249,9 @@ export function pompeiiRingFields(fields: Heightfield[], data: PompeiiData): Hei
  * bare. The original pixel's lightness is kept as a faint texture, clamped so
  * a white modern roof cannot show through as a speck.
  */
-export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, lon: number) => number, wall: { ring: number[]; origin: Origin; suburbs?: PompeiiSuburbs }): void {
+export function antiquateDrape(drapes: StitchedImage[], heightAt: (lat: number, lon: number) => number, wall: { ring: number[]; origin: Origin; suburbs?: PompeiiSuburbs; land?: LandGrid }): void {
   const R0 = 12000, R1 = 15000;
-  const land = wall.suburbs ? new LandGrid(wall.suburbs, wall.ring) : null;
+  const land = wall.land ?? (wall.suburbs ? new LandGrid(wall.suburbs, wall.ring) : null);
   const lat0 = wall.origin.lat, lon0 = wall.origin.lon;
   const mLat = metresPerDegLat(lat0), mLon = metresPerDegLon(lat0);
   // Fields on the centuriation grid: about 20 actus (710 m) squares, each cut

@@ -1119,15 +1119,6 @@ export const POSES: Pose[] = [
     what: "The beach, the boat sheds in the sea wall, the Sacred Area over them",
   },
   {
-    name: "herc-beach-albedo",
-    city: "herculaneum",
-    lat: 40.805235, lon: 14.345849, altM: 15, hdgDeg: 56, pitchDeg: -10,
-    t: D("0079-08-22T07:30:00Z"),
-    wx: POMPEII_WX,
-    query: "fov=70&terrainDebug=7",
-    what: "herc-beach with the terrain's water mask (debug)",
-  },
-  {
     // Across Cardo IV from the Trellis House: its timber-framed upper floor jettied over the street.
     name: "herc-trellis",
     city: "herculaneum",

@@ -719,8 +719,8 @@ export class LandGrid {
     if (sh.w > 0.5) {
       if (sh.s < 0) return Land.Sea;
       if (this.sub.cliff) {
-        // The beach runs to the cliff foot; above it is the terrace and the town.
-        if (sh.s < 26) return Land.Beach;
+        // The beach runs to the cliff foot and in under the sheds; the terrace and town are built over the rest.
+        if (sh.s < 46) return Land.Beach;
       } else {
         if (sh.s < 40) return Land.Beach;
         if (sh.s < 170) return Land.Dunes;
