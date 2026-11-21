@@ -463,8 +463,11 @@ void main() {
 }
 `;
 
-// Falling pumice: streaks wrapped in a box round the camera, anchored in the
-// world so walking through them reads as walking through them.
+// The fall round the camera, wrapped in a box anchored in the world so walking
+// through it reads as walking through it. Two populations through one
+// shader: uKind 0 the lapilli, pale stones 1 to 3 cm falling at 10 to 18 m/s;
+// uKind 1 the fine ash, motes of a millimetre or two drifting down at a
+// metre or two a second and swirling on the wind.
 const PUMICE_VERT = /* glsl */ `
 precision highp float;
 in vec3 position;
@@ -474,33 +477,50 @@ uniform mat4 projectionMatrix;
 uniform vec3 uCamPos;
 uniform float uTime;
 uniform vec3 uBox;
-uniform vec3 uDrift;   // m/s, x and z; y the fall speed
+uniform vec3 uDrift;   // m/s, x and z; y the stones' fall speed
+uniform float uKind;
 out vec2 vUv;
 out vec3 vWorld;
 out float vShade;
 out float vStretch;
+out float vFade;
+out float vSpin;
+out float vSeed;
+out vec3 vRight;
+out vec3 vBack;
 void main() {
-  // Lapilli 1 to 3 cm fall at 10 to 20 m/s (terminal speed for pumice that size).
-  float speed = uDrift.y * (0.7 + 0.6 * aSeed.w);
+  bool fine = uKind > 0.5;
+  float speed = fine ? 1.0 + 1.4 * aSeed.w : uDrift.y * (0.7 + 0.6 * aSeed.w);
   vec3 vel = vec3(uDrift.x, -speed, uDrift.z);
   vec3 p0 = aSeed.xyz * uBox + vel * uTime;
+  // The fine ash rides the gusts: each mote on its own slow loop.
+  if (fine) p0 += vec3(sin(uTime * 0.9 + aSeed.x * 40.0), 0.4 * sin(uTime * 1.3 + aSeed.z * 30.0), cos(uTime * 0.7 + aSeed.y * 50.0)) * 0.7;
   vec3 rel = mod(p0 - uCamPos + uBox * 0.5, uBox) - uBox * 0.5;
   vec3 c = uCamPos + rel;
   vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
-  // The stone's radius, never under about a pixel and a half, or a stone
-  // further than a few metres is a sub-pixel speck that flickers.
-  float r = 0.005 + 0.01 * fract(aSeed.y * 53.1);
-  float size = max(r, distance(c, uCamPos) * 0.0016);
-  // Smeared along the fall by what it travels in a 1/200 s exposure: a stone
-  // with a short tail, not a raindrop's streak.
-  float len = speed / 200.0;
-  vec3 along = normalize(vel) * (size + 0.5 * len);
+  vec3 back = vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
+  float d = distance(c, uCamPos);
+  float r = fine ? 0.0008 + 0.0012 * fract(aSeed.y * 53.1) : 0.005 + 0.01 * fract(aSeed.y * 53.1);
+  // On screen never under about a pixel and a half (a smaller speck
+  // flickers) and never over about a degree: the few closest stones once
+  // filled a fifth of the screen as slabs.
+  float size = clamp(r, d * 0.0016, d * 0.018);
+  // A 1/200 s smear, but never longer than the stone is wide: a stone, not a streak.
+  float tail = fine ? 0.0 : min(0.5 * speed / 200.0, size);
+  vec3 along = normalize(vel) * (size + tail);
   // Minus: the fall points down, and right x down would turn the quad away from the camera.
   vec3 w = c + right * position.x * size - along * position.y;
   vUv = position.xy;
   vWorld = c;
-  vShade = 0.6 + 0.6 * fract(aSeed.x * 91.7);
-  vStretch = (size + 0.5 * len) / size;
+  vShade = 0.75 + 0.4 * fract(aSeed.x * 91.7);
+  vStretch = (size + tail) / size;
+  // Gone before the near plane rather than through it.
+  vFade = smoothstep(0.15, 0.65, d);
+  vSeed = fract(aSeed.z * 71.3);
+  // Tumbling a few turns a second as it falls.
+  vSpin = uTime * (3.0 + 9.0 * vSeed) + vSeed * 6.28;
+  vRight = right;
+  vBack = back;
   gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
 }
 `;
@@ -511,19 +531,43 @@ in vec2 vUv;
 in vec3 vWorld;
 in float vShade;
 in float vStretch;
+in float vFade;
+in float vSpin;
+in float vSeed;
+in vec3 vRight;
+in vec3 vBack;
 out vec4 fragColor;
 ${COMMON_UNIFORMS}
 uniform vec3 uPumice;
+uniform float uKind;
+${NOISE}
 ${ERUPTION_SURFACE_GLSL}
 void main() {
-  // A round stone swept into a capsule; the smear spreads the same light
-  // over a longer shape, so it fades as it lengthens.
-  float along = abs(vUv.y) * vStretch;
-  float d = length(vec2(vUv.x, max(0.0, along - (vStretch - 1.0))));
-  float a = smoothstep(1.0, 0.55, d) * min(1.0, 1.6 / vStretch);
-  if (a < 0.01) discard;
-  vec3 col = uPumice * vShade * (uNearAmb * 3.0 + eruptionLamps(vWorld, normalize(uCamPos - vWorld)));
   float T = exp(-distance(uCamPos, vWorld) / uVis);
+  if (uKind > 0.5) {
+    float a = smoothstep(1.0, 0.1, length(vUv)) * 0.25 * vFade;
+    if (a < 0.01) discard;
+    vec3 col = vec3(0.55, 0.52, 0.47) * (uNearAmb * 3.0 + uSunE * uShade * 0.3 + eruptionLamps(vWorld, vec3(0.0, 1.0, 0.0)));
+    fragColor = vec4(mix(uHaze, col, T), a);
+    return;
+  }
+  // The stone's own disc, with the smear collapsed out of it.
+  vec2 q = vec2(vUv.x, sign(vUv.y) * max(0.0, abs(vUv.y) * vStretch - (vStretch - 1.0)));
+  // An irregular outline: pumice is a broken froth, not a bead.
+  float ang = atan(q.y, q.x) + vSpin;
+  float rim = 0.84 + 0.09 * sin(3.0 * ang + vSeed * 17.0) + 0.06 * sin(5.0 * ang + vSeed * 31.0);
+  float rr = length(q) / rim;
+  float a = smoothstep(1.0, 0.78, rr) * vFade * min(1.0, 1.5 / vStretch);
+  if (a < 0.01) discard;
+  // Shaded as a lump in the scene's own light: pale where the light falls on
+  // it, dim in its own shade, mottled with vesicles that turn as it tumbles.
+  vec2 qq = q / rim;
+  vec3 n = normalize(vRight * qq.x + vec3(0.0, 1.0, 0.0) * qq.y + vBack * sqrt(max(0.0, 1.0 - dot(qq, qq))));
+  float cs = cos(vSpin), sn = sin(vSpin);
+  vec2 rq = vec2(cs * qq.x - sn * qq.y, sn * qq.x + cs * qq.y);
+  float mott = 0.75 + 0.4 * vnoise(rq * 2.6 + vSeed * 13.0);
+  vec3 light = uNearAmb * (2.0 + 1.4 * n.y) + uSunE * uShade * max(0.0, dot(n, uSunDir)) + eruptionLamps(vWorld, n);
+  vec3 col = uPumice * vShade * mott * light;
   fragColor = vec4(mix(uHaze, col, T), a);
 }
 `;
@@ -694,6 +738,10 @@ export class EruptionView {
   private readonly pGeo: THREE.InstancedBufferGeometry;
   private readonly pumiceN: number;
   private readonly pumiceU: Record<string, THREE.IUniform>;
+  private readonly ash: THREE.Mesh;
+  private readonly aGeo: THREE.InstancedBufferGeometry;
+  private readonly ashN: number;
+  private readonly ashU: Record<string, THREE.IUniform>;
   private readonly glow: THREE.Mesh;
   private readonly gGeo: THREE.InstancedBufferGeometry;
   private readonly gAttr: THREE.InstancedBufferAttribute;
@@ -797,6 +845,7 @@ export class EruptionView {
       uBox: { value: new THREE.Vector3(16, 12, 16) },
       uDrift: { value: new THREE.Vector3(1.2, 14, 2.0) },
       uPumice: { value: new THREE.Color(0.8, 0.76, 0.68) },
+      uKind: { value: 0 },
     };
     this.pumice = new THREE.Mesh(this.pGeo, new THREE.RawShaderMaterial({
       vertexShader: PUMICE_VERT, fragmentShader: PUMICE_FRAG, uniforms: this.pumiceU,
@@ -805,6 +854,23 @@ export class EruptionView {
     this.pumice.frustumCulled = false;
     this.pumice.name = "eruption-pumice";
     this.pumice.renderOrder = 21;
+
+    // The fine ash: a second draw of the same shader, its own seeds and a
+    // smaller box (a mote further than a few metres is below a pixel).
+    this.ashN = red ? 400 : 900;
+    this.aGeo = quadGeometry(0);
+    const aSeeds = new Float32Array(this.ashN * 4);
+    const ra = rng(1979);
+    for (let i = 0; i < aSeeds.length; i++) aSeeds[i] = ra();
+    this.aGeo.setAttribute("aSeed", new THREE.InstancedBufferAttribute(aSeeds, 4));
+    this.ashU = { ...this.pumiceU, uKind: { value: 1 }, uBox: { value: new THREE.Vector3(8, 6, 8) } };
+    this.ash = new THREE.Mesh(this.aGeo, new THREE.RawShaderMaterial({
+      vertexShader: PUMICE_VERT, fragmentShader: PUMICE_FRAG, uniforms: this.ashU,
+      glslVersion: THREE.GLSL3, transparent: true, depthWrite: false,
+    }));
+    this.ash.frustumCulled = false;
+    this.ash.name = "eruption-ash";
+    this.ash.renderOrder = 21;
 
     this.gGeo = quadGeometry(0);
     this.gAttr = new THREE.InstancedBufferAttribute(new Float32Array(12 * 4), 4);
@@ -858,7 +924,7 @@ export class EruptionView {
     this.bundleMesh.frustumCulled = false;
     this.bundleMesh.name = "eruption-bundles";
 
-    this.group.add(this.dome, this.canopy, this.billows, this.pumice, this.glow, this.bolt, this.bundleMesh);
+    this.group.add(this.dome, this.canopy, this.billows, this.pumice, this.ash, this.glow, this.bolt, this.bundleMesh);
   }
 
   /** The state at local hour h, or the untouched eve when switched off. */
@@ -969,7 +1035,7 @@ export class EruptionView {
     this.updateLamps(t, camera);
     su.uAshView.value.set(0, 1, on ? 1 : 0, on ? Math.min(1, s.columnKm / 15) : 0);
     if (!on) {
-      this.billows.visible = this.canopy.visible = this.pumice.visible = this.bolt.visible = this.dome.visible = this.bundleMesh.visible = false;
+      this.billows.visible = this.canopy.visible = this.pumice.visible = this.ash.visible = this.bolt.visible = this.dome.visible = this.bundleMesh.visible = false;
       this.glow.visible = this.pickup !== null;
       return;
     }
@@ -1268,6 +1334,10 @@ export class EruptionView {
     const k = Math.min(1, s.fallRateCmH / 15) * (1 - this.inSurge) * this.fallHere;
     this.pGeo.instanceCount = Math.round(this.pumiceN * k);
     this.pumice.visible = this.pGeo.instanceCount > 0;
+    // The fine ash thickens as the light goes: the grey phase is finer and the
+    // dark is mostly what it hangs in the air.
+    this.aGeo.instanceCount = Math.round(this.ashN * k * (0.35 + 0.65 * (1 - s.light)));
+    this.ash.visible = this.aGeo.instanceCount > 0;
     this.pumiceU.uTime.value = t;
     const grey = 1 - s.whiteness;
     (this.pumiceU.uPumice.value as THREE.Color).setRGB(0.8 - 0.42 * grey, 0.76 - 0.41 * grey, 0.68 - 0.34 * grey);

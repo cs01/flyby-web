@@ -1426,6 +1426,26 @@ export const POSES: Pose[] = [
     what: "The column and umbrella from the bay at 15:00, drawn as billows",
     query: "eruption=1&fov=75&plume=billows",
   },
+  // The fall at street level, close: light at 13:40, heavy at 15:00, dark
+  // with the lamp at 17:00, on the desktop and on the phone tier.
+  ...([["1340", "0079-08-22T12:50:04Z"], ["1500", "0079-08-22T14:10:04Z"], ["1700", "0079-08-22T16:10:04Z"]] as const).flatMap(([hm, iso]) =>
+    [["", ""], ["-phone", "&tier=reduced"]].map(([sfx, q]): Pose => ({
+      name: `eruption-fall-${hm}${sfx}`,
+      city: "pompeii",
+      lat: 40.75092, lon: 14.49024, altM: 34.0, hdgDeg: 58, pitchDeg: 6,
+      t: D(iso), wx: POMPEII_WX,
+      what: `The fall in the street at ${hm.slice(0, 2)}:${hm.slice(2)}${sfx ? " on the phone tier" : ""}`,
+      query: `eruption=1&fov=60${q}`,
+    }))),
+  // Four frames a tenth of a second apart: does it fall like stones.
+  ...[0, 1, 2, 3].map((i): Pose => ({
+    name: `eruption-fall-motion-${i}`,
+    city: "pompeii",
+    lat: 40.75092, lon: 14.49024, altM: 34.0, hdgDeg: 58, pitchDeg: 6,
+    t: D("0079-08-22T14:10:04Z"), wx: POMPEII_WX,
+    what: `The fall in the street at 15:00, animation clock ${(i / 10).toFixed(1)} s`,
+    query: `eruption=1&fov=60&anim=${(i / 10).toFixed(1)}`,
+  })),
   // The motion check: the 15:00 bay pose at six points of the animation clock.
   ...[0, 5, 10, 15, 20, 25].map((s): Pose => ({
     name: `eruption-motion-${String(s).padStart(2, "0")}`,

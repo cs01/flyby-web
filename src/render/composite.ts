@@ -384,7 +384,12 @@ void main() {
   plumeMarch(rd, sceneDist, hp, scattered, through, dSum, wSum);
   // Open sky seen through the air under the umbrella, from outside the fall
   // (inside it the eruption's own sky dome stands there instead).
-  if (sceneDist > 1.0e8 && uPlumeD.y > 0.0) through *= mix(1.0, mix(0.2, 1.0, plumeAirLit(rd, 60000.0)), uPlumeD.y);
+  if (sceneDist > 1.0e8 && uPlumeD.y > 0.0) {
+    // What it scatters instead is the ash's dim brown, not sky blue.
+    float m = mix(1.0, mix(0.2, 1.0, plumeAirLit(rd, 60000.0)), uPlumeD.y);
+    scattered += through * (1.0 - m) * uPlumeGround * 0.6 * vec3(1.0, 0.85, 0.7);
+    through *= m;
+  }
 #endif
 
   // --- AERIAL PERSPECTIVE ---------------------------------------------------
@@ -399,7 +404,7 @@ void main() {
     vec3 air = atmosphere(atmoOrigin(uCameraPos.y), rd, dMean, airT);
 #ifdef PLUME
     // The air in the umbrella's shadow scatters no sun (plumeAirLit).
-    air *= mix(0.15, 1.0, plumeAirLit(rd, dMean));
+    air *= mix(0.08, 1.0, plumeAirLit(rd, dMean));
     // Inside the fall the volume carries its own haze (the fall's visibility,
     // render/eruptionvolume.ts), which is what the town's haze is too; the
     // aerosol this integral would add for that visibility left nothing at all.

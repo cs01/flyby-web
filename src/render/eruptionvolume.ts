@@ -22,7 +22,7 @@
 
 import * as THREE from "three";
 import {
-  BUOYANT_W_MS, EXIT_SPEED_MS, LEAN, SPREAD, UMBRELLA_MAX_HALF_M, WIND_UMBRELLA_MS, ashAlbedo, columnRadiusM, plumeShape,
+  BUOYANT_W_MS, EXIT_SPEED_MS, LEAN, SPREAD, VISIBLE_EDGE, UMBRELLA_MAX_HALF_M, WIND_UMBRELLA_MS, ashAlbedo, columnRadiusM, plumeShape,
   umbrellaHalfWidthM, type PlumeShape,
 } from "../sim/plume";
 import { COLUMN_H, SURGE_SPEED_MS, type EruptionState } from "../sim/eruption";
@@ -33,7 +33,7 @@ const _c = new THREE.Color();
 /** The noise's cell size against the local column radius: big eddies are about 0.6 b. */
 const COLUMN_NOISE = 0.3;
 /** The umbrella's eddies, metres per noise unit (four cells to a unit). */
-const UMBRELLA_NOISE_M = 14000;
+const UMBRELLA_NOISE_M = 10000;
 /** Extinction per unit density, 1/m: a mean free path of 170 m in the core. */
 const PLUME_SIGMA = 0.006;
 /** Ground map for the surge: metres either side of the vent. */
@@ -77,6 +77,7 @@ const float P_UMBN = ${f6(1 / UMBRELLA_NOISE_M)};
 const float P_BUOY = ${f6(BUOYANT_W_MS)};
 const float P_HALFMAX = ${f6(UMBRELLA_MAX_HALF_M)};
 const float P_LEAN = ${f6(LEAN)};
+const float P_VIS = ${f6(VISIBLE_EDGE)};
 
 float plumeR(float z) { return uPlumeA.z + P_SPREAD * max(z, 0.0); }
 
@@ -127,12 +128,20 @@ float flowDetail(vec3 n, vec3 dir, float phase) {
 }
 
 // Normalised distance from the plume's surface at q (from the vent): below 1
-// inside the column (r over the top-hat radius b) or the umbrella (the larger
+// inside the column (r over its visible radius) or the umbrella (the larger
 // of its height over half its thickness and its footprint radius), the two
 // joined with a smooth minimum. 'umb' is the umbrella's share, 'depth' a
 // length scale for how far inside the light has to come.
 float gPlumeGap = 0.0;
 float gPlumeScale = 1000.0;
+// The umbrella under q, for the ash-fall veils: footprint radius (0 at the
+// vent, 1 at the edge), height of its base above the vent, distance downwind.
+float gPlumeRho = 9.0;
+float gPlumeBase = 0.0;
+float gPlumeAlong = 0.0;
+// Height under the umbrella's centre plane in half-thicknesses (negative
+// below), for its hanging lobes.
+float gPlumeV = 0.0;
 float plumeS(vec3 q, out float umb, out float depth) {
   float top = uPlumeA.x, nbl = uPlumeA.y;
   vec2 f = uPlumeC.yz;
@@ -140,17 +149,20 @@ float plumeS(vec3 q, out float umb, out float depth) {
   float cross = q.x * f.y - q.z * f.x;
   float z = q.y;
   umb = 0.0;
-  depth = plumeR(min(max(z, 0.0), nbl));
+  gPlumeRho = 9.0;
+  gPlumeAlong = along;
+  depth = P_VIS * plumeR(min(max(z, 0.0), nbl));
   if (top <= 0.0) return 9.0;
   float zc = clamp(z, 0.0, top);
   // Bent over by the wind toward the top: a strong column leans little.
   float lean = P_LEAN * zc * zc / top;
   float bN = plumeR(nbl);
-  // Above the neutral level the column decelerates and domes over.
-  float k = (z - nbl) / max(top - nbl, 1.0);
-  float b = z < nbl ? plumeR(z) : bN * uPlumeD.x * sqrt(max(0.0, 1.0 - k * k));
+  // Above the neutral level the column decelerates and domes over, swelling
+  // out first (wider on a climbing head) and closing at the top.
+  float k = clamp((z - nbl) / max(top - nbl, 1.0), 0.0, 1.0);
+  float b = z < nbl ? plumeR(z) : bN * (1.0 + (uPlumeD.x - 1.0) * min(1.0, 3.0 * k)) * sqrt(max(0.0, 1.0 - k * k));
   float r = length(vec2(along - lean, cross));
-  float sc = z > top || z < -150.0 ? 9.0 : r / max(b, 1.0) + max(0.0, -z) / 150.0;
+  float sc = z > top || z < -150.0 ? 9.0 : r / max(P_VIS * b, 1.0) + max(0.0, -z) / 150.0;
   float su = 9.0;
   float halfT = 1.0e5;
   if (uPlumeB.z > 500.0 && top > 3000.0) {
@@ -167,20 +179,23 @@ float plumeS(vec3 q, out float umb, out float depth) {
       float alongP = max(along, 0.0);
       // Sagging and thinning downwind as it drops its load.
       float sag = min(0.04 * alongP, 0.35 * nbl);
-      float thin = 1.0 / (1.0 + alongP / 30000.0);
+      float thin = 1.0 / (1.0 + alongP / 60000.0);
       // A gravity current keeps a thick head at its front, so the edge is
       // a rolled bank and not a sheet thinning to nothing.
-      float T = max(1500.0, uPlumeB.w * (0.45 + 0.55 * sqrt(max(0.0, 1.0 - rho2))) * thin);
+      float T = max(2500.0, uPlumeB.w * (0.55 + 0.45 * sqrt(max(0.0, 1.0 - rho2))) * thin);
       float yc = nbl + 0.2 * (top - nbl) - sag;
       halfT = 0.5 * T;
       float v = (z - yc) / halfT;
+      gPlumeV = v;
+      gPlumeRho = rho;
+      gPlumeBase = yc - halfT;
       su = max(abs(v), rho) / min(1.0, uPlumeB.z / 4000.0);
     }
   }
   // Metres the march may jump: the lobes reach to about 1.75 of either
   // normalised distance, each in its own length scale.
-  gPlumeGap = min(max(sc - 1.8, 0.0) * max(b, 100.0), max(su - 1.8, 0.0) * halfT);
-  gPlumeScale = min(max(b, 100.0), halfT);
+  gPlumeGap = min(max(sc - 1.8, 0.0) * max(P_VIS * b, 100.0), max(su - 1.8, 0.0) * halfT);
+  gPlumeScale = min(max(P_VIS * b, 100.0), halfT);
   float h = clamp(0.5 + 0.5 * (sc - su) / 0.25, 0.0, 1.0);
   umb = h;
   depth = mix(depth, halfT, h);
@@ -192,8 +207,10 @@ float plumeEnvelope(vec3 q, out float umb, out float depth) {
   return smoothstep(1.3, 0.7, plumeS(q, umb, depth));
 }
 
-// The last plumeDensity call's surface distance.
+// The last plumeDensity call's surface distance, and the march's distance
+// from the eye (the fine octave is only worth its fetches up close).
 float gPlumeS = 9.0;
+float gPlumeT = 0.0;
 
 // Density at p (world). The noise displaces the surface by up to half the
 // local radius, so the outline is lobes with hard edges, the cauliflower of a
@@ -214,14 +231,20 @@ float plumeDensity(vec3 p, bool cheap, out float hf, out float env, out float de
   float shape = 0.5;
   vec3 nC = vec3(0.0), dC = vec3(0.0, 1.0, 0.0), nU = vec3(0.0), dU = vec3(1.0, 0.0, 0.0);
   float phC = 0.0, phU = 0.0;
+  float bS = 1000.0;
   if (umb < 0.98) {
     // Self-similar: across in radii, up in log-radius (an eddy rises one
     // radius per unit), moving at the local rise speed over the local radius.
+    // Over the neutral level the dome keeps eddies of its own size, about a
+    // third of the column's there, carried up at the dome's slowing speed.
+    float nbl = uPlumeA.y;
     float zz = min(z, uPlumeA.x);
-    float bS = plumeR(zz);
+    float bN = plumeR(nbl);
+    float k = clamp((zz - nbl) / max(uPlumeA.x - nbl, 1.0), 0.0, 1.0);
+    bS = zz < nbl ? plumeR(zz) : bN * mix(1.0, 0.35, k);
     float lean = P_LEAN * zz * zz / max(uPlumeA.x, 1.0);
     vec2 xc = vec2(along - lean, cross) / bS;
-    float zeta = log(bS / 100.0) / P_SPREAD;
+    float zeta = zz < nbl ? log(bS / 100.0) / P_SPREAD : log(bN / 100.0) / P_SPREAD + (zz - nbl) / (0.6 * bN);
     nC = vec3(xc.x, zeta, xc.y) * P_COLN;
     // Slower at the margin than on the axis: the shear that rolls the edge
     // over. Never quite still, so the overshoot top keeps turning.
@@ -245,14 +268,45 @@ float plumeDensity(vec3 p, bool cheap, out float hf, out float env, out float de
   if (umb > 0.02) shape = mix(shape, flowShape(nU, dU, phU), umb);
   // Less on the umbrella, whose s is in half-thicknesses of kilometres.
   float se = s - mix(1.2, 0.75, umb) * (shape - 0.5);
+  if (umb > 0.3 && gPlumeV < 0.0) {
+    // Lobes hanging from the umbrella's base where the load drains out of
+    // it (mammatus), a kilometre or two across, drifting with the cloud.
+    vec3 m = vec3(q.x, q.y * 0.6, q.z) * (1.0 / 5000.0) - dU * (phU * 0.36);
+    se -= umb * 0.7 * (perlinWorley(m + 0.41) - 0.45);
+  }
   if (!cheap && abs(se - 1.0) < 0.25) {
     // The cauliflower on the lobes, only where the surface is.
     float detail = umb < 0.5 ? flowDetail(nC * 3.3, dC, phC * 3.3) : flowDetail(nU * 3.3, dU, phU * 3.3);
     se -= 0.22 * (detail - 0.5);
+    // And on that, near the eye, where a few hundred metres span many pixels.
+    if (umb < 0.5 && gPlumeT < 30.0 * bS && abs(se - 1.0) < 0.1) {
+      se -= 0.09 * (flowDetail(nC * 11.0 + 0.27, dC, phC * 11.0) - 0.5);
+    }
   }
   float d = smoothstep(1.07, 0.93, se);
-  // Denser low in the column, where the tephra is.
-  return d * mix(1.6, 0.8, hf);
+  // Denser low in the column, where the tephra is, and through the umbrella,
+  // which is an optically thick slab kilometres deep.
+  return d * mix(mix(1.8, 0.9, hf), 1.6, umb);
+}
+
+// Ash falling out of the umbrella's base: streaky curtains under the
+// downwind sheet, bent by the wind they fall through. Reads the umbrella
+// footprint plumeS left for the same point. Thin (a mean free path of
+// kilometres) and smooth enough to integrate over the march's long jumps.
+float plumeVeil(vec3 p) {
+  // Seen from inside the fall the fall's own haze is this, already.
+  if (gPlumeRho > 1.0 || uPlumeD.y <= 0.0) return 0.0;
+  vec3 q = p - uPlumeVent.xyz;
+  float below = gPlumeBase - q.y;
+  if (below <= 0.0 || q.y < -uPlumeVent.y) return 0.0;
+  vec2 f = uPlumeC.yz;
+  // Falling at about twice the wind's speed: displaced downwind half the drop.
+  float a = gPlumeAlong - 0.5 * below;
+  float c = q.x * f.y - q.z * f.x;
+  vec4 n = texture(uShape, vec3(a / 9000.0, q.y / 40000.0, c / 9000.0) + vec3(uPlumeVent.w * P_WIND / 9000.0, 0.0, 0.0));
+  float streak = smoothstep(0.35, 0.8, n.g * 0.7 + n.r * 0.3);
+  float onset = smoothstep(-2000.0, 6000.0, gPlumeAlong);
+  return uPlumeD.y * 0.08 * streak * onset * smoothstep(1.0, 0.75, gPlumeRho) * smoothstep(0.0, 1500.0, below);
 }
 
 float plumeDensityCheap(vec3 p) {
@@ -274,11 +328,17 @@ float plumeAirLit(vec3 rd, float dist) {
   if (uPlumeB.z <= 500.0 || uSunDir.y < 0.03) return 1.0;
   float yc = uPlumeVent.y + uPlumeA.y + 0.2 * (uPlumeA.x - uPlumeA.y);
   float sw = 0.0, sl = 0.0;
-  for (int i = 0; i < 6; i++) {
-    vec3 x = uCameraPos + rd * (dist * (float(i) + 0.5) / 6.0);
+  for (int i = 0; i < 10; i++) {
+    vec3 x = uCameraPos + rd * (dist * (float(i) + 0.5) / 10.0);
     float w = exp(-max(x.y, 0.0) / 8000.0);
     float lit = 1.0;
+    // Under the umbrella's footprint the air is ash-laden from its base to
+    // the ground (the veils are only the thick of it): it absorbs, and what
+    // it scatters is dim and brown, not sky blue.
+    plumeEnvAt(x);
+    float under = gPlumeRho < 1.2 ? smoothstep(1.1, 0.75, gPlumeRho) * smoothstep(0.0, 2000.0, gPlumeBase - (x.y - uPlumeVent.y)) : 0.0;
     if (x.y < yc) lit = exp(-4.0 * plumeEnvAt(x + uSunDir * ((yc - x.y) / uSunDir.y)));
+    lit = mix(lit, 0.1, under);
     sw += w;
     sl += w * lit;
   }
@@ -302,7 +362,7 @@ float surgeDensity(vec3 p, out float hfs) {
   if (abs(ang) > 0.95) return 0.0;
   float hg = p.y - surgeGround(p.xz);
   // Written so a NaN from the ground map fails it too.
-  if (!(hg > -10.0 && hg < 900.0)) return 0.0;
+  if (!(hg > -10.0 && hg < 1300.0)) return 0.0;
   float s = ang * rr;
   float t = uPlumeVent.w;
   // Lobes and clefts along the front, a few hundred metres apart.
@@ -311,20 +371,23 @@ float surgeDensity(vec3 p, out float hfs) {
   float behind = front - rr;
   if (behind < -150.0) return 0.0;
   // Billows rolling forward and up off the head, carried at the front's speed.
-  vec3 n = vec3(s, hg * 1.2, rr) / 320.0;
-  float sh = flowShape(n, normalize(vec3(0.0, 0.5, 1.0)), t * uSurge.z / 320.0);
+  vec3 n = vec3(s, hg * 1.2, rr) / 170.0;
+  float sh = flowShape(n, normalize(vec3(0.0, 0.5, 1.0)), t * uSurge.z / 170.0);
   behind += 90.0 * (sh - 0.5);
   // The dense basal current, a few tens of metres deep, with a head about
   // three times that at the front (a gravity current's raised nose); above
   // and behind it the dilute cloud that lofts as it entrains air and sheds
   // its load, rising to several hundred metres a few kilometres back.
-  float hb = 35.0 + 85.0 * exp(-max(behind, 0.0) / 220.0);
-  float hd = 120.0 + min(max(behind, 0.0) * 0.22, 650.0);
+  float hb = 50.0 + 170.0 * exp(-max(behind, 0.0) / 350.0);
+  // The nose overhangs its own foot: the head runs ahead of the ground-
+  // dragged base by tens of metres at mid-height.
+  behind += 60.0 * sin(3.14159 * clamp(hg / hb, 0.0, 1.0)) * exp(-max(behind, 0.0) / 300.0);
+  float hd = 250.0 + min(max(behind, 0.0) * 0.3, 900.0);
   float tail = smoothstep(-40.0, 30.0, behind) * smoothstep(5000.0, 2000.0, behind) * uSurge.w;
   if (tail <= 0.0) return 0.0;
   // Surfaces displaced by the noise, as for the column: hard-edged lobes.
-  float dense = smoothstep(1.08, 0.92, hg / hb - 0.9 * (sh - 0.5));
-  float dil = 0.22 * smoothstep(1.1, 0.85, hg / hd - 0.9 * (sh - 0.5)) * smoothstep(0.0, 300.0, behind);
+  float dense = smoothstep(1.05, 0.95, hg / hb - 1.3 * (sh - 0.5));
+  float dil = 0.5 * smoothstep(1.06, 0.94, hg / hd - 1.1 * (sh - 0.5)) * smoothstep(0.0, 300.0, behind);
   hfs = sat(hg / hd);
   return max(3.0 * dense, dil) * tail;
 }
@@ -345,7 +408,25 @@ vec3 plumeSunAt(float y, vec3 sunLo, vec3 sunHi) {
   return mix(sunLo, sunHi, sat((y - 1500.0) / 24000.0)) * smoothstep(horizon - 0.006, horizon + 0.012, uSunDir.y);
 }
 
-void plumeMarch(vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout float through, inout float dSum, inout float wSum) {
+// The ash-fall veils over a jump of len metres from p, at p's density. They
+// sit in the umbrella's shadow, lit by the ground and the sky round the edge
+// and by the sun only where it gets in under the edge.
+void veilStep(vec3 p, float dV, float len, float t, vec3 rd, vec3 sunLo, vec3 sunHi,
+              inout vec3 scattered, inout float through, inout float dSum, inout float wSum) {
+  float yc = uPlumeVent.y + uPlumeA.y + 0.2 * (uPlumeA.x - uPlumeA.y);
+  float sunVis = uSunDir.y > 0.03 ? exp(-4.0 * plumeEnvAt(p + uSunDir * (max(yc - p.y, 0.0) / uSunDir.y))) : 0.0;
+  vec3 lum = (uPlumeGround * 0.8 + uPlumeAmb * 0.25 + plumeSunAt(p.y, sunLo, sunHi) * sunVis * 0.1) * 0.18 * vec3(1.0, 0.86, 0.7);
+  float fog = mix(exp(-t / uPlumeD.z), 1.0, uPlumeD.y);
+  float a = (1.0 - exp(-dV * P_SIGMA * len)) * fog;
+  float w = through * a;
+  scattered += lum * w;
+  dSum += w * (t + 0.5 * len);
+  wSum += w;
+  through *= 1.0 - a;
+}
+
+void plumeMarch(
+vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout float through, inout float dSum, inout float wSum) {
   vec3 ro = uCameraPos;
   vec2 iv[3];
   iv[0] = boxHits(ro, rd, uPlumeBox0Min, uPlumeBox0Max);
@@ -389,20 +470,27 @@ void plumeMarch(vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout 
       steps++;
       vec3 p = ro + rd * t;
       float hf, env, depth, hfs;
+      gPlumeT = t;
       float dP = plumeDensity(p, false, hf, env, depth);
+      float dV = plumeVeil(p);
       float dS = surgeDensity(p, hfs);
       float dens = dP + dS;
+      bool nearSurge = uSurge.w > 0.0 && all(greaterThan(p, uSurgeBoxMin)) && all(lessThan(p, uSurgeBoxMax));
       if (dens <= 0.001) {
-        float jump = coarse ? 2.5 * dt : dt;
+        // No coarse stride in the surge: its billows are tens of metres and
+        // alternate hits and misses between pixels read as speckle.
+        float jump = coarse && !nearSurge ? 2.5 * dt : dt;
         // Far outside the plume and clear of the surge: jump most of the way to
         // its surface. The lobes reach out to about 1.5 of the normalised
         // distance, so the jump stops short of that.
-        bool nearSurge = uSurge.w > 0.0 && all(greaterThan(p, uSurgeBoxMin)) && all(lessThan(p, uSurgeBoxMax));
-        if (!nearSurge) jump = max(jump, min(0.8 * gPlumeGap, 4000.0));
+        if (!nearSurge) jump = max(jump, min(0.8 * gPlumeGap, dV > 0.0 ? 2000.0 : 4000.0));
         // Never over the surge: a long jump from the camera cleared it whole.
         if (sIv.y > sIv.x && t < sIv.x) jump = min(jump, max(sIv.x - t, dt));
+        if (dV > 0.0) veilStep(p, dV, jump, t, rd, sunLo, sunHi, scattered, through, dSum, wSum);
         t += jump;
-        coarse = true;
+        // Back up on the next hit only after a stride longer than a step, or a
+        // single-step march walks back and forth over the same edge.
+        coarse = jump > 1.01 * dt;
         continue;
       }
       if (coarse) {
@@ -410,8 +498,9 @@ void plumeMarch(vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout 
         t = max(seg.x, t - 1.5 * dt);
         continue;
       }
+      dens += dV;
       vec3 lum;
-      if (dP >= dS) {
+      if (dP + dV >= dS) {
         // Light toward the sun: near steps through the noise, far ones
         // through the envelope alone, then the umbrella overhead.
         float od = 0.0;
@@ -431,10 +520,10 @@ void plumeMarch(vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout 
           float tu = (yc - p.y) / uSunDir.y;
           od += plumeEnvAt(p + uSunDir * tu) * uPlumeB.w * 0.8;
         }
-        float alb = ${ashAlbedo(0).toFixed(3)} + ${(ashAlbedo(1) - ashAlbedo(0)).toFixed(3)} * hf;
+        float alb = ${ashAlbedo(0).toFixed(3)} + ${(ashAlbedo(1) - ashAlbedo(0)).toFixed(3)} * smoothstep(0.0, 0.45, hf);
         alb *= 1.0 - 0.2 * grey;
         // Tephra-laden and brown low down, paler ash grey in the umbrella.
-        vec3 tint = mix(vec3(1.0, 0.9, 0.79), vec3(1.0, 0.97, 0.93), smoothstep(0.1, 0.8, hf));
+        vec3 tint = mix(vec3(1.0, 0.8, 0.62), vec3(1.0, 0.94, 0.86), smoothstep(0.1, 0.6, hf));
         float s = 0.0;
         float aw = alb;
         float b = 1.0;
@@ -449,6 +538,10 @@ void plumeMarch(vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout 
           kph *= 0.6;
         }
         float powder = 1.0 - 0.7 * exp(-dP * P_SIGMA * 700.0) * sat(-cosSun * 0.5 + 0.5);
+        // The phase and octaves above are the water-cloud calibration (render/
+        // composite.ts sunScatter); ash scatters less of the beam back out of
+        // its sunlit face than a cumulus of the same albedo would.
+        s *= 0.55;
         vec3 sun = plumeSunAt(p.y, sunLo, sunHi);
         // Sky light from above, from the side facing the eye and from the
         // ground below, each through the envelope in its own direction: the
@@ -472,20 +565,28 @@ void plumeMarch(vec3 rd, float sceneDist, ivec2 hp, inout vec3 scattered, inout 
           lum += vec3(0.75, 0.8, 1.0) * uPlumeFlash.w * alb * exp(-dot(fd, fd) / 3.2e6);
         }
       } else {
-        float alb = mix(0.22, 0.45, hfs);
-        vec3 tint = mix(vec3(0.85, 0.74, 0.62), vec3(1.0, 0.95, 0.88), hfs);
-        float ambVis = mix(0.35, 1.0, hfs);
-        lum = (uSurgeSun * (0.4 + 0.6 * hfs) + uSurgeAmb * ambVis) * alb * tint;
+        // Dark and dense at the base, the lofting cloud above paler and lit from
+        // above by the dawn there is: the wall reads by its tones, not lightning.
+        float alb = mix(0.18, 0.45, hfs);
+        vec3 tint = mix(vec3(0.85, 0.72, 0.58), vec3(1.0, 0.92, 0.82), hfs);
+        // Light from above through the cloud over the sample: billow tops pale,
+        // the creases between them and the undersides dark.
+        float hd1, hd2;
+        float occ = exp(-P_SIGMA * (surgeDensity(p + vec3(0.0, 35.0, 0.0), hd1) * 35.0 + surgeDensity(p + vec3(0.0, 110.0, 0.0), hd2) * 75.0) * 1.5);
+        lum = (uSurgeSun * (0.3 + 0.7 * hfs) * occ + uSurgeAmb * (0.25 + 2.2 * occ) * (0.6 + 0.6 * hfs)) * alb * tint;
         if (uPlumeFlash.w > 0.0) {
           vec3 fd = p - uPlumeFlash.xyz;
           // The surge's own lightning is most of what shows it in the dark.
-          lum += vec3(0.75, 0.8, 1.0) * uPlumeFlash.w * (alb / 0.3) * exp(-dot(fd, fd) / 2.0e6);
+          lum += vec3(0.75, 0.8, 1.0) * uPlumeFlash.w * alb * (0.2 + 0.6 * occ) * exp(-dot(fd, fd) / 2.0e6);
         }
       }
       lastLum = lum;
       // Inside the fall the plume fades into the fall's own haze with distance,
       // as everything else there does (the scene behind is that haze).
-      float fog = mix(exp(-t / uPlumeD.z), 1.0, uPlumeD.y);
+      // The surge's head is hundreds of metres of near-opaque cloud standing
+      // against the lighter haze behind it, a contrast that carries further
+      // than the fall's visibility (set for a small dark object near the ground).
+      float fog = mix(exp(-t / (uPlumeD.z * (dS > dP ? 3.0 : 1.0))), 1.0, uPlumeD.y);
       float stepA = (1.0 - exp(-dens * P_SIGMA * dt)) * fog;
       float w = through * stepA;
       scattered += lum * w;
@@ -629,9 +730,10 @@ export class EruptionVolume {
     // sky blue the column read lavender from across the bay.
     const al = fr.amb.r * 0.3 + fr.amb.g * 0.45 + fr.amb.b * 0.25;
     u.uPlumeAmb.value.copy(fr.amb).lerp(_c.setRGB(al, al * 0.95, al * 0.88), 0.5);
-    // Light from below: the landscape round the umbrella's shadow, albedo about
-    // 0.12 in the sun, and the sky it reflects. What lights the underside.
-    u.uPlumeGround.value.copy(fr.sun).multiplyScalar(0.12 * Math.max(0, fr.sunY)).add(_c.copy(fr.amb).multiplyScalar(0.25));
+    // Light from below: the landscape round the umbrella's shadow (albedo about
+    // 0.12, half of what the underside sees is in that shadow) and the sky it
+    // reflects. What lights the underside, a few stops under its sunlit top.
+    u.uPlumeGround.value.copy(fr.sun).multiplyScalar(0.06 * Math.max(0, fr.sunY)).add(_c.copy(fr.amb).multiplyScalar(0.15));
     u.uPlumeFlash.value.copy(fr.flash);
     // The vent's glow: constant in radiance, so it only tells once the day goes.
     const glow = sh.topM > 0 ? 1 : 0;
@@ -640,7 +742,7 @@ export class EruptionVolume {
     // Bounds: the column as a box round the vent, the umbrella as the box
     // round its footprint in the wind frame.
     const bN = columnRadiusM(sh.nblM, sh);
-    const colHalf = 1.4 * Math.max(bN, columnRadiusM(sh.topM, sh) * 0.6) + 0.1 * sh.topM + 300;
+    const colHalf = 1.4 * VISIBLE_EDGE * Math.max(bN, columnRadiusM(sh.topM, sh) * 0.6) + 0.1 * sh.topM + 300;
     u.uPlumeBox0Min.value.set(v.x - colHalf, v.y - 300, v.z - colHalf);
     u.uPlumeBox0Max.value.set(v.x + colHalf, v.y + sh.topM + 400, v.z + colHalf);
     if (sh.spreadM > 500 && sh.topM > 3000) {
@@ -654,7 +756,8 @@ export class EruptionVolume {
         const x = v.x + fx * a + fz * c, z = v.z + fz * a - fx * c;
         x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z);
       }
-      u.uPlumeBox1Min.value.set(x0, yLo, z0);
+      // Down to the ground: the ash-fall veils hang from the base to it.
+      u.uPlumeBox1Min.value.set(x0, Math.min(yLo, -100), z0);
       u.uPlumeBox1Max.value.set(x1, v.y + sh.topM + 600, z1);
     } else {
       u.uPlumeBox1Min.value.set(0, 0, 0);
@@ -685,7 +788,7 @@ export class EruptionVolume {
         }
       }
       u.uSurgeBoxMin.value.set(x0, gMin - 20, z0);
-      u.uSurgeBoxMax.value.set(x1, gMax + 900, z1);
+      u.uSurgeBoxMax.value.set(x1, gMax + 1300, z1);
       u.uSurgeSun.value.copy(fr.sun).multiplyScalar(fr.shade);
       u.uSurgeAmb.value.copy(fr.nearAmb).multiplyScalar(3);
     } else {

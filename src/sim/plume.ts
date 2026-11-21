@@ -128,6 +128,19 @@ export function columnRadiusM(z: number, s: Pick<PlumeShape, "ventRM">): number 
 }
 
 /**
+ * Where the column stops hiding the sky, as a multiple of the top-hat radius.
+ * The concentration falls off as a Gaussian exp(-2 r^2 / b^2) and at 1.4 b is
+ * still 2% of the axis; a column whose axis takes kilometres of tephra-laden
+ * air per metre of light is opaque there across a chord of a kilometre.
+ */
+export const VISIBLE_EDGE = 1.4;
+
+/** The column's visible radius at height z above the vent, m. */
+export function visibleRadiusM(z: number, s: Pick<PlumeShape, "ventRM">): number {
+  return VISIBLE_EDGE * columnRadiusM(z, s);
+}
+
+/**
  * Rise speed on the column's axis at height z, m/s. A momentum jet out of the
  * vent decelerating as it entrains (w ~ 1/b), then the buoyant plume (w ~ z^(-1/3)),
  * both going to nothing at the top of the overshoot.
@@ -167,7 +180,13 @@ export function plumeShape(km: number, steadyKm: number, ventKm: number, ageS: n
   };
 }
 
-/** Albedo of the ash at height fraction f of the column, 0 vent .. 1 top (single scattering, 0.3 to 0.5 for ash). */
+/**
+ * Albedo of the plume at height fraction f, 0 vent .. 1 top. Fine ash alone
+ * scatters 0.3 to 0.5 of what it meets; the lower third carries the coarse
+ * tephra and lithics that the umbrella has dropped by the time it spreads, and
+ * reads near black-brown.
+ */
 export function ashAlbedo(f: number): number {
-  return 0.28 + 0.17 * clamp01(f);
+  const t = clamp01(f / 0.45);
+  return 0.14 + 0.24 * t * t * (3 - 2 * t);
 }
