@@ -175,10 +175,13 @@ export function buildHerculaneum(k: SuburbKit, h: HerculaneumExtras, o: {
     // The cella behind a porch of four columns.
     const cellaH = 5.2;
     box(rect(-W / 2 + 0.3, nF + 3, W / 2 - 0.3, nB - 0.3), pod, pod + cellaH, [0.86, 0.8, 0.68], 0.3 + ti * 0.1, Surf.Stucco);
+    // The porch columns carry an architrave across the front, up to the porch ceiling.
+    const archH = 0.5;
     for (let c = 0; c < 4; c++) {
       const [x, z] = Q(-W / 2 + 0.6 + (c * (W - 1.2)) / 3, nF + 0.7);
-      o.orders(x, z, pod, cellaH - 0.4);
+      o.orders(x, z, pod, cellaH - archH);
     }
+    box(rect(-W / 2, nF + 0.3, W / 2, nF + 1.1), pod + cellaH - archH, pod + cellaH, [0.86, 0.8, 0.68], 0.3 + ti * 0.1, Surf.Stucco, Surf.Stucco, [0.86, 0.8, 0.68], true);
     // Gable roof, ridge front to back, and the pediment on the sea side.
     const rise = 1.6, yE = pod + cellaH;
     const [fl0x, fl0z] = Q(-W / 2, nF), [fr0x, fr0z] = Q(W / 2, nF), [bl0x, bl0z] = Q(-W / 2, nB), [br0x, br0z] = Q(W / 2, nB);
@@ -268,7 +271,8 @@ export function buildHerculaneum(k: SuburbKit, h: HerculaneumExtras, o: {
         const a = (i / 10) * Math.PI * 2;
         o.orders(x + Math.cos(a) * 4.4, z + Math.sin(a) * 4.4, g + 0.05, 4.6);
       }
-      lathe(S, x, g + 4.6, z, [[4.9, 0], [4.9, 0.5], [4.6, 0.6], [3.2, 1.6], [1.2, 2.4], [0.01, 2.6]], lean ? 12 : 24, TILE, 0.5, Surf.Tile);
+      // The roof closed underneath (axis out to the rim first), so the columns have something over them.
+      lathe(S, x, g + 4.6, z, [[0.01, 0], [4.9, 0], [4.9, 0.5], [4.6, 0.6], [3.2, 1.6], [1.2, 2.4], [0.01, 2.6]], lean ? 12 : 24, TILE, 0.5, Surf.Tile);
       solids.push({ ring: [x - 5, z - 5, x + 5, z - 5, x + 5, z + 5, x - 5, z + 5], baseY: g - 1, topY: g + 7.2 });
     }
   }

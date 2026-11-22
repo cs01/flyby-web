@@ -230,12 +230,14 @@ export interface ArtPlaced {
 export interface PompeiiModel {
   /** Every column with its order, for the detailed near copies. */
   orders: ColumnInstance[];
+  /** Every column and post built, with or without an order: the support gate reads them. */
+  posts: { x: number; z: number; y0: number; h: number }[];
   /** Named works placed in their houses (empty with art off). */
   art: ArtPlaced[];
   /** Rooms built inside the houses (full build), with a place to stand and where to look: the poses and the gate read them. */
   interiors: InteriorView[];
   /** Pedestals built empty for a statue (the garden statuary): top centre and the way the figure faces. */
-  statueBases: { x: number; y: number; z: number; yaw: number; what: "garden" }[];
+  statueBases: { x: number; y: number; z: number; yaw: number; what: "garden" | "cult" }[];
   /** What was modelled at the mapped sites. */
   sites: { mills: { x: number; z: number; site: string }[]; ovens: string[]; thermopolia: number; statues: string[]; shrines: number; stalls: number };
   /** The town: buildings, kerbs, landmarks, walls. Single-sided. */
@@ -360,6 +362,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   const upperHouses: PompeiiModel["upperHouses"] = [];
   const art = opts.art !== false && !grey;
   const orders: ColumnInstance[] = [];
+  const posts: PompeiiModel["posts"] = [];
   const artPlaced: ArtPlaced[] = [];
   const interiors: InteriorView[] = [];
   const statueBases: PompeiiModel["statueBases"] = [];
@@ -475,6 +478,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       rTop = r * TOP_DIAMETER;
     }
     stats.columns++;
+    posts.push({ x, z, y0, h });
     for (let k = 0; k < sides; k++) {
       const a0 = (k / sides) * Math.PI * 2, a1 = ((k + 1) / sides) * Math.PI * 2;
       const am = (a0 + a1) / 2;
@@ -2317,16 +2321,21 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const e0: [number, number] = [a[0] + fx * 0.5, a[1] + fz * 0.5], e1: [number, number] = [b[0] - fx * 0.5, b[1] - fz * 0.5];
       const q = [e0[0], e0[1], e1[0], e1[1], e1[0] + ox * P, e1[1] + oz * P, e0[0] + ox * P, e0[1] + oz * P];
       box(q, y0 - 0.2, y0, [0.4, 0.27, 0.15], s, Surf.Wood);
-      // Parapet, plastered like the wall behind it.
+      // Parapet, plastered like the wall behind it, 12 cm thick with a capped
+      // top: the posts stand on it.
+      const Pi = P - 0.12;
       wall(e0[0] + ox * P, e0[1] + oz * P, e1[0] + ox * P, e1[1] + oz * P, y0, y0, y0 + 1.0, y0 + 1.0, ox, oz, col, s, Surf.Plaster, 0, 255, 0, fl, y0, 1.0);
-      wall(e1[0] + ox * P, e1[1] + oz * P, e0[0] + ox * P, e0[1] + oz * P, y0, y0, y0 + 1.0, y0 + 1.0, -ox, -oz, col, s, Surf.Plaster, 0, 255, 0, fl, y0, 1.0);
-      // Posts and the pent roof.
+      wall(e1[0] + ox * Pi, e1[1] + oz * Pi, e0[0] + ox * Pi, e0[1] + oz * Pi, y0, y0, y0 + 1.0, y0 + 1.0, -ox, -oz, col, s, Surf.Plaster, 0, 255, 0, fl, y0, 1.0);
+      poly(S, [[e0[0] + ox * Pi, y0 + 1.0, e0[1] + oz * Pi], [e1[0] + ox * Pi, y0 + 1.0, e1[1] + oz * Pi], [e1[0] + ox * P, y0 + 1.0, e1[1] + oz * P], [e0[0] + ox * P, y0 + 1.0, e0[1] + oz * P]],
+        [0, 1, 0], col, s, Surf.Stucco, 0, 0, uv4());
+      // Posts up to the pent roof's underside where they meet it (it falls outward).
+      const ry0 = y0 + 3.0, ry1 = y0 + 2.55;
+      const pv = P - 0.06, postTop = ry0 + ((ry1 - ry0) * pv) / (P + 0.3);
       const L = fl - 1;
       for (let k = 0; k <= Math.max(1, Math.round(L / 2.5)); k++) {
-        const t = (L * k) / Math.max(1, Math.round(L / 2.5));
-        column(e0[0] + fx * t + ox * (P - 0.08), e0[1] + fz * t + oz * (P - 0.08), y0 + 1.0, 1.9, 0.07, [0.36, 0.24, 0.13], s, 4);
+        const t = 0.1 + ((L - 0.2) * k) / Math.max(1, Math.round(L / 2.5));
+        column(e0[0] + fx * t + ox * pv, e0[1] + fz * t + oz * pv, y0 + 1.0, postTop - y0 - 1.0, 0.06, [0.36, 0.24, 0.13], s, 4);
       }
-      const ry0 = y0 + 3.0, ry1 = y0 + 2.55;
       poly(S, [[e0[0], ry0, e0[1]], [e1[0], ry0, e1[1]], [e1[0] + ox * (P + 0.3), ry1, e1[1] + oz * (P + 0.3)], [e0[0] + ox * (P + 0.3), ry1, e0[1] + oz * (P + 0.3)]],
         [ox, 1, oz], [0.62, 0.31, 0.2], s, Surf.Tile, 0, 0, [[0, P, L, P], [L, P, L, P], [L, 0, L, P], [0, 0, L, P]]);
       poly(S, [[e0[0], ry0, e0[1]], [e1[0], ry0, e1[1]], [e1[0] + ox * (P + 0.3), ry1, e1[1] + oz * (P + 0.3)], [e0[0] + ox * (P + 0.3), ry1, e0[1] + oz * (P + 0.3)]],
@@ -3091,21 +3100,28 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const area = ringArea(r);
     const o = obb(r);
     const g = groundMin(r) + KERB_M;
+    const jupiter = p.name.includes("Giove"), apollo = p.name.includes("Apollo"), isis = p.name.includes("Iside");
+    // The phone keeps the cella shut (a closed block with its door leaves) and Apollo without his flank colonnade.
+    const peri = apollo && !lean;
     // Which end is the front: towards the forum when it is near, else south.
+    // The Iseum's temple faces east, to the rising sun.
     let front = 1;
-    if (forumC && Math.hypot(forumC[0] - o.cx, forumC[1] - o.cz) < 150) {
+    if (isis) front = o.ux > 0 ? 1 : -1;
+    else if (forumC && Math.hypot(forumC[0] - o.cx, forumC[1] - o.cz) < 150) {
       front = (forumC[0] - o.cx) * o.ux + (forumC[1] - o.cz) * o.uz > 0 ? 1 : -1;
       // The temple of Jupiter stands at the forum's north end facing down it;
       // inside the forum the near end is the back, which the rule gets right.
     } else front = o.uz > 0 ? 1 : -1;
     let t = o;
-    if (area > 900) {
-      // A sanctuary (Apollo): portico round the precinct, the temple inside.
+    if (area > 900 || isis) {
+      // A sanctuary (Apollo, Isis): portico round the precinct, the temple inside.
       buildPortico(r, g, seed, false);
-      t = { ...o, hu: Math.min(o.hu * 0.45, 17), hv: Math.min(o.hv * 0.38, 9) };
+      t = isis
+        ? { ...o, hu: Math.min(o.hu * 0.5, 8), hv: Math.min(o.hv * 0.4, 4.6) }
+        : { ...o, hu: Math.min(o.hu * 0.45, 17), hv: Math.min(o.hv * 0.38, 9) };
     }
-    const podium = p.name.includes("Giove") ? 3.2 : 2.2;
-    const H = p.name.includes("Giove") ? 12 : 9;
+    const podium = jupiter ? 3.2 : 2.2;
+    const H = jupiter ? 12 : isis ? 7 : 9;
     const fx = t.ux * front, fz = t.uz * front;
     // Podium.
     box(obbCorners(t), g - 0.5, g + podium, [0.85, 0.82, 0.75], seed, Surf.Stucco, Surf.Marble, [0.86, 0.84, 0.8]);
@@ -3116,27 +3132,104 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
       const q = obbCorners({ ...t, cx: t.cx + fx * (du - 0.35 / 2), cz: t.cz + fz * (du - 0.35 / 2), hu: 0.18 + 0.01 }, 0.18, t.hv * 0.62);
       box(q, g - 0.5, g + (k + 1) * (podium / steps), [0.86, 0.84, 0.78], seed, Surf.Marble);
     }
-    // Cella in the back 58%, a gable roof running the long axis with a pediment front.
+    // Cella in the back 58%: walls 0.6 m thick, the door in the front one,
+    // inside a marble floor, painted walls, a coffered ceiling and the base
+    // the cult statue stands on against the back wall. Apollo's temple is
+    // peripteral, its cella narrower inside a colonnade down both flanks.
     const cellaHu = t.hu * 0.58;
-    const cc = { ...t, cx: t.cx - fx * (t.hu - cellaHu), cz: t.cz - fz * (t.hu - cellaHu), hu: cellaHu - 0.3, hv: t.hv - 0.8 };
-    const cq = obbCorners(cc);
+    const cc = { ...t, cx: t.cx - fx * (t.hu - cellaHu), cz: t.cz - fz * (t.hu - cellaHu), hu: cellaHu - 0.3, hv: t.hv - (peri ? 2.6 : 0.8) };
     const y0 = g + podium;
-    box(cq, y0, y0 + H, [0.88, 0.85, 0.78], seed, Surf.Stucco, Surf.Stucco, [0.88, 0.85, 0.78], false);
+    const vx = -t.uz, vz = t.ux;
+    /** A point in the cella's frame: f toward the door, s across. */
+    const C = (f: number, s: number): [number, number] => [cc.cx + fx * f + vx * s, cc.cz + fz * f + vz * s];
+    const wt = 0.6, hf = cc.hu, hs = cc.hv;
+    const dw = Math.min(hs * 0.8, 4.6), dh = Math.min(H * 0.62, 7.2);
+    const outC: RGB = [0.88, 0.85, 0.78];
+    const ceilY = y0 + H - 0.15;
+    const wallQ = (a: [number, number], b: [number, number], y1: number, ox: number, oz: number, c: RGB, s: Surf, p1: number, yb = y0): void =>
+      wall(a[0], a[1], b[0], b[1], yb, yb, y1, y1, ox, oz, c, seed, s, p1, 0, 0, Math.hypot(b[0] - a[0], b[1] - a[1]), yb, y1 - yb);
+    if (lean) {
+      box(obbCorners(cc), y0, y0 + H, outC, seed, Surf.Stucco, Surf.Stucco, outC, false);
+      const q = [C(hf + 0.02, -dw / 2), C(hf + 0.02, dw / 2)];
+      wallQ(q[0], q[1], y0 + dh, fx, fz, [0.36, 0.24, 0.14], Surf.Wood, 0);
+    } else {
+      // Outside faces: back, flanks, and the front in three pieces round the door.
+      wallQ(C(-hf, hs), C(-hf, -hs), y0 + H, -fx, -fz, outC, Surf.Stucco, 0);
+      wallQ(C(-hf, -hs), C(hf, -hs), y0 + H, -vx, -vz, outC, Surf.Stucco, 0);
+      wallQ(C(hf, hs), C(-hf, hs), y0 + H, vx, vz, outC, Surf.Stucco, 0);
+      wallQ(C(hf, -hs), C(hf, -dw / 2), y0 + H, fx, fz, outC, Surf.Stucco, 0);
+      wallQ(C(hf, dw / 2), C(hf, hs), y0 + H, fx, fz, outC, Surf.Stucco, 0);
+      wallQ(C(hf, -dw / 2), C(hf, dw / 2), y0 + H, fx, fz, outC, Surf.Stucco, 0, y0 + dh);
+      // The door's reveal through the wall and its lintel's underside.
+      const fi = hf - wt;
+      wallQ(C(hf, -dw / 2), C(fi, -dw / 2), y0 + dh, vx, vz, outC, Surf.Stucco, 0);
+      wallQ(C(fi, dw / 2), C(hf, dw / 2), y0 + dh, -vx, -vz, outC, Surf.Stucco, 0);
+      {
+        const q = [C(hf, -dw / 2), C(hf, dw / 2), C(fi, dw / 2), C(fi, -dw / 2)].map(([x, z]): V3 => [x, y0 + dh, z]);
+        poly(S, q, [0, -1, 0], outC, seed, Surf.Stucco, 0, 0, uv4());
+      }
+      // Inside: painted walls (a Fourth Style scheme on red), the floor, the ceiling.
+      const si = hs - wt, bi = -hf + wt;
+      const paint: RGB = [0.55, 0.12, 0.08];
+      const scheme = 0;
+      wallQ(C(bi, -si), C(bi, si), ceilY, fx, fz, paint, Surf.Fresco, scheme);
+      wallQ(C(fi, -si), C(bi, -si), ceilY, vx, vz, paint, Surf.Fresco, scheme);
+      wallQ(C(bi, si), C(fi, si), ceilY, -vx, -vz, paint, Surf.Fresco, scheme);
+      wallQ(C(fi, si), C(fi, dw / 2), ceilY, -fx, -fz, paint, Surf.Fresco, scheme);
+      wallQ(C(fi, -dw / 2), C(fi, -si), ceilY, -fx, -fz, paint, Surf.Fresco, scheme);
+      wallQ(C(fi, dw / 2), C(fi, -dw / 2), ceilY, -fx, -fz, paint, Surf.Fresco, scheme, y0 + dh);
+      const inner = [C(fi, -si), C(fi, si), C(bi, si), C(bi, -si)];
+      roomQuad(inner.map(([x, z]): V3 => [x, y0 + 0.03, z]), [0, 1, 0], [0.62, 0.6, 0.56], seed, Surf.Floor, jupiter ? FloorKind.BlackWhite : FloorKind.Sectile);
+      roomQuad(inner.map(([x, z]): V3 => [x, ceilY, z]), [0, -1, 0], [0.42, 0.3, 0.2], seed, Surf.Ceiling, CeilingKind.Coffers);
+      // The door sill, across the floor's edge.
+      {
+        const q = [C(hf, -dw / 2), C(hf, dw / 2), C(fi, dw / 2), C(fi, -dw / 2)].map(([x, z]): V3 => [x, y0 + 0.03, z]);
+        poly(S, q, [0, 1, 0], [0.86, 0.84, 0.8], seed, Surf.Marble, 0, 0, uv4());
+      }
+      // The cult statue's base against the back wall; the Capitolium's runs
+      // the cella's width for the triad (Jupiter, Juno, Minerva).
+      {
+        const bd = jupiter ? 2.6 : 1.8, bh = jupiter ? 2.0 : 1.5, bw = jupiter ? si - 0.4 : Math.min(si - 0.4, 1.1);
+        const q = [C(bi, -bw), C(bi + bd, -bw), C(bi + bd, bw), C(bi, bw)].flat();
+        box(q, y0 + 0.03, y0 + bh, [0.84, 0.8, 0.72], seed, Surf.Marble, Surf.Marble, [0.88, 0.86, 0.82], false);
+        // A moulded cornice proud of the base's top.
+        const qc = [C(bi, -bw - 0.08), C(bi + bd + 0.08, -bw - 0.08), C(bi + bd + 0.08, bw + 0.08), C(bi, bw + 0.08)].flat();
+        box(qc, y0 + bh, y0 + bh + 0.16, [0.88, 0.86, 0.82], seed, Surf.Marble, Surf.Marble, [0.88, 0.86, 0.82], true);
+        const yaw = Math.atan2(fx, fz);
+        for (const s of jupiter ? [-bw * 0.62, 0, bw * 0.62] : [0]) {
+          const [x, z] = C(bi + bd / 2, s);
+          statueBases.push({ x, y: y0 + bh + 0.16, z, yaw, what: "cult" });
+        }
+      }
+    }
     // Columns across the pronaos: 6 across the front, 2 deep.
     const across = 6;
+    const colR = Math.min(0.55, t.hv * 0.07);
     for (let row = 0; row < 3; row++) {
       for (let k = 0; k < across; k++) {
         if (row > 0 && k > 0 && k < across - 1) continue;
         const v = -t.hv + 0.9 + ((2 * t.hv - 1.8) * k) / (across - 1);
         const u = t.hu - 0.9 - row * ((t.hu - cellaHu * 2 + 0.4) / 2 + 1.2);
-        column(t.cx + fx * u - t.uz * v * 1, t.cz + fz * u + t.ux * v * 1, y0, H, Math.min(0.55, t.hv * 0.07), [0.9, 0.88, 0.82], seed, lean ? 8 : 12, false, Order.Corinthian);
+        column(t.cx + fx * u - t.uz * v * 1, t.cz + fz * u + t.ux * v * 1, y0, H, colR, [0.9, 0.88, 0.82], seed, lean ? 8 : 12, false, Order.Corinthian);
+      }
+    }
+    if (peri) {
+      // The peristasis down both flanks, behind the pronaos to the back.
+      const u0 = t.hu - 0.9 - 2 * ((t.hu - cellaHu * 2 + 0.4) / 2 + 1.2), u1 = -t.hu + 0.9;
+      const n = Math.max(2, Math.round((u0 - u1) / 2.9));
+      for (let i = 1; i <= n; i++) for (const v of [-t.hv + 0.9, t.hv - 0.9]) {
+        const u = u0 + ((u1 - u0) * i) / n;
+        column(t.cx + fx * u - t.uz * v, t.cz + fz * u + t.ux * v, y0, H, colR, [0.9, 0.88, 0.82], seed, lean ? 8 : 12, false, Order.Corinthian);
+      }
+      for (let k = 1; k < across - 1; k++) {
+        const v = -t.hv + 0.9 + ((2 * t.hv - 1.8) * k) / (across - 1);
+        column(t.cx + fx * u1 - t.uz * v, t.cz + fz * u1 + t.ux * v, y0, H, colR, [0.9, 0.88, 0.82], seed, lean ? 8 : 12, false, Order.Corinthian);
       }
     }
     // Roof over cella and pronaos.
     const rise = t.hv * 0.42;
     const top = y0 + H + 0.9;
     box(obbCorners(t, t.hu, t.hv), y0 + H, top, [0.88, 0.85, 0.78], seed, Surf.Stucco);
-    const vx = -t.uz, vz = t.ux;
     const pt = (u: number, v: number, y: number): V3 => [t.cx + t.ux * u + vx * v, y, t.cz + t.uz * u + vz * v];
     const hu = t.hu + 0.4, hv = t.hv + 0.4;
     poly(S, [pt(-hu, -hv, top), pt(hu, -hv, top), pt(hu, 0, top + rise), pt(-hu, 0, top + rise)], [-vx, 1, -vz], [0.64, 0.32, 0.2], seed, Surf.Tile, 0, 0,
@@ -3249,7 +3342,11 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   }
 
   function buildTheatre(r: Ring, seed: number): void {
-    // The cavea opens to the south, with the stage building along its chord.
+    // The Teatro Grande: the cavea opens to the south, the stage building
+    // along its chord. The bowl leans on the hillside and on its own walls:
+    // the seating is a closed mass (orchestra wall, risers, treads, the
+    // analemmata at the two ends, the crypta round the top and the arcaded
+    // outer wall), never a stair of treads with nothing under it.
     const o = obb(r);
     // Chord along whichever OBB axis is more east-west; the bowl is north of it.
     let ax = o.ux, az = o.uz;
@@ -3261,43 +3358,169 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const cx = o.cx - nx * (R * 0.35), cz = o.cz - nz * (R * 0.35);
     const g0 = ground(cx, cz) + KERB_M;
     const orch = R * 0.3;
+    // Seats run to Rs; the crypta, a vaulted corridor 4 m wide, rings the top
+    // under the summa cavea's walk, out to the outer wall at R.
+    const Rs = R - 4;
     const rows = lean ? 10 : 22;
     const segs = lean ? 16 : 28;
-    const topY = g0 + 12;
+    const topY = g0 + 12, walkY = topY + 3.5, wallTop = walkY + 1.2;
+    const foot = Math.min(g0 - 2, groundMin(r) - 0.5);
+    const stone: RGB = [0.8, 0.76, 0.66], riserC: RGB = [0.7, 0.66, 0.58], tuff: RGB = [0.78, 0.72, 0.6];
+    const dark: RGB = [0.1, 0.08, 0.07];
+    /** A point at radius rad and angle a round the bowl (a = 0 east end of the chord, PI the west). */
+    const P = (rad: number, a: number, yy: number): V3 => [cx + (ax * Math.cos(a) + nx * Math.sin(a)) * rad, yy, cz + (az * Math.cos(a) + nz * Math.sin(a)) * rad];
+    const outAt = (a: number): [number, number] => [ax * Math.cos(a) + nx * Math.sin(a), az * Math.cos(a) + nz * Math.sin(a)];
+    /** Chord frame: u along the chord, v into the bowl (negative toward the stage). */
+    const Q = (u: number, v: number): [number, number] => [cx + ax * u + nx * v, cz + az * u + nz * v];
+    const rowR = (k: number): number => orch + ((Rs - orch) * k) / rows;
+    const rowY = (k: number): number => g0 + 1 + ((topY - g0 - 1) * (k + 1)) / rows;
     for (let k = 0; k < rows; k++) {
-      const r0 = orch + ((R - orch) * k) / rows, r1 = orch + ((R - orch) * (k + 1)) / rows;
-      const y = g0 + 1 + ((topY - g0 - 1) * (k + 1)) / rows, yPrev = g0 + 1 + ((topY - g0 - 1) * k) / rows;
+      const r0 = rowR(k), r1 = rowR(k + 1), y = rowY(k), yPrev = k === 0 ? g0 : rowY(k - 1);
       for (let s = 0; s < segs; s++) {
-        const a0 = (s / segs) * Math.PI, a1 = ((s + 1) / segs) * Math.PI;
-        const P = (rad: number, a: number, yy: number): V3 => [cx + (ax * Math.cos(a) + nx * Math.sin(a)) * rad, yy, cz + (az * Math.cos(a) + nz * Math.sin(a)) * rad];
-        poly(S, [P(r0, a0, y), P(r1, a0, y), P(r1, a1, y), P(r0, a1, y)], [0, 1, 0], [0.8, 0.76, 0.66], seed, Surf.Marble, 0, 0, uv4());
-        const am = (a0 + a1) / 2;
-        poly(S, [P(r0, a0, yPrev), P(r0, a1, yPrev), P(r0, a1, y), P(r0, a0, y)], [-(ax * Math.cos(am) + nx * Math.sin(am)), 0, -(az * Math.cos(am) + nz * Math.sin(am))], [0.7, 0.66, 0.58], seed, Surf.Marble, 0, 0, uv4());
+        const a0 = (s / segs) * Math.PI, a1 = ((s + 1) / segs) * Math.PI, am = (a0 + a1) / 2;
+        poly(S, [P(r0, a0, y), P(r1, a0, y), P(r1, a1, y), P(r0, a1, y)], [0, 1, 0], stone, seed, Surf.Marble, 0, 0, uv4());
+        // The first riser is the orchestra's wall, down to its floor.
+        const [ox, oz] = outAt(am);
+        poly(S, [P(r0, a0, yPrev), P(r0, a1, yPrev), P(r0, a1, y), P(r0, a0, y)], [-ox, 0, -oz], k === 0 ? [0.84, 0.8, 0.72] : riserC, seed, Surf.Marble, 0, 0, uv4());
       }
     }
-    // Outer wall round the bowl.
+    // The crypta: its front wall over the top row with the vomitoria in it,
+    // the summa cavea's walk on its vault, the parapet on the outer wall.
+    const vom = lean ? 4 : 7;
     for (let s = 0; s < segs; s++) {
       const a0 = (s / segs) * Math.PI, a1 = ((s + 1) / segs) * Math.PI, am = (a0 + a1) / 2;
-      const P = (a: number): [number, number] => [cx + (ax * Math.cos(a) + nx * Math.sin(a)) * R, cz + (az * Math.cos(a) + nz * Math.sin(a)) * R];
-      const [x0, z0] = P(a0), [x1, z1] = P(a1);
-      const ux = ax * Math.cos(am) + nx * Math.sin(am), uz = az * Math.cos(am) + nz * Math.sin(am);
-      wall(x0, z0, x1, z1, g0 - 2, g0 - 2, topY + 1.5, topY + 1.5, ux, uz, [0.78, 0.72, 0.6], seed, Surf.Masonry, 0, 0, (s * R * Math.PI) / segs, R * Math.PI, g0, topY + 1.5 - g0);
+      const [ox, oz] = outAt(am);
+      const L = (Rs * Math.PI) / segs;
+      poly(S, [P(Rs, a0, topY), P(Rs, a1, topY), P(Rs, a1, walkY), P(Rs, a0, walkY)], [-ox, 0, -oz], tuff, seed, Surf.Masonry, 0, 0, uv4());
+      poly(S, [P(Rs, a0, walkY), P(R, a0, walkY), P(R, a1, walkY), P(Rs, a1, walkY)], [0, 1, 0], stone, seed, Surf.Marble, 0, 0, uv4());
+      // Outer wall, its arcades painted as the amphitheatre's are.
+      const [x0, , z0] = P(R, a0, 0), [x1, , z1] = P(R, a1, 0);
+      wall(x0, z0, x1, z1, foot, foot, wallTop, wallTop, ox, oz, [0.78, 0.72, 0.6], seed, Surf.Masonry, 1, 0, (s * R * Math.PI) / segs, R * Math.PI, g0, wallTop - g0);
+      const [i0, , j0] = P(R - 0.5, a0, 0), [i1, , j1] = P(R - 0.5, a1, 0);
+      wall(i1, j1, i0, j0, walkY, walkY, wallTop, wallTop, -ox, -oz, tuff, seed, Surf.Masonry, 0, 0, 0, L, walkY, 1.2);
+      poly(S, [P(R - 0.5, a0, wallTop), P(R, a0, wallTop), P(R, a1, wallTop), P(R - 0.5, a1, wallTop)], [0, 1, 0], tuff, seed, Surf.Kerb, 0, 0, uv4());
+      // A vomitorium every few bays: a doorway out of the crypta onto the top row.
+      if ((s * vom) % segs < vom && s > 0 && s < segs - 1) {
+        const ac = am, half = 0.8 / Rs;
+        const [jx, jz] = outAt(ac);
+        const pA = P(Rs, ac - half, 0), pB = P(Rs, ac + half, 0);
+        const lo = topY + 0.02, hi = topY + 2.5;
+        // Proud of the crypta wall by a hair, so the wall need not be cut.
+        const e = 0.02;
+        const pe = (p: V3): V3 => [p[0] - jx * e, 0, p[2] - jz * e];
+        const [a, b] = [pe(pA), pe(pB)];
+        poly(S, [[a[0], lo, a[2]], [b[0], lo, b[2]], [b[0], hi, b[2]], [a[0], hi, a[2]]], [-jx, 0, -jz], dark, seed, Surf.Interior, 0, 0, uv4());
+      }
     }
-    // Orchestra and the stage building with its two-storey columned front.
+    // The analemmata: the cavea's two end walls on the chord, stepping up
+    // with the rows; the vaulted parodos through each, into the orchestra,
+    // under the tribunal box over it.
+    for (const a of [0, Math.PI]) {
+      const sg = a === 0 ? 1 : -1;
+      const fz = (rad: number): [number, number] => Q(sg * rad, 0);
+      for (let k = 0; k <= rows; k++) {
+        const r0 = k === rows ? Rs : rowR(k), r1 = k === rows ? R : rowR(k + 1);
+        const y = k === rows ? walkY : rowY(k);
+        const [x0, z0] = fz(r0), [x1, z1] = fz(r1);
+        wall(x0, z0, x1, z1, foot, foot, y, y, -nx, -nz, tuff, seed, Surf.Masonry, 0, 0, sg * r0, R, g0, y - g0);
+      }
+      // The parodos mouth on the stage side, beyond the pulpitum's end.
+      const p0 = orch + 6.6, p1 = orch + 9.6, ph = 3.4, e = 0.02;
+      const [x0, z0] = Q(sg * p0, -e), [x1, z1] = Q(sg * p1, -e);
+      poly(S, [[x0, g0 - 0.4, z0], [x1, g0 - 0.4, z1], [x1, g0 + ph, z1], [x0, g0 + ph, z0]], [-nx, 0, -nz], dark, seed, Surf.Interior, 0, 0, uv4());
+    }
+    // Orchestra: the marble floor of the half circle.
     const op: V3[] = [];
-    for (let s = 0; s <= 12; s++) {
-      const a = (s / 12) * Math.PI;
-      op.push([cx + (ax * Math.cos(a) + nx * Math.sin(a)) * orch, g0 + 0.05, cz + (az * Math.cos(a) + nz * Math.sin(a)) * orch]);
-    }
+    for (let s = 0; s <= 12; s++) op.push(P(orch, (s / 12) * Math.PI, g0 + 0.05));
     poly(S, op, [0, 1, 0], [0.82, 0.8, 0.74], seed, Surf.Marble, 0, 0, op.map((p) => [p[0], p[2], 0, 0]));
-    const stage = [cx - ax * R * 0.95, cz - az * R * 0.95, cx + ax * R * 0.95, cz + az * R * 0.95,
-      cx + ax * R * 0.95 - nx * 9, cz + az * R * 0.95 - nz * 9, cx - ax * R * 0.95 - nx * 9, cz - az * R * 0.95 - nz * 9];
-    box([stage[0] - nx * 1, stage[1] - nz * 1, stage[2] - nx * 1, stage[3] - nz * 1, stage[4] + nx * 0, stage[5], stage[6], stage[7]], g0, g0 + 1.5, [0.5, 0.36, 0.24], seed, Surf.Wood);
-    const sb = [stage[0] - nx * 4, stage[1] - nz * 4, stage[2] - nx * 4, stage[3] - nz * 4, stage[4], stage[5], stage[6], stage[7]];
-    box(sb, g0, topY + 2, [0.86, 0.82, 0.72], seed, Surf.Stucco);
-    colonnade(stage[0] - nx * 3, stage[1] - nz * 3, stage[2] - nx * 3, stage[3] - nz * 3, g0 + 1.5, 5.5, 0.35, 3, -nx, -nz, 0, 0, seed);
-    if (!lean) colonnade(stage[0] - nx * 3, stage[1] - nz * 3, stage[2] - nx * 3, stage[3] - nz * 3, g0 + 7.7, 4.5, 0.3, 3, -nx, -nz, 0, 0, seed);
-    solids.push({ ring: sb, baseY: g0, topY: topY + 2 });
+
+    // The stage. The pulpitum, a metre high and 6 deep, across the orchestra
+    // and a little beyond; the scaenae frons behind it the full width of the
+    // cavea, with three doors and two storeys of columns on a podium; the
+    // scaena building behind that, and a timber roof over the stage hung
+    // from the frons on brackets.
+    const Ws = R * 0.95, Wp = orch + 6, Dp = 6, Df = 7.5;
+    const stageY = g0 + 1.0;
+    const rect = (u0: number, v0: number, u1: number, v1: number): number[] => [...Q(u0, v0), ...Q(u1, v0), ...Q(u1, v1), ...Q(u0, v1)];
+    box(rect(-Wp, -Dp, Wp, 0), g0 - 0.5, stageY, [0.84, 0.8, 0.72], seed, Surf.Stucco, Surf.Wood, [0.5, 0.36, 0.24]);
+    // The frons and scaena as one block, its front face built round the doors.
+    const fy0 = g0 - 0.5, fy1 = walkY;
+    const front = -Dp, back = -Dp - Df;
+    const doors: [number, number, number][] = [[-orch * 0.9 - 1, -orch * 0.9 + 1, 4.2], [-1.5, 1.5, 5.4], [orch * 0.9 - 1, orch * 0.9 + 1, 4.2]];
+    const frC: RGB = [0.86, 0.82, 0.72];
+    let u = -Ws;
+    for (const [d0, d1, dh] of doors) {
+      const [a0x, a0z] = Q(u, front), [a1x, a1z] = Q(d0, front);
+      wall(a0x, a0z, a1x, a1z, fy0, fy0, fy1, fy1, nx, nz, frC, seed, Surf.Stucco, 0, 0, u + Ws, 2 * Ws, g0, fy1 - g0);
+      const [b0x, b0z] = Q(d0, front), [b1x, b1z] = Q(d1, front);
+      wall(b0x, b0z, b1x, b1z, stageY + dh, stageY + dh, fy1, fy1, nx, nz, frC, seed, Surf.Stucco, 0, 0, d0 + Ws, 2 * Ws, g0, fy1 - g0);
+      // The reveal: jambs, soffit and a dark leaf 0.8 m in.
+      const rd = 0.8;
+      const [c0x, c0z] = Q(d0, front - rd), [c1x, c1z] = Q(d1, front - rd);
+      wall(b0x, b0z, c0x, c0z, stageY, stageY, stageY + dh, stageY + dh, ax, az, frC, seed, Surf.Stucco, 0, 0, 0, rd, stageY, dh);
+      wall(c1x, c1z, b1x, b1z, stageY, stageY, stageY + dh, stageY + dh, -ax, -az, frC, seed, Surf.Stucco, 0, 0, 0, rd, stageY, dh);
+      poly(S, [[b0x, stageY + dh, b0z], [b1x, stageY + dh, b1z], [c1x, stageY + dh, c1z], [c0x, stageY + dh, c0z]], [0, -1, 0], frC, seed, Surf.Stucco, 0, 0, uv4());
+      wall(c0x, c0z, c1x, c1z, stageY, stageY, stageY + dh, stageY + dh, nx, nz, [0.36, 0.24, 0.14], seed, Surf.Wood, 0, 0, 0, d1 - d0, stageY, dh);
+      // Below the door the stage floor runs into it.
+      poly(S, [[b0x, stageY, b0z], [b1x, stageY, b1z], [c1x, stageY, c1z], [c0x, stageY, c0z]], [0, 1, 0], [0.5, 0.36, 0.24], seed, Surf.Wood, 0, 0, uv4());
+      u = d1;
+    }
+    {
+      const [a0x, a0z] = Q(u, front), [a1x, a1z] = Q(Ws, front);
+      wall(a0x, a0z, a1x, a1z, fy0, fy0, fy1, fy1, nx, nz, frC, seed, Surf.Stucco, 0, 0, u + Ws, 2 * Ws, g0, fy1 - g0);
+    }
+    // The block's other faces: the back wall on the quadriporticus, the ends, the top under the roof.
+    const blk = [...Q(-Ws, front), ...Q(Ws, front), ...Q(Ws, back), ...Q(-Ws, back)];
+    for (const [i, j, ox, oz] of [[1, 2, ax, az], [2, 3, -nx, -nz], [3, 0, -ax, -az]] as const) {
+      wall(blk[i * 2], blk[i * 2 + 1], blk[j * 2], blk[j * 2 + 1], fy0, fy0, fy1, fy1, ox, oz, frC, seed, Surf.Stucco, 0, 0, 0, i === 2 ? 2 * Ws : Df, g0, fy1 - g0);
+    }
+    // Gable roof over the scaena, ridge along the chord.
+    {
+      const rise = (Df / 2) * TAN_PITCH, vm = (front + back) / 2;
+      const p = (uu: number, vv: number, yy: number): V3 => { const [x, z] = Q(uu, vv); return [x, yy, z]; };
+      const ov = 0.4;
+      poly(S, [p(-Ws, front + ov, fy1), p(Ws, front + ov, fy1), p(Ws, vm, fy1 + rise), p(-Ws, vm, fy1 + rise)], [nx, 1, nz], [0.63, 0.31, 0.2], seed, Surf.Tile, 0, 0,
+        [[0, 0, 2 * Ws, Df / 2], [2 * Ws, 0, 2 * Ws, Df / 2], [2 * Ws, Df / 2, 2 * Ws, Df / 2], [0, Df / 2, 2 * Ws, Df / 2]]);
+      poly(S, [p(-Ws, back - ov, fy1), p(Ws, back - ov, fy1), p(Ws, vm, fy1 + rise), p(-Ws, vm, fy1 + rise)], [-nx, 1, -nz], [0.63, 0.31, 0.2], seed, Surf.Tile, 0, 0,
+        [[0, 0, 2 * Ws, Df / 2], [2 * Ws, 0, 2 * Ws, Df / 2], [2 * Ws, Df / 2, 2 * Ws, Df / 2], [0, Df / 2, 2 * Ws, Df / 2]]);
+      for (const sg of [1, -1]) poly(S, [p(sg * Ws, front, fy1), p(sg * Ws, back, fy1), p(sg * Ws, vm, fy1 + rise)], [ax * sg, 0, az * sg], frC, seed, Surf.Stucco, 0, 0, uv4());
+      // The eave soffits, seen from the stage and from the street behind.
+      poly(S, [p(-Ws, front, fy1), p(Ws, front, fy1), p(Ws, front + ov, fy1), p(-Ws, front + ov, fy1)], [0, -1, 0], [0.45, 0.36, 0.28], seed, Surf.Wood, 0, 0, uv4());
+      poly(S, [p(-Ws, back, fy1), p(Ws, back, fy1), p(Ws, back - ov, fy1), p(-Ws, back - ov, fy1)], [0, -1, 0], [0.45, 0.36, 0.28], seed, Surf.Wood, 0, 0, uv4());
+    }
+    // The columnar front: a podium along the frons on the stage, two orders on it.
+    const podY = stageY + 1.2;
+    // In pieces between the doors, which open onto the stage floor.
+    {
+      let p0 = -Wp + 0.5;
+      for (const [d0, d1] of [...doors, [Wp - 0.5, Wp - 0.5, 0] as [number, number, number]]) {
+        if (d0 - 0.3 > p0) box(rect(p0, front, d0 - 0.3, front + 1.3), stageY - 0.05, podY, [0.84, 0.8, 0.72], seed, Surf.Marble);
+        p0 = d1 + 0.3;
+      }
+    }
+    const cv = front + 0.7;
+    const [l0x, l0z] = Q(-Wp + 0.8, cv), [l1x, l1z] = Q(Wp - 0.8, cv);
+    // Skip the columns that would stand in a doorway.
+    const inDoor = (x: number, z: number): boolean => { const uu = (x - cx) * ax + (z - cz) * az; return doors.some(([d0, d1]) => uu > d0 - 0.5 && uu < d1 + 0.5); };
+    const top0 = colonnade(l0x, l0z, l1x, l1z, podY, 4.4, 0, 3, -nx, -nz, 0.7, NaN, seed, [0.9, 0.88, 0.82], inDoor, Order.Corinthian);
+    if (!lean) colonnade(l0x, l0z, l1x, l1z, top0, 3.6, 0, 3, -nx, -nz, 0.7, NaN, seed, [0.9, 0.88, 0.82], inDoor, Order.Ionic);
+    // The stage roof: falling from under the frons's eave to over the
+    // pulpitum, its rafters on timber brackets let into the frons.
+    {
+      const yb = fy1 - 1.4, yf = fy1 - 2.6, reach = 4.8;
+      const p = (uu: number, vv: number, yy: number): V3 => { const [x, z] = Q(uu, vv); return [x, yy, z]; };
+      const rl = Math.hypot(reach, yb - yf);
+      poly(S, [p(-Wp, front, yb), p(Wp, front, yb), p(Wp, front + reach, yf), p(-Wp, front + reach, yf)], [nx, 1, nz], [0.62, 0.31, 0.2], seed, Surf.Tile, 0, 0,
+        [[0, 0, 2 * Wp, rl], [2 * Wp, 0, 2 * Wp, rl], [2 * Wp, rl, 2 * Wp, rl], [0, rl, 2 * Wp, rl]]);
+      poly(S, [p(-Wp, front, yb - 0.1), p(Wp, front, yb - 0.1), p(Wp, front + reach, yf - 0.1), p(-Wp, front + reach, yf - 0.1)], [0, -1, 0], [0.42, 0.32, 0.22], seed, Surf.Wood, 0, 0, uv4());
+      // The roof's ends closed, and a fascia board along its front edge.
+      for (const sg of [1, -1]) poly(S, [p(sg * Wp, front, yb - 0.1), p(sg * Wp, front + reach, yf - 0.1), p(sg * Wp, front + reach, yf), p(sg * Wp, front, yb)], [ax * sg, 0, az * sg], [0.42, 0.32, 0.22], seed, Surf.Wood, 0, 0, uv4());
+      if (!lean) for (let b = -Wp + 1; b <= Wp - 0.9; b += 3) {
+        const [bx0, bz0] = Q(b, front), [bx1, bz1] = Q(b, front + reach - 0.3);
+        tube(S, [bx0, yb - 2.2, bz0], [bx1, yf - 0.12, bz1], 0.09, 0.07, 4, [0.4, 0.28, 0.17], seed, Surf.Wood);
+      }
+    }
+    solids.push({ ring: blk, baseY: fy0, topY: fy1 + (Df / 2) * TAN_PITCH });
   }
 
   let amphY = { floor: 0, rim: 0 };
@@ -3809,6 +4032,7 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
   stats.buildMs = performance.now() - t0;
   return {
     orders,
+    posts,
     art: artPlaced,
     interiors,
     statueBases,

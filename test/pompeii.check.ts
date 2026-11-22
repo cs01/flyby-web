@@ -26,6 +26,7 @@ import { STATUE_FULL_BYTES, STATUE_KINDS, STATUE_LEAN_BYTES, buildStatue, runSta
 import { ART_WORKS } from "../src/data/pompeiiart";
 import { ORDERS, Order, columnTemplate, shaftRadius } from "../src/render/pompeiiorders";
 import { statSync } from "node:fs";
+import { unsupportedColumns } from "./columnsupport";
 import { FIELD_CLASSES, Land, LandGrid, coastGround, lengthOf, nearestOn, shoreAt } from "../src/data/pompeiisuburbs";
 
 let failures = 0;
@@ -957,49 +958,23 @@ let built: PompeiiModel;
   check("open frontage on the kerb line is walled (under 120 m of the town's left bare)", bm < 120, `${bm} m bare, ${full.stats.plotWallM.toFixed(0)} m of plot wall`);
   check("probe: without the plot walls it is caught", bmProbe > 500, `${bmProbe} m bare`);
 
-  // Every column carries something and stands on something: straight up
-  // from its capital the town mesh is within 5 cm (an architrave, a beam),
-  // and down from its base there is a floor within 5 cm under it or one it
-  // is set into. Beams were boxes open underneath, colonnades stopped short
-  // of their roofs, the forum's gallery stood half a metre over its floor.
-  const unsupported = (m: PompeiiModel): { top: number; base: number } => {
-    const meshes = [m.mesh, m.floor, m.streets];
-    const grid = new Map<number, [number, number][]>();
-    const key = (i: number, j: number): number => i * 100003 + j;
-    meshes.forEach((st, mi) => {
-      const P = st.position, I = st.index;
-      for (let t = 0; t < I.length; t += 3) {
-        let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
-        for (let j = 0; j < 3; j++) { const v = I[t + j]; x0 = Math.min(x0, P[v * 3]); x1 = Math.max(x1, P[v * 3]); z0 = Math.min(z0, P[v * 3 + 2]); z1 = Math.max(z1, P[v * 3 + 2]); }
-        if (x1 - x0 > 300 || z1 - z0 > 300) continue;
-        for (let i = Math.floor(x0 / 2); i <= Math.floor(x1 / 2); i++) for (let j = Math.floor(z0 / 2); j <= Math.floor(z1 / 2); j++) (grid.get(key(i, j)) ?? grid.set(key(i, j), []).get(key(i, j))!).push([mi, t]);
-      }
-    });
-    const heights = (x: number, z: number): number[] => {
-      const out: number[] = [];
-      for (const [mi, t] of grid.get(key(Math.floor(x / 2), Math.floor(z / 2))) ?? []) {
-        const P = meshes[mi].position, I = meshes[mi].index;
-        const a = I[t] * 3, b = I[t + 1] * 3, c = I[t + 2] * 3;
-        const d = (P[b + 2] - P[c + 2]) * (P[a] - P[c]) + (P[c] - P[b]) * (P[a + 2] - P[c + 2]);
-        if (Math.abs(d) < 1e-9) continue;
-        const wa = ((P[b + 2] - P[c + 2]) * (x - P[c]) + (P[c] - P[b]) * (z - P[c + 2])) / d;
-        const wb = ((P[c + 2] - P[a + 2]) * (x - P[c]) + (P[a] - P[c]) * (z - P[c + 2])) / d;
-        if (wa < -1e-6 || wb < -1e-6 || wa + wb > 1 + 1e-6) continue;
-        out.push(wa * P[a + 1] + wb * P[b + 1] + (1 - wa - wb) * P[c + 1]);
-      }
-      return out;
-    };
-    let top = 0, base = 0;
-    for (const c of m.orders) {
-      const t = c.y0 + c.h, hs = heights(c.x, c.z);
-      if (!hs.some((y) => y >= t - 0.1 && y <= t + 0.05)) top++;
-      if (!hs.some((y) => y >= c.y0 - 0.05 && y < t - 0.5)) base++;
-    }
-    return { top, base };
-  };
-  const cu = unsupported(full), cuProbe = unsupported(buildPompeii({ data, groundAt: flat, suburbs: false, probeOpenBeams: true }));
-  check("every column inside the walls carries a beam and stands on a floor", cu.top === 0 && cu.base === 0, `${full.orders.length} columns: ${cu.top} carry nothing, ${cu.base} stand on nothing`);
+  // Every column and post carries something and stands on something
+  // (test/columnsupport.ts): straight up from its capital the town mesh is
+  // within 5 cm (an architrave, a beam, a roof's underside), and down from its
+  // base a floor or the ground within 5 cm under it or one it is set into.
+  // Beams were boxes open underneath, colonnades stopped short of their roofs,
+  // the forum's gallery stood half a metre over its floor, balcony posts ran
+  // through their pent roofs, and outside the walls the tholos tombs' cones,
+  // the villas' peristyles and the roadside porticoes had nothing over them.
+  const town = buildPompeii({ data, groundAt: flat });
+  const outside = (x: number, z: number): boolean => !pointInRing(data.wall, x, z);
+  const cu = unsupportedColumns(town, flat), cuOut = unsupportedColumns(town, flat, outside);
+  const probe = buildPompeii({ data, groundAt: flat, probeOpenBeams: true });
+  const cuProbe = unsupportedColumns(probe, flat), cuProbeOut = unsupportedColumns(probe, flat, outside);
+  check("every column and post, inside the walls and out, carries a beam and stands on a floor", cu.top === 0 && cu.base === 0 && cuOut.n > 300,
+    `${cu.n} posts (${cuOut.n} outside the walls): ${cu.top} carry nothing, ${cu.base} stand on nothing`);
   check("probe: open beams and the unbeamed colonnades are caught", cuProbe.top > 100, `${cuProbe.top} carry nothing, ${cuProbe.base} stand on nothing`);
+  check("probe: outside the walls too (the porticoes' beams left open)", cuProbeOut.top > 10, `${cuProbeOut.top} carry nothing outside the walls`);
 }
 
 console.log(failures ? `\n${failures} pompeii check(s) FAILED` : "\nall pompeii checks ok");
