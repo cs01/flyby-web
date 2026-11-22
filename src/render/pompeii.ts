@@ -25,7 +25,7 @@ import { Order, columnTemplate } from "./pompeiiorders";
 import { INTERIOR_GLSL } from "./pompeiiinterior";
 import { ART_WORKS, type ArtAtlas } from "../data/pompeiiart";
 import { HORSE_BONES, STRIDE_M, buildHorse, poseHorse, type Gait, type HorseMesh } from "./horse";
-import { runStatueJob, takeStatueJobs, type StatueJob } from "./statues";
+import { runStatueJob, statueScansReady, takeStatueJobs, type StatueJob } from "./statues";
 import { pointInRing, type PompeiiData } from "../data/pompeii";
 import { Land, LandGrid, type PompeiiSuburbs } from "../data/pompeiisuburbs";
 import { BuildingKind, RoofShape, type Building, type CityPack } from "../data/citypack";
@@ -1272,7 +1272,9 @@ void main() {
     // normal leans toward the sun, more where the stone is thin) and thin
     // edges, fingers and fold lips glow warm when lit from behind.
     albedo *= 0.97 + 0.05 * vnoise(vWorld.xz * 40.0 + vWorld.y * 31.0);
-    n = normalize(n + uSunDir * (0.25 + 0.3 * seed));
+    // A light wrap only: at 0.25 the sunlit and shaded sides of a figure
+    // came out the same white and the carving was lost.
+    n = normalize(n + uSunDir * (0.08 + 0.3 * seed));
     float back = clamp(-dot(normalize(vNormal), uSunDir), 0.0, 1.0);
     albedo += vec3(0.1, 0.05, 0.025) * seed * (0.3 + 0.7 * back) * step(0.0, uSunDir.y);
     gloss = 0.35;
@@ -1646,7 +1648,9 @@ export class Pompeii {
       mesh.position.set(ox, 0, oz);
       this.buildings.add(mesh);
     };
-    setTimeout(step, 0);
+    // The scans replace some of the sculpted figures: wait for them, so a
+    // statue is built once and not swapped after it has been seen.
+    void statueScansReady().then(() => setTimeout(step, 0));
   }
 
   /** Per frame: the near columns. Cheap unless the camera has moved 6 m. */

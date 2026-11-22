@@ -3320,7 +3320,10 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
     const n = ring.length / 2;
     const tri = triangulateRing(new Float32Array(ring));
     const base = S.n;
-    for (let i = 0; i < ring.length; i += 2) S.vert([ring[i], g + (opts.probeCoplanar ? 0.04 : 0.1), ring[i + 1]], [0, 1, 0], pool ? [0.34, 0.4, 0.2] : [0.72, 0.64, 0.5], seed, pool ? Surf.Garden : Surf.Sand, 0, 0, [ring[i], ring[i + 1], 0, 0]);
+    // Each corner a hand over the block's slab (ground + kerb + 0.06) and the
+    // colonnade's stylobate (+ 0.09) where it stands: laid flat at the lowest
+    // corner, the court cut through both along a line wherever the block sloped.
+    for (let i = 0; i < ring.length; i += 2) S.vert([ring[i], opts.probeCoplanar ? g + 0.04 : Math.max(g + 0.1, ground(ring[i], ring[i + 1]) + KERB_M + 0.12), ring[i + 1]], [0, 1, 0], pool ? [0.34, 0.4, 0.2] : [0.72, 0.64, 0.5], seed, pool ? Surf.Garden : Surf.Sand, 0, 0, [ring[i], ring[i + 1], 0, 0]);
     for (let k = 0; k < tri.length; k += 3) S.tri(base + tri[k], base + tri[k + 2], base + tri[k + 1]);
     for (let i = 0; i < n; i++) {
       const ax = ring[i * 2], az = ring[i * 2 + 1], bx = ring[((i + 1) % n) * 2], bz = ring[((i + 1) % n) * 2 + 1];

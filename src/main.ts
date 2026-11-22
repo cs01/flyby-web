@@ -42,7 +42,7 @@ import { IntroPath, IntroRun, type PoseSample } from "./sim/intro";
 import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { Townsfolk } from "./render/pompeiifolk";
-import { STATUE_SPOTS } from "./render/statues";
+import { STATUE_SPOTS, loadStatueScans } from "./render/statues";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { LandGrid, restoreCoast79 } from "./data/pompeiisuburbs";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
@@ -581,6 +581,7 @@ async function main() {
   let bareHeight: ((x: number, z: number) => number) | null = null;
   if (pompeiiData) {
     const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
+    if (!budget.pompeii.lean) void loadStatueScans(`${import.meta.env.BASE_URL}statues`);
     pompeii = new Pompeii({
       data: pompeiiData, heightAt: terrain.heightAt, shadow: sunShadow.uniforms,
       lean: budget.pompeii.lean, offsetX: off.x, offsetZ: off.z, art: !perfOff.has("pompeiiart"),

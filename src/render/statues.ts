@@ -1054,8 +1054,81 @@ let JOBS: StatueJob[] = [];
 /** The statues listed since the last call, for the caller to build. */
 export function takeStatueJobs(): StatueJob[] { const j = JOBS; JOBS = []; return j; }
 
+// --- museum scans ------------------------------------------------------------------------
+// Scans of the real pieces (tools/bake-statue-scans.ts, public/statues/),
+// used in place of the figures sculpted in code wherever one fits the
+// statue's type. The Arringatore is a togate orator with his arm raised; the
+// Idolino was itself a lamp bearer, and stands in for the other bronze
+// youths; the Spinario, the boy with his dog, the centaur from Oplontis and a
+// herm go in the gardens. Full tier only: each is some 250 KB.
+
+interface Scan { position: number[]; normal: number[]; cavity: number[]; index: number[]; height: number }
+const SCANS = new Map<string, Scan>();
+const SCAN_FOR: Partial<Record<StatueKind, string[]>> = {
+  togate: ["arringatore"], lampbearer: ["idolino"], apollo: ["idolino"], doryphoros: ["idolino"],
+  boy: ["boydog", "spinario"], satyr: ["centaur", "spinario"], herm: ["herm"],
+};
+let scansReady: Promise<void> = Promise.resolve();
+/** Resolves when the scans asked for have loaded (at once if none were). */
+export const statueScansReady = (): Promise<void> => scansReady;
+
+/** Fetch the baked scans from `base` (public/statues). A scan that fails to load leaves its statue to the code-built figure. */
+export function loadStatueScans(base: string): Promise<void> {
+  const names = [...new Set(Object.values(SCAN_FOR).flat())];
+  scansReady = Promise.all(names.map(async (name) => {
+    try {
+      const r = await fetch(`${base}/${name}.bin`);
+      if (!r.ok) return;
+      const d = new DataView(await r.arrayBuffer());
+      if (d.getUint32(0, true) !== 0x54415453) return; // "STAT"
+      const nv = d.getUint32(4, true), ni = d.getUint32(8, true), h = d.getFloat32(12, true);
+      const s: Scan = { position: new Array(nv * 3), normal: new Array(nv * 3), cavity: new Array(nv), index: new Array(ni), height: h };
+      for (let i = 0; i < nv * 3; i++) s.position[i] = (d.getInt16(16 + i * 2, true) / 32767) * h;
+      const no = 16 + nv * 6;
+      for (let i = 0; i < nv; i++) {
+        for (let c = 0; c < 3; c++) s.normal[i * 3 + c] = d.getInt8(no + i * 4 + c) / 127;
+        s.cavity[i] = d.getUint8(no + i * 4 + 3) / 255;
+      }
+      const io = no + nv * 4;
+      for (let i = 0; i < ni; i++) s.index[i] = d.getUint16(io + i * 2, true);
+      SCANS.set(name, s);
+    } catch { /* the code-built figure stands in */ }
+  })).then(() => undefined);
+  return scansReady;
+}
+
+/** A scan as a statue mesh in bronze or marble: the baked cavity darkens the folds, patina in the deepest. */
+function scanMesh(s: Scan, marble: boolean): StatueMesh & { style: number } {
+  const colour = new Array<number>(s.cavity.length * 3), thin = new Array<number>(s.cavity.length);
+  for (let i = 0; i < s.cavity.length; i++) {
+    const open = s.cavity[i];
+    let c: RGB;
+    // Weathered marble, a shade under the forum's travertine so the figure
+    // stands off it, the folds held dark by the baked cavity.
+    if (marble) c = scl3([0.78, 0.74, 0.66], 0.3 + 0.7 * open * open);
+    else {
+      c = mix3(DARK, BRONZE, smooth(0.25, 0.9, open));
+      c = mix3(c, PATINA, smooth(0.3, 0.05, open) * 0.55);
+      // Rubbed bright on what stands proudest.
+      c = mix3(c, WORN, smooth(0.97, 1.0, open) * 0.18);
+    }
+    colour[i * 3] = c[0]; colour[i * 3 + 1] = c[1]; colour[i * 3 + 2] = c[2];
+    thin[i] = marble ? 0.05 : 0.5;
+  }
+  return { position: s.position, normal: s.normal, colour, index: s.index, thin, style: marble ? STYLE_STATUE_MARBLE : STYLE_BRONZE };
+}
+let scanTurn = 0;
+
 /** Build one listed statue (with its horse and reins for a rider) into a store; its triangles. */
 export function runStatueJob(st: Sink, j: StatueJob): number {
+  const names = j.lean || j.horse ? undefined : SCAN_FOR[j.kind];
+  const scan = names && SCANS.get(names[scanTurn++ % names.length]);
+  if (scan) {
+    // At the height asked for, but never much over the piece's real size: a
+    // herm bust scaled to a pillar's height would be a giant's head.
+    const want = Math.min(j.fit || j.scale * 1.7, scan.height * 1.3);
+    return emitStatue(st, scanMesh(scan, !!j.marble), j.at, j.yaw, want / scan.height);
+  }
   if (!j.horse) {
     const m = buildStatue(j.kind, j.lean, { marble: j.marble });
     return emitStatue(st, m, j.at, j.yaw, j.fit ? j.fit / m.height : j.scale);
