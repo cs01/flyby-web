@@ -20,6 +20,8 @@ export interface PlaceRow {
   topY: number;
   /** An airport id: picking the row hovers the drone there to watch traffic. */
   spot?: string;
+  /** In an ancient town's streets: picked on foot, it is walked up to rather than flown at. */
+  inTown?: boolean;
 }
 
 /** More than this and it stops being a list and becomes a directory. */
@@ -89,6 +91,12 @@ export class Places {
   }
 
   /** Shown under the filter when a search reached past the list, or failed. */
+  /** The panel's heading: "Fly to" over a modern city, "Go to" in a town you walk. */
+  setTitle(text: string): void {
+    const h = this.root.querySelector("h2");
+    if (h) h.textContent = text;
+  }
+
   setNote(text: string): void {
     this.note.textContent = text;
   }

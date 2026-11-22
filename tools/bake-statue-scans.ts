@@ -33,6 +33,8 @@ interface Scan {
   triangles: number;
   /** The source winds its triangles inward. */
   flip?: boolean;
+  /** A second scan in the same frame, baked into the same statue (a rider for his horse). */
+  also?: string;
 }
 
 const SCANS: Scan[] = [
@@ -41,6 +43,11 @@ const SCANS: Scan[] = [
   { name: "spinario", file: "Thorne/Thorne.obj", up: "+y", yawDeg: 180, heightM: 0.73, triangles: 22000 },
   { name: "herm", file: "Plato/Plato.obj", up: "+y", yawDeg: 180, heightM: 0.55, triangles: 12000 },
   { name: "centaur", file: "Centaur/Centaur.stl", up: "+y", yawDeg: 180, heightM: 1.1, triangles: 26000, flip: true },
+  { name: "doryphoros", file: "commons/doryphoros.stl", up: "plinth", yawDeg: 180, heightM: 2.12, triangles: 30000 },
+  { name: "satyr", file: "commons/satyr.stl", up: "plinth", yawDeg: 90, heightM: 1.43, triangles: 30000 },
+  { name: "isispriest", file: "commons/isis-priest.stl", up: "plinth", yawDeg: 90, heightM: 1.7, triangles: 26000 },
+  { name: "zeus", file: "commons/zeus.stl", up: "plinth", yawDeg: 90, heightM: 2.09, triangles: 30000 },
+  { name: "jupiter", file: "commons/jupiter.stl", up: "+y", yawDeg: 0, heightM: 1.2, triangles: 24000 },
   { name: "boydog", file: "enfant_au_chien_threedscans/enfant_au_chien_threedscans.obj", up: "+z", yawDeg: 0, heightM: 0.75, triangles: 20000 },
 ];
 
@@ -88,20 +95,30 @@ function parseObj(path: string): { pos: Float32Array; idx: Uint32Array } {
 function parseStl(path: string): { pos: Float32Array; idx: Uint32Array } {
   const buf = readFileSync(path);
   const nt = buf.readUInt32LE(80);
-  const map = new Map<string, number>();
-  const pos: number[] = [];
+  // Weld the triangle soup with an open-addressed table that compares the
+  // coordinates themselves: a hash alone welded unrelated vertices on the
+  // multi-million-triangle scans and drew spikes across the figure.
+  let cap = 1;
+  while (cap < nt * 3) cap <<= 1;
+  const table = new Int32Array(cap).fill(-1);
+  const pos = new Float32Array(nt * 9);
+  let nv = 0;
   const idx = new Uint32Array(nt * 3);
+  const f32 = new Float32Array(3), u32 = new Uint32Array(f32.buffer);
   for (let t = 0; t < nt; t++) {
     const o = 84 + t * 50 + 12;
     for (let k = 0; k < 3; k++) {
-      const x = buf.readFloatLE(o + k * 12), y = buf.readFloatLE(o + k * 12 + 4), z = buf.readFloatLE(o + k * 12 + 8);
-      const key = `${x},${y},${z}`;
-      let v = map.get(key);
-      if (v === undefined) { v = pos.length / 3; map.set(key, v); pos.push(x, y, z); }
-      idx[t * 3 + k] = v;
+      f32[0] = buf.readFloatLE(o + k * 12); f32[1] = buf.readFloatLE(o + k * 12 + 4); f32[2] = buf.readFloatLE(o + k * 12 + 8);
+      let h = (Math.imul(u32[0], 73856093) ^ Math.imul(u32[1], 19349663) ^ Math.imul(u32[2], 83492791)) & (cap - 1);
+      for (;;) {
+        const v = table[h];
+        if (v < 0) { table[h] = nv; pos[nv * 3] = f32[0]; pos[nv * 3 + 1] = f32[1]; pos[nv * 3 + 2] = f32[2]; idx[t * 3 + k] = nv++; break; }
+        if (pos[v * 3] === f32[0] && pos[v * 3 + 1] === f32[1] && pos[v * 3 + 2] === f32[2]) { idx[t * 3 + k] = v; break; }
+        h = (h + 1) & (cap - 1);
+      }
     }
   }
-  return { pos: new Float32Array(pos), idx };
+  return { pos: pos.slice(0, nv * 3), idx };
 }
 
 /** Source coordinates to y-up with the given yaw; right-handedness kept so the winding stays outward. */
@@ -176,7 +193,15 @@ function levelOnPlinth(p: Float32Array, idx: Uint32Array): void {
 async function bake(src: string, sc: Scan, outDir: string): Promise<void> {
   const path = join(src, sc.file);
   const t0 = performance.now();
-  const raw = sc.file.toLowerCase().endsWith(".stl") ? parseStl(path) : parseObj(path);
+  const load = (p: string) => (p.toLowerCase().endsWith(".stl") ? parseStl(p) : parseObj(p));
+  let raw = load(path);
+  if (sc.also) {
+    const b = load(join(src, sc.also)), n0 = raw.pos.length / 3;
+    const pos = new Float32Array(raw.pos.length + b.pos.length), idx = new Uint32Array(raw.idx.length + b.idx.length);
+    pos.set(raw.pos); pos.set(b.pos, raw.pos.length); idx.set(raw.idx);
+    for (let i = 0; i < b.idx.length; i++) idx[raw.idx.length + i] = b.idx[i] + n0;
+    raw = { pos, idx };
+  }
   const box = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
   for (let i = 0; i < raw.pos.length; i += 3) for (let k = 0; k < 3; k++) {
     box[k] = Math.min(box[k], raw.pos[i + k]); box[3 + k] = Math.max(box[3 + k], raw.pos[i + k]);

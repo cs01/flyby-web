@@ -63,7 +63,8 @@ export function flameOffsets(kind: LampKind, nozzles: number): [number, number, 
     // Hook at the origin; the lamp hangs 0.72 m below on its chains.
     case LampKind.Hanging: return [[0.11, -0.68, 0], [-0.11, -0.68, 0]].slice(0, Math.max(1, nozzles)) as [number, number, number][];
     case LampKind.Candelabrum: return [[0.088, 1.424, 0]];
-    case LampKind.Lampbearer: return [[0.248, 1.993, -0.39], [0.248, 1.993, -0.49]].slice(0, Math.max(1, nozzles)) as [number, number, number][];
+    // On the tray in the bronze's outstretched hand (render/pompeiilamps.ts lampbearerGeometry).
+    case LampKind.Lampbearer: return [[0.028, 1.508, -0.37], [0.028, 1.508, -0.47]].slice(0, Math.max(1, nozzles)) as [number, number, number][];
     case LampKind.Lararium: return [[0.068, 0.046, 0]];
   }
 }

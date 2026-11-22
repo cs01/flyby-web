@@ -71,6 +71,9 @@ const BASE: { name: string; query: string; act?: string; settleMs?: number; atMs
 const SCENES: Scene[] = [
   ...BASE.flatMap((b) => SIZES.map((s) => ({ ...b, name: `${b.name}-${s.tag}`, w: s.w, h: s.h, dpr: s.dpr }))),
   { name: "desktop-pompeii-walk", query: "city=pompeii&intro=0", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 2500 },
+  // Picking a place on foot in the town walks you up to it (main.ts arriveAt): the list, then two arrivals.
+  { name: "desktop-pompeii-goto-jupiter", query: "city=pompeii&intro=0", act: "(() => { const i = document.querySelector('.place-filter'); i.value = 'Tempio di Giove'; i.dispatchEvent(new Event('input', { bubbles: true })); setTimeout(() => [...document.querySelectorAll('.place-row')].find((b) => b.offsetParent && /Tempio di Giove/i.test(b.textContent ?? ''))?.click(), 400); })()", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 4500 },
+  { name: "desktop-pompeii-goto-fauno", query: "city=pompeii&intro=0", act: "(() => { const i = document.querySelector('.place-filter'); i.value = 'Casa del Fauno'; i.dispatchEvent(new Event('input', { bubbles: true })); setTimeout(() => [...document.querySelectorAll('.place-row')].find((b) => b.offsetParent && /Casa del Fauno/i.test(b.textContent ?? ''))?.click(), 400); })()", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 4500 },
   { name: "desktop-pompeii-escape", query: "city=pompeii&intro=0&escape=lupanar", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 3000 },
   { name: "desktop-pompeii-escape-bakery", query: "city=pompeii&intro=0&escape=bakery", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 3000 },
   { name: "desktop-pompeii-escape-bakery-in", query: "city=pompeii&intro=0&escape=bakery", act: "setTimeout(() => { flyby.drone.yawDeg += 180; }, 2500)", w: 1280, h: 720, dpr: 1, desktop: true, settleMs: 4500 },

@@ -23,7 +23,7 @@ import type { PompeiiData } from "../data/pompeii";
 import { LampKind, LAMP_KINDS, flameOffsets, flicker, jitter, lampLevel, placeLamps, lampCensus, type Lamp, type LampSites } from "../data/pompeiilamps";
 import { POMPEII_FRAG, type PompeiiUniforms } from "./pompeii";
 import { OIL_REACH_M, buildOilGrid, townLampUniforms } from "./oillight";
-import { buildStatue } from "./statues";
+import { buildStatue, scanStatue, statueScansReady } from "./statues";
 
 /** Per tier: lights in the shader, flame sprites, fittings drawn and how far. */
 export const LAMP_TIERS = {
@@ -195,11 +195,15 @@ function lampbearerGeometry(seg: number): THREE.BufferGeometry {
   P.at(new THREE.BoxGeometry(0.5, 0.05, 0.5), [0.78, 0.76, 0.72], STYLE.marble, 0, 0.525, 0);
   const B = DARK_BRONZE;
   const y0 = 0.55;
-  // The youth, sculpted (render/statues.ts) and 1.5 m as the bronze is, with
-  // its patina. The figure faces +z; here he faces +x, so his left hand
+  // The youth is the Idolino, a scan of the real bronze (render/statues.ts),
+  // which was itself a lamp bearer: mirrored, his outstretched hand (0.42 m
+  // out, 0.89 m up) carries the tray. Until the scan has loaded, far off, and
+  // on the phone, the figure sculpted in code holds the same tray in the
+  // same place. The figure faces +z; here he faces +x, so his left hand
   // (figure +x) comes out at -z under the tray.
-  const s = 1.5 / 1.7;
-  const body = buildStatue("lampbearer", seg <= 8, { tray: [0.44 / s, 1.39 / s, 0.2 / s] });
+  const scan = seg > 8 ? scanStatue("idolino", true) : undefined;
+  const s = scan ? 1 : 1.5 / 1.7;
+  const body = scan ?? buildStatue("lampbearer", seg <= 8, { tray: [0.42 / s, 0.905 / s, -0.02 / s] });
   const n = body.position.length / 3, bp = new Float32Array(n * 3), bn = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     const x = body.position[i * 3], y = body.position[i * 3 + 1], z = body.position[i * 3 + 2];
@@ -213,9 +217,9 @@ function lampbearerGeometry(seg: number): THREE.BufferGeometry {
   bg.setIndex(body.index);
   P.add(bg, B, STYLE.bronze, undefined, true);
   // The tray, and two lamps on it.
-  P.at(new THREE.CylinderGeometry(0.12, 0.1, 0.014, Math.max(10, seg * 2)), BRONZE, STYLE.bronze, 0.2, y0 + 1.39, -0.44);
-  lucerna(P, BRONZE, STYLE.bronze, 0.16, y0 + 1.397, -0.39, seg);
-  lucerna(P, BRONZE, STYLE.bronze, 0.16, y0 + 1.397, -0.49, seg);
+  P.at(new THREE.CylinderGeometry(0.12, 0.1, 0.014, Math.max(10, seg * 2)), BRONZE, STYLE.bronze, -0.02, y0 + 0.905, -0.42);
+  lucerna(P, BRONZE, STYLE.bronze, -0.06, y0 + 0.912, -0.37, seg);
+  lucerna(P, BRONZE, STYLE.bronze, -0.06, y0 + 0.912, -0.47, seg);
   return P.build();
 }
 
@@ -422,6 +426,12 @@ export class PompeiiLamps {
     for (let k = 0; k < LAMP_KINDS; k++) {
       for (const [list, seg, tag] of [[this.near, 12, "near"], [this.far, 6, "far"]] as const) {
         const im = new THREE.InstancedMesh(KIND_GEOMETRY[k as LampKind](seg), mat, cap);
+        // The near lampbearer is rebuilt round the scanned bronze once that has loaded.
+        if (k === LampKind.Lampbearer && seg > 8) void statueScansReady().then(() => {
+          if (!scanStatue("idolino")) return;
+          im.geometry.dispose();
+          im.geometry = lampbearerGeometry(seg);
+        });
         im.count = 0;
         im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
         // Refilled round the camera; their bounds would only cull wrongly.

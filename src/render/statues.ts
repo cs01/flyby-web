@@ -1049,7 +1049,7 @@ export const STATUE_KINDS: StatueKind[] = ["togate", "cuirassed", "rider", "apol
  * and lists these: sculpting them takes a second or two, so render/pompeii.ts
  * builds them into a mesh of their own after the town is up (runStatueJob).
  */
-export interface StatueJob { kind: StatueKind; lean: boolean; marble?: boolean; at: V3; yaw: number; scale: number; fit?: number; horse?: boolean }
+export interface StatueJob { kind: StatueKind; lean: boolean; marble?: boolean; at: V3; yaw: number; scale: number; fit?: number; horse?: boolean; /** A scan by name, at the full height asked for. */ scan?: string }
 let JOBS: StatueJob[] = [];
 /** The statues listed since the last call, for the caller to build. */
 export function takeStatueJobs(): StatueJob[] { const j = JOBS; JOBS = []; return j; }
@@ -1065,16 +1065,20 @@ export function takeStatueJobs(): StatueJob[] { const j = JOBS; JOBS = []; retur
 interface Scan { position: number[]; normal: number[]; cavity: number[]; index: number[]; height: number }
 const SCANS = new Map<string, Scan>();
 const SCAN_FOR: Partial<Record<StatueKind, string[]>> = {
-  togate: ["arringatore"], lampbearer: ["idolino"], apollo: ["idolino"], doryphoros: ["idolino"],
+  togate: ["arringatore"], lampbearer: ["idolino"], apollo: ["idolino"], doryphoros: ["doryphoros"],
+  // No free scan of the House of the Faun's own bronze: the Medici dancing satyr stands in for him.
+  faun: ["satyr"],
   boy: ["boydog", "spinario"], satyr: ["centaur", "spinario"], herm: ["herm"],
 };
+/** Scans a job names itself (the cult statues), beside those picked by kind. */
+const CULT_SCANS = ["jupiter", "isispriest"];
 let scansReady: Promise<void> = Promise.resolve();
 /** Resolves when the scans asked for have loaded (at once if none were). */
 export const statueScansReady = (): Promise<void> => scansReady;
 
 /** Fetch the baked scans from `base` (public/statues). A scan that fails to load leaves its statue to the code-built figure. */
 export function loadStatueScans(base: string): Promise<void> {
-  const names = [...new Set(Object.values(SCAN_FOR).flat())];
+  const names = [...new Set([...Object.values(SCAN_FOR).flat(), ...CULT_SCANS])];
   scansReady = Promise.all(names.map(async (name) => {
     try {
       const r = await fetch(`${base}/${name}.bin`);
@@ -1119,14 +1123,27 @@ function scanMesh(s: Scan, marble: boolean): StatueMesh & { style: number } {
 }
 let scanTurn = 0;
 
+/** A loaded scan as a bronze statue mesh, mirrored left to right if asked; undefined until loadStatueScans has it. */
+export function scanStatue(name: string, mirror = false): (StatueMesh & { style: number; height: number }) | undefined {
+  const s = SCANS.get(name);
+  if (!s) return undefined;
+  const m = scanMesh(s, false);
+  if (!mirror) return { ...m, height: s.height };
+  const position = s.position.slice(), normal = s.normal.slice(), index = s.index.slice();
+  for (let i = 0; i < position.length; i += 3) { position[i] = -position[i]; normal[i] = -normal[i]; }
+  for (let t = 0; t < index.length; t += 3) { const a = index[t + 1]; index[t + 1] = index[t + 2]; index[t + 2] = a; }
+  return { ...m, position, normal, index, height: s.height };
+}
+
 /** Build one listed statue (with its horse and reins for a rider) into a store; its triangles. */
 export function runStatueJob(st: Sink, j: StatueJob): number {
   const names = j.lean || j.horse ? undefined : SCAN_FOR[j.kind];
-  const scan = names && SCANS.get(names[scanTurn++ % names.length]);
+  const scan = j.scan ? SCANS.get(j.scan) : names && SCANS.get(names[scanTurn++ % names.length]);
   if (scan) {
     // At the height asked for, but never much over the piece's real size: a
-    // herm bust scaled to a pillar's height would be a giant's head.
-    const want = Math.min(j.fit || j.scale * 1.7, scan.height * 1.3);
+    // herm bust scaled to a pillar's height would be a giant's head. A cult
+    // statue was colossal and takes the height it is given.
+    const want = j.scan ? j.fit || j.scale * 1.7 : Math.min(j.fit || j.scale * 1.7, scan.height * 1.3);
     return emitStatue(st, scanMesh(scan, !!j.marble), j.at, j.yaw, want / scan.height);
   }
   if (!j.horse) {
@@ -1237,7 +1254,8 @@ function crossing(a: number[], b: number[]): [number, number] | null {
  * the Samnite Palaestra. `ground` in pack metres; floors stand kerb high.
  */
 export function placeTownStatues(st: Sink, data: { publics: { name: string; ring: number[] }[]; streets: { name: string; pts: number[]; carriageM: number; sidewalkM: number }[] },
-  ground: (x: number, z: number) => number, kerb: number, lean: boolean, seed: number, gardens: { x: number; y: number; z: number; yaw: number }[] = []): { tris: number; placed: string[] } {
+  ground: (x: number, z: number) => number, kerb: number, lean: boolean, seed: number, bases: { x: number; y: number; z: number; yaw: number; what?: string; who?: string }[] = []): { tris: number; placed: string[] } {
+  const gardens = bases.filter((b) => b.what !== "cult"), cults = bases.filter((b) => b.what === "cult" && b.who);
   let tris = 0;
   const placed: string[] = [];
   const floorOf = (r: number[]): number => { let g = 1e9; for (let i = 0; i < r.length; i += 2) g = Math.min(g, ground(r[i], r[i + 1])); return g + kerb; };
@@ -1286,6 +1304,14 @@ export function placeTownStatues(st: Sink, data: { publics: { name: string; ring
     placed.push("doryphoros");
   }
   // Garden bronzes on the peristyles' pedestals (full detail only: they are small and many).
+  // The gods in their cellas (pompeiimesh.ts opens them on the full build): Jupiter
+  // colossal in the Capitolium, a priestess of Isis in her temple, Apollo in his.
+  if (!lean) for (const b of cults) {
+    const [scan, kind, tall, marble]: [string, StatueKind, number, boolean] = b.who === "jupiter" ? ["jupiter", "togate", 3.4, true] : b.who === "isis" ? ["isispriest", "togate", 1.9, true] : ["idolino", "apollo", 1.9, false];
+    JOBS.push({ kind, lean: false, marble, at: [b.x, b.y, b.z], yaw: b.yaw, scale: 0, fit: tall, scan });
+    STATUE_SPOTS.push({ kind, x: b.x, y: b.y, z: b.z, yaw: b.yaw, top: b.y + tall });
+    placed.push("cult-" + b.who);
+  }
   if (!lean) gardens.slice(0, 12).forEach((b, i) => {
     const kind: StatueKind = (["boy", "satyr", "herm"] as const)[Math.floor(hashU(i, b.x) * 3)];
     const tall = kind === "herm" ? 0.75 : kind === "boy" ? 0.7 : 0.8;

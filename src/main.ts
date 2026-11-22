@@ -43,6 +43,7 @@ import { Car, CAR_NEAR_PLANE_M } from "./sim/car";
 import { Pompeii, Cart, loadPompeiiArt, POMPEII_SHADOW_SPLITS, antiquateDrape, pompeiiRingFields, loadPompeii, pompeiiCityPack, pompeiiVegetation, restoreVesuvius, CART_TOP_SPEED, CART_BOOST_SPEED, CART_EYE_HEIGHT_M } from "./render/pompeii";
 import { Townsfolk } from "./render/pompeiifolk";
 import { STATUE_SPOTS, loadStatueScans } from "./render/statues";
+import { plainName } from "./data/pompeii";
 import { pompeiiRoadPack, pompeiiHeightAt } from "./data/pompeiiroads";
 import { LandGrid, restoreCoast79 } from "./data/pompeiisuburbs";
 import { EruptionView, eruptionSurfaceUniforms, ashLiftAt } from "./render/eruption";
@@ -1644,6 +1645,21 @@ async function main() {
       spotAt(p.spot);
       return;
     }
+    // On foot or in the cart in an ancient town, a place in the list is
+    // somewhere to walk up to. Being lifted into an aeroplane half a mile out
+    // over 79 AD because you tapped "Forum" made no sense.
+    if (pompeiiData && (droneActive || carActive) && p.inTown) {
+      const at = walkUpTo(p.x, p.z);
+      if (at) {
+        autopilot.disengage();
+        places.setActive(p.name);
+        places.setNote("");
+        phone?.close();
+        sortByRange();
+        hud.toast(p.name);
+        return;
+      }
+    }
     const dx = ac.position.x - p.x;
     const dz = ac.position.z - p.z;
     const len = Math.hypot(dx, dz);
@@ -1718,6 +1734,22 @@ async function main() {
     const w = origin.toWorld(a.lat, a.lon);
     curated.push({ name: `${a.icao.slice(1)} ${a.name} spotting`, x: w.x, z: w.z, topY: terrain.heightAt(w.x, w.z) + 120, spot: a.id });
   }
+  // An ancient town lists its own named places (gates, public buildings,
+  // the named houses and shops of the excavated plan), each somewhere on
+  // the ground you can walk to.
+  if (pompeiiData) {
+    const off = origin.toWorld(pompeiiData.lat0, pompeiiData.lon0);
+    const have = new Set(curated.map((c) => c.name));
+    for (const c of curated) c.inTown = Math.hypot(c.x - off.x, c.z - off.z) < 2500;
+    for (const pl of pompeiiData.places) {
+      const name = plainName(pl.name);
+      if (have.has(name)) continue;
+      have.add(name);
+      const x = pl.x + off.x, z = pl.z + off.z;
+      curated.push({ name, x, z, topY: terrain.heightAt(x, z) + 30, inTown: true });
+    }
+  }
+  if (pompeiiData) places.setTitle("Go to");
   let nearby: PlaceRow[] = [...curated];
   const sortedAt = { x: 0, z: 0 };
   /** Whoever the player is right now: the walker or the car, not the parked
@@ -1740,7 +1772,9 @@ async function main() {
 
   // Fired after the flight has started: discovery must never be able to delay
   // it, and a failure is silent because the flight is the point.
-  void fetchNearby(city.lat, city.lon).then((found) => {
+  // Not for an ancient town: Wikipedia's list for the spot is the modern
+  // world's (the ruins' own article, a railway station), none of it in 79 AD.
+  if (!pompeiiData) void fetchNearby(city.lat, city.lon).then((found) => {
     const seen = new Set(curated.map((c) => c.name));
     for (const f of found) {
       if (seen.has(f.name)) continue;
@@ -1768,6 +1802,7 @@ async function main() {
   // The 79 AD switch and the escape mission (app/escape.ts). The walker is
   // placed through a closure: the spawn search is defined further down.
   let escapePlace: (x: number, z: number, fx: number, fz: number) => { x: number; z: number } | null = () => null;
+  let walkUpTo: (x: number, z: number) => { x: number; z: number } | null = () => null;
   let escapeExact: (x: number, z: number, fx: number, fz: number) => void = () => {};
   let escapeBlocked: (x: number, z: number) => boolean = () => false;
   // The escape story is Pompeii's (its gates, roads and the day it fell): Herculaneum has none yet.
@@ -1905,6 +1940,67 @@ async function main() {
     droneActive = true;
     drone.blocked = (bx, bz) => terrain.heightAt(bx, bz) < waterLevel + 0.4;
     drone.enterWalk(at.x, at.z, terrain.heightAt(at.x, at.z), (hdg + 360) % 360);
+    return at;
+  };
+  walkUpTo = (x, z) => {
+    // The nearest pavement to a house is the one under its own wall, where
+    // facing it is a face full of plaster. Step back from the place, across
+    // the street if the ground allows, and look at it from there.
+    const off = pompeiiOff ?? { x: 0, z: 0 };
+    const tx = x - off.x, tz = z - off.z;
+    const inRing = (r: ArrayLike<number>, px: number, pz: number): boolean => {
+      let c = false;
+      for (let i = 0, j = r.length - 2; i < r.length; j = i, i += 2) {
+        if (r[i + 1] > pz !== r[j + 1] > pz && px < ((r[j] - r[i]) * (pz - r[i + 1])) / (r[j + 1] - r[i + 1]) + r[i]) c = !c;
+      }
+      return c;
+    };
+    // A house: stand in the street in front of its door, looking in.
+    const house = pompeiiData?.domus.find((h) => inRing(h.ring, tx, tz));
+    // Its openings are the ones a pace inside its outline. A surveyed house
+    // lists only the shops either side of its door, so with no door among
+    // them the middle of the row stands for it.
+    const fronts = house ? (pompeii?.model.lampSites.openings ?? []).filter((o) => inRing(house.ring, o.x - o.ox * 0.8, o.z - o.oz * 0.8)) : [];
+    const doors = fronts.filter((o) => o.kind === "door").sort((p, q) => q.w - p.w);
+    const main = doors[0] ?? fronts[0];
+    const row = main ? fronts.filter((o) => o.ox * main.ox + o.oz * main.oz > 0.95) : [];
+    const door = doors[0] ?? (main && { ox: main.ox, oz: main.oz, x: row.reduce((t, o) => t + o.x, 0) / row.length, z: row.reduce((t, o) => t + o.z, 0) / row.length });
+    if (door) {
+      for (const back of [5, 3.5, 2.2]) {
+        const cx = door.x + door.ox * back + off.x, cz = door.z + door.oz * back + off.z;
+        const u = unstandable(cx, cz);
+        if (u === null || u === "carriageway") { escapeExact(cx, cz, door.x + off.x, door.z + off.z); return { x: cx, z: cz }; }
+      }
+    }
+    // A public building near the forum fronts onto it: come at it from the square.
+    const pub = pompeiiData?.publics.find((p) => p.kind !== "forum" && inRing(p.ring, tx, tz));
+    const forum = pompeiiData?.publics.find((p) => p.kind === "forum");
+    if (pub && forum) {
+      let fx = 0, fz = 0;
+      for (let i = 0; i < forum.ring.length; i += 2) { fx += forum.ring[i]; fz += forum.ring[i + 1]; }
+      fx /= forum.ring.length / 2; fz /= forum.ring.length / 2;
+      const d = Math.hypot(fx - tx, fz - tz);
+      if (d > 1 && d < 160) {
+        // Walk out of the building toward the square, then 14 m on.
+        const ux = (fx - tx) / d, uz = (fz - tz) / d;
+        let t = 0;
+        while (t < d && inRing(pub.ring, tx + ux * t, tz + uz * t)) t += 1;
+        for (const back of [14, 10, 6]) {
+          const cx = tx + ux * Math.min(d, t + back) + off.x, cz = tz + uz * Math.min(d, t + back) + off.z;
+          if (unstandable(cx, cz) === null) { escapeExact(cx, cz, x, z); return { x: cx, z: cz }; }
+        }
+      }
+    }
+    const near = findSpawn(x, z, true);
+    if (!near) return null;
+    const d = Math.hypot(near.x - x, near.z - z) || 1, ux = (near.x - x) / d, uz = (near.z - z) / d;
+    let at = near;
+    for (const back of [9, 7.5, 6, 4.5, 3]) {
+      const cx = near.x + ux * back, cz = near.z + uz * back;
+      const u = unstandable(cx, cz);
+      if (u === null || u === "carriageway") { at = { x: cx, z: cz }; break; }
+    }
+    escapeExact(at.x, at.z, x, z);
     return at;
   };
   // The sweep plays when the city starts on foot, never in shot mode unless

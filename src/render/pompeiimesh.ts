@@ -237,7 +237,7 @@ export interface PompeiiModel {
   /** Rooms built inside the houses (full build), with a place to stand and where to look: the poses and the gate read them. */
   interiors: InteriorView[];
   /** Pedestals built empty for a statue (the garden statuary): top centre and the way the figure faces. */
-  statueBases: { x: number; y: number; z: number; yaw: number; what: "garden" | "cult" }[];
+  statueBases: { x: number; y: number; z: number; yaw: number; what: "garden" | "cult"; who?: "jupiter" | "apollo" | "isis" }[];
   /** What was modelled at the mapped sites. */
   sites: { mills: { x: number; z: number; site: string }[]; ovens: string[]; thermopolia: number; statues: string[]; shrines: number; stalls: number };
   /** The town: buildings, kerbs, landmarks, walls. Single-sided. */
@@ -3198,7 +3198,8 @@ export function buildPompeii(opts: BuildOptions): PompeiiModel {
         const yaw = Math.atan2(fx, fz);
         for (const s of jupiter ? [-bw * 0.62, 0, bw * 0.62] : [0]) {
           const [x, z] = C(bi + bd / 2, s);
-          statueBases.push({ x, y: y0 + bh + 0.16, z, yaw, what: "cult" });
+          // The middle of the Capitolium's base is Jupiter's; Juno and Minerva's places either side stay empty.
+          if (s === 0) statueBases.push({ x, y: y0 + bh + 0.16, z, yaw, what: "cult", who: jupiter ? "jupiter" : isis ? "isis" : "apollo" });
         }
       }
     }
