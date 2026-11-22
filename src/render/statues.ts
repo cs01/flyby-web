@@ -1139,6 +1139,9 @@ export function scanStatue(name: string, mirror = false): (StatueMesh & { style:
 export function runStatueJob(st: Sink, j: StatueJob): number {
   const names = j.lean || j.horse ? undefined : SCAN_FOR[j.kind];
   const scan = j.scan ? SCANS.get(j.scan) : names && SCANS.get(names[scanTurn++ % names.length]);
+  // A cult statue exists only as its scan: with the scan missing its base
+  // stands empty rather than carrying a code-built stand-in.
+  if (j.scan && !scan) return 0;
   if (scan) {
     // At the height asked for, but never much over the piece's real size: a
     // herm bust scaled to a pillar's height would be a giant's head. A cult
